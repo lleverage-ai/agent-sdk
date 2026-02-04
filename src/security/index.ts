@@ -414,4 +414,3 @@ export function getBackendOptionsForAcceptEdits(
     blockedCommands: [...existingBlocked, ...ACCEPT_EDITS_BLOCKED_PATTERNS],
   };
 }
-

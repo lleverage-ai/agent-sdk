@@ -7,7 +7,7 @@ import { tool } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { FilesystemBackend } from "../src/backends/filesystem.js";
-import { type AgentState, createAgentState, StateBackend } from "../src/backends/state.js";
+import { createAgentState, StateBackend } from "../src/backends/state.js";
 import {
   type CoreTools,
   type CoreToolsOptions,
