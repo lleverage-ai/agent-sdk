@@ -333,9 +333,10 @@ describe("Metrics", () => {
       const histogram = registry.histogram("test_duration", [50, 100, 200]);
 
       const endTimer = histogram.startTimer();
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 15));
       const duration = endTimer();
 
+      // Allow some timing variance in CI environments
       expect(duration).toBeGreaterThanOrEqual(10);
       expect(histogram.get().count).toBe(1);
     });
