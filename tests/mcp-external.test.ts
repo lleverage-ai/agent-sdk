@@ -8,39 +8,47 @@ import type {
 
 // Mock the MCP SDK
 vi.mock("@modelcontextprotocol/sdk/client/index.js", () => ({
-  Client: vi.fn().mockImplementation(() => ({
-    connect: vi.fn().mockResolvedValue(undefined),
-    listTools: vi.fn().mockResolvedValue({
-      tools: [
-        {
-          name: "list_issues",
-          description: "List GitHub issues",
-          inputSchema: { type: "object", properties: {} },
-        },
-        {
-          name: "create_pr",
-          description: "Create a pull request",
-          inputSchema: { type: "object", properties: {} },
-        },
-      ],
-    }),
-    callTool: vi.fn().mockResolvedValue({
-      content: [{ type: "text", text: "Tool result" }],
-    }),
-    close: vi.fn().mockResolvedValue(undefined),
-  })),
+  Client: vi.fn().mockImplementation(function (this: object) {
+    return {
+      connect: vi.fn().mockResolvedValue(undefined),
+      listTools: vi.fn().mockResolvedValue({
+        tools: [
+          {
+            name: "list_issues",
+            description: "List GitHub issues",
+            inputSchema: { type: "object", properties: {} },
+          },
+          {
+            name: "create_pr",
+            description: "Create a pull request",
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      }),
+      callTool: vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "Tool result" }],
+      }),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+  }),
 }));
 
 vi.mock("@modelcontextprotocol/sdk/client/stdio.js", () => ({
-  StdioClientTransport: vi.fn().mockImplementation(() => ({})),
+  StdioClientTransport: vi.fn().mockImplementation(function (this: object) {
+    return {};
+  }),
 }));
 
 vi.mock("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
-  StreamableHTTPClientTransport: vi.fn().mockImplementation(() => ({})),
+  StreamableHTTPClientTransport: vi.fn().mockImplementation(function (this: object) {
+    return {};
+  }),
 }));
 
 vi.mock("@modelcontextprotocol/sdk/client/sse.js", () => ({
-  SSEClientTransport: vi.fn().mockImplementation(() => ({})),
+  SSEClientTransport: vi.fn().mockImplementation(function (this: object) {
+    return {};
+  }),
 }));
 
 describe("MCPManager external servers", () => {

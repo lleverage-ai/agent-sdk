@@ -12,9 +12,9 @@ import {
   stepCountIs,
   streamText,
 } from "ai";
-import type { BackendProtocol, SandboxBackendProtocol } from "./backend.js";
-import { isSandboxBackend } from "./backend.js";
-import { CommandBlockedError } from "./backends/sandbox.js";
+import type { BackendProtocol, ExecutableBackend } from "./backend.js";
+import { hasExecuteCapability } from "./backend.js";
+import { CommandBlockedError } from "./backends/filesystem.js";
 import type { AgentState } from "./backends/state.js";
 import { createAgentState, StateBackend } from "./backends/state.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
@@ -125,17 +125,17 @@ const FILE_EDIT_TOOLS = new Set([
 ]);
 
 /**
- * Wraps a sandbox backend to add additional blocked command patterns.
+ * Wraps a backend with execute capability to add additional blocked command patterns.
  * This creates a proxy that intercepts execute() calls and validates
  * commands against the additional patterns before delegating.
  * @internal
  */
-function wrapSandboxWithBlockedPatterns(
-  sandbox: SandboxBackendProtocol,
+function wrapBackendWithBlockedPatterns<T extends ExecutableBackend>(
+  backend: T,
   additionalPatterns: RegExp[],
-): SandboxBackendProtocol {
+): T {
   // Create a proxy that intercepts execute() calls
-  return new Proxy(sandbox, {
+  return new Proxy(backend, {
     get(target, prop, receiver) {
       if (prop === "execute") {
         return async (command: string) => {
@@ -817,18 +817,19 @@ export function createAgent(options: AgentOptions): Agent {
     },
   });
 
-  // Determine sandbox backend if available
-  let sandbox: SandboxBackendProtocol | undefined = isSandboxBackend(backend) ? backend : undefined;
+  // Determine if backend has execute capability
+  // Also support legacy sandbox pattern for backward compatibility
+  let effectiveBackend: BackendProtocol = backend;
 
   // Apply acceptEdits shell file operation blocking
-  // When permissionMode is "acceptEdits" and a sandbox is available,
+  // When permissionMode is "acceptEdits" and backend has execute capability,
   // automatically block shell-based file operations unless explicitly disabled
-  if (permissionMode === "acceptEdits" && sandbox) {
+  if (permissionMode === "acceptEdits" && hasExecuteCapability(backend)) {
     const blockShellFileOps = options.blockShellFileOps ?? true;
 
     if (blockShellFileOps) {
-      // Wrap the sandbox to block shell file operations
-      sandbox = wrapSandboxWithBlockedPatterns(sandbox, ACCEPT_EDITS_BLOCKED_PATTERNS);
+      // Wrap the backend to block shell file operations
+      effectiveBackend = wrapBackendWithBlockedPatterns(backend, ACCEPT_EDITS_BLOCKED_PATTERNS);
     } else {
       // User explicitly disabled shell blocking - log a warning
       console.warn(
@@ -874,10 +875,9 @@ export function createAgent(options: AgentOptions): Agent {
 
   // Auto-create core tools (unless user provides explicit tools)
   // Note: search_tools is created separately with proper configuration
-  const autoCreatedCoreTools = createCoreTools({
-    backend,
+  const { tools: autoCreatedCoreTools } = createCoreTools({
+    backend: effectiveBackend,
     state,
-    sandbox,
     mcpManager: deferredLoadingActive ? undefined : mcpManager, // Only pass if not deferred
     disabled: options.disabledCoreTools,
     skills,

@@ -56,14 +56,12 @@
     "format:check": "biome format .",
     "check": "biome check .",
     "check:fix": "biome check --write .",
-    "docs": "typedoc",
-    "docs:watch": "typedoc --watch",
     "clean": "rm -rf dist coverage docs",
     "prepublishOnly": "npm run clean && npm run check && npm run test && npm run build"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.25.3",
-    "ai": "^6.0.0",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "ai": "^6.0.70",
     "ajv": "^8.17.1",
     "zod": "^4.3.6"
   },
@@ -73,9 +71,7 @@
     "@tsconfig/node18": "^18.2.4",
     "@types/json-schema": "^7.0.15",
     "@types/node": "^25.1.0",
-    "typedoc": "^0.28.0",
-    "typedoc-plugin-markdown": "^4.6.0",
     "typescript": "^5.9.2",
-    "vitest": "^3.2.0"
+    "vitest": "^4.0.18"
   }
 }

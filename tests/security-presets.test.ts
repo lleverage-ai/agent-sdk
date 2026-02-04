@@ -3,14 +3,14 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { LocalSandbox } from "../src/backends/sandbox.js";
+import { FilesystemBackend } from "../src/backends/filesystem.js";
 import { applySecurityPolicy, type SecurityPolicyPreset } from "../src/security/index.js";
 
 describe("Security Policy Presets", () => {
   describe("applySecurityPolicy", () => {
-    it("should return a LocalSandbox backend", () => {
+    it("should return a FilesystemBackend backend", () => {
       const result = applySecurityPolicy("development");
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
 
     it("should include permission mode in result", () => {
@@ -25,11 +25,11 @@ describe("Security Policy Presets", () => {
       expect(result.permissionMode).toBe("plan");
     });
 
-    it("should merge sandbox options with overrides", () => {
+    it("should merge backend options with overrides", () => {
       const result = applySecurityPolicy("development", {
-        sandbox: { timeout: 5000 },
+        backend: { timeout: 5000 },
       });
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
   });
 
@@ -41,17 +41,17 @@ describe("Security Policy Presets", () => {
       expect(result.allowedTools).toBeUndefined();
     });
 
-    it("should allow dangerous commands in sandbox", async () => {
+    it("should allow dangerous commands in backend", async () => {
       const result = applySecurityPolicy("development");
       // Should not throw for dangerous commands (allowDangerous: true)
       // We can't directly test this without executing, but we verify the backend was created
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
 
     it("should have long timeout", () => {
       const result = applySecurityPolicy("development");
-      // Sandbox is created with 120000ms timeout (verified in implementation)
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      // Backend is created with 120000ms timeout (verified in implementation)
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
   });
 
@@ -69,14 +69,14 @@ describe("Security Policy Presets", () => {
 
     it("should have medium timeout for long tests", () => {
       const result = applySecurityPolicy("ci");
-      // Sandbox is created with 300000ms timeout (verified in implementation)
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      // Backend is created with 300000ms timeout (verified in implementation)
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
 
-    it("should block network operations in sandbox", () => {
+    it("should block network operations in backend", () => {
       const result = applySecurityPolicy("ci");
-      // Sandbox has blockedCommands for curl, wget, git push, etc.
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      // Backend has blockedCommands for curl, wget, git push, etc.
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
   });
 
@@ -94,14 +94,14 @@ describe("Security Policy Presets", () => {
 
     it("should have short timeout (fail fast)", () => {
       const result = applySecurityPolicy("production");
-      // Sandbox is created with 60000ms timeout (verified in implementation)
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      // Backend is created with 60000ms timeout (verified in implementation)
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
 
     it("should block package management commands", () => {
       const result = applySecurityPolicy("production");
-      // Sandbox has blockedCommands for npm install, yarn add, etc.
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      // Backend has blockedCommands for npm install, yarn add, etc.
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
   });
 
@@ -129,14 +129,14 @@ describe("Security Policy Presets", () => {
 
     it("should have very short timeout", () => {
       const result = applySecurityPolicy("readonly");
-      // Sandbox is created with 30000ms timeout (verified in implementation)
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      // Backend is created with 30000ms timeout (verified in implementation)
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
 
-    it("should block all write commands in sandbox", () => {
+    it("should block all write commands in backend", () => {
       const result = applySecurityPolicy("readonly");
-      // Sandbox has extensive blockedCommands list
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      // Backend has extensive blockedCommands list
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
   });
 
@@ -162,14 +162,14 @@ describe("Security Policy Presets", () => {
       expect(result.allowedTools).toEqual(["read", "custom-read"]);
     });
 
-    it("should merge sandbox options", () => {
+    it("should merge backend options", () => {
       const result = applySecurityPolicy("ci", {
-        sandbox: {
+        backend: {
           timeout: 10000,
           maxFileSizeMb: 1,
         },
       });
-      expect(result.backend).toBeInstanceOf(LocalSandbox);
+      expect(result.backend).toBeInstanceOf(FilesystemBackend);
     });
 
     it("should override unified hooks", () => {

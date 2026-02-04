@@ -2,13 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   type BackendProtocol,
   type EditResult,
+  type ExecutableBackend,
   type ExecuteResponse,
   type FileData,
   type FileInfo,
   type GrepMatch,
+  hasExecuteCapability,
   isBackend,
-  isSandboxBackend,
-  type SandboxBackendProtocol,
   type WriteResult,
 } from "../src/backend.js";
 
@@ -71,13 +71,13 @@ describe("Backend Type Guards", () => {
     });
   });
 
-  describe("isSandboxBackend", () => {
+  describe("hasExecuteCapability", () => {
     it("returns false for non-backend objects", () => {
-      expect(isSandboxBackend(null)).toBe(false);
-      expect(isSandboxBackend({})).toBe(false);
+      expect(hasExecuteCapability(null)).toBe(false);
+      expect(hasExecuteCapability({})).toBe(false);
     });
 
-    it("returns false for basic BackendProtocol without sandbox methods", () => {
+    it("returns false for basic BackendProtocol without execute method", () => {
       const mockBackend: BackendProtocol = {
         lsInfo: () => [],
         read: () => "",
@@ -88,12 +88,12 @@ describe("Backend Type Guards", () => {
         edit: () => ({ success: true }),
       };
 
-      expect(isSandboxBackend(mockBackend)).toBe(false);
+      expect(hasExecuteCapability(mockBackend)).toBe(false);
     });
 
-    it("returns true for object with all SandboxBackendProtocol properties", () => {
-      const mockSandbox: SandboxBackendProtocol = {
-        id: "sandbox-123",
+    it("returns true for object with execute method", () => {
+      const mockExecutable: ExecutableBackend = {
+        id: "exec-123",
         lsInfo: () => [],
         read: () => "",
         readRaw: () => ({ content: [], created_at: "", modified_at: "" }),
@@ -106,11 +106,11 @@ describe("Backend Type Guards", () => {
         downloadFiles: async () => [],
       };
 
-      expect(isSandboxBackend(mockSandbox)).toBe(true);
+      expect(hasExecuteCapability(mockExecutable)).toBe(true);
     });
 
     it("returns false if id is not a string", () => {
-      const invalidSandbox = {
+      const invalidExecutable = {
         id: 123, // Should be string
         lsInfo: () => [],
         read: () => "",
@@ -124,7 +124,7 @@ describe("Backend Type Guards", () => {
         downloadFiles: async () => [],
       };
 
-      expect(isSandboxBackend(invalidSandbox)).toBe(false);
+      expect(hasExecuteCapability(invalidExecutable)).toBe(false);
     });
   });
 });

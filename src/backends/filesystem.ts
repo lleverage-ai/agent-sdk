@@ -27,14 +27,18 @@
  * @packageDocumentation
  */
 
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fsSync from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type {
   BackendProtocol,
   EditResult,
+  ExecuteResponse,
   FileData,
   FileInfo,
+  FileUploadResponse,
   GrepMatch,
   WriteResult,
 } from "../backend.js";
@@ -48,11 +52,19 @@ import type {
  *
  * @example
  * ```typescript
- * const options: FilesystemBackendOptions = {
+ * // Basic filesystem backend (no bash)
+ * const backend = new FilesystemBackend({
  *   rootDir: "/home/user/project",
  *   maxFileSizeMb: 5,
- *   followSymlinks: false,
- * };
+ * });
+ *
+ * // Filesystem backend with bash enabled
+ * const backendWithBash = new FilesystemBackend({
+ *   rootDir: "/home/user/project",
+ *   enableBash: true,
+ *   timeout: 30000,
+ *   blockedCommands: ["rm -rf /"],
+ * });
  * ```
  *
  * @category Backend
@@ -84,6 +96,66 @@ export interface FilesystemBackendOptions {
    * Useful for accessing system paths like /tmp.
    */
   allowedPaths?: string[];
+
+  // ===========================================================================
+  // Bash Execution Options
+  // ===========================================================================
+
+  /**
+   * Enable shell command execution via the `execute()` method.
+   * When false (default), the backend only supports file operations.
+   * @defaultValue false
+   */
+  enableBash?: boolean;
+
+  /**
+   * Default timeout in milliseconds for command execution.
+   * Only used when enableBash is true.
+   * @defaultValue 120000 (2 minutes)
+   */
+  timeout?: number;
+
+  /**
+   * Maximum output size in bytes before truncation.
+   * Only used when enableBash is true.
+   * @defaultValue 1048576 (1MB)
+   */
+  maxOutputSize?: number;
+
+  /**
+   * Shell to use for command execution.
+   * Only used when enableBash is true.
+   * @defaultValue "/bin/sh" on Unix, "cmd.exe" on Windows
+   */
+  shell?: string;
+
+  /**
+   * Environment variables to set for all commands.
+   * Only used when enableBash is true.
+   */
+  env?: Record<string, string>;
+
+  /**
+   * Commands or patterns that are blocked from execution.
+   * Supports simple string matching and regex patterns.
+   * Only used when enableBash is true.
+   */
+  blockedCommands?: Array<string | RegExp>;
+
+  /**
+   * Only allow these commands to be executed.
+   * If set, only commands matching these patterns are allowed.
+   * Only used when enableBash is true.
+   */
+  allowedCommands?: Array<string | RegExp>;
+
+  /**
+   * Whether to allow potentially dangerous commands.
+   * When false (default), certain dangerous patterns are blocked.
+   * Only used when enableBash is true.
+   * @defaultValue false
+   */
+  allowDangerous?: boolean;
 }
 
 // =============================================================================
@@ -134,6 +206,74 @@ export class FileSizeLimitError extends Error {
 }
 
 // =============================================================================
+// Dangerous Command Patterns
+// =============================================================================
+
+/**
+ * Default patterns that are considered dangerous.
+ * These are blocked unless allowDangerous is true.
+ *
+ * @category Backend
+ */
+export const DANGEROUS_COMMAND_PATTERNS: RegExp[] = [
+  // Recursive force delete from root or home
+  /rm\s+(-[a-z]*r[a-z]*\s+)?(-[a-z]*f[a-z]*\s+)?[/~]/i,
+  /rm\s+(-[a-z]*f[a-z]*\s+)?(-[a-z]*r[a-z]*\s+)?[/~]/i,
+  // Format/wipe commands
+  /mkfs\./i,
+  /dd\s+.*of=\/dev\//i,
+  // Shutdown/reboot
+  /shutdown/i,
+  /reboot/i,
+  /halt/i,
+  /poweroff/i,
+  // Fork bombs
+  /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;?\s*:/,
+  // Overwrite important files
+  />\s*\/etc\/(passwd|shadow|sudoers)/i,
+  // Downloading and executing
+  /curl.*\|\s*(ba)?sh/i,
+  /wget.*\|\s*(ba)?sh/i,
+  // Chmod dangerous patterns
+  /chmod\s+777\s+\//i,
+  /chmod\s+-R\s+777/i,
+  // Environment manipulation that could be dangerous
+  /export\s+PATH\s*=\s*$/i,
+];
+
+/**
+ * Error thrown when a command is blocked by security filters.
+ *
+ * @category Backend
+ */
+export class CommandBlockedError extends Error {
+  constructor(
+    public readonly command: string,
+    public readonly reason: string,
+  ) {
+    super(`Command blocked: ${reason}`);
+    this.name = "CommandBlockedError";
+  }
+}
+
+/**
+ * Error thrown when a command execution times out.
+ *
+ * @category Backend
+ */
+export class CommandTimeoutError extends Error {
+  constructor(
+    public readonly command: string,
+    public readonly timeoutMs: number,
+  ) {
+    super(
+      `Command timed out after ${timeoutMs}ms: "${command.slice(0, 100)}${command.length > 100 ? "..." : ""}"`,
+    );
+    this.name = "CommandTimeoutError";
+  }
+}
+
+// =============================================================================
 // Filesystem Backend Implementation
 // =============================================================================
 
@@ -145,12 +285,21 @@ export class FileSizeLimitError extends Error {
  * - Symlink attacks
  * - Excessive file sizes
  *
+ * Optionally supports shell command execution when `enableBash` is true.
+ *
  * @example
  * ```typescript
+ * // Basic usage - file operations only
  * const backend = new FilesystemBackend({
  *   rootDir: "/home/user/project",
  *   maxFileSizeMb: 10,
- *   followSymlinks: false,
+ * });
+ *
+ * // With bash enabled
+ * const backend = new FilesystemBackend({
+ *   rootDir: "/home/user/project",
+ *   enableBash: true,
+ *   timeout: 30000,
  * });
  *
  * // List files
@@ -161,15 +310,33 @@ export class FileSizeLimitError extends Error {
  *
  * // Search for patterns
  * const matches = await backend.grepRaw("TODO", "./src", "*.ts");
+ *
+ * // Execute commands (if enableBash is true)
+ * if (hasExecuteCapability(backend)) {
+ *   const result = await backend.execute("npm test");
+ * }
  * ```
  *
  * @category Backend
  */
 export class FilesystemBackend implements BackendProtocol {
+  /** Unique identifier for this backend instance */
+  public readonly id: string;
+
   private readonly rootDir: string;
   private readonly maxFileSizeMb: number;
   private readonly followSymlinks: boolean;
   private readonly allowedPaths: Set<string>;
+
+  // Bash execution options
+  private readonly enableBash: boolean;
+  private readonly timeout: number;
+  private readonly maxOutputSize: number;
+  private readonly shell: string;
+  private readonly env: Record<string, string>;
+  private readonly blockedCommands: Array<string | RegExp>;
+  private readonly allowedCommands?: Array<string | RegExp>;
+  private readonly allowDangerous: boolean;
 
   /**
    * Create a new FilesystemBackend.
@@ -177,6 +344,9 @@ export class FilesystemBackend implements BackendProtocol {
    * @param options - Configuration options
    */
   constructor(options: FilesystemBackendOptions = {}) {
+    // Generate unique ID
+    this.id = `fs-${randomUUID()}`;
+
     // Resolve symlinks in rootDir to handle cases like /tmp -> /private/tmp on macOS
     // This ensures symlink checks within rootDir work correctly
     const resolvedRoot = path.resolve(options.rootDir ?? process.cwd());
@@ -199,6 +369,16 @@ export class FilesystemBackend implements BackendProtocol {
         }
       }),
     );
+
+    // Initialize bash execution options
+    this.enableBash = options.enableBash ?? false;
+    this.timeout = options.timeout ?? 120000; // 2 minutes default
+    this.maxOutputSize = options.maxOutputSize ?? 1048576; // 1MB default
+    this.shell = options.shell ?? (process.platform === "win32" ? "cmd.exe" : "/bin/sh");
+    this.env = { ...process.env, ...options.env } as Record<string, string>;
+    this.blockedCommands = options.blockedCommands ?? [];
+    this.allowedCommands = options.allowedCommands;
+    this.allowDangerous = options.allowDangerous ?? false;
   }
 
   /**
@@ -475,6 +655,204 @@ export class FilesystemBackend implements BackendProtocol {
         path: filePath,
       };
     }
+  }
+
+  // ===========================================================================
+  // Command Execution Methods
+  // ===========================================================================
+
+  /**
+   * Execute a shell command.
+   *
+   * Only available when `enableBash` is true in the constructor options.
+   *
+   * @param command - Shell command to execute
+   * @returns Execution result with output and exit code
+   * @throws {Error} If bash is not enabled
+   * @throws {CommandBlockedError} If the command is blocked
+   */
+  async execute(command: string): Promise<ExecuteResponse> {
+    if (!this.enableBash) {
+      throw new Error(
+        "Bash execution is not enabled. Create FilesystemBackend with enableBash: true",
+      );
+    }
+
+    // Validate command
+    this.validateCommand(command);
+
+    return new Promise((resolve) => {
+      let output = "";
+      let truncated = false;
+      let resolved = false;
+
+      const shellArgs = process.platform === "win32" ? ["/c", command] : ["-c", command];
+
+      const child = spawn(this.shell, shellArgs, {
+        cwd: this.rootDir,
+        env: this.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const handleOutput = (data: Buffer) => {
+        if (truncated) return;
+
+        const chunk = data.toString();
+        if (output.length + chunk.length > this.maxOutputSize) {
+          output += chunk.slice(0, this.maxOutputSize - output.length);
+          truncated = true;
+        } else {
+          output += chunk;
+        }
+      };
+
+      child.stdout?.on("data", handleOutput);
+      child.stderr?.on("data", handleOutput);
+
+      // Set up timeout
+      const timeoutId = setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          child.kill("SIGTERM");
+          // Give it a moment to terminate gracefully
+          setTimeout(() => {
+            child.kill("SIGKILL");
+          }, 1000);
+
+          resolve({
+            output: `${output}\n[Command timed out after ${this.timeout}ms]`,
+            exitCode: null,
+            truncated,
+          });
+        }
+      }, this.timeout);
+
+      child.on("close", (code) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeoutId);
+          resolve({
+            output,
+            exitCode: code,
+            truncated,
+          });
+        }
+      });
+
+      child.on("error", (error) => {
+        if (!resolved) {
+          resolved = true;
+          clearTimeout(timeoutId);
+          resolve({
+            output: `Error: ${error.message}`,
+            exitCode: 1,
+            truncated: false,
+          });
+        }
+      });
+    });
+  }
+
+  /**
+   * Upload files to the backend.
+   *
+   * @param files - Array of [path, content] tuples
+   * @returns Array of upload results
+   */
+  async uploadFiles(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]> {
+    const results: FileUploadResponse[] = [];
+
+    for (const [filePath, content] of files) {
+      try {
+        const textContent = new TextDecoder().decode(content);
+        const result = await this.write(filePath, textContent);
+
+        results.push({
+          path: filePath,
+          success: result.success,
+          error: result.error,
+        });
+      } catch (error) {
+        results.push({
+          path: filePath,
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Download files from the backend.
+   *
+   * @param paths - Paths to download
+   * @returns Array of { path, content } objects
+   */
+  async downloadFiles(paths: string[]): Promise<Array<{ path: string; content: Uint8Array }>> {
+    const results: Array<{ path: string; content: Uint8Array }> = [];
+
+    for (const filePath of paths) {
+      try {
+        const fileData = await this.readRaw(filePath);
+        const content = new TextEncoder().encode(fileData.content.join("\n"));
+        results.push({ path: filePath, content });
+      } catch {
+        // Skip files we can't read
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Validate a command before execution.
+   *
+   * @param command - Command to validate
+   * @throws {CommandBlockedError} If the command is blocked
+   * @internal
+   */
+  private validateCommand(command: string): void {
+    // Check allowlist first (if configured)
+    if (this.allowedCommands && this.allowedCommands.length > 0) {
+      const isAllowed = this.allowedCommands.some((pattern) =>
+        this.matchesCommandPattern(command, pattern),
+      );
+      if (!isAllowed) {
+        throw new CommandBlockedError(command, "Command not in allowlist");
+      }
+    }
+
+    // Check blocklist
+    for (const pattern of this.blockedCommands) {
+      if (this.matchesCommandPattern(command, pattern)) {
+        throw new CommandBlockedError(command, "Command matches blocked pattern");
+      }
+    }
+
+    // Check dangerous patterns (unless explicitly allowed)
+    if (!this.allowDangerous) {
+      for (const pattern of DANGEROUS_COMMAND_PATTERNS) {
+        if (pattern.test(command)) {
+          throw new CommandBlockedError(
+            command,
+            `Command matches dangerous pattern: ${pattern.source.slice(0, 50)}`,
+          );
+        }
+      }
+    }
+  }
+
+  /**
+   * Check if a command matches a pattern.
+   * @internal
+   */
+  private matchesCommandPattern(command: string, pattern: string | RegExp): boolean {
+    if (typeof pattern === "string") {
+      return command.includes(pattern);
+    }
+    return pattern.test(command);
   }
 
   // ===========================================================================

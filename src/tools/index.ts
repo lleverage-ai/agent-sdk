@@ -14,7 +14,11 @@
 export type { BashResult, BashToolOptions } from "./execute.js";
 // Bash tool
 export { createBashTool } from "./execute.js";
-export type { CoreTools, CoreToolsOptions } from "./factory.js";
+export type {
+  CoreTools,
+  CoreToolsOptions,
+  CreateCoreToolsResult,
+} from "./factory.js";
 // Tool factory (unified tool creation)
 export {
   coreToolsToToolSet,
@@ -83,12 +87,6 @@ export {
   createUseToolsTool,
   ToolRegistry,
 } from "./tool-registry.js";
-export type {
-  AskUserCallback,
-  QuestionOption,
-} from "./user-interaction.js";
-// User interaction tools
-export { createAskUserQuestionTool } from "./user-interaction.js";
 export type { ToolReference } from "./utils.js";
 // Tool utilities (DX helpers)
 export { mcpTools, mcpToolsFor, toolsFrom, toolsFromPlugin } from "./utils.js";

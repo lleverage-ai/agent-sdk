@@ -1,7 +1,7 @@
 /**
- * Bash tool for running shell commands in a sandbox.
+ * Bash tool for running shell commands.
  *
- * This tool wraps the SandboxBackendProtocol to provide command execution
+ * This tool wraps backends with execute capability to provide command execution
  * to agents. It includes timeout support, output truncation, and optional
  * command approval for dangerous operations.
  *
@@ -10,7 +10,8 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import type { ExecuteResponse, SandboxBackendProtocol } from "../backend.js";
+import type { BackendProtocol, ExecutableBackend, ExecuteResponse } from "../backend.js";
+import { hasExecuteCapability } from "../backend.js";
 
 // =============================================================================
 // Constants
@@ -35,8 +36,11 @@ const MAX_OUTPUT_SIZE_CHARS = 120_000;
  * @category Tools
  */
 export interface BashToolOptions {
-  /** The sandbox to use for command execution */
-  sandbox: SandboxBackendProtocol;
+  /**
+   * The backend to use for command execution.
+   * Must have execute capability (use `hasExecuteCapability()` to check).
+   */
+  backend: ExecutableBackend | BackendProtocol;
 
   /**
    * Default timeout in milliseconds for command execution.
@@ -48,7 +52,7 @@ export interface BashToolOptions {
   /**
    * Commands or patterns that are blocked from execution.
    * Supports simple string matching and regex patterns.
-   * Note: The sandbox itself may have additional blocking rules.
+   * Note: The backend itself may have additional blocking rules.
    */
   blockedCommands?: Array<string | RegExp>;
 
@@ -113,11 +117,14 @@ export interface BashResult {
  *
  * @example
  * ```typescript
- * import { createBashTool, LocalSandbox } from "@lleverage-ai/agent-sdk";
+ * import { createBashTool, FilesystemBackend } from "@lleverage-ai/agent-sdk";
  *
- * const sandbox = new LocalSandbox({ cwd: process.cwd() });
+ * const backend = new FilesystemBackend({
+ *   rootDir: process.cwd(),
+ *   enableBash: true,
+ * });
  * const bash = createBashTool({
- *   sandbox,
+ *   backend,
  *   timeout: 30000,
  *   blockedCommands: ["rm -rf /"],
  * });
@@ -132,7 +139,7 @@ export interface BashResult {
  */
 export function createBashTool(options: BashToolOptions) {
   const {
-    sandbox,
+    backend,
     timeout = DEFAULT_TIMEOUT_MS,
     blockedCommands = [],
     allowedCommands,
@@ -140,6 +147,16 @@ export function createBashTool(options: BashToolOptions) {
     onApprovalRequest,
     maxOutputSize = MAX_OUTPUT_SIZE_CHARS,
   } = options;
+
+  // Validate backend has execute capability
+  if (!hasExecuteCapability(backend)) {
+    throw new Error(
+      "Backend does not have execute capability. " +
+        "Use FilesystemBackend with enableBash: true, or provide a backend with execute() method.",
+    );
+  }
+
+  const executor: ExecutableBackend = backend;
 
   return tool({
     description:
@@ -193,13 +210,13 @@ export function createBashTool(options: BashToolOptions) {
       }
 
       try {
-        // Execute command through sandbox
-        const result = await sandbox.execute(command);
+        // Execute command through backend
+        const result = await executor.execute(command);
 
         // Format output
         return formatBashResult(result, maxOutputSize);
       } catch (error) {
-        // Handle sandbox-level errors (e.g., CommandBlockedError)
+        // Handle backend-level errors (e.g., CommandBlockedError)
         return {
           success: false,
           output: "",

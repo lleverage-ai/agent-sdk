@@ -47,7 +47,7 @@ describe("createProductionAgent", () => {
 
     // Agent should have security-configured backend
     expect(agent).toBeDefined();
-    // The backend should be a LocalSandbox with production settings
+    // The backend should be a FilesystemBackend with production settings
     // We can't directly inspect the backend, but we can verify the agent was created
   });
 

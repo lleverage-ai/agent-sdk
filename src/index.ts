@@ -64,42 +64,39 @@ export { createAgent } from "./agent.js";
 export type {
   BackendProtocol,
   EditResult,
+  ExecutableBackend,
   ExecuteResponse,
   FileData,
   FileInfo,
   FileUploadResponse,
   GrepMatch,
-  SandboxBackendProtocol,
   WriteResult,
 } from "./backend.js";
 // Backend
-export { isBackend, isSandboxBackend } from "./backend.js";
+export { hasExecuteCapability, isBackend } from "./backend.js";
 export type {
   AgentState,
   CompositeBackendOptions,
   FilesystemBackendOptions,
   KeyValueStore,
-  LocalSandboxOptions,
   PersistentBackendOptions,
   RouteConfig,
   TodoItem,
   TodoStatus,
 } from "./backends/index.js";
 export {
-  BaseSandbox,
   CommandBlockedError,
   CommandTimeoutError,
   CompositeBackend,
   createAgentState,
   createCompositeBackend,
   createFilesystemBackend,
-  createLocalSandbox,
   createPersistentBackend,
   createStateBackend,
+  DANGEROUS_COMMAND_PATTERNS,
   FileSizeLimitError,
   FilesystemBackend,
   InMemoryStore,
-  LocalSandbox,
   PathTraversalError,
   PersistentBackend,
   StateBackend,
@@ -535,19 +532,17 @@ export {
 } from "./task-store/index.js";
 // Tool types
 export type {
-  AskUserCallback,
   BashResult,
   BashToolOptions,
   CoreTools,
   // Tool factory types
   CoreToolsOptions,
+  CreateCoreToolsResult,
   FilesystemTools,
   FilesystemToolsOptions,
   // Skill tool types
   LoadableSkillDefinition,
   OnTodosChanged,
-  // User interaction types
-  QuestionOption,
   // Search tools types (MCP integration)
   SearchToolsOptions,
   SkillLoadResult,
@@ -573,8 +568,6 @@ export type {
 export {
   cleanupStaleTasks,
   clearCompletedTasks,
-  // User interaction tools
-  createAskUserQuestionTool,
   // Bash tool
   createBashTool,
   // Tool factory (unified tool creation)

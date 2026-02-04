@@ -15,8 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Core agent creation with `createAgent()`
 - Plugin system with `definePlugin()`
 - Skill system with `defineSkill()`
-- 11 core tools: read, write, edit, glob, grep, bash, todo_write, task, skill, ask_user, search_tools
-- Backend abstractions: FilesystemBackend, StateBackend, LocalSandbox, CompositeBackend
+- 10 core tools: read, write, edit, glob, grep, bash, todo_write, task, skill, search_tools
+- Backend abstractions: FilesystemBackend, StateBackend, CompositeBackend
 - MCP (Model Context Protocol) integration with MCPManager
 - Unified hooks system for lifecycle events
 - Hook utilities: caching, retry, rate limiting, guardrails, secrets filtering, audit logging

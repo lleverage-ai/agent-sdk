@@ -134,20 +134,30 @@ export interface EditResult {
  * All storage backends implement this interface, providing a consistent API
  * for file operations regardless of the underlying storage mechanism.
  *
+ * Backends may optionally support command execution by implementing the
+ * `execute()` method. Use {@link hasExecuteCapability} to check if a backend
+ * supports execution before calling it.
+ *
  * @example
  * ```typescript
  * // Using with StateBackend (in-memory)
  * const state = { todos: [], files: {} };
  * const backend: BackendProtocol = new StateBackend(state);
  *
- * // Using with FilesystemBackend (real filesystem)
+ * // Using with FilesystemBackend (real filesystem with bash)
  * const backend: BackendProtocol = new FilesystemBackend({
  *   rootDir: process.cwd(),
+ *   enableBash: true,
  * });
  *
  * // Operations work the same regardless of backend
  * const content = await backend.read("/src/index.ts");
  * const files = await backend.globInfo("**\/*.ts");
+ *
+ * // Check for execute capability
+ * if (hasExecuteCapability(backend)) {
+ *   const result = await backend.execute("echo hello");
+ * }
  * ```
  *
  * @category Backend
@@ -299,6 +309,57 @@ export interface BackendProtocol {
     newString: string,
     replaceAll?: boolean,
   ): EditResult | Promise<EditResult>;
+
+  // ===========================================================================
+  // Optional: Command Execution
+  // ===========================================================================
+
+  /**
+   * Optional unique identifier for this backend instance.
+   * Useful for tracking and debugging when multiple backends are in use.
+   */
+  readonly id?: string;
+
+  /**
+   * Execute a shell command in the backend environment.
+   *
+   * This method is optional. Use {@link hasExecuteCapability} to check
+   * if a backend supports command execution before calling this method.
+   *
+   * @param command - Shell command to execute
+   * @returns Execution result with output and exit code
+   *
+   * @example
+   * ```typescript
+   * if (hasExecuteCapability(backend)) {
+   *   const result = await backend.execute("ls -la /src");
+   *   if (result.exitCode === 0) {
+   *     console.log("Output:", result.output);
+   *   }
+   * }
+   * ```
+   */
+  execute?(command: string): Promise<ExecuteResponse>;
+
+  /**
+   * Upload files to the backend.
+   *
+   * This method is optional and typically used with sandboxed or remote backends.
+   *
+   * @param files - Array of [path, content] tuples
+   * @returns Array of upload results
+   */
+  uploadFiles?(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]>;
+
+  /**
+   * Download files from the backend.
+   *
+   * This method is optional and typically used with sandboxed or remote backends.
+   *
+   * @param paths - Paths to download
+   * @returns Array of { path, content } objects
+   */
+  downloadFiles?(paths: string[]): Promise<Array<{ path: string; content: Uint8Array }>>;
 }
 
 // =============================================================================
@@ -335,68 +396,6 @@ export interface FileUploadResponse {
 
   /** Error message if failed */
   error?: string;
-}
-
-/**
- * Extended backend protocol with command execution capabilities.
- *
- * Sandboxes provide isolated environments for running shell commands safely.
- * Implementations may use local processes, containers, or cloud sandboxes.
- *
- * @example
- * ```typescript
- * // Using LocalSandbox for development
- * const sandbox = new LocalSandbox({ cwd: process.cwd() });
- *
- * // Execute commands
- * const result = await sandbox.execute("npm test");
- * console.log(`Exit code: ${result.exitCode}`);
- * console.log(`Output: ${result.output}`);
- *
- * // Upload files
- * const encoder = new TextEncoder();
- * await sandbox.uploadFiles([
- *   ["/tmp/test.txt", encoder.encode("Hello, World!")],
- * ]);
- * ```
- *
- * @category Backend
- */
-export interface SandboxBackendProtocol extends BackendProtocol {
-  /** Unique identifier for this sandbox instance */
-  readonly id: string;
-
-  /**
-   * Execute a shell command in the sandbox.
-   *
-   * @param command - Shell command to execute
-   * @returns Execution result with output and exit code
-   *
-   * @example
-   * ```typescript
-   * const result = await sandbox.execute("ls -la /src");
-   * if (result.exitCode === 0) {
-   *   console.log("Directory listing:", result.output);
-   * }
-   * ```
-   */
-  execute(command: string): Promise<ExecuteResponse>;
-
-  /**
-   * Upload files to the sandbox.
-   *
-   * @param files - Array of [path, content] tuples
-   * @returns Array of upload results
-   */
-  uploadFiles(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]>;
-
-  /**
-   * Download files from the sandbox.
-   *
-   * @param paths - Paths to download
-   * @returns Array of { path, content } objects
-   */
-  downloadFiles(paths: string[]): Promise<Array<{ path: string; content: Uint8Array }>>;
 }
 
 // =============================================================================
@@ -438,33 +437,58 @@ export function isBackend(value: unknown): value is BackendProtocol {
 }
 
 /**
- * Check if a value implements the SandboxBackendProtocol interface.
+ * Backend with execute capability.
  *
- * @param value - Value to check
- * @returns True if value is a SandboxBackendProtocol
+ * This type represents a BackendProtocol that has the `execute()` method available.
+ * Use {@link hasExecuteCapability} to narrow a BackendProtocol to this type.
+ *
+ * @category Backend
+ */
+export interface ExecutableBackend extends BackendProtocol {
+  /** Unique identifier for this backend instance */
+  readonly id: string;
+
+  /** Execute a shell command */
+  execute(command: string): Promise<ExecuteResponse>;
+}
+
+/**
+ * Check if a backend supports command execution.
+ *
+ * Use this to safely narrow a BackendProtocol to one that supports the `execute()` method.
+ * This is the recommended way to check for execute capability.
+ *
+ * @param backend - Backend to check
+ * @returns True if the backend supports execute()
  *
  * @example
  * ```typescript
- * function maybeExecute(backend: BackendProtocol, command: string) {
- *   if (isSandboxBackend(backend)) {
+ * function maybeRunCommand(backend: BackendProtocol, command: string) {
+ *   if (hasExecuteCapability(backend)) {
  *     return backend.execute(command);
  *   }
  *   throw new Error("Backend does not support command execution");
+ * }
+ *
+ * // With FilesystemBackend that has bash enabled
+ * const backend = new FilesystemBackend({
+ *   rootDir: process.cwd(),
+ *   enableBash: true,
+ * });
+ *
+ * if (hasExecuteCapability(backend)) {
+ *   const result = await backend.execute("npm test");
  * }
  * ```
  *
  * @category Backend
  */
-export function isSandboxBackend(value: unknown): value is SandboxBackendProtocol {
-  if (!isBackend(value)) {
+export function hasExecuteCapability(
+  backend: BackendProtocol | null | undefined,
+): backend is ExecutableBackend {
+  if (!backend || typeof backend !== "object") {
     return false;
   }
-
-  const obj = value as unknown as Record<string, unknown>;
-  return (
-    typeof obj.id === "string" &&
-    typeof obj.execute === "function" &&
-    typeof obj.uploadFiles === "function" &&
-    typeof obj.downloadFiles === "function"
-  );
+  const obj = backend as unknown as Record<string, unknown>;
+  return typeof obj.id === "string" && typeof obj.execute === "function";
 }

@@ -4,9 +4,8 @@ import {
   createAgent,
   createAgentState,
   FilesystemBackend,
+  hasExecuteCapability,
   isBackend,
-  isSandboxBackend,
-  LocalSandbox,
   StateBackend,
 } from "../src/index.js";
 import { createMockModel, resetMocks } from "./setup.js";
@@ -203,25 +202,25 @@ describe("Backend Integration", () => {
     });
   });
 
-  describe("sandbox backend", () => {
-    it("can use LocalSandbox as backend", () => {
+  describe("backend with execute capability", () => {
+    it("can use FilesystemBackend with bash as backend", () => {
       const model = createMockModel();
-      const sandbox = new LocalSandbox({ cwd: "/tmp" });
+      const backend = new FilesystemBackend({ rootDir: "/tmp", enableBash: true });
 
-      const agent = createAgent({ model, backend: sandbox });
+      const agent = createAgent({ model, backend });
 
-      expect(agent.backend).toBe(sandbox);
-      expect(isSandboxBackend(agent.backend)).toBe(true);
+      expect(agent.backend).toBe(backend);
+      expect(hasExecuteCapability(agent.backend)).toBe(true);
     });
 
-    it("sandbox backend supports execute", async () => {
+    it("backend with execute supports execute", async () => {
       const model = createMockModel();
-      const sandbox = new LocalSandbox({ cwd: "/tmp" });
+      const backend = new FilesystemBackend({ rootDir: "/tmp", enableBash: true });
 
-      const agent = createAgent({ model, backend: sandbox });
+      const agent = createAgent({ model, backend });
 
       // Type guard to access execute
-      if (isSandboxBackend(agent.backend)) {
+      if (hasExecuteCapability(agent.backend)) {
         const result = await agent.backend.execute("echo hello");
         expect(result.output.trim()).toBe("hello");
         expect(result.exitCode).toBe(0);
@@ -284,13 +283,17 @@ describe("Backend Integration", () => {
       expect(isBackend({ read: "not a function" })).toBe(false);
     });
 
-    it("isSandboxBackend distinguishes sandbox from regular backend", () => {
+    it("hasExecuteCapability distinguishes backends with execute", () => {
       const state = createAgentState();
       const stateBackend = new StateBackend(state);
-      const sandbox = new LocalSandbox({ cwd: "/tmp" });
+      const executableBackend = new FilesystemBackend({ rootDir: "/tmp", enableBash: true });
 
-      expect(isSandboxBackend(stateBackend)).toBe(false);
-      expect(isSandboxBackend(sandbox)).toBe(true);
+      // StateBackend doesn't have execute method
+      expect(hasExecuteCapability(stateBackend)).toBe(false);
+      // FilesystemBackend with enableBash: true has execute capability
+      expect(hasExecuteCapability(executableBackend)).toBe(true);
+      // Note: FilesystemBackend always has execute method, but it throws when enableBash: false
+      // The hasExecuteCapability check only tests if the method exists, not if it's enabled
     });
   });
 

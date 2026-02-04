@@ -8,7 +8,8 @@
  */
 
 import type { LanguageModel, Tool, ToolSet } from "ai";
-import type { BackendProtocol, SandboxBackendProtocol } from "../backend.js";
+import type { BackendProtocol } from "../backend.js";
+import { hasExecuteCapability } from "../backend.js";
 import type { AgentState } from "../backends/state.js";
 import type { MCPManager } from "../mcp/manager.js";
 import type { Agent, CoreToolName, SkillDefinition, SubagentDefinition } from "../types.js";
@@ -58,11 +59,8 @@ import { createTodoWriteTool, type TodoWriteToolOptions } from "./todos.js";
  * @example
  * ```typescript
  * const tools = createCoreTools({
- *   backend: new FilesystemBackend({ rootDir: process.cwd() }),
+ *   backend: new FilesystemBackend({ rootDir: process.cwd(), enableBash: true }),
  *   state: createAgentState(),
- *
- *   // Enable shell execution
- *   sandbox: new LocalSandbox({ cwd: process.cwd() }),
  *
  *   // Enable skill loading
  *   skillRegistry: createSkillRegistry([gitSkill, dockerSkill]),
@@ -132,13 +130,15 @@ export interface CoreToolsOptions {
   // === Shell Execution Options ===
 
   /**
-   * Sandbox backend for command execution.
-   * If provided, bash tool is included.
+   * Whether to include the bash tool if the backend has execute capability.
+   * When true (default), bash tool is automatically included if `hasExecuteCapability(backend)` is true.
+   * Set to false to explicitly disable bash even if backend supports it.
+   * @defaultValue true
    */
-  sandbox?: SandboxBackendProtocol;
+  includeBash?: boolean;
 
-  /** Options for the bash tool */
-  bashOptions?: Omit<BashToolOptions, "sandbox">;
+  /** Options for the bash tool (excluding backend) */
+  bashOptions?: Omit<BashToolOptions, "backend">;
 
   // === Skill Options ===
 
@@ -204,7 +204,10 @@ export interface CoreToolsOptions {
 }
 
 /**
- * Result from createCoreTools containing all created tools and registries.
+ * Core tools created by createCoreTools.
+ *
+ * This is a clean ToolSet containing only the tools, without registries.
+ * Each tool is optional depending on the configuration provided.
  *
  * @category Tools
  */
@@ -233,7 +236,7 @@ export interface CoreTools {
 
   // === Bash Tool ===
 
-  /** Shell execution (if sandbox provided) */
+  /** Shell execution (if backend has execute capability or sandbox provided) */
   bash?: Tool;
 
   // === Skill Tool ===
@@ -250,10 +253,18 @@ export interface CoreTools {
 
   /** Tool search/discovery (if mcpManager provided) */
   search_tools?: Tool;
+}
 
-  // === Registries ===
+/**
+ * Result from createCoreTools containing tools and optional registries.
+ *
+ * @category Tools
+ */
+export interface CreateCoreToolsResult {
+  /** The created core tools */
+  tools: CoreTools;
 
-  /** The skill registry (if provided) */
+  /** The skill registry (if skills were provided) */
   skillRegistry?: SkillRegistry;
 }
 
@@ -266,27 +277,30 @@ export interface CoreTools {
  *
  * This is the recommended way to create agent tools. The minimal tool set is:
  * - `read`, `write`, `edit`, `glob`, `grep` - filesystem operations
- * - `bash` - shell command execution (optional, requires sandbox)
+ * - `bash` - shell command execution (if backend has execute capability)
  * - `todo_write` - task tracking (optional)
  * - `task` - subagent delegation (optional, requires subagents)
  * - `skill` - progressive capability loading (optional, requires registry)
  *
  * @param options - Configuration options
- * @returns Object containing all created tools and registries
+ * @returns Object containing tools and optional registries
  *
  * @example
  * ```typescript
  * import { createAgent, createCoreTools, createAgentState } from "@lleverage-ai/agent-sdk";
- * import { FilesystemBackend, LocalSandbox } from "@lleverage-ai/agent-sdk";
+ * import { FilesystemBackend } from "@lleverage-ai/agent-sdk";
  *
  * const state = createAgentState();
- * const backend = new FilesystemBackend({ rootDir: process.cwd() });
- * const sandbox = new LocalSandbox({ cwd: process.cwd() });
  *
- * const tools = createCoreTools({
+ * // Backend with bash enabled - bash tool is automatically included
+ * const backend = new FilesystemBackend({
+ *   rootDir: process.cwd(),
+ *   enableBash: true,
+ * });
+ *
+ * const { tools } = createCoreTools({
  *   backend,
  *   state,
- *   sandbox,
  * });
  *
  * const agent = createAgent({
@@ -297,9 +311,10 @@ export interface CoreTools {
  *
  * @example
  * ```typescript
- * // Minimal: just filesystem tools
- * const tools = createCoreTools({
- *   backend: new StateBackend(state),
+ * // Minimal: just filesystem tools (no bash)
+ * const backend = new FilesystemBackend({ rootDir: process.cwd() });
+ * const { tools } = createCoreTools({
+ *   backend,
  *   state,
  *   includeTodoWrite: false,
  * });
@@ -307,7 +322,7 @@ export interface CoreTools {
  *
  * @category Tools
  */
-export function createCoreTools(options: CoreToolsOptions): CoreTools {
+export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResult {
   const {
     backend,
     state,
@@ -320,7 +335,7 @@ export function createCoreTools(options: CoreToolsOptions): CoreTools {
     includeTodoWrite = true,
     onTodosChanged,
     // Bash
-    sandbox,
+    includeBash = true,
     bashOptions = {},
     // Skills
     skillRegistry: providedSkillRegistry,
@@ -343,31 +358,34 @@ export function createCoreTools(options: CoreToolsOptions): CoreTools {
   // Helper to check if a tool is disabled
   const isDisabled = (name: CoreToolName): boolean => disabledSet.has(name);
 
-  // Create result object
-  const result: CoreTools = {};
+  // Create tools object
+  const tools: CoreTools = {};
+
+  // Track skill registry separately
+  let resultSkillRegistry: SkillRegistry | undefined;
 
   // =========================================================================
   // Filesystem Tools
   // =========================================================================
 
   if (!isDisabled("read")) {
-    result.read = createReadTool(backend);
+    tools.read = createReadTool(backend);
   }
 
   if (!isDisabled("glob")) {
-    result.glob = createGlobTool(backend);
+    tools.glob = createGlobTool(backend);
   }
 
   if (!isDisabled("grep")) {
-    result.grep = createGrepTool(backend);
+    tools.grep = createGrepTool(backend);
   }
 
   if (!isDisabled("write") && includeWrite) {
-    result.write = createWriteTool(backend);
+    tools.write = createWriteTool(backend);
   }
 
   if (!isDisabled("edit") && includeEdit) {
-    result.edit = createEditTool(backend);
+    tools.edit = createEditTool(backend);
   }
 
   // =========================================================================
@@ -375,7 +393,7 @@ export function createCoreTools(options: CoreToolsOptions): CoreTools {
   // =========================================================================
 
   if (!isDisabled("todo_write") && includeTodoWrite) {
-    result.todo_write = createTodoWriteTool({
+    tools.todo_write = createTodoWriteTool({
       state,
       onTodosChanged,
     });
@@ -385,8 +403,8 @@ export function createCoreTools(options: CoreToolsOptions): CoreTools {
   // Bash Tool
   // =========================================================================
 
-  if (!isDisabled("bash") && sandbox) {
-    result.bash = createBashTool({ sandbox, ...bashOptions });
+  if (!isDisabled("bash") && includeBash && hasExecuteCapability(backend)) {
+    tools.bash = createBashTool({ backend, ...bashOptions });
   }
 
   // =========================================================================
@@ -413,11 +431,11 @@ export function createCoreTools(options: CoreToolsOptions): CoreTools {
     }
 
     if (skillRegistry) {
-      result.skill = createSkillTool({
+      tools.skill = createSkillTool({
         registry: skillRegistry,
         ...skillToolOptions,
       });
-      result.skillRegistry = skillRegistry;
+      resultSkillRegistry = skillRegistry;
     }
   }
 
@@ -426,7 +444,7 @@ export function createCoreTools(options: CoreToolsOptions): CoreTools {
   // =========================================================================
 
   if (!isDisabled("task") && subagents && subagents.length > 0 && parentAgent && defaultModel) {
-    result.task = createTaskTool({
+    tools.task = createTaskTool({
       subagents,
       defaultModel,
       parentAgent,
@@ -440,28 +458,30 @@ export function createCoreTools(options: CoreToolsOptions): CoreTools {
   // =========================================================================
 
   if (!isDisabled("search_tools") && mcpManager) {
-    result.search_tools = createSearchToolsTool({
+    tools.search_tools = createSearchToolsTool({
       manager: mcpManager,
       ...searchToolsOptions,
     });
   }
 
-  return result;
+  return {
+    tools,
+    skillRegistry: resultSkillRegistry,
+  };
 }
 
 /**
  * Converts CoreTools to a ToolSet for direct use with AI SDK.
  *
- * This extracts only the tool properties (excluding skillRegistry)
- * and filters out undefined tools.
+ * Filters out undefined tools and returns a clean ToolSet.
  *
  * @param coreTools - The core tools object from createCoreTools
  * @returns A ToolSet compatible with AI SDK
  *
  * @example
  * ```typescript
- * const coreTools = createCoreTools({ backend, state });
- * const toolSet = coreToolsToToolSet(coreTools);
+ * const { tools } = createCoreTools({ backend, state });
+ * const toolSet = coreToolsToToolSet(tools);
  *
  * const result = await generateText({
  *   model,
@@ -473,19 +493,13 @@ export function createCoreTools(options: CoreToolsOptions): CoreTools {
  * @category Tools
  */
 export function coreToolsToToolSet(coreTools: CoreTools): ToolSet {
-  const {
-    skillRegistry: _registry, // Exclude non-tool property
-    ...tools
-  } = coreTools;
-
-  // Filter out undefined tools
-  const result: ToolSet = {};
-  for (const [name, tool] of Object.entries(tools)) {
-    if (tool !== undefined) {
-      result[name] = tool;
+  const toolsOnly: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(coreTools)) {
+    if (value !== undefined) {
+      toolsOnly[key] = value;
     }
   }
-  return result;
+  return toolsOnly as ToolSet;
 }
 
 // =============================================================================

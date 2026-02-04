@@ -1,7 +1,7 @@
 /**
  * Security policy presets for agent configuration.
  *
- * This module provides security policy presets that bundle together sandbox configuration,
+ * This module provides security policy presets that bundle together backend configuration,
  * permission modes, and hook settings to enforce different security levels. The presets help
  * developers quickly configure agents for different environments (development, CI, production)
  * without manually configuring each security control.
@@ -19,7 +19,7 @@
  *
  * // Or customize a preset
  * const customPolicy = applySecurityPolicy("ci", {
- *   sandbox: { timeout: 60000 },
+ *   backend: { timeout: 60000 },
  *   permissionMode: "plan",
  * });
  * ```
@@ -27,8 +27,8 @@
  * @packageDocumentation
  */
 
-import type { LocalSandboxOptions } from "../backends/sandbox.js";
-import { LocalSandbox } from "../backends/sandbox.js";
+import type { FilesystemBackendOptions } from "../backends/filesystem.js";
+import { FilesystemBackend } from "../backends/filesystem.js";
 import type { HookRegistration, PermissionMode } from "../types.js";
 
 /**
@@ -66,7 +66,7 @@ export const ACCEPT_EDITS_BLOCKED_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Security policy configuration that bundles sandbox, permission, and hook settings.
+ * Security policy configuration that bundles backend, permission, and hook settings.
  *
  * This type combines multiple security controls into a single policy that can be
  * applied to an agent. Policies can be created from presets or customized.
@@ -74,7 +74,7 @@ export const ACCEPT_EDITS_BLOCKED_PATTERNS: RegExp[] = [
  * @example
  * ```typescript
  * const policy: SecurityPolicy = {
- *   sandbox: { allowDangerous: false, timeout: 30000 },
+ *   backend: { allowDangerous: false, timeout: 30000 },
  *   permissionMode: "default",
  *   disallowedTools: ["bash"],
  *   hooks: { PreToolUse: [auditHook] },
@@ -85,9 +85,9 @@ export const ACCEPT_EDITS_BLOCKED_PATTERNS: RegExp[] = [
  */
 export interface SecurityPolicy {
   /**
-   * Sandbox configuration for command execution security.
+   * Backend configuration for command execution security.
    */
-  sandbox?: LocalSandboxOptions;
+  backend?: FilesystemBackendOptions;
 
   /**
    * Permission mode for tool execution control.
@@ -111,7 +111,7 @@ export interface SecurityPolicy {
 
   /**
    * When true and permissionMode is "acceptEdits", automatically configures the
-   * sandbox to block shell-based file operations (e.g., echo > file, rm, mv).
+   * backend to block shell-based file operations (e.g., echo > file, rm, mv).
    * This prevents bash commands from bypassing the acceptEdits permission checks.
    *
    * @defaultValue true
@@ -135,11 +135,11 @@ export type SecurityPolicyPreset = "development" | "ci" | "production" | "readon
  * Apply a security policy preset to agent options.
  *
  * This function returns a partial AgentOptions object that can be spread into
- * createAgent(). It configures the sandbox, permission mode, tool restrictions,
+ * createAgent(). It configures the backend, permission mode, tool restrictions,
  * and hooks according to the selected preset.
  *
  * When permissionMode is "acceptEdits" and blockShellFileOps is true (default),
- * the sandbox will be automatically configured to block shell-based file operations
+ * the backend will be automatically configured to block shell-based file operations
  * like `echo > file`, `rm`, `mv`, etc. This prevents bash commands from bypassing
  * the acceptEdits permission checks.
  *
@@ -159,7 +159,7 @@ export type SecurityPolicyPreset = "development" | "ci" | "production" | "readon
  * const ciAgent = createAgent({
  *   model,
  *   ...applySecurityPolicy("ci", {
- *     sandbox: { timeout: 120000 },
+ *     backend: { timeout: 120000 },
  *   }),
  * });
  *
@@ -185,7 +185,7 @@ export function applySecurityPolicy(
   preset: SecurityPolicyPreset,
   overrides?: Partial<SecurityPolicy>,
 ): {
-  backend: LocalSandbox;
+  backend: FilesystemBackend;
   permissionMode?: PermissionMode;
   allowedTools?: string[];
   disallowedTools?: string[];
@@ -196,7 +196,7 @@ export function applySecurityPolicy(
 
   // Merge with overrides
   const policy: SecurityPolicy = {
-    sandbox: { ...basePolicy.sandbox, ...overrides?.sandbox },
+    backend: { ...basePolicy.backend, ...overrides?.backend },
     permissionMode: overrides?.permissionMode ?? basePolicy.permissionMode,
     allowedTools: overrides?.allowedTools ?? basePolicy.allowedTools,
     disallowedTools: overrides?.disallowedTools ?? basePolicy.disallowedTools,
@@ -207,15 +207,18 @@ export function applySecurityPolicy(
   // If acceptEdits mode is enabled and blockShellFileOps is true,
   // add shell file operation patterns to blocked commands
   if (policy.permissionMode === "acceptEdits" && policy.blockShellFileOps) {
-    const existingBlocked = policy.sandbox?.blockedCommands ?? [];
-    policy.sandbox = {
-      ...policy.sandbox,
+    const existingBlocked = policy.backend?.blockedCommands ?? [];
+    policy.backend = {
+      ...policy.backend,
       blockedCommands: [...existingBlocked, ...ACCEPT_EDITS_BLOCKED_PATTERNS],
     };
   }
 
-  // Create sandbox backend
-  const backend = new LocalSandbox(policy.sandbox);
+  // Create filesystem backend with bash enabled
+  const backend = new FilesystemBackend({
+    enableBash: true,
+    ...policy.backend,
+  });
 
   // Return agent options
   return {
@@ -259,7 +262,7 @@ function getPresetPolicy(preset: SecurityPolicyPreset): SecurityPolicy {
  */
 function getDevelopmentPolicy(): SecurityPolicy {
   return {
-    sandbox: {
+    backend: {
       allowDangerous: true,
       timeout: 120000,
       maxFileSizeMb: 100,
@@ -281,7 +284,7 @@ function getDevelopmentPolicy(): SecurityPolicy {
  */
 function getCiPolicy(): SecurityPolicy {
   return {
-    sandbox: {
+    backend: {
       allowDangerous: false,
       timeout: 300000, // 5 minutes
       maxFileSizeMb: 50,
@@ -316,7 +319,7 @@ function getCiPolicy(): SecurityPolicy {
  */
 function getProductionPolicy(): SecurityPolicy {
   return {
-    sandbox: {
+    backend: {
       allowDangerous: false,
       timeout: 60000, // 1 minute
       maxFileSizeMb: 10,
@@ -351,11 +354,10 @@ function getProductionPolicy(): SecurityPolicy {
  */
 function getReadOnlyPolicy(): SecurityPolicy {
   return {
-    sandbox: {
+    backend: {
       allowDangerous: false,
       timeout: 30000, // 30 seconds
       maxFileSizeMb: 5,
-      // Use blockedCommands from LocalSandbox.readOnly() pattern
       blockedCommands: [
         /\brm\b/i,
         /\bmv\b/i,
@@ -382,33 +384,34 @@ function getReadOnlyPolicy(): SecurityPolicy {
 }
 
 /**
- * Helper function to get sandbox options that block shell-based file operations.
+ * Helper function to get backend options that block shell-based file operations.
  * Use this when you want to enable "acceptEdits" permission mode while preventing
  * bash commands from bypassing the file edit restrictions.
  *
- * @param baseOptions - Optional base sandbox options to extend
- * @returns Sandbox options with file operation blocking enabled
+ * @param baseOptions - Optional base backend options to extend
+ * @returns Backend options with file operation blocking enabled
  *
  * @example
  * ```typescript
- * import { LocalSandbox } from "@lleverage-ai/agent-sdk/backends";
- * import { getSandboxOptionsForAcceptEdits } from "@lleverage-ai/agent-sdk/security";
+ * import { FilesystemBackend } from "@lleverage-ai/agent-sdk";
+ * import { getBackendOptionsForAcceptEdits } from "@lleverage-ai/agent-sdk/security";
  *
  * const agent = createAgent({
  *   model,
- *   backend: new LocalSandbox(getSandboxOptionsForAcceptEdits()),
+ *   backend: new FilesystemBackend(getBackendOptionsForAcceptEdits({ enableBash: true })),
  *   permissionMode: "acceptEdits",
  * });
  * ```
  *
  * @category Security
  */
-export function getSandboxOptionsForAcceptEdits(
-  baseOptions?: LocalSandboxOptions,
-): LocalSandboxOptions {
+export function getBackendOptionsForAcceptEdits(
+  baseOptions?: FilesystemBackendOptions,
+): FilesystemBackendOptions {
   const existingBlocked = baseOptions?.blockedCommands ?? [];
   return {
     ...baseOptions,
     blockedCommands: [...existingBlocked, ...ACCEPT_EDITS_BLOCKED_PATTERNS],
   };
 }
+

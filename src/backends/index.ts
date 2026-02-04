@@ -15,7 +15,10 @@ export {
 } from "./composite.js";
 
 export {
+  CommandBlockedError,
+  CommandTimeoutError,
   createFilesystemBackend,
+  DANGEROUS_COMMAND_PATTERNS,
   FileSizeLimitError,
   FilesystemBackend,
   type FilesystemBackendOptions,
@@ -30,14 +33,6 @@ export {
   PersistentBackend,
   type PersistentBackendOptions,
 } from "./persistent.js";
-export {
-  BaseSandbox,
-  CommandBlockedError,
-  CommandTimeoutError,
-  createLocalSandbox,
-  LocalSandbox,
-  type LocalSandboxOptions,
-} from "./sandbox.js";
 export {
   type AgentState,
   createAgentState,

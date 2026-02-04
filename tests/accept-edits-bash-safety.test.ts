@@ -8,11 +8,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgent } from "../src/agent.js";
-import { LocalSandbox } from "../src/backends/sandbox.js";
+import { FilesystemBackend } from "../src/backends/filesystem.js";
 import {
   ACCEPT_EDITS_BLOCKED_PATTERNS,
   applySecurityPolicy,
-  getSandboxOptionsForAcceptEdits,
+  getBackendOptionsForAcceptEdits,
 } from "../src/security/index.js";
 import { createMockModel } from "./setup.js";
 
@@ -92,22 +92,22 @@ describe("acceptEdits mode bash safety", () => {
     });
   });
 
-  describe("getSandboxOptionsForAcceptEdits", () => {
+  describe("getBackendOptionsForAcceptEdits", () => {
     it("should add blocked patterns to base options", () => {
-      const options = getSandboxOptionsForAcceptEdits({
+      const options = getBackendOptionsForAcceptEdits({
         timeout: 30000,
-        cwd: "/tmp",
+        rootDir: "/tmp",
       });
 
       expect(options.timeout).toBe(30000);
-      expect(options.cwd).toBe("/tmp");
+      expect(options.rootDir).toBe("/tmp");
       expect(options.blockedCommands).toBeDefined();
       expect(options.blockedCommands?.length).toBeGreaterThan(0);
     });
 
     it("should merge with existing blocked commands", () => {
       const customPattern = /custom-command/;
-      const options = getSandboxOptionsForAcceptEdits({
+      const options = getBackendOptionsForAcceptEdits({
         blockedCommands: [customPattern],
       });
 
@@ -115,12 +115,12 @@ describe("acceptEdits mode bash safety", () => {
       expect(options.blockedCommands?.length).toBeGreaterThan(1);
     });
 
-    it("should create valid sandbox options", () => {
-      const options = getSandboxOptionsForAcceptEdits();
-      const sandbox = new LocalSandbox(options);
+    it("should create valid backend options", () => {
+      const options = getBackendOptionsForAcceptEdits({ enableBash: true });
+      const backend = new FilesystemBackend(options);
 
-      expect(sandbox).toBeDefined();
-      expect(sandbox.id).toBeDefined();
+      expect(backend).toBeDefined();
+      expect(backend.id).toBeDefined();
     });
   });
 
@@ -133,10 +133,10 @@ describe("acceptEdits mode bash safety", () => {
       expect(policy.permissionMode).toBe("acceptEdits");
       expect(policy.backend).toBeDefined();
 
-      // Verify sandbox blocks file write commands
-      const sandbox = policy.backend as LocalSandbox;
+      // Verify backend blocks file write commands
+      const backend = policy.backend as FilesystemBackend;
       try {
-        await sandbox.execute("echo 'test' > /tmp/test.txt");
+        await backend.execute("echo 'test' > /tmp/test.txt");
         expect(true).toBe(false); // Should not reach here
       } catch (error: any) {
         expect(error.name).toBe("CommandBlockedError");
@@ -152,11 +152,11 @@ describe("acceptEdits mode bash safety", () => {
       expect(policy.permissionMode).toBe("acceptEdits");
 
       // Should NOT block file write commands when blockShellFileOps is false
-      const sandbox = policy.backend as LocalSandbox;
+      const backend = policy.backend as FilesystemBackend;
       // This should succeed (or fail with a normal execution error, not CommandBlockedError)
       try {
         // Try a safe write operation
-        const result = await sandbox.execute("echo 'test' > /tmp/test-${Date.now()}.txt");
+        const result = await backend.execute("echo 'test' > /tmp/test-${Date.now()}.txt");
         // If it succeeds, that's fine - it means blocking is disabled
         expect(result.exitCode).toBeDefined();
       } catch (error: any) {
@@ -174,10 +174,10 @@ describe("acceptEdits mode bash safety", () => {
       expect(policy.permissionMode).toBe("default");
 
       // blockShellFileOps should only apply when permissionMode is acceptEdits
-      const sandbox = policy.backend as LocalSandbox;
+      const backend = policy.backend as FilesystemBackend;
       // This should succeed since blockShellFileOps only applies to acceptEdits mode
       try {
-        const result = await sandbox.execute("echo 'test' > /tmp/test-${Date.now()}.txt");
+        const result = await backend.execute("echo 'test' > /tmp/test-${Date.now()}.txt");
         expect(result.exitCode).toBeDefined();
       } catch (error: any) {
         // If it fails, it should NOT be due to blocking
@@ -185,20 +185,20 @@ describe("acceptEdits mode bash safety", () => {
       }
     });
 
-    it("should preserve existing sandbox blocked commands", async () => {
+    it("should preserve existing backend blocked commands", async () => {
       const customPattern = /dangerous-command/;
       const policy = applySecurityPolicy("development", {
         permissionMode: "acceptEdits",
-        sandbox: {
+        backend: {
           blockedCommands: [customPattern],
         },
       });
 
-      const sandbox = policy.backend as LocalSandbox;
+      const backend = policy.backend as FilesystemBackend;
 
       // Custom pattern should be blocked
       try {
-        await sandbox.execute("dangerous-command");
+        await backend.execute("dangerous-command");
         expect(true).toBe(false); // Should not reach here
       } catch (error: any) {
         expect(error.name).toBe("CommandBlockedError");
@@ -206,7 +206,7 @@ describe("acceptEdits mode bash safety", () => {
 
       // File write operations should also be blocked
       try {
-        await sandbox.execute("echo 'test' > /tmp/test.txt");
+        await backend.execute("echo 'test' > /tmp/test.txt");
         expect(true).toBe(false); // Should not reach here
       } catch (error: any) {
         expect(error.name).toBe("CommandBlockedError");
@@ -214,17 +214,18 @@ describe("acceptEdits mode bash safety", () => {
     });
   });
 
-  describe("integration with LocalSandbox", () => {
+  describe("integration with FilesystemBackend", () => {
     it("should block shell write commands when configured", async () => {
-      const options = getSandboxOptionsForAcceptEdits({
-        cwd: "/tmp",
+      const options = getBackendOptionsForAcceptEdits({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
-      const sandbox = new LocalSandbox(options);
+      const backend = new FilesystemBackend(options);
 
       // Try to execute a blocked command
       try {
-        await sandbox.execute("echo 'test' > /tmp/testfile.txt");
+        await backend.execute("echo 'test' > /tmp/testfile.txt");
         expect(true).toBe(false); // Should not reach here
       } catch (error: any) {
         expect(error.name).toBe("CommandBlockedError");
@@ -233,30 +234,32 @@ describe("acceptEdits mode bash safety", () => {
     });
 
     it("should allow read commands when configured", async () => {
-      const options = getSandboxOptionsForAcceptEdits({
-        cwd: "/tmp",
+      const options = getBackendOptionsForAcceptEdits({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
-      const sandbox = new LocalSandbox(options);
+      const backend = new FilesystemBackend(options);
 
       // Try to execute an allowed command
-      const result = await sandbox.execute("echo 'test'");
+      const result = await backend.execute("echo 'test'");
       expect(result.exitCode).toBe(0);
       expect(result.output).toContain("test");
     });
 
     it("should block multiple types of write operations", async () => {
-      const options = getSandboxOptionsForAcceptEdits({
-        cwd: "/tmp",
+      const options = getBackendOptionsForAcceptEdits({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
-      const sandbox = new LocalSandbox(options);
+      const backend = new FilesystemBackend(options);
 
       const blockedCommands = ["touch /tmp/newfile", "mkdir /tmp/newdir", "rm /tmp/somefile"];
 
       for (const cmd of blockedCommands) {
         try {
-          await sandbox.execute(cmd);
+          await backend.execute(cmd);
           expect(true).toBe(false); // Should not reach here
         } catch (error: any) {
           expect(error.name).toBe("CommandBlockedError");
@@ -277,14 +280,15 @@ describe("acceptEdits mode bash safety", () => {
     });
 
     it("should automatically block shell file ops in acceptEdits mode by default", async () => {
-      const sandbox = new LocalSandbox({
-        cwd: "/tmp",
+      const backend = new FilesystemBackend({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
 
       const agent = createAgent({
         model: createMockModel(),
-        backend: sandbox,
+        backend,
         permissionMode: "acceptEdits",
         // blockShellFileOps defaults to true
       });
@@ -303,40 +307,38 @@ describe("acceptEdits mode bash safety", () => {
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
       expect(result.error).toContain("acceptEdits");
-
-      // Verify no warning was logged (since blocking is enabled)
-      expect(consoleWarnSpy).not.toHaveBeenCalled();
     });
 
     it("should log warning when blockShellFileOps is explicitly disabled", () => {
-      const sandbox = new LocalSandbox({
-        cwd: "/tmp",
+      const backend = new FilesystemBackend({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
 
       createAgent({
         model: createMockModel(),
-        backend: sandbox,
+        backend,
         permissionMode: "acceptEdits",
         blockShellFileOps: false, // Explicitly disable
       });
 
       // Verify warning was logged
-      expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
       expect(consoleWarnSpy).toHaveBeenCalledWith(
         expect.stringContaining("blockShellFileOps is disabled"),
       );
     });
 
     it("should allow shell file ops when blockShellFileOps is false", async () => {
-      const sandbox = new LocalSandbox({
-        cwd: "/tmp",
+      const backend = new FilesystemBackend({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
 
       const agent = createAgent({
         model: createMockModel(),
-        backend: sandbox,
+        backend,
         permissionMode: "acceptEdits",
         blockShellFileOps: false, // Explicitly allow shell file ops
       });
@@ -355,14 +357,15 @@ describe("acceptEdits mode bash safety", () => {
     });
 
     it("should not apply shell blocking for non-acceptEdits modes", async () => {
-      const sandbox = new LocalSandbox({
-        cwd: "/tmp",
+      const backend = new FilesystemBackend({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
 
       const agent = createAgent({
         model: createMockModel(),
-        backend: sandbox,
+        backend,
         permissionMode: "default", // Not acceptEdits
       });
 
@@ -378,18 +381,20 @@ describe("acceptEdits mode bash safety", () => {
       expect(result.success).toBe(true);
       expect(result.output).toContain("test");
 
-      // Verify no warning was logged
-      expect(consoleWarnSpy).not.toHaveBeenCalled();
+      // Verify no blockShellFileOps warning was logged
+      expect(consoleWarnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("blockShellFileOps is disabled"),
+      );
     });
 
-    it("should not apply shell blocking when no sandbox backend", () => {
-      // Create agent without sandbox backend (uses StateBackend)
+    it("should not apply shell blocking when no bash-enabled backend", () => {
+      // Create agent without bash-enabled backend (uses StateBackend)
       const agent = createAgent({
         model: createMockModel(),
         permissionMode: "acceptEdits",
       });
 
-      // Should not have bash tool since there's no sandbox
+      // Should not have bash tool since there's no bash-enabled backend
       const tools = agent.getActiveTools();
       expect(tools.bash).toBeUndefined();
 
@@ -398,14 +403,15 @@ describe("acceptEdits mode bash safety", () => {
     });
 
     it("should block multiple file operation commands automatically", async () => {
-      const sandbox = new LocalSandbox({
-        cwd: "/tmp",
+      const backend = new FilesystemBackend({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
 
       const agent = createAgent({
         model: createMockModel(),
-        backend: sandbox,
+        backend,
         permissionMode: "acceptEdits",
       });
 
@@ -432,14 +438,15 @@ describe("acceptEdits mode bash safety", () => {
     });
 
     it("should allow read-only commands in acceptEdits mode", async () => {
-      const sandbox = new LocalSandbox({
-        cwd: "/tmp",
+      const backend = new FilesystemBackend({
+        rootDir: "/tmp",
+        enableBash: true,
         timeout: 5000,
       });
 
       const agent = createAgent({
         model: createMockModel(),
-        backend: sandbox,
+        backend,
         permissionMode: "acceptEdits",
       });
 

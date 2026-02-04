@@ -704,7 +704,7 @@ export interface AgentOptions {
    *
    * This option only has an effect when:
    * - `permissionMode` is set to `"acceptEdits"`
-   * - The `backend` is a sandbox backend (e.g., `LocalSandbox`)
+   * - The `backend` has execute capability (e.g., `FilesystemBackend` with `enableBash: true`)
    *
    * @defaultValue true
    *
@@ -713,7 +713,7 @@ export interface AgentOptions {
    * // Default: shell file ops are blocked in acceptEdits mode
    * const agent = createAgent({
    *   model,
-   *   backend: new LocalSandbox({ cwd: process.cwd() }),
+   *   backend: new FilesystemBackend({ rootDir: process.cwd(), enableBash: true }),
    *   permissionMode: "acceptEdits",
    *   // blockShellFileOps: true is the default
    * });
@@ -721,7 +721,7 @@ export interface AgentOptions {
    * // Explicitly allow shell file ops (not recommended)
    * const agent = createAgent({
    *   model,
-   *   backend: new LocalSandbox({ cwd: process.cwd() }),
+   *   backend: new FilesystemBackend({ rootDir: process.cwd(), enableBash: true }),
    *   permissionMode: "acceptEdits",
    *   blockShellFileOps: false, // Warning will be logged
    * });

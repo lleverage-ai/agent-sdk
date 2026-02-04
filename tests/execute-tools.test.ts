@@ -3,12 +3,13 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExecuteResponse, SandboxBackendProtocol } from "../src/backend.js";
+import type { ExecutableBackend, ExecuteResponse } from "../src/backend.js";
 import { createBashTool } from "../src/tools/execute.js";
 
-// Mock sandbox
-function createMockSandbox(responses: Map<string, ExecuteResponse>): SandboxBackendProtocol {
+// Mock backend with execute capability
+function createMockBackend(responses: Map<string, ExecuteResponse>): ExecutableBackend {
   return {
+    id: "mock-backend",
     execute: vi.fn(async (command: string): Promise<ExecuteResponse> => {
       const response = responses.get(command);
       if (response) {
@@ -20,17 +21,17 @@ function createMockSandbox(responses: Map<string, ExecuteResponse>): SandboxBack
         truncated: false,
       };
     }),
-    uploadFile: vi.fn(),
+    uploadFiles: vi.fn(),
   };
 }
 
 describe("Bash Tool", () => {
-  let sandbox: SandboxBackendProtocol;
+  let backend: ExecutableBackend;
   let responses: Map<string, ExecuteResponse>;
 
   beforeEach(() => {
     responses = new Map();
-    sandbox = createMockSandbox(responses);
+    backend = createMockBackend(responses);
   });
 
   describe("createBashTool", () => {
@@ -41,7 +42,7 @@ describe("Bash Tool", () => {
         truncated: false,
       });
 
-      const bash = createBashTool({ sandbox });
+      const bash = createBashTool({ backend });
       const result = await bash.execute({ command: "echo hello" }, {} as any);
 
       expect(result.success).toBe(true);
@@ -56,7 +57,7 @@ describe("Bash Tool", () => {
         truncated: false,
       });
 
-      const bash = createBashTool({ sandbox });
+      const bash = createBashTool({ backend });
       const result = await bash.execute({ command: "exit 1" }, {} as any);
 
       expect(result.success).toBe(false);
@@ -64,7 +65,7 @@ describe("Bash Tool", () => {
     });
 
     it("should reject empty commands", async () => {
-      const bash = createBashTool({ sandbox });
+      const bash = createBashTool({ backend });
       const result = await bash.execute({ command: "   " }, {} as any);
 
       expect(result.success).toBe(false);
@@ -73,7 +74,7 @@ describe("Bash Tool", () => {
 
     it("should block commands matching blockedCommands", async () => {
       const bash = createBashTool({
-        sandbox,
+        backend,
         blockedCommands: ["rm -rf"],
       });
       const result = await bash.execute({ command: "rm -rf /" }, {} as any);
@@ -84,7 +85,7 @@ describe("Bash Tool", () => {
 
     it("should block commands with regex patterns", async () => {
       const bash = createBashTool({
-        sandbox,
+        backend,
         blockedCommands: [/sudo/],
       });
       const result = await bash.execute({ command: "sudo rm file" }, {} as any);
@@ -95,7 +96,7 @@ describe("Bash Tool", () => {
 
     it("should allow only allowedCommands when set", async () => {
       const bash = createBashTool({
-        sandbox,
+        backend,
         allowedCommands: ["ls", "cat"],
       });
 
@@ -116,7 +117,7 @@ describe("Bash Tool", () => {
 
     it("should require approval for matching commands", async () => {
       const bash = createBashTool({
-        sandbox,
+        backend,
         requireApproval: ["git push"],
         onApprovalRequest: async () => false, // Deny
       });
@@ -135,7 +136,7 @@ describe("Bash Tool", () => {
       });
 
       const bash = createBashTool({
-        sandbox,
+        backend,
         requireApproval: ["git push"],
         onApprovalRequest: async () => true, // Approve
       });
@@ -148,7 +149,7 @@ describe("Bash Tool", () => {
 
     it("should block when no approval callback is provided", async () => {
       const bash = createBashTool({
-        sandbox,
+        backend,
         requireApproval: ["git push"],
         // No onApprovalRequest
       });
@@ -168,7 +169,7 @@ describe("Bash Tool", () => {
       });
 
       const bash = createBashTool({
-        sandbox,
+        backend,
         maxOutputSize: 1000,
       });
 
@@ -179,27 +180,28 @@ describe("Bash Tool", () => {
       expect(result.output).toContain("[Output truncated");
     });
 
-    it("should handle sandbox errors", async () => {
-      const errorSandbox: SandboxBackendProtocol = {
-        execute: vi.fn().mockRejectedValue(new Error("Sandbox error")),
-        uploadFile: vi.fn(),
+    it("should handle backend errors", async () => {
+      const errorBackend: ExecutableBackend = {
+        id: "error-backend",
+        execute: vi.fn().mockRejectedValue(new Error("Backend error")),
+        uploadFiles: vi.fn(),
       };
 
-      const bash = createBashTool({ sandbox: errorSandbox });
+      const bash = createBashTool({ backend: errorBackend });
       const result = await bash.execute({ command: "any command" }, {} as any);
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain("Sandbox error");
+      expect(result.error).toContain("Backend error");
     });
 
-    it("should preserve truncated flag from sandbox", async () => {
+    it("should preserve truncated flag from backend", async () => {
       responses.set("big command", {
         output: "Some output",
         exitCode: 0,
-        truncated: true, // Already truncated by sandbox
+        truncated: true, // Already truncated by backend
       });
 
-      const bash = createBashTool({ sandbox });
+      const bash = createBashTool({ backend });
       const result = await bash.execute({ command: "big command" }, {} as any);
 
       expect(result.truncated).toBe(true);
@@ -208,13 +210,13 @@ describe("Bash Tool", () => {
 
   describe("Tool Schema", () => {
     it("should have description", () => {
-      const bash = createBashTool({ sandbox });
+      const bash = createBashTool({ backend });
       expect(bash.description).toBeDefined();
       expect(bash.description?.length).toBeGreaterThan(0);
     });
 
     it("should have parameters schema", () => {
-      const bash = createBashTool({ sandbox });
+      const bash = createBashTool({ backend });
       expect((bash as any).inputSchema || (bash as any).parameters).toBeDefined();
     });
   });

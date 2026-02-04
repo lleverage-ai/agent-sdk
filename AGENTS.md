@@ -85,7 +85,6 @@ agent-sdk/
 │       ├── task.ts          # task (subagent delegation)
 │       ├── skills.ts        # skill (progressive disclosure)
 │       ├── tool-registry.ts # Tool registry (deferred loading)
-│       ├── user-interaction.ts # ask_user
 │       ├── search.ts        # search_tools (MCP integration)
 │       ├── utils.ts         # Tool utilities
 │       └── factory.ts       # createCoreTools()
@@ -273,41 +272,44 @@ const myTool = tool({
 
 ### Using Core Tools
 
-The SDK provides a set of 11 core tools via `createCoreTools()`:
+The SDK provides a set of 10 core tools via `createCoreTools()`:
 
 ```typescript
 import {
   createCoreTools,
   createAgentState,
   StateBackend,
-  LocalSandbox,
+  FilesystemBackend,
 } from "@lleverage-ai/agent-sdk";
 
+// Option 1: In-memory backend (no bash) - safest default
 const state = createAgentState();
 const backend = new StateBackend(state);
+const { tools } = createCoreTools({ backend, state });
 
-const tools = createCoreTools({
-  backend,
+// Option 2: Filesystem backend with bash - for real file operations
+const fsBackend = new FilesystemBackend({
+  rootDir: process.cwd(),
+  enableBash: true,  // Enable shell command execution
+  timeout: 30000,    // Optional: command timeout in ms
+});
+const { tools: fsTools } = createCoreTools({
+  backend: fsBackend,
   state,
-  // Optional: enable shell execution
-  sandbox: new LocalSandbox({ cwd: process.cwd() }),
   // Optional: enable subagent delegation
   subagents: [researcherAgent, coderAgent],
   parentAgent,
   defaultModel,
-  // Optional: enable user interaction
-  askUserCallback: async (question, options) => { /* prompt user */ },
   // Optional: enable MCP tool search
   mcpManager,
 });
 
 // Tools included:
 // - read, write, edit, glob, grep (filesystem)
-// - bash (shell execution, if sandbox provided)
+// - bash (shell execution, if backend has enableBash: true)
 // - todo_write (task tracking)
 // - task (subagent delegation, if subagents provided)
 // - skill (progressive disclosure, if skillRegistry provided)
-// - ask_user (user interaction, if askUserCallback provided)
 // - search_tools (MCP tool search, if mcpManager provided)
 ```
 
@@ -348,25 +350,108 @@ import {
   createCoreTools,
   createAgentState,
   StateBackend,
+  FilesystemBackend,
 } from "@lleverage-ai/agent-sdk";
 
-// Set up state and tools
+// === Simplest: In-memory agent (no bash, safe default) ===
 const state = createAgentState();
 const backend = new StateBackend(state);
-const coreTools = createCoreTools({ backend, state });
+const { tools } = createCoreTools({ backend, state });
 
+const agent = createAgent({
+  model: "anthropic/claude-haiku-4.5",
+  systemPrompt: "You are a helpful assistant.",
+  tools,
+});
+
+// === Filesystem agent with bash ===
+const fsBackend = new FilesystemBackend({
+  rootDir: process.cwd(),
+  enableBash: true,
+});
+const { tools: fsTools } = createCoreTools({ backend: fsBackend, state });
+
+const fsAgent = createAgent({
+  model: "anthropic/claude-haiku-4.5",
+  systemPrompt: "You are a helpful coding assistant.",
+  tools: fsTools,
+});
+
+// === With plugins and custom tools ===
 const agent = createAgent({
   model: "anthropic/claude-haiku-4.5",
   systemPrompt: "You are a helpful assistant.",
   plugins: [myPlugin],
   tools: {
-    ...coreTools,
+    ...tools,
     myCustomTool, // Add custom tools
   },
 });
 
 const result = await agent.generate({ prompt: "Hello" });
 ```
+
+## Backend & Bash Execution
+
+The SDK uses a unified backend architecture. `FilesystemBackend` provides both file operations and optional bash execution.
+
+### FilesystemBackend with Bash
+
+```typescript
+import { FilesystemBackend, hasExecuteCapability } from "@lleverage-ai/agent-sdk";
+
+const backend = new FilesystemBackend({
+  rootDir: process.cwd(),
+  enableBash: true,           // Enable shell command execution
+  timeout: 30000,             // Command timeout (default: 120000ms)
+  maxOutputSize: 100000,      // Max output size (default: 100000 chars)
+  shell: "/bin/bash",         // Shell to use (default: /bin/bash or cmd on Windows)
+  env: { NODE_ENV: "dev" },   // Additional environment variables
+  blockedCommands: [/rm -rf/],// Block dangerous commands
+  allowedCommands: [/npm/],   // Allowlist (if set, only these are allowed)
+  allowDangerous: false,      // Allow dangerous patterns (default: false)
+});
+
+// Check if backend supports execute
+if (hasExecuteCapability(backend)) {
+  const result = await backend.execute("echo hello");
+  console.log(result.output); // "hello\n"
+}
+```
+
+### Backend Types
+
+| Backend            | File Operations | Bash Execution | Use Case                        |
+| ------------------ | --------------- | -------------- | ------------------------------- |
+| `StateBackend`     | In-memory       | No             | Testing, sandboxed environments |
+| `FilesystemBackend`| Real filesystem | Optional       | Development, production         |
+
+### Unified Backend Architecture
+
+The SDK uses a unified backend architecture with `FilesystemBackend` providing both file operations and bash execution in one interface:
+
+```typescript
+import { FilesystemBackend, hasExecuteCapability } from "@lleverage-ai/agent-sdk";
+
+// Single backend for both file ops and bash execution
+const backend = new FilesystemBackend({
+  rootDir: process.cwd(),
+  enableBash: true,
+});
+
+const { tools } = createCoreTools({ backend, state });
+
+// Check for bash capability
+if (hasExecuteCapability(backend)) {
+  const result = await backend.execute("npm test");
+}
+```
+
+Key points:
+- Single `backend` parameter instead of separate `backend` + `sandbox`
+- Use `hasExecuteCapability(backend)` to check for bash support
+- `createCoreTools()` automatically detects bash capability and includes the bash tool
+- Note: The tool is called `bash` (what users interact with), while the backend interface method is called `execute()` (more general-purpose)
 
 ## AI SDK v6 Notes
 
@@ -381,33 +466,31 @@ The project uses Vercel AI SDK v6 which has breaking changes from v4/v5:
 
 ## Core Tools
 
-The SDK provides a set of 11 tools (inspired by Claude Code's tool philosophy):
+The SDK provides a set of 10 tools (inspired by Claude Code's tool philosophy):
 
-| Tool           | Description                       | Requires                             |
-| -------------- | --------------------------------- | ------------------------------------ |
-| `read`         | Read file contents                | backend                              |
-| `write`        | Write/create files                | backend                              |
-| `edit`         | Edit files via string replacement | backend                              |
-| `glob`         | Find files by pattern             | backend                              |
-| `grep`         | Search file contents              | backend                              |
-| `bash`         | Execute shell commands            | sandbox                              |
-| `todo_write`   | Update task list                  | state                                |
-| `task`         | Delegate to subagents             | subagents, parentAgent, defaultModel |
-| `skill`        | Load additional capabilities      | skillRegistry                        |
-| `ask_user`     | Ask user questions during run     | askUserCallback                      |
-| `search_tools` | Search MCP tools dynamically      | mcpManager                           |
+| Tool           | Description                       | Requires                                  |
+| -------------- | --------------------------------- | ----------------------------------------- |
+| `read`         | Read file contents                | backend                                   |
+| `write`        | Write/create files                | backend                                   |
+| `edit`         | Edit files via string replacement | backend                                   |
+| `glob`         | Find files by pattern             | backend                                   |
+| `grep`         | Search file contents              | backend                                   |
+| `bash`         | Execute shell commands            | backend with execute capability           |
+| `todo_write`   | Update task list                  | state                                     |
+| `task`         | Delegate to subagents             | subagents, parentAgent, defaultModel      |
+| `skill`        | Load additional capabilities      | skillRegistry                             |
+| `search_tools` | Search MCP tools dynamically      | mcpManager                                |
 
 Create tools via `createCoreTools()` or individual factory functions:
 
 ```typescript
-// All-in-one
-const tools = createCoreTools({ backend, state, sandbox });
+// All-in-one (returns { tools, skillRegistry })
+const { tools } = createCoreTools({ backend, state });
 
 // Or individual tools
-import { createReadTool, createBashTool, createAskUserQuestionTool } from "@lleverage-ai/agent-sdk";
+import { createReadTool, createBashTool } from "@lleverage-ai/agent-sdk";
 const read = createReadTool(backend);
-const bash = createBashTool({ sandbox });
-const askUser = createAskUserQuestionTool({ callback: myCallback });
+const bash = createBashTool({ backend: executableBackend }); // backend with execute capability
 
 // Tool utilities for working with plugins and MCP
 import { mcpTools, toolsFromPlugin } from "@lleverage-ai/agent-sdk";

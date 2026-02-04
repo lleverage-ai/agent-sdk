@@ -4,10 +4,9 @@
 
 import type { LanguageModel } from "ai";
 import { tool } from "ai";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type { BackendProtocol } from "../src/backend.js";
-import { LocalSandbox } from "../src/backends/sandbox.js";
+import { FilesystemBackend } from "../src/backends/filesystem.js";
 import { type AgentState, createAgentState, StateBackend } from "../src/backends/state.js";
 import {
   type CoreTools,
@@ -97,7 +96,7 @@ function createTestOptions(overrides?: Partial<CoreToolsOptions>): CoreToolsOpti
 describe("createCoreTools", () => {
   describe("basic creation", () => {
     it("creates filesystem tools by default", () => {
-      const tools = createCoreTools(createTestOptions());
+      const { tools } = createCoreTools(createTestOptions());
 
       expect(tools.read).toBeDefined();
       expect(tools.write).toBeDefined();
@@ -107,26 +106,26 @@ describe("createCoreTools", () => {
     });
 
     it("creates todo_write tool by default", () => {
-      const tools = createCoreTools(createTestOptions());
+      const { tools } = createCoreTools(createTestOptions());
 
       expect(tools.todo_write).toBeDefined();
     });
 
-    it("does not create bash tool without sandbox", () => {
-      const tools = createCoreTools(createTestOptions());
+    it("does not create bash tool without execute-capable backend", () => {
+      const { tools } = createCoreTools(createTestOptions());
 
       expect(tools.bash).toBeUndefined();
     });
 
     it("does not create skill tool without registry", () => {
-      const tools = createCoreTools(createTestOptions());
+      const { tools, skillRegistry } = createCoreTools(createTestOptions());
 
       expect(tools.skill).toBeUndefined();
-      expect(tools.skillRegistry).toBeUndefined();
+      expect(skillRegistry).toBeUndefined();
     });
 
     it("does not create task tool without subagents", () => {
-      const tools = createCoreTools(createTestOptions());
+      const { tools } = createCoreTools(createTestOptions());
 
       expect(tools.task).toBeUndefined();
     });
@@ -134,21 +133,21 @@ describe("createCoreTools", () => {
 
   describe("filesystem tool options", () => {
     it("excludes write when disabled", () => {
-      const tools = createCoreTools(createTestOptions({ includeWrite: false }));
+      const { tools } = createCoreTools(createTestOptions({ includeWrite: false }));
 
       expect(tools.write).toBeUndefined();
       expect(tools.edit).toBeDefined();
     });
 
     it("excludes edit when disabled", () => {
-      const tools = createCoreTools(createTestOptions({ includeEdit: false }));
+      const { tools } = createCoreTools(createTestOptions({ includeEdit: false }));
 
       expect(tools.write).toBeDefined();
       expect(tools.edit).toBeUndefined();
     });
 
     it("excludes both write and edit when disabled", () => {
-      const tools = createCoreTools(
+      const { tools } = createCoreTools(
         createTestOptions({
           includeWrite: false,
           includeEdit: false,
@@ -165,46 +164,57 @@ describe("createCoreTools", () => {
 
   describe("todo tool options", () => {
     it("excludes todo_write when disabled", () => {
-      const tools = createCoreTools(createTestOptions({ includeTodoWrite: false }));
+      const { tools } = createCoreTools(createTestOptions({ includeTodoWrite: false }));
 
       expect(tools.todo_write).toBeUndefined();
     });
   });
 
-  describe("bash tool with sandbox", () => {
-    let sandbox: LocalSandbox;
-    let state: AgentState;
-    let backend: BackendProtocol;
-
-    beforeEach(() => {
-      state = createAgentState();
-      backend = new StateBackend(state);
-      sandbox = new LocalSandbox({
-        backend,
-        cwd: process.cwd(),
+  describe("bash tool with execute-capable backend", () => {
+    it("creates bash tool when backend has execute capability", () => {
+      const backend = new FilesystemBackend({
+        rootDir: process.cwd(),
+        enableBash: true,
         timeout: 1000,
       });
-    });
+      const state = createAgentState();
 
-    it("creates bash tool when sandbox provided", () => {
-      const tools = createCoreTools(
-        createTestOptions({
-          sandbox,
-        }),
-      );
+      const { tools } = createCoreTools({
+        backend,
+        state,
+      });
 
       expect(tools.bash).toBeDefined();
     });
 
+    it("does not create bash tool when backend lacks execute capability", () => {
+      // StateBackend doesn't have execute capability
+      const state = createAgentState();
+      const backend = new StateBackend(state);
+
+      const { tools } = createCoreTools({
+        backend,
+        state,
+      });
+
+      expect(tools.bash).toBeUndefined();
+    });
+
     it("passes bash options to the tool", () => {
-      const tools = createCoreTools(
-        createTestOptions({
-          sandbox,
-          bashOptions: {
-            blockedCommands: ["rm"],
-          },
-        }),
-      );
+      const backend = new FilesystemBackend({
+        rootDir: process.cwd(),
+        enableBash: true,
+        timeout: 1000,
+      });
+      const state = createAgentState();
+
+      const { tools } = createCoreTools({
+        backend,
+        state,
+        bashOptions: {
+          blockedCommands: ["rm"],
+        },
+      });
 
       expect(tools.bash).toBeDefined();
     });
@@ -212,20 +222,20 @@ describe("createCoreTools", () => {
 
   describe("skill tool with registry", () => {
     it("creates skill tool when registry provided", () => {
-      const skillRegistry = new SkillRegistry();
+      const providedRegistry = new SkillRegistry();
 
-      const tools = createCoreTools(
+      const { tools, skillRegistry } = createCoreTools(
         createTestOptions({
-          skillRegistry,
+          skillRegistry: providedRegistry,
         }),
       );
 
       expect(tools.skill).toBeDefined();
-      expect(tools.skillRegistry).toBe(skillRegistry);
+      expect(skillRegistry).toBe(providedRegistry);
     });
 
     it("passes skill tool options", () => {
-      const skillRegistry = new SkillRegistry({
+      const providedRegistry = new SkillRegistry({
         skills: [
           defineLoadableSkill({
             name: "test-skill",
@@ -236,9 +246,9 @@ describe("createCoreTools", () => {
         ],
       });
 
-      const tools = createCoreTools(
+      const { tools } = createCoreTools(
         createTestOptions({
-          skillRegistry,
+          skillRegistry: providedRegistry,
           skillToolOptions: {
             descriptionPrefix: "Custom prefix",
           },
@@ -254,7 +264,7 @@ describe("createCoreTools", () => {
       const parentAgent = createMockAgent();
       const defaultModel = createMockModel();
 
-      const tools = createCoreTools(
+      const { tools } = createCoreTools(
         createTestOptions({
           subagents: [createMockSubagentDefinition("researcher")],
           parentAgent,
@@ -269,7 +279,7 @@ describe("createCoreTools", () => {
       const parentAgent = createMockAgent();
       const defaultModel = createMockModel();
 
-      const tools = createCoreTools(
+      const { tools } = createCoreTools(
         createTestOptions({
           subagents: [],
           parentAgent,
@@ -283,7 +293,7 @@ describe("createCoreTools", () => {
     it("does not create task tool when parentAgent missing", () => {
       const defaultModel = createMockModel();
 
-      const tools = createCoreTools(
+      const { tools } = createCoreTools(
         createTestOptions({
           subagents: [createMockSubagentDefinition("researcher")],
           defaultModel,
@@ -296,7 +306,7 @@ describe("createCoreTools", () => {
     it("does not create task tool when defaultModel missing", () => {
       const parentAgent = createMockAgent();
 
-      const tools = createCoreTools(
+      const { tools } = createCoreTools(
         createTestOptions({
           subagents: [createMockSubagentDefinition("researcher")],
           parentAgent,
@@ -310,7 +320,7 @@ describe("createCoreTools", () => {
       const parentAgent = createMockAgent();
       const defaultModel = createMockModel();
 
-      const tools = createCoreTools(
+      const { tools } = createCoreTools(
         createTestOptions({
           subagents: [createMockSubagentDefinition("researcher")],
           parentAgent,
@@ -329,7 +339,7 @@ describe("createCoreTools", () => {
     it("filesystem tools work with state backend", async () => {
       const state = createAgentState();
       const backend = new StateBackend(state);
-      const tools = createCoreTools({ backend, state });
+      const { tools } = createCoreTools({ backend, state });
 
       // Write a file using the tool
       const writeResult = await tools.write?.execute?.(
@@ -340,7 +350,7 @@ describe("createCoreTools", () => {
       expect(writeResult).toContain("Successfully wrote");
 
       // Read it back
-      const readResult = await tools.read.execute?.({ file_path: "/test.txt" }, {} as any);
+      const readResult = await tools.read?.execute?.({ file_path: "/test.txt" }, {} as any);
 
       expect(readResult).toContain("Hello World");
     });
@@ -348,7 +358,7 @@ describe("createCoreTools", () => {
     it("todo_write tool works with shared state", async () => {
       const state = createAgentState();
       const backend = new StateBackend(state);
-      const tools = createCoreTools({ backend, state });
+      const { tools } = createCoreTools({ backend, state });
 
       // Write todos
       const writeResult = await tools.todo_write?.execute?.(
@@ -392,7 +402,7 @@ describe("createCoreTools", () => {
         ],
       });
 
-      const tools = createCoreTools({ backend, state, skillRegistry });
+      const { tools } = createCoreTools({ backend, state, skillRegistry });
 
       // Load the skill
       const result = await tools.skill?.execute?.({ skill_name: "test-skill" }, {} as any);
@@ -449,31 +459,26 @@ describe("convenience factories", () => {
 describe("tool integration", () => {
   it("all tools can be spread into an agent", () => {
     const state = createAgentState();
-    const backend = new StateBackend(state);
-    const sandbox = new LocalSandbox({
-      backend,
-      cwd: process.cwd(),
+    const backend = new FilesystemBackend({
+      rootDir: process.cwd(),
+      enableBash: true,
       timeout: 1000,
     });
-    const skillRegistry = new SkillRegistry();
+    const providedRegistry = new SkillRegistry();
     const parentAgent = createMockAgent();
     const defaultModel = createMockModel();
 
-    const tools = createCoreTools({
+    const { tools } = createCoreTools({
       backend,
       state,
-      sandbox,
-      skillRegistry,
+      skillRegistry: providedRegistry,
       subagents: [createMockSubagentDefinition("researcher")],
       parentAgent,
       defaultModel,
     });
 
-    // Filter out non-tool properties
-    const { skillRegistry: _sr, ...toolsOnly } = tools;
-
-    // All remaining properties should be tools
-    for (const [_name, tool] of Object.entries(toolsOnly)) {
+    // All properties should be tools
+    for (const [_name, tool] of Object.entries(tools)) {
       if (tool !== undefined) {
         expect(tool).toHaveProperty("execute");
         expect(tool).toHaveProperty("inputSchema");
@@ -485,7 +490,7 @@ describe("tool integration", () => {
     const state = createAgentState();
     const backend = new StateBackend(state);
 
-    const tools = createCoreTools({ backend, state });
+    const { tools } = createCoreTools({ backend, state });
 
     // 1. Create todos
     await tools.todo_write?.execute?.(
@@ -500,7 +505,7 @@ describe("tool integration", () => {
     );
 
     // 3. Search for the file
-    const searchResult = await tools.grep.execute?.({ pattern: "Documentation" }, {} as any);
+    const searchResult = await tools.grep?.execute?.({ pattern: "Documentation" }, {} as any);
 
     expect(searchResult).toContain("README.md");
 
@@ -517,7 +522,7 @@ describe("tool integration", () => {
 
 describe("disabled option", () => {
   it("disables specified tools via disabled array", () => {
-    const tools = createCoreTools(
+    const { tools } = createCoreTools(
       createTestOptions({
         disabled: ["write", "edit", "bash"],
       }),
@@ -532,7 +537,7 @@ describe("disabled option", () => {
   });
 
   it("disabled takes precedence over include options", () => {
-    const tools = createCoreTools(
+    const { tools } = createCoreTools(
       createTestOptions({
         disabled: ["write"],
         includeWrite: true, // This should be overridden by disabled
@@ -543,7 +548,7 @@ describe("disabled option", () => {
   });
 
   it("can disable all filesystem tools", () => {
-    const tools = createCoreTools(
+    const { tools } = createCoreTools(
       createTestOptions({
         disabled: ["read", "write", "edit", "glob", "grep"],
       }),
@@ -558,7 +563,7 @@ describe("disabled option", () => {
   });
 
   it("can disable todo_write", () => {
-    const tools = createCoreTools(
+    const { tools } = createCoreTools(
       createTestOptions({
         disabled: ["todo_write"],
       }),
@@ -569,17 +574,17 @@ describe("disabled option", () => {
   });
 
   it("can disable skill tool", () => {
-    const skillRegistry = new SkillRegistry();
+    const providedRegistry = new SkillRegistry();
 
-    const tools = createCoreTools(
+    const { tools, skillRegistry } = createCoreTools(
       createTestOptions({
-        skillRegistry,
+        skillRegistry: providedRegistry,
         disabled: ["skill"],
       }),
     );
 
     expect(tools.skill).toBeUndefined();
-    expect(tools.skillRegistry).toBeUndefined();
+    expect(skillRegistry).toBeUndefined();
   });
 });
 
@@ -600,14 +605,14 @@ describe("skills option (alternative to skillRegistry)", () => {
       },
     ];
 
-    const tools = createCoreTools(
+    const { tools, skillRegistry } = createCoreTools(
       createTestOptions({
         skills,
       }),
     );
 
     expect(tools.skill).toBeDefined();
-    expect(tools.skillRegistry).toBeDefined();
+    expect(skillRegistry).toBeDefined();
   });
 
   it("ignores skills without tools", () => {
@@ -620,14 +625,14 @@ describe("skills option (alternative to skillRegistry)", () => {
       },
     ];
 
-    const tools = createCoreTools(
+    const { tools, skillRegistry } = createCoreTools(
       createTestOptions({
         skills,
       }),
     );
 
     expect(tools.skill).toBeUndefined();
-    expect(tools.skillRegistry).toBeUndefined();
+    expect(skillRegistry).toBeUndefined();
   });
 
   it("skillRegistry takes precedence over skills array", () => {
@@ -657,7 +662,7 @@ describe("skills option (alternative to skillRegistry)", () => {
       },
     ];
 
-    const tools = createCoreTools(
+    const { skillRegistry } = createCoreTools(
       createTestOptions({
         skillRegistry: existingRegistry,
         skills,
@@ -665,15 +670,15 @@ describe("skills option (alternative to skillRegistry)", () => {
     );
 
     // Should use the provided registry, not create from skills array
-    expect(tools.skillRegistry).toBe(existingRegistry);
+    expect(skillRegistry).toBe(existingRegistry);
   });
 });
 
 describe("coreToolsToToolSet", () => {
   it("converts CoreTools to ToolSet", () => {
-    const coreTools = createCoreTools(createTestOptions());
+    const { tools } = createCoreTools(createTestOptions());
 
-    const toolSet = coreToolsToToolSet(coreTools);
+    const toolSet = coreToolsToToolSet(tools);
 
     // Should have tools but not skillRegistry
     expect(toolSet.read).toBeDefined();
@@ -686,14 +691,14 @@ describe("coreToolsToToolSet", () => {
   });
 
   it("filters out undefined tools", () => {
-    const coreTools = createCoreTools(
+    const { tools } = createCoreTools(
       createTestOptions({
         includeWrite: false,
         includeEdit: false,
       }),
     );
 
-    const toolSet = coreToolsToToolSet(coreTools);
+    const toolSet = coreToolsToToolSet(tools);
 
     expect(toolSet.read).toBeDefined();
     expect(toolSet.write).toBeUndefined();
@@ -706,27 +711,25 @@ describe("coreToolsToToolSet", () => {
 
   it("works with all tools enabled", () => {
     const state = createAgentState();
-    const backend = new StateBackend(state);
-    const sandbox = new LocalSandbox({
-      backend,
-      cwd: process.cwd(),
+    const backend = new FilesystemBackend({
+      rootDir: process.cwd(),
+      enableBash: true,
       timeout: 1000,
     });
-    const skillRegistry = new SkillRegistry();
+    const providedRegistry = new SkillRegistry();
     const parentAgent = createMockAgent();
     const defaultModel = createMockModel();
 
-    const coreTools = createCoreTools({
+    const { tools } = createCoreTools({
       backend,
       state,
-      sandbox,
-      skillRegistry,
+      skillRegistry: providedRegistry,
       subagents: [createMockSubagentDefinition("researcher")],
       parentAgent,
       defaultModel,
     });
 
-    const toolSet = coreToolsToToolSet(coreTools);
+    const toolSet = coreToolsToToolSet(tools);
 
     // All tools should be in the toolSet
     expect(toolSet.read).toBeDefined();
