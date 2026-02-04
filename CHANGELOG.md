@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.2-alpha.0] - 2026-02-04
+
+### Changed
+
+- **BREAKING**: Removed `LocalSandbox`, `BaseSandbox`, and `createLocalSandbox` - use `FilesystemBackend` with `enableBash: true` instead
+- **BREAKING**: Removed `SandboxBackendProtocol` and `isSandboxBackend()` - use `hasExecuteCapability()` instead
+- **BREAKING**: Removed `sandbox` option from `createCoreTools()` and `BashToolOptions` - use `backend` instead
+- **BREAKING**: Renamed `getSandboxOptionsForAcceptEdits()` to `getBackendOptionsForAcceptEdits()`
+- `FilesystemBackend` now provides both file operations and optional bash execution via `enableBash` option
+
+### Removed
+
+- `ask_user` tool - users can implement custom user interaction tools using interrupt/resume mechanisms
+- `CoreToolsLegacy` type alias
+
 ## [0.0.1] - 2026-02-04
 
 ### Added
@@ -32,5 +47,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.2-alpha.0...HEAD
+[0.0.2-alpha.0]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.1...v0.0.2-alpha.0
 [0.0.1]: https://github.com/lleverage-ai/agent-sdk/releases/tag/v0.0.1
