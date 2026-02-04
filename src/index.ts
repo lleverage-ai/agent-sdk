@@ -549,6 +549,7 @@ export type {
   SkillRegistryOptions,
   SkillToolOptions,
   // Task tool types
+  TaskOutputToolOptions,
   TaskStatus,
   TaskToolOptions as TaskToolOptions_Tool,
   TodoChangeType,
@@ -583,7 +584,8 @@ export {
   createSearchToolsTool,
   createSkillRegistry,
   createSkillTool,
-  // Task tool (subagent delegation)
+  // Task tools (subagent delegation)
+  createTaskOutputTool,
   createTaskTool,
   // Todo tool
   createTodoWriteTool,

@@ -37,9 +37,11 @@ import {
 
 import {
   clearCompletedTasks,
+  createTaskOutputTool,
   createTaskTool,
   getBackgroundTask,
   listBackgroundTasks,
+  type TaskOutputToolOptions,
   type TaskStatus,
   type TaskToolOptions,
 } from "./task.js";
@@ -184,7 +186,7 @@ export interface CoreToolsOptions {
 
   /**
    * Include general-purpose subagent automatically.
-   * @defaultValue false
+   * @defaultValue true
    */
   includeGeneralPurpose?: boolean;
 
@@ -244,10 +246,13 @@ export interface CoreTools {
   /** Load skill tool (if registry provided) */
   skill?: Tool;
 
-  // === Task Tool ===
+  // === Task Tools ===
 
   /** Task delegation tool (if subagents provided) */
   task?: Tool;
+
+  /** Task output retrieval tool (if task tool is included) */
+  task_output?: Tool;
 
   // === Search Tool ===
 
@@ -345,7 +350,7 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
     subagents,
     parentAgent,
     defaultModel,
-    includeGeneralPurpose = false,
+    includeGeneralPurpose = true,
     taskOptions = {},
     // Search/MCP
     mcpManager,
@@ -443,14 +448,28 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
   // Task Tool
   // =========================================================================
 
-  if (!isDisabled("task") && subagents && subagents.length > 0 && parentAgent && defaultModel) {
+  // Task tool requires parentAgent and defaultModel
+  // Include when: explicit subagents provided OR includeGeneralPurpose is true
+  if (
+    !isDisabled("task") &&
+    parentAgent &&
+    defaultModel &&
+    ((subagents && subagents.length > 0) || includeGeneralPurpose)
+  ) {
     tools.task = createTaskTool({
-      subagents,
+      subagents: subagents ?? [],
       defaultModel,
       parentAgent,
       includeGeneralPurpose,
       ...taskOptions,
     });
+
+    // Include task_output tool alongside task tool for retrieving background task results
+    if (!isDisabled("task_output")) {
+      tools.task_output = createTaskOutputTool({
+        taskStore: taskOptions?.taskStore,
+      });
+    }
   }
 
   // =========================================================================
@@ -545,6 +564,7 @@ export {
   createSkillTool,
   createSkillRegistry,
   // Tasks
+  createTaskOutputTool,
   createTaskTool,
   getBackgroundTask,
   listBackgroundTasks,
@@ -566,6 +586,7 @@ export type {
   LoadableSkillDefinition,
   SkillToolOptions,
   // Tasks
+  TaskOutputToolOptions,
   TaskToolOptions,
   TaskStatus,
   // Search

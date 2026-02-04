@@ -49,7 +49,10 @@ export interface TaskToolOptions {
   description?: string;
   /** Default max turns for subagents */
   defaultMaxTurns?: number;
-  /** Include a general-purpose subagent automatically */
+  /**
+   * Include a general-purpose subagent automatically.
+   * @defaultValue true
+   */
   includeGeneralPurpose?: boolean;
   /** Model to use for general-purpose subagent */
   generalPurposeModel?: LanguageModel;
@@ -456,7 +459,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
     defaultModel,
     parentAgent,
     defaultMaxTurns = 10,
-    includeGeneralPurpose = false,
+    includeGeneralPurpose = true,
     generalPurposeModel,
     generalPurposePrompt,
     streamingContext,
@@ -498,7 +501,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
         .boolean()
         .optional()
         .describe(
-          "Run the task in background without blocking. Returns task ID for later retrieval via get_task_result action.",
+          "Run the task in background without blocking. Returns task ID for later retrieval via task_output tool.",
         ),
     }),
     execute: async (params) => {
@@ -687,7 +690,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
         return {
           taskId,
           status: "running",
-          message: `Task started in background. Use task tool with action "get_result" and taskId "${taskId}" to retrieve the result later.`,
+          message: `Task started in background. Use the task_output tool with task_id "${taskId}" to check status or retrieve the result.`,
         };
       }
 
@@ -730,6 +733,179 @@ export function createTaskTool(options: TaskToolOptions): Tool {
           message: errorMessage,
         };
       }
+    },
+  });
+}
+
+// =============================================================================
+// TaskOutput Tool Options
+// =============================================================================
+
+/**
+ * Options for creating the task_output tool.
+ *
+ * @category Subagents
+ */
+export interface TaskOutputToolOptions {
+  /** Custom tool description */
+  description?: string;
+
+  /**
+   * Default timeout in milliseconds for blocking requests.
+   * @defaultValue 30000 (30 seconds)
+   */
+  defaultTimeout?: number;
+
+  /**
+   * Task store for loading persisted tasks.
+   * If not provided, uses the global task store set by createTaskTool.
+   */
+  taskStore?: BaseTaskStore;
+}
+
+// =============================================================================
+// TaskOutput Tool
+// =============================================================================
+
+/**
+ * Creates the task_output tool for retrieving background task results.
+ *
+ * This tool retrieves output from running or completed background tasks.
+ * It supports both blocking (wait for completion) and non-blocking (check status)
+ * modes.
+ *
+ * @param options - Configuration options
+ * @returns An AI SDK tool for retrieving task output
+ *
+ * @example
+ * ```typescript
+ * import { createTaskTool, createTaskOutputTool } from "@lleverage-ai/agent-sdk";
+ *
+ * const task = createTaskTool({ ... });
+ * const taskOutput = createTaskOutputTool();
+ *
+ * const agent = createAgent({
+ *   model,
+ *   tools: { task, task_output: taskOutput },
+ * });
+ * ```
+ *
+ * @category Subagents
+ */
+export function createTaskOutputTool(options: TaskOutputToolOptions = {}): Tool {
+  const { defaultTimeout = 30000, taskStore: providedTaskStore } = options;
+
+  const toolDescription =
+    options.description ??
+    `Retrieve output from a running or completed background task.
+
+Use this tool to:
+- Check the status of a background task
+- Get the result of a completed task
+- Wait for a running task to complete (blocking mode)
+
+Parameters:
+- task_id: The ID of the task to check (returned when task was started)
+- block: If true (default), wait for task completion. If false, return current status immediately.
+- timeout: Maximum time to wait in milliseconds (only used when block=true, default: ${defaultTimeout}ms)`;
+
+  return tool({
+    description: toolDescription,
+    inputSchema: z.object({
+      task_id: z.string().describe("The task ID to get output from"),
+      block: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe("Whether to wait for task completion (default: true)"),
+      timeout: z
+        .number()
+        .optional()
+        .describe(`Maximum wait time in milliseconds (default: ${defaultTimeout})`),
+    }),
+    execute: async (params) => {
+      const { task_id, block = true, timeout = defaultTimeout } = params;
+
+      // Use provided task store or fall back to global
+      const taskStore = providedTaskStore ?? globalTaskStore;
+
+      // Helper to load task from store or in-memory map
+      const loadTask = async (): Promise<BackgroundTask | undefined> => {
+        if (taskStore) {
+          return taskStore.load(task_id);
+        }
+        return backgroundTasks.get(task_id);
+      };
+
+      // Helper to format task response
+      const formatTaskResponse = (task: BackgroundTask) => {
+        const response: Record<string, unknown> = {
+          taskId: task.id,
+          status: task.status,
+          subagentType: task.subagentType,
+          description: task.description,
+          createdAt: task.createdAt,
+        };
+
+        if (task.completedAt) {
+          response.completedAt = task.completedAt;
+        }
+
+        if (task.status === "completed" && task.result) {
+          response.result = task.result;
+        }
+
+        if (task.status === "failed" && task.error) {
+          response.error = task.error;
+        }
+
+        return response;
+      };
+
+      // Load the task
+      let task = await loadTask();
+
+      if (!task) {
+        return {
+          error: true,
+          message: `Task not found: ${task_id}`,
+        };
+      }
+
+      // Non-blocking: return current status immediately
+      if (!block) {
+        return formatTaskResponse(task);
+      }
+
+      // Blocking: wait for task completion
+      const startTime = Date.now();
+      const pollInterval = 100; // Check every 100ms
+
+      while (task.status === "pending" || task.status === "running") {
+        // Check timeout
+        if (Date.now() - startTime > timeout) {
+          return {
+            ...formatTaskResponse(task),
+            timedOut: true,
+            message: `Timed out waiting for task completion after ${timeout}ms`,
+          };
+        }
+
+        // Wait before polling again
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+        // Reload task status
+        task = await loadTask();
+        if (!task) {
+          return {
+            error: true,
+            message: `Task disappeared: ${task_id}`,
+          };
+        }
+      }
+
+      // Task reached terminal state
+      return formatTaskResponse(task);
     },
   });
 }

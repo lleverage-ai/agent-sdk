@@ -52,6 +52,7 @@ import {
   coreToolsToToolSet,
   createCoreTools,
   createSearchToolsTool,
+  createTaskOutputTool,
   createTaskTool,
 } from "./tools/factory.js";
 import { createUseToolsTool, ToolRegistry } from "./tools/tool-registry.js";
@@ -1078,40 +1079,48 @@ export function createAgent(options: AgentOptions): Agent {
   };
 
   /**
-   * Adds the task tool to a toolset when subagents are configured.
+   * Adds the task and task_output tools to a toolset.
    *
    * This enables the agent to delegate work to specialized subagents via the
-   * task tool. The streaming context is only passed when using streamDataResponse(),
+   * task tool, and retrieve results via the task_output tool. A general-purpose
+   * subagent is always included by default, allowing any agent to spawn
+   * subagents for parallel or delegated work.
+   *
+   * The streaming context is only passed when using streamDataResponse(),
    * allowing streaming subagents to write to the parent's data stream.
    *
    * @param tools - The base toolset to augment
    * @param streamingContext - Optional streaming context for streaming subagents
-   * @returns The toolset with task tool added (if subagents configured)
+   * @returns The toolset with task and task_output tools added
    */
   const addTaskToolIfConfigured = (
     tools: ToolSet,
     streamingContext?: StreamingContext,
   ): ToolSet => {
-    // Skip if no subagents configured
-    if (!options.subagents || options.subagents.length === 0) {
-      return tools;
-    }
-
-    // Respect disabledCoreTools setting
+    // Respect disabledCoreTools setting for task tool
     if (options.disabledCoreTools?.includes("task")) {
       return tools;
     }
 
-    return {
+    const result: ToolSet = {
       ...tools,
       task: createTaskTool({
-        subagents: options.subagents,
+        subagents: options.subagents ?? [],
         defaultModel: options.model,
         parentAgent: agent,
+        // Always include general-purpose subagent so agents can delegate tasks
+        includeGeneralPurpose: true,
         // Only pass streaming context when provided (streamDataResponse)
         streamingContext,
       }),
     };
+
+    // Add task_output tool unless disabled
+    if (!options.disabledCoreTools?.includes("task_output")) {
+      result.task_output = createTaskOutputTool();
+    }
+
+    return result;
   };
 
   // Track current checkpoint state per thread

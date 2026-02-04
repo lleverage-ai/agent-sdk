@@ -52,6 +52,7 @@ export {
   SkillRegistry,
 } from "./skills.js";
 export type {
+  TaskOutputToolOptions,
   TaskStatus,
   TaskToolOptions,
 } from "./task.js";
@@ -59,6 +60,7 @@ export type {
 export {
   cleanupStaleTasks,
   clearCompletedTasks,
+  createTaskOutputTool,
   createTaskTool,
   getBackgroundTask,
   listBackgroundTasks,

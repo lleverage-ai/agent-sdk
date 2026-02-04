@@ -1543,6 +1543,7 @@ export type CoreToolName =
   | "bash"
   | "todo_write"
   | "task"
+  | "task_output"
   | "skill"
   | "search_tools";
 
