@@ -1,0 +1,89 @@
+name: Unpublish
+
+on:
+  delete:
+    # Triggers when a tag is deleted
+
+jobs:
+  unpublish:
+    # Only run for tag deletions, not branch deletions
+    if: github.event.ref_type == 'tag' && startsWith(github.event.ref, 'v')
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Extract version from tag
+        id: version
+        env:
+          TAG_REF: ${{ github.event.ref }}
+        run: |
+          # Validate tag format (vX.Y.Z with optional prerelease)
+          if [[ ! "$TAG_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Invalid tag format: $TAG_REF"
+            exit 1
+          fi
+          VERSION="${TAG_REF#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Deleted tag: $TAG_REF"
+          echo "Package version: $VERSION"
+
+      - name: Check if version exists on npm
+        id: check
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if npm view "@lleverage-ai/agent-sdk@$VERSION" version 2>/dev/null; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "Version $VERSION not found on npm, skipping"
+          fi
+
+      - name: Try to unpublish
+        id: unpublish
+        if: steps.check.outputs.exists == 'true'
+        continue-on-error: true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm unpublish "@lleverage-ai/agent-sdk@$VERSION"
+          echo "success=true" >> $GITHUB_OUTPUT
+          echo "Successfully unpublished @lleverage-ai/agent-sdk@$VERSION"
+
+      - name: Deprecate if unpublish failed
+        if: steps.check.outputs.exists == 'true' && steps.unpublish.outcome == 'failure'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          npm deprecate "@lleverage-ai/agent-sdk@$VERSION" "This version has been removed. Please use a newer version."
+          echo "Deprecated @lleverage-ai/agent-sdk@$VERSION"
+
+      - name: Summary
+        env:
+          TAG_REF: ${{ github.event.ref }}
+          VERSION: ${{ steps.version.outputs.version }}
+          EXISTS: ${{ steps.check.outputs.exists }}
+          UNPUBLISH_OUTCOME: ${{ steps.unpublish.outcome }}
+        run: |
+          echo "## Unpublish Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag deleted:** $TAG_REF" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** $VERSION" >> $GITHUB_STEP_SUMMARY
+          if [ "$EXISTS" != "true" ]; then
+            echo "- **Status:** Version not found on npm (already unpublished or never published)" >> $GITHUB_STEP_SUMMARY
+          elif [ "$UNPUBLISH_OUTCOME" == "success" ]; then
+            echo "- **Status:** Successfully unpublished" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status:** Deprecated (unpublish not allowed after 72 hours)" >> $GITHUB_STEP_SUMMARY
+          fi
