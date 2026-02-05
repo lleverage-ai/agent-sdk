@@ -57,6 +57,7 @@ agent-sdk/
 │   ├── index.ts             # Public exports
 │   ├── types.ts             # Type definitions
 │   ├── agent.ts             # createAgent()
+│   ├── session.ts           # AgentSession for event-driven interactions
 │   ├── hooks.ts             # Hook system
 │   ├── plugins.ts           # definePlugin()
 │   ├── tools.ts             # defineSkill()
@@ -199,6 +200,7 @@ export type FinishReason = "stop" | "length" | "tool-calls" | "error" | "other";
 Use these categories consistently:
 
 - `Agent` - Agent creation and core functionality
+- `Session` - AgentSession for event-driven interactions
 - `Tools` - Tool definitions and utilities
 - `Plugins` - Plugin system
 - `Hooks` - Hook system and lifecycle events
@@ -390,6 +392,54 @@ const agent = createAgent({
 
 const result = await agent.generate({ prompt: "Hello" });
 ```
+
+### Using AgentSession
+
+For interactive agents with background tasks, use `AgentSession`:
+
+```typescript
+import {
+  createAgent,
+  createAgentSession,
+  FilesystemBackend,
+} from "@lleverage-ai/agent-sdk";
+
+const backend = new FilesystemBackend({
+  rootDir: process.cwd(),
+  enableBash: true,
+});
+
+const agent = createAgent({
+  model: "anthropic/claude-sonnet-4",
+  systemPrompt: "You are a helpful assistant.",
+  backend,
+});
+
+// AgentSession handles background task completions automatically
+const session = createAgentSession({
+  agent,
+  threadId: "session-123", // Enable checkpointing
+});
+
+for await (const output of session.run()) {
+  switch (output.type) {
+    case "waiting_for_input":
+      session.sendMessage(await getUserInput());
+      break;
+    case "text_delta":
+      process.stdout.write(output.text);
+      break;
+    case "generation_complete":
+      console.log("\n");
+      break;
+    case "interrupt":
+      session.respondToInterrupt(output.interrupt.id, await handleInterrupt(output.interrupt));
+      break;
+  }
+}
+```
+
+See [Agent Session docs](./docs/agent-session.md) for full details.
 
 ## Backend & Bash Execution
 
