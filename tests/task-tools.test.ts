@@ -6,6 +6,7 @@ import type { LanguageModel } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearCompletedTasks,
+  createTaskOutputTool,
   createTaskTool,
   getBackgroundTask,
   listBackgroundTasks,
@@ -488,6 +489,40 @@ describe("Task Tool", () => {
       expect(smartSubagent.create).toHaveBeenCalledWith(
         expect.objectContaining({ model: smartModel }),
       );
+    });
+  });
+
+  describe("Tool Descriptions", () => {
+    it("task tool description should mention parallel execution", () => {
+      const tool = createTaskTool({
+        subagents,
+        defaultModel: {} as LanguageModel,
+        parentAgent,
+      });
+
+      expect(tool.description).toContain("parallel");
+    });
+
+    it("task tool description should mention fire-and-forget for background", () => {
+      const tool = createTaskTool({
+        subagents,
+        defaultModel: {} as LanguageModel,
+        parentAgent,
+      });
+
+      expect(tool.description).toContain("fire-and-forget");
+    });
+
+    it("task_output tool description should mention fire-and-forget", () => {
+      const taskOutput = createTaskOutputTool();
+
+      expect(taskOutput.description).toContain("fire-and-forget");
+    });
+
+    it("task_output tool description should clarify it is not needed for parallel foreground tasks", () => {
+      const taskOutput = createTaskOutputTool();
+
+      expect(taskOutput.description).toContain("parallel foreground tasks");
     });
   });
 });

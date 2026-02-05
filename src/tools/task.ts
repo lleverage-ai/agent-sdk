@@ -493,7 +493,14 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 
   const toolDescription =
     options.description ??
-    `Delegate a task to a specialized subagent. Each subagent runs with isolated context.\n\nAvailable subagent types:\n${subagentDescriptions}`;
+    `Delegate a task to a specialized subagent. Each subagent runs with isolated context.
+
+When you call this tool multiple times in the same step (without run_in_background), the AI SDK automatically executes them in parallel via Promise.all. This is the preferred way to run concurrent tasks — no special flags needed.
+
+Use run_in_background ONLY for true fire-and-forget tasks where you want to continue the conversation immediately and be notified later when the task completes.
+
+Available subagent types:
+${subagentDescriptions}`;
 
   return tool({
     description: toolDescription,
@@ -510,7 +517,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
         .boolean()
         .optional()
         .describe(
-          "Run the task in background without blocking. Returns task ID for later retrieval via task_output tool.",
+          "Fire-and-forget: start the task in the background and continue the conversation immediately. The session will notify you when it completes. Only use this for tasks you don't need to wait on — for parallel execution, simply call the task tool multiple times in the same step (they run concurrently automatically).",
         ),
     }),
     execute: async (params) => {
@@ -837,7 +844,9 @@ export function createTaskOutputTool(options: TaskOutputToolOptions = {}): Tool 
 
   const toolDescription =
     options.description ??
-    `Inspect a background task's current state or wait for completion.
+    `Inspect a fire-and-forget background task's current state or wait for completion.
+
+This tool is for tasks started with run_in_background=true. You do NOT need this for parallel foreground tasks — those return results directly.
 
 For running tasks, shows:
 - Current status and progress
@@ -847,7 +856,7 @@ For running tasks, shows:
 For completed/failed tasks, shows the full result.
 
 Parameters:
-- task_id: The ID of the task to check (returned when task was started)
+- task_id: The ID of the task to check (returned when task was started with run_in_background)
 - block: If true, wait for task completion. If false (default), return current status immediately.
 - timeout: Maximum wait time in milliseconds (only used when block=true, default: ${defaultTimeout}ms)
 - output_lines: Number of recent output lines to show for running tasks (default: ${defaultOutputLines})`;

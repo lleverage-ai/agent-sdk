@@ -307,6 +307,15 @@ export class AgentSession {
    * Process a single event and yield output.
    */
   private async *processEvent(event: SessionEvent): AsyncGenerator<SessionOutput, void, unknown> {
+    // Skip task events for tasks already consumed via task_output.
+    // When task_output observes a terminal task, it removes it from TaskManager.
+    // If the task is gone by the time the session processes the queued event, skip it.
+    if (event.type === "task_completed" || event.type === "task_failed") {
+      if (!this.agent.taskManager.getTask(event.task.id)) {
+        return;
+      }
+    }
+
     // Handle interrupt response specially - resume the generation
     if (event.type === "interrupt_response") {
       if (!this.pendingInterrupt) {
@@ -332,10 +341,12 @@ export class AgentSession {
 
       case "task_completed":
         prompt = this.formatTaskCompletion(event.task);
+        this.agent.taskManager.removeTask(event.task.id);
         break;
 
       case "task_failed":
         prompt = this.formatTaskFailure(event.task);
+        this.agent.taskManager.removeTask(event.task.id);
         break;
 
       default:
