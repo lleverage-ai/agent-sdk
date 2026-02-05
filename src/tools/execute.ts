@@ -12,6 +12,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import type { BackendProtocol, ExecutableBackend, ExecuteResponse } from "../backend.js";
 import { hasExecuteCapability } from "../backend.js";
+import type { TaskManager } from "../task-manager.js";
+import { createBackgroundTask } from "../task-store/types.js";
 
 // =============================================================================
 // Constants
@@ -79,6 +81,19 @@ export interface BashToolOptions {
    * @defaultValue 120000
    */
   maxOutputSize?: number;
+
+  /**
+   * Task manager for tracking background commands.
+   * Required for run_in_background support.
+   */
+  taskManager?: TaskManager;
+
+  /**
+   * Maximum runtime for background commands in milliseconds.
+   * Background commands that exceed this will be killed.
+   * @defaultValue 600000 (10 minutes)
+   */
+  backgroundMaxRuntime?: number;
 }
 
 /**
@@ -98,6 +113,26 @@ export interface BashResult {
   /** Error message if command was blocked or failed to start */
   error?: string;
 }
+
+/**
+ * Result of starting a background command.
+ *
+ * @category Tools
+ */
+export interface BashBackgroundResult {
+  /** Task ID for tracking the background command */
+  taskId: string;
+  /** Current status */
+  status: "running";
+  /** Informational message */
+  message: string;
+}
+
+/** Default maximum runtime for background commands (10 minutes) */
+const DEFAULT_BACKGROUND_MAX_RUNTIME_MS = 600000;
+
+/** Task ID counter for uniqueness */
+let bashTaskIdCounter = 0;
 
 // =============================================================================
 // Bash Tool
@@ -146,6 +181,8 @@ export function createBashTool(options: BashToolOptions) {
     requireApproval = [],
     onApprovalRequest,
     maxOutputSize = MAX_OUTPUT_SIZE_CHARS,
+    taskManager,
+    backgroundMaxRuntime = DEFAULT_BACKGROUND_MAX_RUNTIME_MS,
   } = options;
 
   // Validate backend has execute capability
@@ -160,18 +197,35 @@ export function createBashTool(options: BashToolOptions) {
 
   return tool({
     description:
-      "Execute a shell command. Returns stdout/stderr output, exit code, and whether output was truncated.",
+      "Execute a shell command. Returns stdout/stderr output, exit code, and whether output was truncated. " +
+      "Use run_in_background for long-running commands to avoid blocking.",
     inputSchema: z.object({
       command: z.string().describe("Shell command to execute"),
       timeout: z.number().optional().describe(`Timeout in milliseconds (default: ${timeout})`),
+      run_in_background: z
+        .boolean()
+        .optional()
+        .describe(
+          "Run command in background without blocking. Returns task ID for status/output retrieval via task_output tool.",
+        ),
     }),
-    execute: async ({
-      command,
-      timeout: commandTimeout,
-    }: {
-      command: string;
-      timeout?: number;
-    }): Promise<BashResult> => {
+    execute: async (
+      {
+        command,
+        timeout: commandTimeout,
+        run_in_background,
+      }: {
+        command: string;
+        timeout?: number;
+        run_in_background?: boolean;
+      },
+      execOptions,
+    ): Promise<BashResult | BashBackgroundResult> => {
+      // Get taskManager from execution options (injected by agent at runtime)
+      // Falls back to construction-time taskManager for direct tool usage
+      const effectiveTaskManager =
+        (execOptions as { taskManager?: TaskManager } | undefined)?.taskManager ?? taskManager;
+
       // Validate command at tool level
       const validationError = validateCommand(command, blockedCommands, allowedCommands);
       if (validationError) {
@@ -184,7 +238,7 @@ export function createBashTool(options: BashToolOptions) {
         };
       }
 
-      // Check if approval is required
+      // Check if approval is required (happens before background execution)
       const approvalReason = needsApproval(command, requireApproval);
       if (approvalReason) {
         if (!onApprovalRequest) {
@@ -209,14 +263,120 @@ export function createBashTool(options: BashToolOptions) {
         }
       }
 
-      try {
-        // Execute command through backend
-        const result = await executor.execute(command);
+      // Background execution
+      if (run_in_background) {
+        if (!effectiveTaskManager) {
+          return {
+            success: false,
+            output: "",
+            exitCode: null,
+            truncated: false,
+            error:
+              "Background execution requires a TaskManager. This should be provided automatically by the agent.",
+          };
+        }
 
-        // Format output
+        const taskId = `bash-${++bashTaskIdCounter}-${Date.now()}`;
+        const commandPreview = command.length > 100 ? `${command.slice(0, 100)}...` : command;
+
+        const task = createBackgroundTask({
+          id: taskId,
+          subagentType: "bash",
+          description: `Running: ${commandPreview}`,
+          status: "running",
+          metadata: { command },
+        });
+
+        try {
+          // Start background execution
+          const { process } = executor.executeBackground({
+            command,
+            timeout: backgroundMaxRuntime,
+            onOutput: (chunk) => {
+              // Update task with current output
+              const currentTask = effectiveTaskManager.getTask(taskId);
+              if (currentTask) {
+                const currentOutput = (currentTask.metadata?.currentOutput as string) || "";
+                const newOutput = currentOutput + chunk;
+                const truncated = newOutput.length > maxOutputSize;
+                effectiveTaskManager.updateTask(taskId, {
+                  metadata: {
+                    ...currentTask.metadata,
+                    currentOutput: truncated ? newOutput.slice(0, maxOutputSize) : newOutput,
+                    truncated,
+                  },
+                });
+              }
+            },
+            onComplete: (result) => {
+              // Check if task is already in a terminal state (e.g., killed)
+              // to avoid overwriting the status when a process is intentionally terminated
+              const currentTask = effectiveTaskManager.getTask(taskId);
+              if (
+                currentTask &&
+                (currentTask.status === "killed" ||
+                  currentTask.status === "completed" ||
+                  currentTask.status === "failed")
+              ) {
+                return; // Already in terminal state, don't overwrite
+              }
+              const formattedResult = formatBashResult(result, maxOutputSize);
+              effectiveTaskManager.updateTask(taskId, {
+                status: formattedResult.success ? "completed" : "failed",
+                result: formattedResult.output,
+                error: formattedResult.error,
+                completedAt: new Date().toISOString(),
+                metadata: {
+                  command,
+                  exitCode: formattedResult.exitCode,
+                  truncated: formattedResult.truncated,
+                },
+              });
+            },
+            onError: (error) => {
+              // Check if task is already in a terminal state (e.g., killed)
+              // to avoid overwriting the status when a process is intentionally terminated
+              const currentTask = effectiveTaskManager.getTask(taskId);
+              if (
+                currentTask &&
+                (currentTask.status === "killed" ||
+                  currentTask.status === "completed" ||
+                  currentTask.status === "failed")
+              ) {
+                return; // Already in terminal state, don't overwrite
+              }
+              effectiveTaskManager.updateTask(taskId, {
+                status: "failed",
+                error: error.message,
+                completedAt: new Date().toISOString(),
+              });
+            },
+          });
+
+          // Register with task manager
+          effectiveTaskManager.registerTask(task, { process });
+
+          return {
+            taskId,
+            status: "running",
+            message: `Command started in background. Use task_output with task_id "${taskId}" to check status or retrieve output.`,
+          };
+        } catch (error) {
+          return {
+            success: false,
+            output: "",
+            exitCode: null,
+            truncated: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      }
+
+      // Foreground execution (blocking)
+      try {
+        const result = await executor.execute(command);
         return formatBashResult(result, maxOutputSize);
       } catch (error) {
-        // Handle backend-level errors (e.g., CommandBlockedError)
         return {
           success: false,
           output: "",

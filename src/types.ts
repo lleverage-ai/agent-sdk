@@ -125,6 +125,13 @@ export interface ExtendedToolExecutionOptions extends ToolExecutionOptions {
    * Available when the agent has a checkpointer configured.
    */
   interrupt: InterruptFunction;
+
+  /**
+   * Task manager for background task tracking.
+   * Available when running within an agent context.
+   * Used by bash tool for run_in_background support.
+   */
+  taskManager?: import("./task-manager.js").TaskManager;
 }
 
 // =============================================================================
@@ -1130,6 +1137,53 @@ export interface Agent {
     response: unknown,
     options?: Partial<GenerateOptions>,
   ): Promise<GenerateResult>;
+
+  /**
+   * The task manager for background task tracking.
+   *
+   * Provides access to background tasks (bash commands and subagents).
+   * Use this to list tasks, kill tasks, or subscribe to task events.
+   *
+   * @example
+   * ```typescript
+   * // List running tasks
+   * const tasks = agent.taskManager.listTasks({ status: "running" });
+   *
+   * // Kill a specific task
+   * await agent.taskManager.killTask(taskId);
+   *
+   * // Subscribe to task completion
+   * agent.taskManager.on("complete", (task) => {
+   *   console.log(`Task ${task.id} completed`);
+   * });
+   * ```
+   */
+  readonly taskManager: import("./task-manager.js").TaskManager;
+
+  /**
+   * Dispose the agent and clean up resources.
+   *
+   * This method should be called when the agent is no longer needed,
+   * especially in ephemeral/serverless environments. It:
+   * - Kills all running background tasks
+   * - Closes MCP connections
+   * - Cleans up any pending resources
+   *
+   * @returns Promise that resolves when disposal is complete
+   *
+   * @example
+   * ```typescript
+   * // In a serverless function
+   * const agent = createAgent({ model });
+   * try {
+   *   const result = await agent.generate({ prompt });
+   *   return result;
+   * } finally {
+   *   await agent.dispose();
+   * }
+   * ```
+   */
+  dispose(): Promise<void>;
 }
 
 // =============================================================================
@@ -1544,6 +1598,8 @@ export type CoreToolName =
   | "todo_write"
   | "task"
   | "task_output"
+  | "kill_task"
+  | "list_tasks"
   | "skill"
   | "search_tools";
 

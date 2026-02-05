@@ -31,7 +31,7 @@ import type {
  *
  * @category Subagents
  */
-export type TaskStatus = "pending" | "running" | "completed" | "failed";
+export type TaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
 
 /**
  * Options for creating the task tool.
@@ -107,6 +107,14 @@ export interface TaskToolOptions {
    * ```
    */
   taskStore?: BaseTaskStore;
+
+  /**
+   * Task manager for unified background task tracking.
+   *
+   * When provided, background subagent tasks are registered with the task manager,
+   * enabling unified listing and killing of tasks (both bash commands and subagents).
+   */
+  taskManager?: import("../task-manager.js").TaskManager;
 
   /**
    * Parent span context for distributed tracing.
@@ -217,7 +225,7 @@ export async function clearCompletedTasks(): Promise<number> {
   // In-memory fallback
   let cleared = 0;
   for (const [id, task] of backgroundTasks) {
-    if (task.status === "completed" || task.status === "failed") {
+    if (task.status === "completed" || task.status === "failed" || task.status === "killed") {
       backgroundTasks.delete(id);
       cleared++;
     }
@@ -465,6 +473,7 @@ export function createTaskTool(options: TaskToolOptions): Tool {
     streamingContext,
     taskStore,
     parentSpanContext,
+    taskManager,
   } = options;
 
   // Set the global task store for persistence
@@ -647,8 +656,13 @@ export function createTaskTool(options: TaskToolOptions): Tool {
           };
         }
 
-        // Save initial task state
-        if (taskStore) {
+        // Create abort controller for cancellation
+        const abortController = new AbortController();
+
+        // Register with task manager if available
+        if (taskManager) {
+          taskManager.registerTask(task, { abortController });
+        } else if (taskStore) {
           await taskStore.save(task);
         } else {
           backgroundTasks.set(taskId, task);
@@ -657,34 +671,43 @@ export function createTaskTool(options: TaskToolOptions): Tool {
         // Start execution without awaiting
         executeTask()
           .then(async (resultText) => {
-            const completedTask = updateBackgroundTask(task, {
-              status: "completed",
+            const updates = {
+              status: "completed" as const,
               result: resultText,
               completedAt: new Date().toISOString(),
-            });
+            };
 
-            if (taskStore) {
-              await taskStore.save(completedTask);
+            if (taskManager) {
+              taskManager.updateTask(taskId, updates);
             } else {
-              backgroundTasks.set(taskId, completedTask);
+              const completedTask = updateBackgroundTask(task, updates);
+              if (taskStore) {
+                await taskStore.save(completedTask);
+              } else {
+                backgroundTasks.set(taskId, completedTask);
+              }
+              Object.assign(task, completedTask);
             }
-            Object.assign(task, completedTask);
           })
           .catch(async (error) => {
             const errorMessage = error instanceof Error ? error.message : String(error);
-
-            const failedTask = updateBackgroundTask(task, {
-              status: "failed",
+            const updates = {
+              status: "failed" as const,
               error: errorMessage,
               completedAt: new Date().toISOString(),
-            });
+            };
 
-            if (taskStore) {
-              await taskStore.save(failedTask);
+            if (taskManager) {
+              taskManager.updateTask(taskId, updates);
             } else {
-              backgroundTasks.set(taskId, failedTask);
+              const failedTask = updateBackgroundTask(task, updates);
+              if (taskStore) {
+                await taskStore.save(failedTask);
+              } else {
+                backgroundTasks.set(taskId, failedTask);
+              }
+              Object.assign(task, failedTask);
             }
-            Object.assign(task, failedTask);
           });
 
         return {
@@ -761,6 +784,18 @@ export interface TaskOutputToolOptions {
    * If not provided, uses the global task store set by createTaskTool.
    */
   taskStore?: BaseTaskStore;
+
+  /**
+   * Task manager for accessing running tasks.
+   * When provided, enables live output inspection for running tasks.
+   */
+  taskManager?: import("../task-manager.js").TaskManager;
+
+  /**
+   * Default number of output lines to show for running tasks.
+   * @defaultValue 50
+   */
+  defaultOutputLines?: number;
 }
 
 // =============================================================================
@@ -793,21 +828,29 @@ export interface TaskOutputToolOptions {
  * @category Subagents
  */
 export function createTaskOutputTool(options: TaskOutputToolOptions = {}): Tool {
-  const { defaultTimeout = 30000, taskStore: providedTaskStore } = options;
+  const {
+    defaultTimeout = 30000,
+    taskStore: providedTaskStore,
+    taskManager,
+    defaultOutputLines = 50,
+  } = options;
 
   const toolDescription =
     options.description ??
-    `Retrieve output from a running or completed background task.
+    `Inspect a background task's current state or wait for completion.
 
-Use this tool to:
-- Check the status of a background task
-- Get the result of a completed task
-- Wait for a running task to complete (blocking mode)
+For running tasks, shows:
+- Current status and progress
+- Recent output (last N lines of stdout/stderr for bash commands)
+- Recent streamed text (for subagents)
+
+For completed/failed tasks, shows the full result.
 
 Parameters:
 - task_id: The ID of the task to check (returned when task was started)
-- block: If true (default), wait for task completion. If false, return current status immediately.
-- timeout: Maximum time to wait in milliseconds (only used when block=true, default: ${defaultTimeout}ms)`;
+- block: If true, wait for task completion. If false (default), return current status immediately.
+- timeout: Maximum wait time in milliseconds (only used when block=true, default: ${defaultTimeout}ms)
+- output_lines: Number of recent output lines to show for running tasks (default: ${defaultOutputLines})`;
 
   return tool({
     description: toolDescription,
@@ -816,33 +859,51 @@ Parameters:
       block: z
         .boolean()
         .optional()
-        .default(true)
-        .describe("Whether to wait for task completion (default: true)"),
+        .default(false)
+        .describe("Whether to wait for task completion (default: false)"),
       timeout: z
         .number()
         .optional()
         .describe(`Maximum wait time in milliseconds (default: ${defaultTimeout})`),
+      output_lines: z
+        .number()
+        .optional()
+        .describe(
+          `Number of recent output lines to show for running tasks (default: ${defaultOutputLines})`,
+        ),
     }),
     execute: async (params) => {
-      const { task_id, block = true, timeout = defaultTimeout } = params;
+      const {
+        task_id,
+        block = false,
+        timeout = defaultTimeout,
+        output_lines = defaultOutputLines,
+      } = params;
 
       // Use provided task store or fall back to global
       const taskStore = providedTaskStore ?? globalTaskStore;
 
-      // Helper to load task from store or in-memory map
+      // Helper to load task from store, task manager, or in-memory map
       const loadTask = async (): Promise<BackgroundTask | undefined> => {
+        // First try task manager (for running tasks with live output)
+        if (taskManager) {
+          const task = taskManager.getTask(task_id);
+          if (task) return task;
+        }
+        // Then try task store
         if (taskStore) {
           return taskStore.load(task_id);
         }
+        // Fall back to in-memory map
         return backgroundTasks.get(task_id);
       };
 
-      // Helper to format task response
+      // Helper to format task response with live output support
       const formatTaskResponse = (task: BackgroundTask) => {
         const response: Record<string, unknown> = {
           taskId: task.id,
+          type: task.subagentType,
           status: task.status,
-          subagentType: task.subagentType,
           description: task.description,
           createdAt: task.createdAt,
         };
@@ -851,12 +912,36 @@ Parameters:
           response.completedAt = task.completedAt;
         }
 
+        // For running/pending tasks, show live output preview
+        if (task.status === "running" || task.status === "pending") {
+          const currentOutput = task.metadata?.currentOutput as string | undefined;
+          if (currentOutput) {
+            const lines = currentOutput.split("\n");
+            const recentLines = lines.slice(-output_lines);
+            response.recentOutput = recentLines.join("\n");
+            response.totalLines = lines.length;
+            response.outputTruncated = task.metadata?.truncated as boolean | undefined;
+          }
+        }
+
+        // For completed tasks, show full result
         if (task.status === "completed" && task.result) {
           response.result = task.result;
         }
 
+        // For failed tasks, show error
         if (task.status === "failed" && task.error) {
           response.error = task.error;
+        }
+
+        // For killed tasks, indicate it was terminated
+        if (task.status === "killed") {
+          response.message = "Task was terminated by user";
+        }
+
+        // Include exit code for bash tasks
+        if (task.metadata?.exitCode !== undefined) {
+          response.exitCode = task.metadata.exitCode;
         }
 
         return response;
@@ -872,9 +957,21 @@ Parameters:
         };
       }
 
+      // Helper to cleanup task after observation
+      const cleanupIfTerminal = (t: BackgroundTask) => {
+        if (
+          taskManager &&
+          (t.status === "completed" || t.status === "failed" || t.status === "killed")
+        ) {
+          taskManager.removeTask(t.id);
+        }
+      };
+
       // Non-blocking: return current status immediately
       if (!block) {
-        return formatTaskResponse(task);
+        const response = formatTaskResponse(task);
+        cleanupIfTerminal(task);
+        return response;
       }
 
       // Blocking: wait for task completion
@@ -904,8 +1001,10 @@ Parameters:
         }
       }
 
-      // Task reached terminal state
-      return formatTaskResponse(task);
+      // Task reached terminal state - cleanup and return
+      const response = formatTaskResponse(task);
+      cleanupIfTerminal(task);
+      return response;
     },
   });
 }

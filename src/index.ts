@@ -60,6 +60,9 @@
 
 // Core agent
 export { createAgent } from "./agent.js";
+// Session (event-driven agent interactions)
+export { AgentSession, createAgentSession } from "./session.js";
+export type { AgentSessionOptions, SessionEvent, SessionOutput } from "./session.js";
 // Backend types
 export type {
   BackendProtocol,
@@ -530,16 +533,26 @@ export {
   shouldExpireTask,
   updateBackgroundTask,
 } from "./task-store/index.js";
+// Task Manager types
+export type {
+  KillAllResult,
+  KillResult,
+  RestoreOptions,
+  TaskFilter,
+  TaskManagerEvents,
+  TaskResources,
+} from "./task-manager.js";
+// Task Manager (background task lifecycle)
+export { TaskManager } from "./task-manager.js";
 // Tool types
 export type {
   BashResult,
   BashToolOptions,
-  CoreTools,
-  // Tool factory types
-  CoreToolsOptions,
-  CreateCoreToolsResult,
   FilesystemTools,
   FilesystemToolsOptions,
+  // Task management tool types
+  KillTaskToolOptions,
+  ListTasksToolOptions,
   // Skill tool types
   LoadableSkillDefinition,
   OnTodosChanged,
@@ -571,13 +584,14 @@ export {
   clearCompletedTasks,
   // Bash tool
   createBashTool,
-  // Tool factory (unified tool creation)
-  createCoreTools,
   createEditTool,
   createFilesystemTools,
   createFilesystemToolsOnly,
   createGlobTool,
   createGrepTool,
+  // Task management tools
+  createKillTaskTool,
+  createListTasksTool,
   // Filesystem tools
   createReadTool,
   // Search tools (MCP integration)

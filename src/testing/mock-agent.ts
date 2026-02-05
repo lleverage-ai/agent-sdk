@@ -11,6 +11,7 @@ import type { LanguageModel, LanguageModelUsage, ModelMessage, ToolSet } from "a
 import type { BackendProtocol } from "../backend.js";
 import type { AgentState } from "../backends/state.js";
 import { StateBackend } from "../backends/state.js";
+import { TaskManager } from "../task-manager.js";
 import type {
   Agent,
   AgentOptions,
@@ -263,6 +264,9 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
   // Initialize backend
   const backend: BackendProtocol = options.backend ?? new StateBackend(state);
 
+  // Initialize task manager
+  const taskManager = new TaskManager();
+
   // Response configuration
   let currentResponse: MockResponse = options.response ?? DEFAULT_MOCK_RESPONSE;
   let responseHandler = options.responseHandler;
@@ -380,6 +384,7 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
     options: agentOptions,
     backend,
     state,
+    taskManager,
 
     // Call tracking
     generateCalls,
@@ -584,6 +589,11 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
         threadId,
         ...genOptions,
       });
+    },
+
+    async dispose(): Promise<void> {
+      // Kill all running background tasks
+      await taskManager.killAllTasks();
     },
 
     // Mock agent is always ready immediately

@@ -101,6 +101,9 @@ Background tasks progress through these states:
 2. **running**: Task is currently executing
 3. **completed**: Task finished successfully
 4. **failed**: Task encountered an error
+5. **killed**: Task was explicitly terminated by user
+
+The `killed` status is distinct from `failed` - it indicates intentional termination via `kill_task`, not an error condition.
 
 ```typescript
 import {
@@ -215,4 +218,43 @@ async function initializeAgent() {
     taskStore,
   });
 }
+```
+
+## Automatic Task Completion Handling
+
+For interactive agents that should automatically respond when background tasks complete, use `AgentSession`. See [Agent Session](./agent-session.md) for details.
+
+```typescript
+import { createAgentSession } from "@lleverage-ai/agent-sdk";
+
+const session = createAgentSession({
+  agent,
+  threadId: "session-123",
+});
+
+// Session automatically handles task completions
+for await (const output of session.run()) {
+  switch (output.type) {
+    case "text_delta":
+      // Includes responses to background task completions
+      process.stdout.write(output.text);
+      break;
+    case "waiting_for_input":
+      session.sendMessage(await getUserInput());
+      break;
+  }
+}
+```
+
+Without AgentSession, you must poll for task status or subscribe to TaskManager events manually:
+
+```typescript
+// Manual approach (without AgentSession)
+agent.taskManager.on("taskCompleted", async (task) => {
+  // Manually trigger follow-up generation
+  await agent.generate({
+    prompt: `Background task completed: ${task.result}`,
+    messages: currentMessages,
+  });
+});
 ```
