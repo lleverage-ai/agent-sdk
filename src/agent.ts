@@ -47,8 +47,8 @@ import {
 } from "./hooks.js";
 import { MCPManager } from "./mcp/manager.js";
 import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index.js";
-import { TaskManager } from "./task-manager.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
+import { TaskManager } from "./task-manager.js";
 import {
   coreToolsToToolSet,
   createCoreTools,

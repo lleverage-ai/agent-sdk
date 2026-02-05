@@ -13,7 +13,7 @@ import { z } from "zod";
 import type { BackendProtocol, ExecutableBackend, ExecuteResponse } from "../backend.js";
 import { hasExecuteCapability } from "../backend.js";
 import type { TaskManager } from "../task-manager.js";
-import { createBackgroundTask, updateBackgroundTask } from "../task-store/types.js";
+import { createBackgroundTask } from "../task-store/types.js";
 
 // =============================================================================
 // Constants
@@ -289,7 +289,7 @@ export function createBashTool(options: BashToolOptions) {
 
         try {
           // Start background execution
-          const { process, abort } = executor.executeBackground({
+          const { process } = executor.executeBackground({
             command,
             timeout: backgroundMaxRuntime,
             onOutput: (chunk) => {

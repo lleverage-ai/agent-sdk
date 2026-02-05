@@ -868,7 +868,9 @@ Parameters:
       output_lines: z
         .number()
         .optional()
-        .describe(`Number of recent output lines to show for running tasks (default: ${defaultOutputLines})`),
+        .describe(
+          `Number of recent output lines to show for running tasks (default: ${defaultOutputLines})`,
+        ),
     }),
     execute: async (params) => {
       const {

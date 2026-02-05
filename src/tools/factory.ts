@@ -12,7 +12,7 @@ import type { BackendProtocol } from "../backend.js";
 import { hasExecuteCapability } from "../backend.js";
 import type { AgentState } from "../backends/state.js";
 import type { MCPManager } from "../mcp/manager.js";
-import { TaskManager } from "../task-manager.js";
+import type { TaskManager } from "../task-manager.js";
 import type { Agent, CoreToolName, SkillDefinition, SubagentDefinition } from "../types.js";
 import { type BashToolOptions, createBashTool } from "./execute.js";
 // Tool creators

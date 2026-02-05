@@ -277,10 +277,9 @@ describe("Bash Tool", () => {
       const bash = createBashTool({ backend: bgBackend });
 
       // Execute with TaskManager in options (simulating agent wrapper injection)
-      const result = await bash.execute(
-        { command: "echo hello", run_in_background: true },
-        { taskManager } as any,
-      );
+      const result = await bash.execute({ command: "echo hello", run_in_background: true }, {
+        taskManager,
+      } as any);
 
       expect(result).toHaveProperty("taskId");
       expect(result).toHaveProperty("status", "running");
@@ -297,10 +296,9 @@ describe("Bash Tool", () => {
       const taskManager = new TaskManager();
       const bash = createBashTool({ backend: bgBackend });
 
-      const result = await bash.execute(
-        { command: "echo hello", run_in_background: true },
-        { taskManager } as any,
-      );
+      const result = await bash.execute({ command: "echo hello", run_in_background: true }, {
+        taskManager,
+      } as any);
 
       const taskId = (result as any).taskId;
 
@@ -333,10 +331,9 @@ describe("Bash Tool", () => {
       const taskManager = new TaskManager();
       const bash = createBashTool({ backend: errorBackend });
 
-      const result = await bash.execute(
-        { command: "failing-command", run_in_background: true },
-        { taskManager } as any,
-      );
+      const result = await bash.execute({ command: "failing-command", run_in_background: true }, {
+        taskManager,
+      } as any);
 
       const taskId = (result as any).taskId;
 
@@ -376,10 +373,9 @@ describe("Bash Tool", () => {
       const bash = createBashTool({ backend: bgBackend, taskManager: constructionTaskManager });
 
       // Execute with different TaskManager in options
-      const result = await bash.execute(
-        { command: "echo hello", run_in_background: true },
-        { taskManager: executionTaskManager } as any,
-      );
+      const result = await bash.execute({ command: "echo hello", run_in_background: true }, {
+        taskManager: executionTaskManager,
+      } as any);
 
       // Should use execution options TaskManager
       expect(executionTaskManager.listTasks().length).toBe(1);
@@ -535,10 +531,9 @@ describe("Bash Tool Integration", () => {
       const taskManager = new TaskManager();
 
       // Start a quick background command with TaskManager in execution options
-      const result = await bash.execute(
-        { command: "echo injected", run_in_background: true },
-        { taskManager } as any,
-      );
+      const result = await bash.execute({ command: "echo injected", run_in_background: true }, {
+        taskManager,
+      } as any);
 
       expect(result).toHaveProperty("taskId");
       expect(result).toHaveProperty("status", "running");
