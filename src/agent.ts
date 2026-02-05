@@ -47,6 +47,7 @@ import {
 } from "./hooks.js";
 import { MCPManager } from "./mcp/manager.js";
 import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index.js";
+import { TaskManager } from "./task-manager.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import {
   coreToolsToToolSet,
@@ -738,6 +739,9 @@ export function createAgent(options: AgentOptions): Agent {
     backend = new StateBackend(state);
   }
 
+  // Initialize task manager for background task tracking
+  const taskManager = new TaskManager();
+
   // Determine plugin loading mode
   const pluginLoadingMode = options.pluginLoading ?? "eager";
   const preloadPlugins = new Set(options.preloadPlugins ?? []);
@@ -879,6 +883,7 @@ export function createAgent(options: AgentOptions): Agent {
   const { tools: autoCreatedCoreTools } = createCoreTools({
     backend: effectiveBackend,
     state,
+    taskManager,
     mcpManager: deferredLoadingActive ? undefined : mcpManager, // Only pass if not deferred
     disabled: options.disabledCoreTools,
     skills,
@@ -1392,6 +1397,7 @@ export function createAgent(options: AgentOptions): Agent {
     options,
     backend,
     state,
+    taskManager,
 
     getSkills() {
       return [...skills];
@@ -2669,6 +2675,14 @@ export function createAgent(options: AgentOptions): Agent {
         ...genOptions,
         prompt: undefined,
       });
+    },
+
+    async dispose(): Promise<void> {
+      // Kill all running background tasks
+      await taskManager.killAllTasks();
+
+      // Close MCP connections
+      await mcpManager.disconnect();
     },
 
     // Initialize the ready promise

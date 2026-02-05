@@ -530,6 +530,17 @@ export {
   shouldExpireTask,
   updateBackgroundTask,
 } from "./task-store/index.js";
+// Task Manager types
+export type {
+  KillAllResult,
+  KillResult,
+  RestoreOptions,
+  TaskFilter,
+  TaskManagerEvents,
+  TaskResources,
+} from "./task-manager.js";
+// Task Manager (background task lifecycle)
+export { TaskManager } from "./task-manager.js";
 // Tool types
 export type {
   BashResult,
@@ -540,6 +551,9 @@ export type {
   CreateCoreToolsResult,
   FilesystemTools,
   FilesystemToolsOptions,
+  // Task management tool types
+  KillTaskToolOptions,
+  ListTasksToolOptions,
   // Skill tool types
   LoadableSkillDefinition,
   OnTodosChanged,
@@ -578,6 +592,9 @@ export {
   createFilesystemToolsOnly,
   createGlobTool,
   createGrepTool,
+  // Task management tools
+  createKillTaskTool,
+  createListTasksTool,
   // Filesystem tools
   createReadTool,
   // Search tools (MCP integration)

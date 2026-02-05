@@ -35,6 +35,8 @@ import * as path from "node:path";
 import type {
   BackendProtocol,
   EditResult,
+  ExecuteBackgroundOptions,
+  ExecuteBackgroundResult,
   ExecuteResponse,
   FileData,
   FileInfo,
@@ -751,6 +753,119 @@ export class FilesystemBackend implements BackendProtocol {
         }
       });
     });
+  }
+
+  /**
+   * Execute a shell command in the background (non-blocking).
+   *
+   * Returns immediately with a handle to the running process.
+   * Use the callbacks to receive output and completion events.
+   *
+   * @param options - Execution options including command and callbacks
+   * @returns Handle to the running process with abort capability
+   * @throws {Error} If bash is not enabled
+   * @throws {CommandBlockedError} If the command is blocked
+   */
+  executeBackground(options: ExecuteBackgroundOptions): ExecuteBackgroundResult {
+    const { command, onOutput, onComplete, onError, timeout } = options;
+
+    if (!this.enableBash) {
+      throw new Error(
+        "Bash execution is not enabled. Create FilesystemBackend with enableBash: true",
+      );
+    }
+
+    // Validate command (throws if blocked)
+    this.validateCommand(command);
+
+    let output = "";
+    let truncated = false;
+    let aborted = false;
+
+    const shellArgs = process.platform === "win32" ? ["/c", command] : ["-c", command];
+
+    const child = spawn(this.shell, shellArgs, {
+      cwd: this.rootDir,
+      env: this.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    const handleOutput = (data: Buffer) => {
+      if (truncated) return;
+
+      const chunk = data.toString();
+      if (output.length + chunk.length > this.maxOutputSize) {
+        output += chunk.slice(0, this.maxOutputSize - output.length);
+        truncated = true;
+      } else {
+        output += chunk;
+      }
+
+      // Notify callback with chunk
+      if (onOutput) {
+        onOutput(chunk);
+      }
+    };
+
+    child.stdout?.on("data", handleOutput);
+    child.stderr?.on("data", handleOutput);
+
+    // Optional timeout
+    let timeoutId: NodeJS.Timeout | undefined;
+    if (timeout) {
+      timeoutId = setTimeout(() => {
+        if (!aborted && child.exitCode === null) {
+          aborted = true;
+          child.kill("SIGTERM");
+          setTimeout(() => {
+            if (child.exitCode === null) {
+              child.kill("SIGKILL");
+            }
+          }, 1000);
+
+          if (onComplete) {
+            onComplete({
+              output: `${output}\n[Command timed out after ${timeout}ms]`,
+              exitCode: null,
+              truncated,
+            });
+          }
+        }
+      }, timeout);
+    }
+
+    child.on("close", (code) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (!aborted && onComplete) {
+        onComplete({
+          output,
+          exitCode: code,
+          truncated,
+        });
+      }
+    });
+
+    child.on("error", (error) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      if (!aborted && onError) {
+        onError(error);
+      }
+    });
+
+    // Return handle for aborting
+    const abort = () => {
+      if (!aborted && child.exitCode === null) {
+        aborted = true;
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode === null) {
+            child.kill("SIGKILL");
+          }
+        }, 1000);
+      }
+    };
+
+    return { process: child, abort };
   }
 
   /**

@@ -368,6 +368,16 @@ export function createRecordingAgent(
     get ready() {
       return agent.ready;
     },
+
+    // Delegate to wrapped agent's task manager
+    get taskManager() {
+      return agent.taskManager;
+    },
+
+    // Delegate to wrapped agent's dispose
+    async dispose() {
+      return agent.dispose();
+    },
   };
 }
 

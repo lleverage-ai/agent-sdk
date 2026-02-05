@@ -383,6 +383,41 @@ export interface ExecuteResponse {
 }
 
 /**
+ * Options for background command execution.
+ *
+ * @category Backend
+ */
+export interface ExecuteBackgroundOptions {
+  /** Shell command to execute */
+  command: string;
+
+  /** Callback for output chunks (stdout + stderr) */
+  onOutput?: (chunk: string) => void;
+
+  /** Callback when command completes */
+  onComplete?: (result: ExecuteResponse) => void;
+
+  /** Callback when command fails to start */
+  onError?: (error: Error) => void;
+
+  /** Optional timeout in milliseconds */
+  timeout?: number;
+}
+
+/**
+ * Result from starting a background command.
+ *
+ * @category Backend
+ */
+export interface ExecuteBackgroundResult {
+  /** The spawned child process */
+  process: import("node:child_process").ChildProcess;
+
+  /** Abort the running command */
+  abort: () => void;
+}
+
+/**
  * Response from file upload operation.
  *
  * @category Backend
@@ -448,8 +483,19 @@ export interface ExecutableBackend extends BackendProtocol {
   /** Unique identifier for this backend instance */
   readonly id: string;
 
-  /** Execute a shell command */
+  /** Execute a shell command (blocking) */
   execute(command: string): Promise<ExecuteResponse>;
+
+  /**
+   * Execute a shell command in the background (non-blocking).
+   *
+   * Returns immediately with a handle to the running process.
+   * Use the callbacks to receive output and completion events.
+   *
+   * @param options - Execution options including command and callbacks
+   * @returns Handle to the running process with abort capability
+   */
+  executeBackground(options: ExecuteBackgroundOptions): ExecuteBackgroundResult;
 }
 
 /**

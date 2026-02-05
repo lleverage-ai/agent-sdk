@@ -12,6 +12,7 @@ import type { BackendProtocol } from "../backend.js";
 import { hasExecuteCapability } from "../backend.js";
 import type { AgentState } from "../backends/state.js";
 import type { MCPManager } from "../mcp/manager.js";
+import type { TaskManager } from "../task-manager.js";
 import type { Agent, CoreToolName, SkillDefinition, SubagentDefinition } from "../types.js";
 import { type BashToolOptions, createBashTool } from "./execute.js";
 // Tool creators
@@ -45,6 +46,12 @@ import {
   type TaskStatus,
   type TaskToolOptions,
 } from "./task.js";
+import {
+  createKillTaskTool,
+  createListTasksTool,
+  type KillTaskToolOptions,
+  type ListTasksToolOptions,
+} from "./task-management.js";
 import { createTodoWriteTool, type TodoWriteToolOptions } from "./todos.js";
 
 // =============================================================================
@@ -140,7 +147,7 @@ export interface CoreToolsOptions {
   includeBash?: boolean;
 
   /** Options for the bash tool (excluding backend) */
-  bashOptions?: Omit<BashToolOptions, "backend">;
+  bashOptions?: Omit<BashToolOptions, "backend" | "taskManager">;
 
   // === Skill Options ===
 
@@ -173,6 +180,13 @@ export interface CoreToolsOptions {
   // === Task/Subagent Options ===
 
   /**
+   * Task manager for background task tracking.
+   * If provided, enables background execution for bash and task tools,
+   * and includes kill_task and list_tasks tools.
+   */
+  taskManager?: TaskManager;
+
+  /**
    * Subagent definitions for task delegation.
    * If provided along with parentAgent and defaultModel, task tool is included.
    */
@@ -191,7 +205,7 @@ export interface CoreToolsOptions {
   includeGeneralPurpose?: boolean;
 
   /** Options for the task tool */
-  taskOptions?: Partial<TaskToolOptions>;
+  taskOptions?: Partial<Omit<TaskToolOptions, "taskManager">>;
 
   // === Search/MCP Options ===
 
@@ -253,6 +267,12 @@ export interface CoreTools {
 
   /** Task output retrieval tool (if task tool is included) */
   task_output?: Tool;
+
+  /** Kill a running background task (if taskManager provided) */
+  kill_task?: Tool;
+
+  /** List background tasks (if taskManager provided) */
+  list_tasks?: Tool;
 
   // === Search Tool ===
 
@@ -347,6 +367,7 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
     skills = [],
     skillToolOptions = {},
     // Tasks
+    taskManager,
     subagents,
     parentAgent,
     defaultModel,
@@ -409,7 +430,7 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
   // =========================================================================
 
   if (!isDisabled("bash") && includeBash && hasExecuteCapability(backend)) {
-    tools.bash = createBashTool({ backend, ...bashOptions });
+    tools.bash = createBashTool({ backend, ...bashOptions, taskManager });
   }
 
   // =========================================================================
@@ -462,13 +483,30 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
       parentAgent,
       includeGeneralPurpose,
       ...taskOptions,
+      taskManager,
     });
 
     // Include task_output tool alongside task tool for retrieving background task results
     if (!isDisabled("task_output")) {
       tools.task_output = createTaskOutputTool({
         taskStore: taskOptions?.taskStore,
+        taskManager,
       });
+    }
+  }
+
+  // =========================================================================
+  // Task Management Tools (kill_task, list_tasks)
+  // =========================================================================
+
+  // These tools are included when a taskManager is provided
+  if (taskManager) {
+    if (!isDisabled("kill_task")) {
+      tools.kill_task = createKillTaskTool({ taskManager });
+    }
+
+    if (!isDisabled("list_tasks")) {
+      tools.list_tasks = createListTasksTool({ taskManager });
     }
   }
 
@@ -569,6 +607,9 @@ export {
   getBackgroundTask,
   listBackgroundTasks,
   clearCompletedTasks,
+  // Task Management
+  createKillTaskTool,
+  createListTasksTool,
   // Search
   createSearchToolsTool,
 };
@@ -589,6 +630,9 @@ export type {
   TaskOutputToolOptions,
   TaskToolOptions,
   TaskStatus,
+  // Task Management
+  KillTaskToolOptions,
+  ListTasksToolOptions,
   // Search
   SearchToolsOptions,
 };

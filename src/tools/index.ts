@@ -67,6 +67,9 @@ export {
   recoverFailedTasks,
   recoverRunningTasks,
 } from "./task.js";
+export type { KillTaskToolOptions, ListTasksToolOptions } from "./task-management.js";
+// Task management tools (kill/list background tasks)
+export { createKillTaskTool, createListTasksTool } from "./task-management.js";
 export type {
   OnTodosChanged,
   TodoChangeType,
