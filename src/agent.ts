@@ -478,6 +478,42 @@ function wrapToolsWithPermissionMode(
 }
 
 /**
+ * Wraps tools to inject TaskManager into execution options.
+ *
+ * @param tools - The tools to wrap
+ * @param taskManager - The TaskManager instance to inject
+ * @returns Wrapped tools with TaskManager in execution context
+ *
+ * @internal
+ */
+function wrapToolsWithTaskManager(tools: ToolSet, taskManager: TaskManager): ToolSet {
+  const wrapped: ToolSet = {};
+
+  for (const [name, tool] of Object.entries(tools)) {
+    if (!tool.execute) {
+      wrapped[name] = tool;
+      continue;
+    }
+
+    const originalExecute = tool.execute;
+
+    wrapped[name] = {
+      ...tool,
+      execute: async (input: unknown, options?: ToolExecutionOptions) => {
+        // Inject taskManager into execution options
+        const extendedOptions = {
+          ...options,
+          taskManager,
+        } as ToolExecutionOptions;
+        return originalExecute(input, extendedOptions);
+      },
+    };
+  }
+
+  return wrapped;
+}
+
+/**
  * Wraps tools to emit PreToolUse/PostToolUse/PostToolUseFailure hooks.
  *
  * This enables observability hooks (logging, metrics, tracing) and guardrails
@@ -1076,11 +1112,18 @@ export function createAgent(options: AgentOptions): Agent {
   };
 
   /**
-   * Wraps all tools (including task tool) with hooks.
+   * Wraps all tools with TaskManager injection and hooks.
    * Call this AFTER addTaskToolIfConfigured to ensure task tool is also wrapped.
+   *
+   * This applies two layers of wrapping:
+   * 1. TaskManager injection - makes taskManager available in execution options
+   * 2. Hook wrapping - enables PreToolUse/PostToolUse hooks for observability
    */
   const applyToolHooks = (tools: ToolSet, threadId?: string): ToolSet => {
-    return wrapToolsWithHooks(tools, effectiveHooks, agent, threadId ?? "default");
+    // First inject TaskManager into execution context
+    const withTaskManager = wrapToolsWithTaskManager(tools, taskManager);
+    // Then apply hooks for observability
+    return wrapToolsWithHooks(withTaskManager, effectiveHooks, agent, threadId ?? "default");
   };
 
   /**
@@ -1117,12 +1160,13 @@ export function createAgent(options: AgentOptions): Agent {
         includeGeneralPurpose: true,
         // Only pass streaming context when provided (streamDataResponse)
         streamingContext,
+        taskManager,
       }),
     };
 
     // Add task_output tool unless disabled
     if (!options.disabledCoreTools?.includes("task_output")) {
-      result.task_output = createTaskOutputTool();
+      result.task_output = createTaskOutputTool({ taskManager });
     }
 
     return result;

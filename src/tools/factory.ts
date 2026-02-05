@@ -12,7 +12,7 @@ import type { BackendProtocol } from "../backend.js";
 import { hasExecuteCapability } from "../backend.js";
 import type { AgentState } from "../backends/state.js";
 import type { MCPManager } from "../mcp/manager.js";
-import type { TaskManager } from "../task-manager.js";
+import { TaskManager } from "../task-manager.js";
 import type { Agent, CoreToolName, SkillDefinition, SubagentDefinition } from "../types.js";
 import { type BashToolOptions, createBashTool } from "./execute.js";
 // Tool creators
@@ -367,7 +367,7 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
     skills = [],
     skillToolOptions = {},
     // Tasks
-    taskManager,
+    taskManager: providedTaskManager,
     subagents,
     parentAgent,
     defaultModel,
@@ -430,7 +430,7 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
   // =========================================================================
 
   if (!isDisabled("bash") && includeBash && hasExecuteCapability(backend)) {
-    tools.bash = createBashTool({ backend, ...bashOptions, taskManager });
+    tools.bash = createBashTool({ backend, ...bashOptions, taskManager: providedTaskManager });
   }
 
   // =========================================================================
@@ -483,14 +483,14 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
       parentAgent,
       includeGeneralPurpose,
       ...taskOptions,
-      taskManager,
+      taskManager: providedTaskManager,
     });
 
     // Include task_output tool alongside task tool for retrieving background task results
     if (!isDisabled("task_output")) {
       tools.task_output = createTaskOutputTool({
         taskStore: taskOptions?.taskStore,
-        taskManager,
+        taskManager: providedTaskManager,
       });
     }
   }
@@ -500,13 +500,13 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
   // =========================================================================
 
   // These tools are included when a taskManager is provided
-  if (taskManager) {
+  if (providedTaskManager) {
     if (!isDisabled("kill_task")) {
-      tools.kill_task = createKillTaskTool({ taskManager });
+      tools.kill_task = createKillTaskTool({ taskManager: providedTaskManager });
     }
 
     if (!isDisabled("list_tasks")) {
-      tools.list_tasks = createListTasksTool({ taskManager });
+      tools.list_tasks = createListTasksTool({ taskManager: providedTaskManager });
     }
   }
 

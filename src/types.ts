@@ -125,6 +125,13 @@ export interface ExtendedToolExecutionOptions extends ToolExecutionOptions {
    * Available when the agent has a checkpointer configured.
    */
   interrupt: InterruptFunction;
+
+  /**
+   * Task manager for background task tracking.
+   * Available when running within an agent context.
+   * Used by bash tool for run_in_background support.
+   */
+  taskManager?: import("./task-manager.js").TaskManager;
 }
 
 // =============================================================================

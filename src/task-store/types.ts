@@ -18,10 +18,11 @@
  * - `running`: Task is currently executing
  * - `completed`: Task finished successfully
  * - `failed`: Task encountered an error
+ * - `killed`: Task was explicitly terminated by the user
  *
  * @category TaskStore
  */
-export type BackgroundTaskStatus = "pending" | "running" | "completed" | "failed";
+export type BackgroundTaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
 
 /**
  * Complete snapshot of a background task's state.
@@ -288,7 +289,8 @@ export function isBackgroundTask(value: unknown): value is BackgroundTask {
     (obj.status === "pending" ||
       obj.status === "running" ||
       obj.status === "completed" ||
-      obj.status === "failed") &&
+      obj.status === "failed" ||
+      obj.status === "killed") &&
     typeof obj.createdAt === "string" &&
     typeof obj.updatedAt === "string"
   );
@@ -304,8 +306,8 @@ export function isBackgroundTask(value: unknown): value is BackgroundTask {
  * @category TaskStore
  */
 export function shouldExpireTask(task: BackgroundTask, expirationMs: number): boolean {
-  // Only expire completed or failed tasks
-  if (task.status !== "completed" && task.status !== "failed") {
+  // Only expire completed, failed, or killed tasks
+  if (task.status !== "completed" && task.status !== "failed" && task.status !== "killed") {
     return false;
   }
 

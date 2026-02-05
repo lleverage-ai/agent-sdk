@@ -31,7 +31,7 @@ import type {
  *
  * @category Subagents
  */
-export type TaskStatus = "pending" | "running" | "completed" | "failed";
+export type TaskStatus = "pending" | "running" | "completed" | "failed" | "killed";
 
 /**
  * Options for creating the task tool.
@@ -225,7 +225,7 @@ export async function clearCompletedTasks(): Promise<number> {
   // In-memory fallback
   let cleared = 0;
   for (const [id, task] of backgroundTasks) {
-    if (task.status === "completed" || task.status === "failed") {
+    if (task.status === "completed" || task.status === "failed" || task.status === "killed") {
       backgroundTasks.delete(id);
       cleared++;
     }
@@ -930,6 +930,11 @@ Parameters:
         // For failed tasks, show error
         if (task.status === "failed" && task.error) {
           response.error = task.error;
+        }
+
+        // For killed tasks, indicate it was terminated
+        if (task.status === "killed") {
+          response.message = "Task was terminated by user";
         }
 
         // Include exit code for bash tasks

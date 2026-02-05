@@ -60,6 +60,9 @@
 
 // Core agent
 export { createAgent } from "./agent.js";
+// Session (event-driven agent interactions)
+export { AgentSession, createAgentSession } from "./session.js";
+export type { AgentSessionOptions, SessionEvent, SessionOutput } from "./session.js";
 // Backend types
 export type {
   BackendProtocol,
@@ -545,10 +548,6 @@ export { TaskManager } from "./task-manager.js";
 export type {
   BashResult,
   BashToolOptions,
-  CoreTools,
-  // Tool factory types
-  CoreToolsOptions,
-  CreateCoreToolsResult,
   FilesystemTools,
   FilesystemToolsOptions,
   // Task management tool types
@@ -585,8 +584,6 @@ export {
   clearCompletedTasks,
   // Bash tool
   createBashTool,
-  // Tool factory (unified tool creation)
-  createCoreTools,
   createEditTool,
   createFilesystemTools,
   createFilesystemToolsOnly,

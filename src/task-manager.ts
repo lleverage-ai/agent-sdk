@@ -178,6 +178,8 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
       this.emit("taskCompleted", updated);
     } else if (updates.status === "failed") {
       this.emit("taskFailed", updated);
+    } else if (updates.status === "killed") {
+      this.emit("taskKilled", updated);
     }
   }
 
@@ -253,7 +255,7 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
       return { killed: false, reason: "Task not found" };
     }
 
-    if (task.status === "completed" || task.status === "failed") {
+    if (task.status === "completed" || task.status === "failed" || task.status === "killed") {
       return { killed: false, reason: "Task already finished" };
     }
 
@@ -263,7 +265,15 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
     }
 
     try {
-      // Kill bash process
+      // Set status to "killed" FIRST, before killing the process.
+      // This prevents a race condition where the process death triggers
+      // onError callbacks that would otherwise set status to "failed".
+      this.updateTask(taskId, {
+        status: "killed",
+        completedAt: new Date().toISOString(),
+      });
+
+      // Now kill the process - any callbacks will see status is already "killed"
       if (resources.process) {
         await this.killProcess(resources.process);
       }
@@ -273,14 +283,6 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
         resources.abortController.abort();
       }
 
-      // Update task status
-      this.updateTask(taskId, {
-        status: "failed",
-        error: "Killed by user",
-        completedAt: new Date().toISOString(),
-      });
-
-      this.emit("taskKilled", this.tasks.get(taskId)!);
       return { killed: true };
     } catch (error) {
       return {

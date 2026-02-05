@@ -209,15 +209,23 @@ export function createBashTool(options: BashToolOptions) {
           "Run command in background without blocking. Returns task ID for status/output retrieval via task_output tool.",
         ),
     }),
-    execute: async ({
-      command,
-      timeout: commandTimeout,
-      run_in_background,
-    }: {
-      command: string;
-      timeout?: number;
-      run_in_background?: boolean;
-    }): Promise<BashResult | BashBackgroundResult> => {
+    execute: async (
+      {
+        command,
+        timeout: commandTimeout,
+        run_in_background,
+      }: {
+        command: string;
+        timeout?: number;
+        run_in_background?: boolean;
+      },
+      execOptions,
+    ): Promise<BashResult | BashBackgroundResult> => {
+      // Get taskManager from execution options (injected by agent at runtime)
+      // Falls back to construction-time taskManager for direct tool usage
+      const effectiveTaskManager =
+        (execOptions as { taskManager?: TaskManager } | undefined)?.taskManager ?? taskManager;
+
       // Validate command at tool level
       const validationError = validateCommand(command, blockedCommands, allowedCommands);
       if (validationError) {
@@ -257,7 +265,7 @@ export function createBashTool(options: BashToolOptions) {
 
       // Background execution
       if (run_in_background) {
-        if (!taskManager) {
+        if (!effectiveTaskManager) {
           return {
             success: false,
             output: "",
@@ -286,12 +294,12 @@ export function createBashTool(options: BashToolOptions) {
             timeout: backgroundMaxRuntime,
             onOutput: (chunk) => {
               // Update task with current output
-              const currentTask = taskManager.getTask(taskId);
+              const currentTask = effectiveTaskManager.getTask(taskId);
               if (currentTask) {
                 const currentOutput = (currentTask.metadata?.currentOutput as string) || "";
                 const newOutput = currentOutput + chunk;
                 const truncated = newOutput.length > maxOutputSize;
-                taskManager.updateTask(taskId, {
+                effectiveTaskManager.updateTask(taskId, {
                   metadata: {
                     ...currentTask.metadata,
                     currentOutput: truncated ? newOutput.slice(0, maxOutputSize) : newOutput,
@@ -301,8 +309,19 @@ export function createBashTool(options: BashToolOptions) {
               }
             },
             onComplete: (result) => {
+              // Check if task is already in a terminal state (e.g., killed)
+              // to avoid overwriting the status when a process is intentionally terminated
+              const currentTask = effectiveTaskManager.getTask(taskId);
+              if (
+                currentTask &&
+                (currentTask.status === "killed" ||
+                  currentTask.status === "completed" ||
+                  currentTask.status === "failed")
+              ) {
+                return; // Already in terminal state, don't overwrite
+              }
               const formattedResult = formatBashResult(result, maxOutputSize);
-              taskManager.updateTask(taskId, {
+              effectiveTaskManager.updateTask(taskId, {
                 status: formattedResult.success ? "completed" : "failed",
                 result: formattedResult.output,
                 error: formattedResult.error,
@@ -315,7 +334,18 @@ export function createBashTool(options: BashToolOptions) {
               });
             },
             onError: (error) => {
-              taskManager.updateTask(taskId, {
+              // Check if task is already in a terminal state (e.g., killed)
+              // to avoid overwriting the status when a process is intentionally terminated
+              const currentTask = effectiveTaskManager.getTask(taskId);
+              if (
+                currentTask &&
+                (currentTask.status === "killed" ||
+                  currentTask.status === "completed" ||
+                  currentTask.status === "failed")
+              ) {
+                return; // Already in terminal state, don't overwrite
+              }
+              effectiveTaskManager.updateTask(taskId, {
                 status: "failed",
                 error: error.message,
                 completedAt: new Date().toISOString(),
@@ -324,7 +354,7 @@ export function createBashTool(options: BashToolOptions) {
           });
 
           // Register with task manager
-          taskManager.registerTask(task, { process });
+          effectiveTaskManager.registerTask(task, { process });
 
           return {
             taskId,
