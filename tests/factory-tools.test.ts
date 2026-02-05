@@ -275,7 +275,7 @@ describe("createCoreTools", () => {
       expect(tools.task).toBeDefined();
     });
 
-    it("does not create task tool when subagents empty", () => {
+    it("does not create task tool when subagents empty and general-purpose disabled", () => {
       const parentAgent = createMockAgent();
       const defaultModel = createMockModel();
 
@@ -284,6 +284,7 @@ describe("createCoreTools", () => {
           subagents: [],
           parentAgent,
           defaultModel,
+          includeGeneralPurpose: false,
         }),
       );
 

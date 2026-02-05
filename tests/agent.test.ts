@@ -2599,7 +2599,7 @@ describe("agent.subagents - task tool availability", () => {
     expect(callArgs.tools).toHaveProperty("task");
   });
 
-  it("does not include task tool when no subagents configured", async () => {
+  it("includes task tool with general-purpose subagent even when no subagents configured", async () => {
     const mockGenerateText = vi.mocked(generateText);
     mockGenerateText.mockResolvedValue({
       text: "Response",
@@ -2634,11 +2634,13 @@ describe("agent.subagents - task tool availability", () => {
 
     await agent.generate({ prompt: "Test without subagents" });
 
+    // Task tool is always included with general-purpose subagent
     const callArgs = mockGenerateText.mock.calls[0][0] as { tools?: Record<string, unknown> };
-    expect(callArgs.tools).not.toHaveProperty("task");
+    expect(callArgs.tools).toHaveProperty("task");
+    expect(callArgs.tools).toHaveProperty("task_output");
   });
 
-  it("does not include task tool when subagents array is empty", async () => {
+  it("includes task tool with general-purpose subagent even when subagents array is empty", async () => {
     const mockGenerateText = vi.mocked(generateText);
     mockGenerateText.mockResolvedValue({
       text: "Response",
@@ -2676,8 +2678,10 @@ describe("agent.subagents - task tool availability", () => {
 
     await agent.generate({ prompt: "Test with empty subagents" });
 
+    // Task tool is always included with general-purpose subagent
     const callArgs = mockGenerateText.mock.calls[0][0] as { tools?: Record<string, unknown> };
-    expect(callArgs.tools).not.toHaveProperty("task");
+    expect(callArgs.tools).toHaveProperty("task");
+    expect(callArgs.tools).toHaveProperty("task_output");
   });
 
   it("respects disabledCoreTools for task tool", async () => {
