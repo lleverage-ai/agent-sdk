@@ -955,9 +955,21 @@ Parameters:
         };
       }
 
+      // Helper to cleanup task after observation
+      const cleanupIfTerminal = (t: BackgroundTask) => {
+        if (
+          taskManager &&
+          (t.status === "completed" || t.status === "failed" || t.status === "killed")
+        ) {
+          taskManager.removeTask(t.id);
+        }
+      };
+
       // Non-blocking: return current status immediately
       if (!block) {
-        return formatTaskResponse(task);
+        const response = formatTaskResponse(task);
+        cleanupIfTerminal(task);
+        return response;
       }
 
       // Blocking: wait for task completion
@@ -987,8 +999,10 @@ Parameters:
         }
       }
 
-      // Task reached terminal state
-      return formatTaskResponse(task);
+      // Task reached terminal state - cleanup and return
+      const response = formatTaskResponse(task);
+      cleanupIfTerminal(task);
+      return response;
     },
   });
 }

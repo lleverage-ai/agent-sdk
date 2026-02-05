@@ -198,6 +198,31 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
   }
 
   /**
+   * Remove a task from the manager.
+   *
+   * Only removes tasks in terminal states (completed, failed, killed).
+   * Running or pending tasks cannot be removed - use killTask() instead.
+   *
+   * @param taskId - The task ID to remove
+   * @returns True if task was removed, false if not found or still active
+   */
+  removeTask(taskId: string): boolean {
+    const task = this.tasks.get(taskId);
+    if (!task) {
+      return false;
+    }
+
+    // Only remove terminal tasks
+    if (task.status === "pending" || task.status === "running") {
+      return false;
+    }
+
+    this.tasks.delete(taskId);
+    this.resources.delete(taskId);
+    return true;
+  }
+
+  /**
    * List tasks with optional filtering.
    *
    * @param filter - Optional filter criteria
