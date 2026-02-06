@@ -151,19 +151,22 @@ Always use getSchema first to see column types.`,
 Hooks allow you to observe and react to agent lifecycle events:
 
 ```typescript
+import { createAgent, createToolHook } from "@lleverage-ai/agent-sdk";
+
 const agent = createAgent({
   model,
   hooks: {
+    // Simple observation hook (void return is fine)
     PreGenerate: [async ({ options }) => {
       console.log("Starting generation...");
-      return {};
     }],
-    PostToolUse: [{
-      hooks: [async ({ tool_name, tool_response }) => {
+
+    // Use createToolHook helper for tool-specific hooks
+    PostToolUse: [
+      createToolHook(async ({ tool_name, tool_response }) => {
         console.log("Tool completed:", tool_name);
-        return {};
-      }],
-    }],
+      }, { matcher: "search_*" }), // Only match tools starting with "search_"
+    ],
   },
 });
 ```
@@ -173,7 +176,7 @@ const agent = createAgent({
 - `PreToolUse`, `PostToolUse`, `PostToolUseFailure` — Tool execution lifecycle
 - `MCPConnectionFailed`, `MCPConnectionRestored` — MCP server connection lifecycle
 
-**Hook utilities:** `createRetryHooks`, `createRateLimitHooks`, `createLoggingHooks`, `createGuardrailsHooks`, `createSecretsFilterHooks`
+**Hook utilities:** `createRetryHooks`, `createRateLimitHooks`, `createLoggingHooks`, `createGuardrailsHooks`, `createSecretsFilterHooks`, `createToolHook`
 
 ### Streaming
 

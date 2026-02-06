@@ -57,15 +57,18 @@ export interface SearchToolsOptions {
  *
  * @example
  * ```typescript
+ * // Auto-load pattern (recommended)
  * const searchTool = createSearchToolsTool({
  *   manager: mcpManager,
  *   maxResults: 5,
+ *   autoLoad: true, // Tools are automatically loaded after search
  * });
  *
  * // Agent can then use:
  * // search_tools({ query: "github issues" })
+ * // Returns: "Found and loaded 3 tools... These tools are now available for immediate use."
  *
- * // With loading enabled:
+ * // Manual load pattern (if autoLoad is false)
  * // search_tools({ query: "github issues", load: true })
  * ```
  *

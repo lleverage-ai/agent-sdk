@@ -626,12 +626,21 @@ const jsonLines = exportAuditEventsJSONLines(auditStore.getEvents());
 
 ```typescript
 import {
+  createToolHook,          // Helper for creating tool-specific hooks
   createCacheHooks,        // Response caching
   createRetryHooks,        // Automatic retries
   createRateLimitHooks,    // Rate limiting with token bucket
   createLoggingHooks,      // Generation logging
   createToolLoggingHooks,  // Tool execution logging
 } from "@lleverage-ai/agent-sdk";
+
+// Example: createToolHook for simple tool-specific hooks
+const toolHook = createToolHook(
+  async ({ tool_name, tool_response }) => {
+    console.log(`Tool ${tool_name} completed`);
+  },
+  { matcher: "search_*" }, // Optional: only match tools starting with "search_"
+);
 ```
 
 ## Memory System
