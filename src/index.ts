@@ -278,6 +278,7 @@ export {
 // Hooks
 export {
   aggregatePermissionDecisions,
+  createToolHook,
   extractRespondWith,
   extractRetryDecision,
   extractUpdatedInput,

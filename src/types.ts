@@ -2233,13 +2233,18 @@ export interface HookCallbackContext {
 
 /**
  * Hook callback function signature.
+ *
+ * Hooks can return:
+ * - `HookOutput` object with control fields (e.g., permission decisions, transformations)
+ * - `void` or `undefined` for observation-only hooks (e.g., logging, metrics)
+ *
  * @category Hooks
  */
 export type HookCallback = (
   input: HookInput,
   toolUseId: string | null,
   context: HookCallbackContext,
-) => Promise<HookOutput> | HookOutput;
+) => Promise<HookOutput | void> | HookOutput | void;
 
 /**
  * Matcher for filtering which tools trigger hooks.

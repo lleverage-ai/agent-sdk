@@ -779,6 +779,8 @@ export function createAgent(options: AgentOptions): Agent {
   const taskManager = new TaskManager();
 
   // Determine plugin loading mode
+  // Track whether it was explicitly set to distinguish from default
+  const explicitPluginLoading = options.pluginLoading !== undefined;
   const pluginLoadingMode = options.pluginLoading ?? "eager";
   const preloadPlugins = new Set(options.preloadPlugins ?? []);
 
@@ -907,20 +909,22 @@ export function createAgent(options: AgentOptions): Agent {
   }
 
   // Determine if we should use deferred loading based on tool search settings
-  // Note: "auto" mode enables deferred loading when tool count exceeds threshold
+  // Note: Only activate deferred loading if explicitly requested, not based on auto threshold
+  // The auto threshold should only affect whether search_tools is created, not loading behavior
   if (toolSearchEnabled === "always") {
     deferredLoadingActive = true;
-  } else if (toolSearchEnabled === "auto" && totalPluginToolCount > toolSearchThreshold) {
-    deferredLoadingActive = true;
   }
+  // Removed: auto threshold no longer forces deferred loading
+  // The default eager loading should be respected
 
   // Auto-create core tools (unless user provides explicit tools)
-  // Note: search_tools is created separately with proper configuration
+  // Note: search_tools is created separately below based on loading mode
   const { tools: autoCreatedCoreTools } = createCoreTools({
     backend: effectiveBackend,
     state,
     taskManager,
-    mcpManager: deferredLoadingActive ? undefined : mcpManager, // Only pass if not deferred
+    // Don't pass mcpManager here - we create search_tools manually below
+    mcpManager: undefined,
     disabled: options.disabledCoreTools,
     skills,
   });
@@ -941,30 +945,64 @@ export function createAgent(options: AgentOptions): Agent {
     if (plugin.tools && typeof plugin.tools !== "function") {
       const shouldPreload = preloadPlugins.has(plugin.name);
 
-      if (pluginLoadingMode === "lazy" && toolRegistry) {
+      // Priority order:
+      // 1. Explicit mode - don't register
+      // 2. Preload - always load immediately
+      // 3. Explicit eager - always load immediately
+      // 4. Lazy mode - register with tool registry
+      // 5. Deferred loading - register but don't load
+      // 6. Default eager - load immediately
+      if (pluginLoadingMode === "explicit") {
+        // Explicit mode: don't auto-register, user must do it manually
+        // Skip registration entirely
+      } else if (shouldPreload) {
+        // Preloaded plugins: always load immediately, regardless of other settings
+        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
+          autoLoad: true,
+        });
+      } else if (explicitPluginLoading && pluginLoadingMode === "eager") {
+        // Explicit eager mode: always load immediately, regardless of toolSearch settings
+        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
+          autoLoad: true,
+        });
+      } else if (pluginLoadingMode === "lazy" && toolRegistry) {
         // Lazy mode: register with registry for on-demand loading
         toolRegistry.registerPlugin(plugin.name, plugin.tools);
-      } else if (deferredLoadingActive && !shouldPreload) {
-        // Deferred loading: register tools but don't load them initially
+      } else if (deferredLoadingActive) {
+        // Deferred loading (auto threshold or always enabled): register tools but don't load them initially
         mcpManager.registerPluginTools(plugin.name, plugin.tools, {
           autoLoad: false,
         });
-      } else if (pluginLoadingMode === "eager" || shouldPreload) {
-        // Eager mode or preloaded: register and load immediately
+      } else {
+        // Default eager mode: load immediately
         mcpManager.registerPluginTools(plugin.name, plugin.tools, {
           autoLoad: true,
         });
       }
-      // explicit mode: don't register, user must do it manually
     }
   }
 
-  // Create search_tools with load capability when deferred loading is active
-  if (deferredLoadingActive && !options.disabledCoreTools?.includes("search_tools")) {
+  // Create search_tools for MCP tool discovery and/or plugin loading
+  // New behavior:
+  // - Create when auto threshold is exceeded (for lazy discovery)
+  // - Create when deferred loading is active (explicitly requested)
+  // - Create when external MCP servers exist (for MCP tool search)
+  // - Always auto-load tools when found (no manual load step)
+  const shouldCreateSearchToolsForAutoThreshold =
+    toolSearchEnabled === "auto" && totalPluginToolCount > toolSearchThreshold;
+
+  const shouldCreateSearchTools =
+    !options.disabledCoreTools?.includes("search_tools") &&
+    (deferredLoadingActive ||
+      shouldCreateSearchToolsForAutoThreshold ||
+      (mcpManager.hasExternalServers() && toolSearchEnabled !== "never"));
+
+  if (shouldCreateSearchTools) {
     coreTools.search_tools = createSearchToolsTool({
       manager: mcpManager,
       maxResults: toolSearchMaxResults,
-      enableLoad: true,
+      enableLoad: true, // Always enable auto-loading
+      autoLoad: true, // NEW: Auto-load tools after searching
       onToolsLoaded: (toolNames) => {
         // Tools are now loaded in MCPManager and will be included in getActiveToolSet()
         // This callback can be used for logging/notifications

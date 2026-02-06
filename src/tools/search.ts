@@ -32,6 +32,14 @@ export interface SearchToolsOptions {
   enableLoad?: boolean;
 
   /**
+   * Whether to automatically load tools after searching.
+   * When true, found tools are automatically loaded without requiring load: true.
+   * This provides better UX by eliminating the two-step search-then-load process.
+   * @defaultValue false
+   */
+  autoLoad?: boolean;
+
+  /**
    * Callback when tools are loaded.
    * Used to notify the agent that tools have changed.
    */
@@ -64,17 +72,23 @@ export interface SearchToolsOptions {
  * @category Tools
  */
 export function createSearchToolsTool(options: SearchToolsOptions): Tool {
-  const { manager, maxResults = 10, enableLoad = false, onToolsLoaded } = options;
+  const { manager, maxResults = 10, enableLoad = false, autoLoad = false, onToolsLoaded } = options;
+
+  // Auto-load takes precedence - if enabled, tools are always loaded
+  const shouldAutoLoad = autoLoad;
+  const shouldAllowManualLoad = enableLoad && !autoLoad;
 
   const baseDescription =
     "Search for available tools by query. Returns tool names and descriptions. " +
     "Use this to discover tools that can help with your task.";
 
-  const loadDescription = enableLoad
-    ? " Set 'load: true' to load discovered tools for immediate use."
-    : "";
+  const loadDescription = shouldAutoLoad
+    ? " Found tools are automatically loaded and ready for immediate use."
+    : shouldAllowManualLoad
+      ? " Set 'load: true' to load discovered tools for immediate use."
+      : "";
 
-  const inputSchema = enableLoad
+  const inputSchema = shouldAllowManualLoad
     ? z.object({
         query: z
           .string()
@@ -103,8 +117,11 @@ export function createSearchToolsTool(options: SearchToolsOptions): Tool {
         return `No tools found matching "${query}". Try a different search term.`;
       }
 
-      // If load is requested, load the discovered tools
-      if (load && enableLoad) {
+      // Determine if we should load tools
+      const shouldLoad = shouldAutoLoad || (load && shouldAllowManualLoad);
+
+      // If loading is requested or auto-load is enabled, load the discovered tools
+      if (shouldLoad) {
         const toolNames = results.map((t) => t.name);
         const loadResult = manager.loadTools(toolNames);
 
@@ -115,7 +132,8 @@ export function createSearchToolsTool(options: SearchToolsOptions): Tool {
 
         if (loadResult.loaded.length === 0) {
           const formatted = results.map((t) => `- **${t.name}**: ${t.description}`).join("\n");
-          return `Found ${results.length} tool(s) (all already loaded):\n\n${formatted}`;
+          const autoLoadMsg = shouldAutoLoad ? " (already loaded)" : " (all already loaded)";
+          return `Found ${results.length} tool(s)${autoLoadMsg}:\n\n${formatted}`;
         }
 
         const loadedFormatted = loadResult.loaded
@@ -125,10 +143,15 @@ export function createSearchToolsTool(options: SearchToolsOptions): Tool {
           })
           .join("\n");
 
-        let response = `Loaded ${loadResult.loaded.length} tool(s):\n\n${loadedFormatted}`;
+        const autoLoadPrefix = shouldAutoLoad ? "Found and loaded" : "Loaded";
+        let response = `${autoLoadPrefix} ${loadResult.loaded.length} tool(s):\n\n${loadedFormatted}`;
 
         if (loadResult.alreadyLoaded.length > 0) {
           response += `\n\n(${loadResult.alreadyLoaded.length} tool(s) were already loaded)`;
+        }
+
+        if (shouldAutoLoad) {
+          response += `\n\nThese tools are now available for immediate use.`;
         }
 
         return response;
