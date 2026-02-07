@@ -160,6 +160,59 @@ const agent = createAgent({ model, skills });
 
 See [Skills Documentation](./docs/skills.md) for complete details on the skills system and Agent Skills spec compliance.
 
+### Prompt Builder
+
+Create dynamic, context-aware system prompts from composable components. Instead of static strings, prompts automatically include tools, skills, backend capabilities, and more.
+
+**Using the default builder:**
+```typescript
+const agent = createAgent({
+  model,
+  // No systemPrompt = uses default prompt builder
+  tools: { read, write, bash },
+});
+// Automatically generates:
+// "You are a helpful AI assistant.
+//
+// # Available Tools
+// - **read**: Read files
+// - **write**: Write files
+// - **bash**: Execute commands
+//
+// # Capabilities
+// - Execute shell commands (bash)
+// - Read and write files to the filesystem"
+```
+
+**Customizing the prompt:**
+```typescript
+import { createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
+
+const builder = createDefaultPromptBuilder()
+  .register({
+    name: "project-context",
+    priority: 95,
+    render: () => "You are working on a TypeScript project.",
+  });
+
+const agent = createAgent({
+  model,
+  promptBuilder: builder,
+  tools,
+});
+```
+
+**Static prompts still work:**
+```typescript
+const agent = createAgent({
+  model,
+  systemPrompt: "You are a helpful assistant.",
+  tools,
+});
+```
+
+See [Prompt Builder Documentation](./docs/prompt-builder.md) for complete details on dynamic prompts, components, and customization.
+
 ### Hooks
 
 Hooks allow you to observe and react to agent lifecycle events:
@@ -212,6 +265,7 @@ export async function POST(req: Request) {
 
 ## Documentation
 
+- [Prompt Builder](./docs/prompt-builder.md) — Dynamic, context-aware system prompts
 - [Skills System](./docs/skills.md) — Progressive disclosure with Agent Skills spec compliance
 - [Tool Loading Strategies](./docs/tool-loading.md) — Eager, lazy, and dynamic tool loading
 - [Security & Production](./docs/security.md) — Security policies, guardrails, and secrets filtering
