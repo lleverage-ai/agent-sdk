@@ -1,6 +1,6 @@
 {
   "name": "@lleverage-ai/agent-sdk",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "A TypeScript framework for building AI agents using the Vercel AI SDK v6",
   "type": "module",
   "license": "MIT",
