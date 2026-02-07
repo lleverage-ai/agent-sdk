@@ -548,6 +548,47 @@ const pluginTools = toolsFromPlugin(myPlugin);
 const allMcpTools = await mcpTools(mcpManager);
 ```
 
+## Skills System
+
+The SDK provides a comprehensive skills system aligned with the [Agent Skills specification](https://agentskills.io/specification). Skills enable progressive disclosure of capabilities, allowing agents to load specialized tools and instructions on-demand.
+
+### Skill Types
+
+**Programmatic Skills** - TypeScript objects with inline tools:
+```typescript
+import { defineSkill } from "@lleverage-ai/agent-sdk";
+
+const gitSkill = defineSkill({
+  name: "git",
+  description: "Git version control operations",
+  instructions: "You have access to Git tools. Always check status before committing.",
+  tools: { git_status: tool({ ... }) },
+});
+```
+
+**File-Based Skills** - SKILL.md files following the Agent Skills spec:
+```typescript
+import { loadSkillsFromDirectories } from "@lleverage-ai/agent-sdk";
+
+// Load skills from disk
+const { skills, errors } = await loadSkillsFromDirectories([
+  "/path/to/skills",
+  "/home/user/.skills",
+]);
+
+// Use with registry
+const registry = new SkillRegistry({ skills });
+```
+
+### Progressive Disclosure
+
+Skills implement three levels of progressive disclosure:
+1. **Metadata** (~100 tokens): `name` + `description` for discovery
+2. **Instructions** (<5000 tokens): Full instructions + tools when activated
+3. **Resources** (on-demand): Scripts, references, assets accessed as needed
+
+See [Skills Documentation](./docs/skills.md) for complete details.
+
 ## Hook Utilities
 
 The SDK provides factory functions for common hook patterns:

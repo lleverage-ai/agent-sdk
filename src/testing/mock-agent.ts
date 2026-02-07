@@ -12,6 +12,7 @@ import type { BackendProtocol } from "../backend.js";
 import type { AgentState } from "../backends/state.js";
 import { StateBackend } from "../backends/state.js";
 import { TaskManager } from "../task-manager.js";
+import type { SkillDefinition } from "../tools/skills.js";
 import type {
   Agent,
   AgentOptions,
@@ -19,7 +20,6 @@ import type {
   GenerateOptions,
   GenerateResult,
   GenerateStep,
-  SkillDefinition,
   StreamPart,
 } from "../types.js";
 

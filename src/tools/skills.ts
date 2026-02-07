@@ -11,77 +11,173 @@
 import type { ToolSet } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
-import type { MCPManager } from "../mcp/manager.js";
 
 // =============================================================================
 // Types
 // =============================================================================
 
 /**
- * Definition of a loadable skill for progressive disclosure.
+ * Skill definition aligned with the Agent Skills specification.
  *
- * Skills bundle tools and prompts that are loaded dynamically by the agent.
- * This extends the basic `SkillDefinition` with support for MCP tools and
- * dependencies, enabling on-demand capability expansion.
+ * Skills can be:
+ * - **Programmatic**: TypeScript objects with inline tools
+ * - **File-based**: Loaded from SKILL.md directories
  *
- * @example
+ * @see https://agentskills.io/specification
+ *
+ * @example Programmatic skill
  * ```typescript
- * const gitSkill: LoadableSkillDefinition = {
+ * const gitSkill: SkillDefinition = {
  *   name: "git",
- *   description: "Git version control operations",
+ *   description: "Git version control operations. Use when working with git repositories.",
+ *   license: "MIT",
  *   tools: {
  *     git_status: tool({ ... }),
  *     git_commit: tool({ ... }),
  *   },
- *   prompt: "You now have access to Git tools. Use them to manage version control.",
+ *   instructions: "You now have access to Git tools. Use them to manage version control.",
+ * };
+ * ```
+ *
+ * @example File-based skill
+ * ```typescript
+ * const pdfSkill: SkillDefinition = {
+ *   name: "pdf-processing",
+ *   description: "Extract text and tables from PDF files, fill forms, merge documents.",
+ *   license: "Apache-2.0",
+ *   skillPath: "/path/to/skills/pdf-processing",
+ *   // instructions and tools loaded from SKILL.md and scripts/
  * };
  * ```
  *
  * @category Tools
  */
-export interface LoadableSkillDefinition {
-  /** Unique identifier for the skill */
-  name: string;
-
-  /** Description for the agent to decide when to invoke this skill */
-  description: string;
-
-  /** Tools this skill provides (inline tools) */
-  tools: ToolSet;
+export interface SkillDefinition {
+  // =============================================================================
+  // Agent Skills Specification Frontmatter
+  // https://agentskills.io/specification
+  // =============================================================================
 
   /**
-   * MCP tool names to load when this skill is activated.
+   * Unique skill identifier.
    *
-   * These are tool names from the MCPManager (e.g., "mcp__github__list_issues").
-   * They will be loaded via MCPManager.loadTools() when the skill is activated.
+   * **Requirements:**
+   * - 1-64 characters
+   * - Lowercase alphanumeric and hyphens only
+   * - Must not start or end with hyphen
+   * - Must not contain consecutive hyphens
+   * - Should match directory name for file-based skills
+   *
+   * @example "pdf-processing", "code-review", "data-analysis"
+   */
+  name: string;
+
+  /**
+   * Description of what this skill does and when to use it.
+   *
+   * **Requirements:**
+   * - 1-1024 characters
+   * - Should include keywords for agent discovery
+   * - Should describe both capabilities and use cases
+   *
+   * @example "Extract text and tables from PDF files, fill forms, merge documents. Use when working with PDF documents."
+   */
+  description: string;
+
+  /**
+   * License for this skill.
+   * Can be a license name or reference to a bundled license file.
+   *
+   * @example "MIT"
+   * @example "Proprietary. See LICENSE.txt"
+   */
+  license?: string;
+
+  /**
+   * Environment requirements for this skill.
+   *
+   * **Requirements:**
+   * - Max 500 characters
+   * - Only include if skill has specific requirements
+   *
+   * @example "Requires git, docker, and internet access"
+   * @example "Designed for Claude Code"
+   */
+  compatibility?: string;
+
+  /**
+   * Arbitrary metadata key-value pairs.
+   * Use reasonably unique keys to avoid conflicts.
+   *
+   * @example { author: "acme-corp", version: "1.0", category: "data" }
+   */
+  metadata?: Record<string, string>;
+
+  // =============================================================================
+  // Runtime Implementation
+  // =============================================================================
+
+  /**
+   * Instructions provided when skill is activated.
+   *
+   * - For **programmatic skills**: Inline string or function
+   * - For **file-based skills**: Loaded from SKILL.md body
+   * - Can be omitted if loaded from file
+   *
+   * These instructions are injected into the agent's context when the skill
+   * is loaded, providing guidance on how to use the skill's capabilities.
    *
    * @example
    * ```typescript
-   * const githubSkill: LoadableSkillDefinition = {
-   *   name: "github",
-   *   description: "GitHub operations",
-   *   tools: {},  // No inline tools
-   *   mcpTools: [
-   *     "mcp__github__list_issues",
-   *     "mcp__github__create_pr",
-   *   ],
-   *   prompt: "You can now work with GitHub issues and PRs.",
-   * };
+   * instructions: "You have access to Git tools. Always check status before committing."
+   * ```
+   *
+   * @example With arguments
+   * ```typescript
+   * instructions: (args) => `Analyze ${args} using the data tools.`
    * ```
    */
-  mcpTools?: string[];
+  instructions?: string | ((args?: string) => string);
 
   /**
-   * Prompt to inject when the skill is loaded.
-   * Can be a string or a function that receives optional arguments.
+   * Tools provided by this skill.
+   *
+   * - For **programmatic skills**: Inline AI SDK tools
+   * - For **file-based skills**: Generated from scripts/ directory
+   * - Can be omitted if no tools
+   *
+   * @example
+   * ```typescript
+   * tools: {
+   *   check_status: tool({
+   *     description: "Check status",
+   *     inputSchema: z.object({}),
+   *     execute: async () => ({ status: "ok" }),
+   *   }),
+   * }
+   * ```
    */
-  prompt: string | ((args?: string) => string);
+  tools?: ToolSet;
+
+  // =============================================================================
+  // SDK Extensions for Progressive Disclosure
+  // =============================================================================
 
   /**
-   * Optional skills this skill depends on.
-   * Dependencies are loaded first when this skill is loaded.
+   * Path to skill directory containing SKILL.md.
+   *
+   * When provided, the skill uses progressive disclosure:
+   * 1. **Metadata** from SKILL.md frontmatter (for discovery)
+   * 2. **Instructions** from SKILL.md body (on activation)
+   * 3. **Resources** from scripts/, references/, assets/ (on-demand via read/bash tools)
+   *
+   * Use `getSkillResourcePath()` to access references/ and assets/ on-demand:
+   * - references/ - Additional documentation loaded when needed
+   * - assets/ - Templates, schemas, and other data files
+   *
+   * @example "/path/to/skills/pdf-processing"
    */
-  dependencies?: string[];
+  skillPath?: string;
 }
 
 /**
@@ -96,20 +192,11 @@ export interface SkillLoadResult {
   /** Tools provided by the loaded skill (empty if failed) */
   tools: ToolSet;
 
-  /** Prompt from the loaded skill (empty if failed) */
-  prompt: string;
+  /** Instructions from the loaded skill (empty if failed) */
+  instructions: string;
 
   /** Error message if loading failed */
   error?: string;
-
-  /** Skills that were loaded as dependencies */
-  loadedDependencies?: string[];
-
-  /** MCP tools that were loaded (via MCPManager) */
-  loadedMcpTools?: string[];
-
-  /** MCP tools that were requested but not found */
-  notFoundMcpTools?: string[];
 }
 
 /**
@@ -121,15 +208,7 @@ export interface SkillRegistryOptions {
   /**
    * Initial skills to register.
    */
-  skills?: LoadableSkillDefinition[];
-
-  /**
-   * MCP manager for loading MCP tools referenced by skills.
-   *
-   * When provided, skills can specify `mcpTools` to load MCP tools
-   * when the skill is activated.
-   */
-  mcpManager?: MCPManager;
+  skills?: SkillDefinition[];
 
   /**
    * Callback when a skill is loaded.
@@ -167,16 +246,13 @@ export interface SkillRegistryOptions {
  */
 export class SkillRegistry {
   /** All registered skills */
-  private skills = new Map<string, LoadableSkillDefinition>();
+  private skills = new Map<string, SkillDefinition>();
 
   /** Currently loaded skills */
   private loadedSkills = new Set<string>();
 
   /** Callback for skill load events */
   private onSkillLoaded?: (skillName: string, result: SkillLoadResult) => void;
-
-  /** MCP manager for loading MCP tools */
-  private mcpManager?: MCPManager;
 
   /**
    * Creates a new skill registry.
@@ -185,7 +261,6 @@ export class SkillRegistry {
    */
   constructor(options: SkillRegistryOptions = {}) {
     this.onSkillLoaded = options.onSkillLoaded;
-    this.mcpManager = options.mcpManager;
 
     if (options.skills) {
       for (const skill of options.skills) {
@@ -210,7 +285,7 @@ export class SkillRegistry {
    * });
    * ```
    */
-  register(skill: LoadableSkillDefinition): void {
+  register(skill: SkillDefinition): void {
     if (this.skills.has(skill.name)) {
       throw new Error(`Skill '${skill.name}' is already registered`);
     }
@@ -254,26 +329,26 @@ export class SkillRegistry {
    * @param name - The name of the skill
    * @returns The skill definition or undefined if not found
    */
-  get(name: string): LoadableSkillDefinition | undefined {
+  get(name: string): SkillDefinition | undefined {
     return this.skills.get(name);
   }
 
   /**
-   * Load a skill, making its tools and prompt available.
+   * Load a skill, making its tools and instructions available.
    *
    * This method handles dependencies, loading them first if specified.
    * Already-loaded skills are skipped (no duplicate loading).
    *
    * @param name - The name of the skill to load
-   * @param args - Optional arguments to pass to the skill's prompt function
-   * @returns The load result with tools, prompt, and status
+   * @param args - Optional arguments to pass to the skill's instructions function
+   * @returns The load result with tools, instructions, and status
    *
    * @example
    * ```typescript
    * const result = registry.load("git");
    * if (result.success) {
    *   // Inject result.tools into agent
-   *   // Inject result.prompt into context
+   *   // Inject result.instructions into context
    * }
    * ```
    */
@@ -283,7 +358,7 @@ export class SkillRegistry {
       return {
         success: true,
         tools: {},
-        prompt: "",
+        instructions: "",
         error: `Skill '${name}' is already loaded`,
       };
     }
@@ -294,78 +369,28 @@ export class SkillRegistry {
       return {
         success: false,
         tools: {},
-        prompt: "",
+        instructions: "",
         error: `Skill '${name}' not found. Available: ${this.listAvailable()
           .map((s) => s.name)
           .join(", ")}`,
       };
     }
 
-    // Load dependencies first
-    const loadedDependencies: string[] = [];
-    const aggregatedTools: ToolSet = {};
-    let aggregatedPrompt = "";
-
-    if (skill.dependencies && skill.dependencies.length > 0) {
-      for (const depName of skill.dependencies) {
-        if (this.loadedSkills.has(depName)) {
-          continue; // Skip already loaded dependencies
-        }
-
-        const depResult = this.load(depName);
-        if (!depResult.success) {
-          return {
-            success: false,
-            tools: {},
-            prompt: "",
-            error: `Failed to load dependency '${depName}': ${depResult.error}`,
-          };
-        }
-
-        // Aggregate dependency tools and prompts
-        Object.assign(aggregatedTools, depResult.tools);
-        if (depResult.prompt) {
-          aggregatedPrompt += `${depResult.prompt}\n\n`;
-        }
-        loadedDependencies.push(depName);
-      }
-    }
-
     // Mark as loaded
     this.loadedSkills.add(name);
 
-    // Track MCP tool loading results
-    let loadedMcpTools: string[] | undefined;
-    let notFoundMcpTools: string[] | undefined;
+    // Get the instructions (may be undefined for file-based skills)
+    const instructions = skill.instructions
+      ? typeof skill.instructions === "function"
+        ? skill.instructions(args)
+        : skill.instructions
+      : "";
 
-    // Load MCP tools if specified
-    if (skill.mcpTools && skill.mcpTools.length > 0 && this.mcpManager) {
-      const mcpLoadResult = this.mcpManager.loadTools(skill.mcpTools);
-
-      if (mcpLoadResult.loaded.length > 0 || mcpLoadResult.alreadyLoaded.length > 0) {
-        loadedMcpTools = [...mcpLoadResult.loaded, ...mcpLoadResult.alreadyLoaded];
-      }
-
-      if (mcpLoadResult.notFound.length > 0) {
-        notFoundMcpTools = mcpLoadResult.notFound;
-        // Log warning but continue - some MCP tools may be unavailable
-        console.warn(
-          `Skill '${name}': Some MCP tools not found: ${mcpLoadResult.notFound.join(", ")}`,
-        );
-      }
-    }
-
-    // Get the prompt
-    const prompt = typeof skill.prompt === "function" ? skill.prompt(args) : skill.prompt;
-
-    // Build result - MCP tools are loaded via MCPManager, not returned directly
+    // Build result
     const result: SkillLoadResult = {
       success: true,
-      tools: { ...aggregatedTools, ...skill.tools },
-      prompt: aggregatedPrompt + prompt,
-      loadedDependencies: loadedDependencies.length > 0 ? loadedDependencies : undefined,
-      loadedMcpTools,
-      notFoundMcpTools,
+      tools: skill.tools ?? {},
+      instructions,
     };
 
     // Notify callback
@@ -545,12 +570,8 @@ export function createSkillTool(options: SkillToolOptions) {
         success: true,
         skill: skill_name,
         newTools: toolNames,
-        instructions: result.prompt,
+        instructions: result.instructions,
       };
-
-      if (result.loadedDependencies && result.loadedDependencies.length > 0) {
-        response.dependencies = result.loadedDependencies;
-      }
 
       if (toolNames.length === 0) {
         response.message = `Loaded skill '${skill_name}' (provides instructions only, no new tools)`;
@@ -584,39 +605,11 @@ export function createSkillTool(options: SkillToolOptions) {
  * @category Tools
  */
 export function createSkillRegistry(
-  skills: LoadableSkillDefinition[],
+  skills: SkillDefinition[],
   options?: Omit<SkillRegistryOptions, "skills">,
 ): SkillRegistry {
   return new SkillRegistry({
     ...options,
     skills,
   });
-}
-
-/**
- * Creates a skill definition.
- *
- * This is a helper function for creating LoadableSkillDefinition objects
- * with proper typing.
- *
- * @param options - Skill configuration
- * @returns A LoadableSkillDefinition object
- *
- * @example
- * ```typescript
- * const gitSkill = defineLoadableSkill({
- *   name: "git",
- *   description: "Git version control operations",
- *   tools: {
- *     git_status: tool({ ... }),
- *     git_commit: tool({ ... }),
- *   },
- *   prompt: "You now have access to Git tools.",
- * });
- * ```
- *
- * @category Tools
- */
-export function defineLoadableSkill(options: LoadableSkillDefinition): LoadableSkillDefinition {
-  return options;
 }

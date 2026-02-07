@@ -56,6 +56,7 @@ import {
   createTaskOutputTool,
   createTaskTool,
 } from "./tools/factory.js";
+import type { SkillDefinition } from "./tools/skills.js";
 import { createUseToolsTool, ToolRegistry } from "./tools/tool-registry.js";
 import type {
   Agent,
@@ -77,7 +78,6 @@ import type {
   PostToolUseFailureInput,
   PostToolUseInput,
   PreToolUseInput,
-  SkillDefinition,
   StreamingContext,
   StreamingToolsFactory,
   StreamPart,

@@ -8,7 +8,8 @@
  * @packageDocumentation
  */
 
-import type { SkillDefinition, SkillOptions, ToolSet } from "./types.js";
+import type { SkillDefinition } from "./tools/skills.js";
+import type { SkillOptions, ToolSet } from "./types.js";
 
 /**
  * Creates a skill definition for providing contextual instructions to agents.
@@ -29,7 +30,7 @@ import type { SkillDefinition, SkillOptions, ToolSet } from "./types.js";
  * const dataSkill = defineSkill({
  *   name: "data-exploration",
  *   description: "Query and visualize data",
- *   prompt: `You have access to data exploration tools.
+ *   instructions: `You have access to data exploration tools.
  * Available tables: products, users, sales.
  * Always use getSchema first to see column types.`,
  * });
@@ -45,14 +46,14 @@ import type { SkillDefinition, SkillOptions, ToolSet } from "./types.js";
  * const guidelinesSkill = defineSkill({
  *   name: "guidelines",
  *   description: "Project coding standards",
- *   prompt: "Follow TypeScript strict mode and use named exports.",
+ *   instructions: "Follow TypeScript strict mode and use named exports.",
  * });
  *
  * // Skill with tools for progressive disclosure
  * const analyzeSkill = defineSkill({
  *   name: "analyze",
  *   description: "Deep code analysis",
- *   prompt: "Perform detailed code analysis.",
+ *   instructions: "Perform detailed code analysis.",
  *   tools: {
  *     lint: tool({
  *       description: "Run linter",
@@ -69,8 +70,11 @@ export function defineSkill(options: SkillOptions): SkillDefinition {
   return {
     name: options.name,
     description: options.description,
-    prompt: options.prompt,
+    instructions: options.instructions,
     tools: options.tools,
+    license: options.license,
+    compatibility: options.compatibility,
+    metadata: options.metadata,
   };
 }
 

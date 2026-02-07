@@ -15,8 +15,8 @@ import {
   createCoreTools,
   createFilesystemToolsOnly,
 } from "../src/tools/factory.js";
-import { defineLoadableSkill, SkillRegistry } from "../src/tools/skills.js";
-import type { Agent, SkillDefinition, SubagentDefinition } from "../src/types.js";
+import { SkillRegistry } from "../src/tools/skills.js";
+import type { Agent, SubagentDefinition } from "../src/types.js";
 
 // =============================================================================
 // Mocks
@@ -237,12 +237,12 @@ describe("createCoreTools", () => {
     it("passes skill tool options", () => {
       const providedRegistry = new SkillRegistry({
         skills: [
-          defineLoadableSkill({
+          {
             name: "test-skill",
             description: "A test skill",
             tools: {},
-            prompt: "Test prompt",
-          }),
+            instructions: "Test prompt",
+          },
         ],
       });
 
@@ -388,7 +388,7 @@ describe("createCoreTools", () => {
 
       const skillRegistry = new SkillRegistry({
         skills: [
-          defineLoadableSkill({
+          {
             name: "test-skill",
             description: "A test skill",
             tools: {
@@ -398,8 +398,8 @@ describe("createCoreTools", () => {
                 execute: async () => "test result",
               }),
             },
-            prompt: "Test instructions",
-          }),
+            instructions: "Test instructions",
+          },
         ],
       });
 
@@ -595,7 +595,7 @@ describe("skills option (alternative to skillRegistry)", () => {
       {
         name: "git-skill",
         description: "Git operations",
-        prompt: "Git instructions",
+        instructions: "Git instructions",
         tools: {
           git_status: tool({
             description: "Get git status",
@@ -621,7 +621,7 @@ describe("skills option (alternative to skillRegistry)", () => {
       {
         name: "prompt-only-skill",
         description: "Just a prompt",
-        prompt: "Instructions only",
+        instructions: "Instructions only",
         // No tools defined
       },
     ];
@@ -639,12 +639,12 @@ describe("skills option (alternative to skillRegistry)", () => {
   it("skillRegistry takes precedence over skills array", () => {
     const existingRegistry = new SkillRegistry({
       skills: [
-        defineLoadableSkill({
+        {
           name: "existing-skill",
           description: "From registry",
           tools: {},
-          prompt: "Existing",
-        }),
+          instructions: "Existing",
+        },
       ],
     });
 
@@ -652,7 +652,7 @@ describe("skills option (alternative to skillRegistry)", () => {
       {
         name: "array-skill",
         description: "From array",
-        prompt: "Array",
+        instructions: "Array",
         tools: {
           some_tool: tool({
             description: "Tool",

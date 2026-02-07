@@ -39,7 +39,7 @@ export type { SearchToolsOptions } from "./search.js";
 // Search tools (MCP integration)
 export { createSearchToolsTool } from "./search.js";
 export type {
-  LoadableSkillDefinition,
+  SkillDefinition,
   SkillLoadResult,
   SkillRegistryOptions,
   SkillToolOptions,
@@ -48,7 +48,6 @@ export type {
 export {
   createSkillRegistry,
   createSkillTool,
-  defineLoadableSkill,
   SkillRegistry,
 } from "./skills.js";
 export type {

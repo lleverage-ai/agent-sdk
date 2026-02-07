@@ -395,8 +395,46 @@ export interface AgentOptions {
   /** Plugins to load into the agent */
   plugins?: AgentPlugin[];
 
-  /** Skills providing contextual instructions for the agent */
-  skills?: SkillDefinition[];
+  /**
+   * Skills providing contextual instructions for the agent.
+   *
+   * Skills can be:
+   * - **Programmatic**: TypeScript objects created with {@link defineSkill}
+   * - **File-based**: Loaded from SKILL.md directories via {@link loadSkillsFromDirectories}
+   *
+   * All skills follow the Agent Skills specification and support progressive disclosure.
+   * When skills are provided, the agent automatically creates a skill registry and
+   * load_skill tool, enabling on-demand skill loading.
+   *
+   * @example Programmatic skills
+   * ```typescript
+   * import { defineSkill } from "@lleverage-ai/agent-sdk";
+   *
+   * const agent = createAgent({
+   *   model,
+   *   skills: [
+   *     defineSkill({
+   *       name: "guidelines",
+   *       description: "Project coding standards",
+   *       instructions: "Follow TypeScript strict mode.",
+   *       license: "MIT",
+   *     }),
+   *   ],
+   * });
+   * ```
+   *
+   * @example File-based skills (Agent Skills spec)
+   * ```typescript
+   * import { loadSkillsFromDirectories } from "@lleverage-ai/agent-sdk";
+   *
+   * // Load from SKILL.md files
+   * const { skills } = await loadSkillsFromDirectories(["/path/to/skills"]);
+   *
+   * // Agent auto-creates registry and tool
+   * const agent = createAgent({ model, skills });
+   * ```
+   */
+  skills?: import("./tools/skills.js").SkillDefinition[];
 
   /**
    * Middleware to apply to the agent.
@@ -1027,7 +1065,7 @@ export interface Agent {
    * Get all skills registered with this agent.
    * @returns Array of skill definitions
    */
-  getSkills(): SkillDefinition[];
+  getSkills(): import("./tools/skills.js").SkillDefinition[];
 
   /**
    * Get all currently active tools.
@@ -1706,7 +1744,7 @@ export interface AgentPlugin {
   mcpServer?: MCPServerConfig;
 
   /** Skills provided by this plugin */
-  skills?: SkillDefinition[];
+  skills?: import("./tools/skills.js").SkillDefinition[];
 }
 
 /**
@@ -1741,7 +1779,7 @@ export interface PluginOptions {
   mcpServer?: MCPServerConfig;
 
   /** Skills provided by this plugin */
-  skills?: SkillDefinition[];
+  skills?: import("./tools/skills.js").SkillDefinition[];
 }
 
 // =============================================================================
@@ -1749,67 +1787,46 @@ export interface PluginOptions {
 // =============================================================================
 
 /**
- * Definition of a skill providing contextual instructions for agents.
+ * Options for the {@link defineSkill} helper function.
  *
- * Skills serve multiple purposes:
- * - **Tool guidance**: Bundle with plugin tools to explain how to use them
- * - **Instructions only**: Load dynamic instructions without tools
- * - **Progressive disclosure**: Include tools that load on-demand
+ * Used to create programmatic skills. For file-based skills,
+ * use {@link loadSkillFromDirectory} or {@link loadSkillsFromDirectories}.
  *
  * @example
  * ```typescript
- * // Skill bundled with plugin tools
- * const dataSkill: SkillDefinition = {
+ * import { defineSkill } from "@lleverage-ai/agent-sdk";
+ *
+ * const dataSkill = defineSkill({
  *   name: "data-exploration",
  *   description: "Query and visualize data",
- *   prompt: "Use getSchema first to see available columns.",
- * };
- *
- * // Skill with tools for progressive disclosure
- * const analyzeSkill: SkillDefinition = {
- *   name: "analyze",
- *   description: "Deep code analysis",
- *   prompt: "Perform detailed analysis.",
- *   tools: { lint, typeCheck },
- * };
+ *   instructions: "Use getSchema first to see available columns.",
+ *   license: "MIT",
+ * });
  * ```
  *
  * @category Tools
  */
-export interface SkillDefinition {
-  /** Unique name identifying this skill */
-  name: string;
-
-  /** Description of what this skill does */
-  description: string;
-
-  /**
-   * The prompt to use when this skill is invoked.
-   * Can be a string or a function that receives arguments and returns a prompt.
-   */
-  prompt: string | ((args?: string) => string);
-
-  /** Optional tools that are only available when this skill is active */
-  tools?: ToolSet;
-}
-
-/**
- * Options for the {@link defineSkill} helper function.
- *
- * @category Tools
- */
 export interface SkillOptions {
-  /** Name of the skill */
+  /** Name of the skill (1-64 chars, lowercase + hyphens) */
   name: string;
 
-  /** Description of what this skill does */
+  /** Description of what this skill does (1-1024 chars) */
   description: string;
 
-  /** The prompt template */
-  prompt: string | ((args?: string) => string);
+  /** Instructions to provide when this skill is loaded */
+  instructions: string | ((args?: string) => string);
 
   /** Optional tools specific to this skill (AI SDK ToolSet) */
   tools?: ToolSet;
+
+  /** Optional license for this skill */
+  license?: string;
+
+  /** Optional compatibility requirements (max 500 chars) */
+  compatibility?: string;
+
+  /** Optional arbitrary metadata */
+  metadata?: Record<string, string>;
 }
 
 // =============================================================================
@@ -2244,7 +2261,7 @@ export type HookCallback = (
   input: HookInput,
   toolUseId: string | null,
   context: HookCallbackContext,
-) => Promise<HookOutput | void> | HookOutput | void;
+) => Promise<HookOutput | undefined> | HookOutput | undefined;
 
 /**
  * Matcher for filtering which tools trigger hooks.
