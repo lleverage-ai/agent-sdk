@@ -49,6 +49,17 @@ bun run docs              # Generate TypeDoc
 bun run clean
 ```
 
+## Changelog
+
+Keep `CHANGELOG.md` up to date when making changes. Follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format.
+
+- Add entries under `## [Unreleased]` as changes are made
+- Use sections: `Added`, `Changed`, `Removed`, `Fixed`, `Deprecated`, `Security`
+- When releasing, move Unreleased entries into a versioned section with the date
+- Consolidate pre-release versions (alphas, betas) into the final release entry — don't list every pre-release
+- Mark breaking changes with `**BREAKING**:` prefix
+- Be specific: reference the APIs, tools, or classes affected
+
 ## Project Structure
 
 ```
