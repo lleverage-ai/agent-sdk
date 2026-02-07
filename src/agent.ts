@@ -741,7 +741,7 @@ export function createAgent(options: AgentOptions): Agent {
   const id = `agent-${++agentIdCounter}`;
 
   // Validate mutually exclusive prompt options
-  if (options.systemPrompt && options.promptBuilder) {
+  if (options.systemPrompt !== undefined && options.promptBuilder) {
     throw new Error(
       "Cannot specify both systemPrompt and promptBuilder - they are mutually exclusive",
     );
@@ -750,7 +750,8 @@ export function createAgent(options: AgentOptions): Agent {
   // Determine prompt mode
   // - 'static': Use systemPrompt string directly
   // - 'builder': Use PromptBuilder to generate dynamic prompts
-  const promptMode: "static" | "builder" = options.systemPrompt ? "static" : "builder";
+  const promptMode: "static" | "builder" =
+    options.systemPrompt !== undefined ? "static" : "builder";
 
   // Get or create prompt builder
   const promptBuilder =
@@ -1075,15 +1076,21 @@ export function createAgent(options: AgentOptions): Agent {
 
   // Helper to build prompt context from current agent state
   const buildPromptContext = (messages?: ModelMessage[], threadId?: string): PromptContext => {
-    // Get all available tools (including MCP and dynamically loaded)
-    const allToolsForContext: ToolSet = { ...coreTools };
-    Object.assign(allToolsForContext, mcpManager.getToolSet());
-    if (toolRegistry) {
-      Object.assign(allToolsForContext, toolRegistry.getLoadedTools());
-    }
+    // Get filtered tools (respecting allowedTools/disallowedTools) so the prompt
+    // only advertises tools the agent will actually expose
+    const filteredTools = filterToolsByAllowed(
+      (() => {
+        const allTools: ToolSet = { ...coreTools };
+        Object.assign(allTools, mcpManager.getToolSet());
+        if (toolRegistry) {
+          Object.assign(allTools, toolRegistry.getLoadedTools());
+        }
+        return allTools;
+      })(),
+    );
 
     // Extract tool metadata for context
-    const toolsMetadata = Object.entries(allToolsForContext).map(([name, tool]) => ({
+    const toolsMetadata = Object.entries(filteredTools).map(([name, tool]) => ({
       name,
       description: tool.description ?? "",
     }));

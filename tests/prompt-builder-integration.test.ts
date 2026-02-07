@@ -313,7 +313,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
       expect(agent).toBeDefined();
     });
 
-    it("should render tools in system prompt via custom component", () => {
+    it("should render tools in system prompt via custom component", async () => {
       const builder = createDefaultPromptBuilder();
       let capturedPrompt = "";
 
@@ -359,14 +359,13 @@ describe("Prompt Builder Integration with Real Agents", () => {
         },
       });
 
-      // The prompt is built during generation, so we need to trigger it
-      // We'll verify via the capture component above
-      expect(agent).toBeDefined();
+      await agent.generate({ prompt: "Test prompt" });
+      expect(capturedPrompt).toBe("captured");
     });
   });
 
   describe("with skills", () => {
-    it("should include skills in the prompt context", () => {
+    it("should include skills in the prompt context", async () => {
       const gitSkill = defineSkill({
         name: "git",
         description: "Git version control operations",
@@ -396,18 +395,23 @@ describe("Prompt Builder Integration with Real Agents", () => {
         skills: [gitSkill, npmSkill],
       });
 
-      // Verify skills are available
-      expect(agent).toBeDefined();
+      await agent.generate({ prompt: "Test prompt" });
 
-      // The context is built during generation, but we can verify the agent has skills
-      // by checking that it was created successfully with skills
-      expect(gitSkill.name).toBe("git");
-      expect(npmSkill.name).toBe("npm");
+      expect(skillsInContext).toBeDefined();
+      expect(skillsInContext).toHaveLength(2);
+      expect(skillsInContext).toContainEqual({
+        name: "git",
+        description: "Git version control operations",
+      });
+      expect(skillsInContext).toContainEqual({
+        name: "npm",
+        description: "NPM package management",
+      });
     });
   });
 
   describe("with plugins", () => {
-    it("should include plugins in the prompt context", () => {
+    it("should include plugins in the prompt context", async () => {
       const testPlugin = definePlugin({
         name: "test-plugin",
         description: "A test plugin for verification",
@@ -439,8 +443,15 @@ describe("Prompt Builder Integration with Real Agents", () => {
         plugins: [testPlugin],
       });
 
-      expect(agent).toBeDefined();
-      expect(testPlugin.name).toBe("test-plugin");
+      await agent.generate({ prompt: "Test prompt" });
+
+      expect(pluginsInContext).toBeDefined();
+      expect(pluginsInContext).toContainEqual({
+        name: "test-plugin",
+        description: "A test plugin for verification",
+      });
+      expect(toolsInContext).toBeDefined();
+      expect(toolsInContext?.some((t) => t.name === "mcp__test-plugin__testTool")).toBe(true);
     });
   });
 

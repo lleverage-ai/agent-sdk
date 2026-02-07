@@ -97,7 +97,7 @@ import { createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
 const builder = createDefaultPromptBuilder()
   .register({
     name: "project-context",
-    priority: 95, // Higher than identity (100), lower than tools
+    priority: 95, // Lower than identity (100), higher than tools (70)
     render: (ctx) => {
       return `# Project Context\n\nYou are working on a TypeScript project.`;
     },
@@ -822,7 +822,7 @@ Remove unnecessary components or make them more concise:
 ```typescript
 const builder = createDefaultPromptBuilder()
   .unregister("context")       // Remove if not needed
-  .unregister("permissions")   // Remove if static
+  .unregister("permission-mode")   // Remove if static
   // Keep only essential components
 ```
 
