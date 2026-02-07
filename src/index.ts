@@ -278,6 +278,7 @@ export {
 // Hooks
 export {
   aggregatePermissionDecisions,
+  createToolHook,
   extractRespondWith,
   extractRetryDecision,
   extractUpdatedInput,
@@ -554,10 +555,10 @@ export type {
   KillTaskToolOptions,
   ListTasksToolOptions,
   // Skill tool types
-  LoadableSkillDefinition,
   OnTodosChanged,
   // Search tools types (MCP integration)
   SearchToolsOptions,
+  SkillDefinition,
   SkillLoadResult,
   SkillRegistryOptions,
   SkillToolOptions,
@@ -606,7 +607,6 @@ export {
   createToolRegistry,
   createUseToolsTool,
   createWriteTool,
-  defineLoadableSkill,
   getBackgroundTask,
   listBackgroundTasks,
   // Tool utilities (DX helpers)
@@ -623,6 +623,17 @@ export {
 } from "./tools/index.js";
 // Skills (tools use AI SDK's tool() directly)
 export { defineSkill } from "./tools.js";
+// Skill loader (file-based skills)
+export {
+  loadSkillsFromDirectories,
+  loadSkillFromDirectory,
+  getSkillScripts,
+  getSkillReferences,
+  getSkillAssets,
+  getSkillResourcePath,
+  type SkillLoadError,
+  type LoadSkillsOptions,
+} from "./skills/loader.js";
 export type {
   // Agent-specific types
   Agent,
@@ -678,8 +689,7 @@ export type {
   // Hook input types (for typed hook implementations)
   PreGenerateInput,
   PreToolUseInput,
-  // Skill types
-  SkillDefinition,
+  // Skill types (SkillOptions for defineSkill)
   SkillOptions,
   SseMCPServerConfig,
   StdioMCPServerConfig,

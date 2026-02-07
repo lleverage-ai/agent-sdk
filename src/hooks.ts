@@ -121,7 +121,8 @@ export async function invokeHooksWithTimeout(
 
           // Race between hook execution and timeout
           const result = await Promise.race([hook(input, toolUseId, context), timeoutPromise]);
-          return result;
+          // Convert void/undefined returns to empty objects (for observation-only hooks)
+          return result ?? {};
         } catch (error) {
           // If hook throws or times out, treat as allowing with no modifications
           if (error instanceof HookTimeoutError) {
@@ -381,4 +382,84 @@ export function extractRetryDecision(
     }
   }
   return undefined;
+}
+
+// =============================================================================
+// Helper Functions for Creating Hooks
+// =============================================================================
+
+/**
+ * Creates a tool hook matcher from a callback, simplifying hook registration.
+ *
+ * This helper eliminates the boilerplate of creating HookMatcher objects,
+ * making it easier to register simple observation hooks like logging or metrics.
+ *
+ * @param callback - The hook callback function
+ * @param options - Optional configuration
+ * @returns A HookMatcher that can be used in hook registration
+ *
+ * @example
+ * ```typescript
+ * import { createAgent, createToolHook } from "@lleverage-ai/agent-sdk";
+ *
+ * // Simple logging hook without HookMatcher boilerplate
+ * const loggingHook = createToolHook((input, toolUseId, ctx) => {
+ *   console.log(`Tool called: ${input.tool_name}`);
+ *   // No return needed for observation-only hooks
+ * });
+ *
+ * const agent = createAgent({
+ *   model,
+ *   hooks: {
+ *     PreToolUse: [loggingHook],
+ *   },
+ * });
+ * ```
+ *
+ * @example
+ * ```typescript
+ * // Hook with matcher pattern and timeout
+ * const fileOpHook = createToolHook(
+ *   (input, toolUseId, ctx) => {
+ *     console.log(`File operation: ${input.tool_name}`);
+ *   },
+ *   {
+ *     matcher: "read|write|edit", // Only match file operation tools
+ *     timeout: 5000, // 5 second timeout
+ *   }
+ * );
+ *
+ * const agent = createAgent({
+ *   model,
+ *   hooks: {
+ *     PreToolUse: [fileOpHook],
+ *   },
+ * });
+ * ```
+ *
+ * @category Hooks
+ */
+export function createToolHook(
+  callback: HookCallback,
+  options: {
+    /**
+     * Regex pattern to match tool names (omit for all tools).
+     * @example
+     * - 'read|write' - File operations
+     * - '^mcp__' - All MCP tools
+     * - 'mcp__playwright__' - Specific MCP server
+     */
+    matcher?: string;
+    /**
+     * Timeout in milliseconds for hook execution.
+     * @defaultValue 60000 (60 seconds)
+     */
+    timeout?: number;
+  } = {},
+): HookMatcher {
+  return {
+    matcher: options.matcher,
+    hooks: [callback],
+    timeout: options.timeout,
+  };
 }

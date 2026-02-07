@@ -120,6 +120,28 @@ export class MCPManager {
   }
 
   /**
+   * Check if any external MCP servers are connected or plugin tools are registered.
+   *
+   * @returns True if there are external MCP servers or registered plugin tools
+   *
+   * @category MCP
+   */
+  hasServers(): boolean {
+    return this.externalClients.size > 0 || this.virtualServers.size > 0;
+  }
+
+  /**
+   * Check if any external MCP servers (not plugin tools) are connected.
+   *
+   * @returns True if there are external MCP servers
+   *
+   * @category MCP
+   */
+  hasExternalServers(): boolean {
+    return this.externalClients.size > 0;
+  }
+
+  /**
    * Connect to an external MCP server.
    *
    * @param name - Unique name for this server (used in tool naming)

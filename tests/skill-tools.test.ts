@@ -10,8 +10,7 @@ import { z } from "zod";
 import {
   createSkillRegistry,
   createSkillTool,
-  defineLoadableSkill,
-  type LoadableSkillDefinition,
+  type SkillDefinition,
   SkillRegistry,
 } from "../src/tools/skills.js";
 
@@ -25,8 +24,8 @@ import {
 function createTestSkill(
   name: string,
   description: string,
-  options?: Partial<LoadableSkillDefinition>,
-): LoadableSkillDefinition {
+  options?: Partial<SkillDefinition>,
+): SkillDefinition {
   return {
     name,
     description,
@@ -37,7 +36,7 @@ function createTestSkill(
         execute: async ({ input }) => `${name}: ${input}`,
       }),
     },
-    prompt: `You have loaded the ${name} skill.`,
+    instructions: `You have loaded the ${name} skill.`,
     ...options,
   };
 }
@@ -158,7 +157,7 @@ describe("SkillRegistry", () => {
 
       expect(result.success).toBe(true);
       expect(result.tools).toHaveProperty("git_tool");
-      expect(result.prompt).toBe("You have loaded the git skill.");
+      expect(result.instructions).toBe("You have loaded the git skill.");
     });
 
     it("should mark skill as loaded", () => {
@@ -189,130 +188,31 @@ describe("SkillRegistry", () => {
     });
 
     it("should support prompt as function", () => {
-      const skill: LoadableSkillDefinition = {
+      const skill: SkillDefinition = {
         name: "review",
         description: "Code review",
         tools: {},
-        prompt: (args) => `Reviewing: ${args ?? "all files"}`,
+        instructions: (args) => `Reviewing: ${args ?? "all files"}`,
       };
       registry.register(skill);
 
       const result = registry.load("review", "src/index.ts");
 
-      expect(result.prompt).toBe("Reviewing: src/index.ts");
+      expect(result.instructions).toBe("Reviewing: src/index.ts");
     });
 
     it("should support prompt function with no args", () => {
-      const skill: LoadableSkillDefinition = {
+      const skill: SkillDefinition = {
         name: "review",
         description: "Code review",
         tools: {},
-        prompt: (args) => `Reviewing: ${args ?? "all files"}`,
+        instructions: (args) => `Reviewing: ${args ?? "all files"}`,
       };
       registry.register(skill);
 
       const result = registry.load("review");
 
-      expect(result.prompt).toBe("Reviewing: all files");
-    });
-  });
-
-  describe("dependencies", () => {
-    it("should load dependencies first", () => {
-      const base = createTestSkill("base", "Base skill");
-      const dependent = createTestSkill("dependent", "Dependent skill", {
-        dependencies: ["base"],
-      });
-      registry.register(base);
-      registry.register(dependent);
-
-      const result = registry.load("dependent");
-
-      expect(result.success).toBe(true);
-      expect(result.loadedDependencies).toEqual(["base"]);
-      expect(registry.isLoaded("base")).toBe(true);
-      expect(registry.isLoaded("dependent")).toBe(true);
-    });
-
-    it("should aggregate tools from dependencies", () => {
-      const base = createTestSkill("base", "Base skill");
-      const dependent = createTestSkill("dependent", "Dependent skill", {
-        dependencies: ["base"],
-      });
-      registry.register(base);
-      registry.register(dependent);
-
-      const result = registry.load("dependent");
-
-      expect(result.tools).toHaveProperty("base_tool");
-      expect(result.tools).toHaveProperty("dependent_tool");
-    });
-
-    it("should aggregate prompts from dependencies", () => {
-      const base = createTestSkill("base", "Base skill");
-      const dependent = createTestSkill("dependent", "Dependent skill", {
-        dependencies: ["base"],
-      });
-      registry.register(base);
-      registry.register(dependent);
-
-      const result = registry.load("dependent");
-
-      expect(result.prompt).toContain("base skill");
-      expect(result.prompt).toContain("dependent skill");
-    });
-
-    it("should skip already-loaded dependencies", () => {
-      const base = createTestSkill("base", "Base skill");
-      const dependent = createTestSkill("dependent", "Dependent skill", {
-        dependencies: ["base"],
-      });
-      registry.register(base);
-      registry.register(dependent);
-
-      // Load base first
-      registry.load("base");
-
-      // Load dependent - base should be skipped
-      const result = registry.load("dependent");
-
-      expect(result.success).toBe(true);
-      expect(result.loadedDependencies).toBeUndefined(); // No new dependencies loaded
-    });
-
-    it("should fail if dependency not found", () => {
-      const dependent = createTestSkill("dependent", "Dependent skill", {
-        dependencies: ["nonexistent"],
-      });
-      registry.register(dependent);
-
-      const result = registry.load("dependent");
-
-      expect(result.success).toBe(false);
-      expect(result.error).toContain("Failed to load dependency 'nonexistent'");
-    });
-
-    it("should handle nested dependencies", () => {
-      const level1 = createTestSkill("level1", "Level 1");
-      const level2 = createTestSkill("level2", "Level 2", {
-        dependencies: ["level1"],
-      });
-      const level3 = createTestSkill("level3", "Level 3", {
-        dependencies: ["level2"],
-      });
-      registry.register(level1);
-      registry.register(level2);
-      registry.register(level3);
-
-      const result = registry.load("level3");
-
-      expect(result.success).toBe(true);
-      expect(registry.isLoaded("level1")).toBe(true);
-      expect(registry.isLoaded("level2")).toBe(true);
-      expect(registry.isLoaded("level3")).toBe(true);
-      expect(result.tools).toHaveProperty("level1_tool");
-      expect(result.tools).toHaveProperty("level2_tool");
-      expect(result.tools).toHaveProperty("level3_tool");
+      expect(result.instructions).toBe("Reviewing: all files");
     });
   });
 
@@ -457,11 +357,11 @@ describe("createSkillTool", () => {
   });
 
   it("should pass args to skill", async () => {
-    const skillWithArgs: LoadableSkillDefinition = {
+    const skillWithArgs: SkillDefinition = {
       name: "review",
       description: "Code review",
       tools: {},
-      prompt: (args) => `Review target: ${args}`,
+      instructions: (args) => `Review target: ${args}`,
     };
     registry.register(skillWithArgs);
 
@@ -483,28 +383,12 @@ describe("createSkillTool", () => {
     expect(skillTool.description).toContain("Custom prefix");
   });
 
-  it("should include dependency info in response", async () => {
-    const base = createTestSkill("base", "Base skill");
-    const dependent = createTestSkill("dependent", "Dependent skill", {
-      dependencies: ["base"],
-    });
-    registry.register(base);
-    registry.register(dependent);
-
-    const skillTool = createSkillTool({ registry });
-    const result = (await skillTool.execute({ skill_name: "dependent" })) as {
-      dependencies: string[];
-    };
-
-    expect(result.dependencies).toEqual(["base"]);
-  });
-
   it("should handle skills with no tools", async () => {
-    const promptOnly: LoadableSkillDefinition = {
+    const promptOnly: SkillDefinition = {
       name: "guidelines",
       description: "Coding guidelines",
       tools: {},
-      prompt: "Follow these guidelines...",
+      instructions: "Follow these guidelines...",
     };
     registry.register(promptOnly);
 
@@ -546,22 +430,6 @@ describe("createSkillRegistry", () => {
   });
 });
 
-describe("defineLoadableSkill", () => {
-  it("should return the skill definition unchanged", () => {
-    const input: LoadableSkillDefinition = {
-      name: "test",
-      description: "Test skill",
-      tools: {},
-      prompt: "Test prompt",
-      dependencies: ["dep"],
-    };
-
-    const result = defineLoadableSkill(input);
-
-    expect(result).toEqual(input);
-  });
-});
-
 // =============================================================================
 // Integration Tests
 // =============================================================================
@@ -589,23 +457,6 @@ describe("Skill Tool Integration", () => {
     // Available skills should decrease
     expect(registry.listAvailable()).toHaveLength(1);
     expect(registry.listAvailable()[0].name).toBe("k8s");
-  });
-
-  it("should track skill loading callbacks", async () => {
-    const loadedSkills: string[] = [];
-    const registry = new SkillRegistry({
-      skills: [
-        createTestSkill("level1", "Level 1"),
-        createTestSkill("level2", "Level 2", { dependencies: ["level1"] }),
-      ],
-      onSkillLoaded: (name) => loadedSkills.push(name),
-    });
-
-    const skillTool = createSkillTool({ registry });
-    await skillTool.execute({ skill_name: "level2" });
-
-    // Dependencies loaded first
-    expect(loadedSkills).toEqual(["level1", "level2"]);
   });
 
   it("should describe empty registry appropriately", () => {

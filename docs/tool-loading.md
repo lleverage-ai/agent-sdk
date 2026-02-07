@@ -68,10 +68,10 @@ const agent = createAgent({
   mcpManager,
   mcpEagerLoad: false,
   tools: {
-    search_tools: createSearchToolsTool({ manager: mcpManager, enableLoad: true }),
+    search_tools: createSearchToolsTool({ manager: mcpManager, autoLoad: true }),
   },
 });
-// Agent discovers tools: search_tools({ query: "list files", load: true })
+// Agent discovers and loads tools: search_tools({ query: "list files" })
 ```
 
 ## Tool Registry
@@ -133,10 +133,10 @@ await mcpManager.connectServer({
   env: { DATABASE_URL: process.env.DATABASE_URL },
 });
 
-// Create search tool
+// Create search tool with auto-loading
 const searchTools = createSearchToolsTool({
   manager: mcpManager,
-  enableLoad: true, // Allow loading tools from search results
+  autoLoad: true, // Automatically load discovered tools (default behavior)
   maxResults: 10,
 });
 
@@ -147,9 +147,9 @@ const agent = createAgent({
   tools: { search_tools: searchTools },
 });
 
-// Agent can now:
-// 1. Search: search_tools({ query: "read file" })
-// 2. Load: search_tools({ query: "read file", load: true })
+// Agent searches and loads in one step:
+// search_tools({ query: "read file" })
+// Returns: "Found and loaded 3 tools... These tools are now available for immediate use."
 ```
 
 ## Combining Strategies

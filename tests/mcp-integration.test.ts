@@ -15,7 +15,6 @@ import { z } from "zod";
 
 import { createAgent, definePlugin, MCPManager } from "../src/index.js";
 import { createSearchToolsTool } from "../src/tools/search.js";
-import { SkillRegistry } from "../src/tools/skills.js";
 
 // Mock the AI SDK generateText
 vi.mock("ai", async () => {
@@ -220,74 +219,6 @@ describe("MCP Integration", () => {
       // Now loaded
       expect(Object.keys(manager.getToolSet())).toHaveLength(1);
       expect(onToolsLoaded).toHaveBeenCalledWith(["mcp__loadable__loadable_tool"]);
-    });
-  });
-
-  describe("SkillRegistry with MCP tools", () => {
-    it("loads MCP tools when skill is activated", () => {
-      const manager = new MCPManager();
-      manager.registerPluginTools(
-        "github",
-        {
-          list_issues: tool({
-            description: "List GitHub issues",
-            inputSchema: z.object({}),
-            execute: async () => "issues",
-          }),
-        },
-        { autoLoad: false },
-      );
-
-      const registry = new SkillRegistry({
-        mcpManager: manager,
-        skills: [
-          {
-            name: "github-skill",
-            description: "GitHub operations",
-            tools: {},
-            mcpTools: ["mcp__github__list_issues"],
-            prompt: "You can now work with GitHub.",
-          },
-        ],
-      });
-
-      // Initially not loaded
-      expect(Object.keys(manager.getToolSet())).toHaveLength(0);
-
-      // Load the skill
-      const result = registry.load("github-skill");
-
-      // MCP tool should now be loaded
-      expect(result.success).toBe(true);
-      expect(result.loadedMcpTools).toContain("mcp__github__list_issues");
-      expect(Object.keys(manager.getToolSet())).toHaveLength(1);
-    });
-
-    it("reports notFoundMcpTools for missing MCP tools", () => {
-      const manager = new MCPManager();
-      const registry = new SkillRegistry({
-        mcpManager: manager,
-        skills: [
-          {
-            name: "missing-tools",
-            description: "Skill with missing tools",
-            tools: {},
-            mcpTools: ["mcp__nonexistent__tool"],
-            prompt: "Tools not found.",
-          },
-        ],
-      });
-
-      // Spy on console.warn
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-      const result = registry.load("missing-tools");
-
-      expect(result.success).toBe(true); // Still succeeds, just with warnings
-      expect(result.notFoundMcpTools).toContain("mcp__nonexistent__tool");
-      expect(warnSpy).toHaveBeenCalled();
-
-      warnSpy.mockRestore();
     });
   });
 

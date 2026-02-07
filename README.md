@@ -126,8 +126,9 @@ const agent = createAgent({
 
 ### Skills
 
-Skills provide contextual instructions that guide agent behavior. They can bundle tool guidance, provide instructions-only, or enable progressive disclosure of tools.
+Skills provide contextual instructions that guide agent behavior following the [Agent Skills specification](https://agentskills.io/specification). They support both programmatic (TypeScript) and file-based (SKILL.md) formats.
 
+**Programmatic skills:**
 ```typescript
 import { defineSkill } from "@lleverage-ai/agent-sdk";
 
@@ -138,7 +139,7 @@ const dataPlugin = definePlugin({
     defineSkill({
       name: "data-exploration",
       description: "Query and visualize data",
-      prompt: `You have access to data exploration tools.
+      instructions: `You have access to data exploration tools.
 Available tables: products, users, sales.
 Always use getSchema first to see column types.`,
     }),
@@ -146,24 +147,40 @@ Always use getSchema first to see column types.`,
 });
 ```
 
+**File-based skills:**
+```typescript
+import { loadSkillsFromDirectories } from "@lleverage-ai/agent-sdk";
+
+// Load skills from SKILL.md files
+const { skills } = await loadSkillsFromDirectories(["/path/to/skills"]);
+
+// Agent auto-creates registry and skill tool
+const agent = createAgent({ model, skills });
+```
+
+See [Skills Documentation](./docs/skills.md) for complete details on the skills system and Agent Skills spec compliance.
+
 ### Hooks
 
 Hooks allow you to observe and react to agent lifecycle events:
 
 ```typescript
+import { createAgent, createToolHook } from "@lleverage-ai/agent-sdk";
+
 const agent = createAgent({
   model,
   hooks: {
+    // Simple observation hook (void return is fine)
     PreGenerate: [async ({ options }) => {
       console.log("Starting generation...");
-      return {};
     }],
-    PostToolUse: [{
-      hooks: [async ({ tool_name, tool_response }) => {
+
+    // Use createToolHook helper for tool-specific hooks
+    PostToolUse: [
+      createToolHook(async ({ tool_name, tool_response }) => {
         console.log("Tool completed:", tool_name);
-        return {};
-      }],
-    }],
+      }, { matcher: "search_*" }), // Only match tools starting with "search_"
+    ],
   },
 });
 ```
@@ -173,7 +190,7 @@ const agent = createAgent({
 - `PreToolUse`, `PostToolUse`, `PostToolUseFailure` — Tool execution lifecycle
 - `MCPConnectionFailed`, `MCPConnectionRestored` — MCP server connection lifecycle
 
-**Hook utilities:** `createRetryHooks`, `createRateLimitHooks`, `createLoggingHooks`, `createGuardrailsHooks`, `createSecretsFilterHooks`
+**Hook utilities:** `createRetryHooks`, `createRateLimitHooks`, `createLoggingHooks`, `createGuardrailsHooks`, `createSecretsFilterHooks`, `createToolHook`
 
 ### Streaming
 
@@ -195,6 +212,7 @@ export async function POST(req: Request) {
 
 ## Documentation
 
+- [Skills System](./docs/skills.md) — Progressive disclosure with Agent Skills spec compliance
 - [Tool Loading Strategies](./docs/tool-loading.md) — Eager, lazy, and dynamic tool loading
 - [Security & Production](./docs/security.md) — Security policies, guardrails, and secrets filtering
 - [Subagents](./docs/subagents.md) — Task delegation and background tasks

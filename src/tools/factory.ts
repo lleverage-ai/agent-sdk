@@ -13,7 +13,7 @@ import { hasExecuteCapability } from "../backend.js";
 import type { AgentState } from "../backends/state.js";
 import type { MCPManager } from "../mcp/manager.js";
 import type { TaskManager } from "../task-manager.js";
-import type { Agent, CoreToolName, SkillDefinition, SubagentDefinition } from "../types.js";
+import type { Agent, CoreToolName, SubagentDefinition } from "../types.js";
 import { type BashToolOptions, createBashTool } from "./execute.js";
 // Tool creators
 import {
@@ -31,7 +31,7 @@ import { createSearchToolsTool, type SearchToolsOptions } from "./search.js";
 import {
   createSkillRegistry,
   createSkillTool,
-  type LoadableSkillDefinition,
+  type SkillDefinition,
   SkillRegistry,
   type SkillToolOptions,
 } from "./skills.js";
@@ -449,7 +449,7 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
           skillsWithTools.map((s) => ({
             name: s.name,
             description: s.description,
-            prompt: s.prompt,
+            instructions: s.instructions,
             tools: s.tools!, // Safe due to filter
           })),
         );
@@ -624,7 +624,7 @@ export type {
   // Bash
   BashToolOptions,
   // Skills
-  LoadableSkillDefinition,
+  SkillDefinition,
   SkillToolOptions,
   // Tasks
   TaskOutputToolOptions,

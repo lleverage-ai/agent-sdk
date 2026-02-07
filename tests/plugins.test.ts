@@ -349,29 +349,29 @@ describe("definePlugin with mcpServer", () => {
 });
 
 describe("defineSkill", () => {
-  it("creates a skill with string prompt", () => {
+  it("creates a skill with string instructions", () => {
     const skill = defineSkill({
       name: "review",
       description: "Review code",
-      prompt: "Review the following code for issues",
+      instructions: "Review the following code for issues",
     });
 
     expect(skill.name).toBe("review");
     expect(skill.description).toBe("Review code");
-    expect(skill.prompt).toBe("Review the following code for issues");
+    expect(skill.instructions).toBe("Review the following code for issues");
   });
 
-  it("creates a skill with function prompt", () => {
+  it("creates a skill with function instructions", () => {
     const skill = defineSkill({
       name: "search",
       description: "Search for code",
-      prompt: (args) => `Search for: ${args ?? "nothing"}`,
+      instructions: (args) => `Search for: ${args ?? "nothing"}`,
     });
 
     expect(skill.name).toBe("search");
-    expect(typeof skill.prompt).toBe("function");
-    if (typeof skill.prompt === "function") {
-      expect(skill.prompt("foo")).toBe("Search for: foo");
+    expect(typeof skill.instructions).toBe("function");
+    if (typeof skill.instructions === "function") {
+      expect(skill.instructions("foo")).toBe("Search for: foo");
     }
   });
 
