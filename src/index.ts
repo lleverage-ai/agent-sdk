@@ -305,6 +305,20 @@ export {
   MCPManager,
   VirtualMCPServer,
 } from "./mcp/index.js";
+// Prompt Builder types
+export type { PromptComponent, PromptContext } from "./prompt-builder/index.js";
+// Prompt Builder System
+export { PromptBuilder } from "./prompt-builder/index.js";
+export {
+  capabilitiesComponent,
+  contextComponent,
+  createDefaultPromptBuilder,
+  identityComponent,
+  permissionModeComponent,
+  pluginsComponent,
+  skillsComponent,
+  toolsComponent,
+} from "./prompt-builder/components.js";
 // Memory types
 export type {
   AdditionalMemoryFile,

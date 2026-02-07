@@ -363,9 +363,85 @@ export interface AgentOptions {
 
   /**
    * System prompt that defines the agent's behavior and personality.
+   *
+   * Mutually exclusive with {@link promptBuilder}. If neither is provided,
+   * the agent will use the default prompt builder.
+   *
+   * @example
+   * ```typescript
+   * const agent = createAgent({
+   *   model,
+   *   systemPrompt: "You are a helpful coding assistant.",
+   * });
+   * ```
+   *
    * @defaultValue undefined
    */
   systemPrompt?: string;
+
+  /**
+   * Prompt builder for creating dynamic, context-aware system prompts.
+   *
+   * Mutually exclusive with {@link systemPrompt}. If neither is provided,
+   * the agent will use the default prompt builder.
+   *
+   * The prompt builder allows you to construct prompts from composable components
+   * that have access to the full agent context (tools, skills, backend, etc.).
+   *
+   * @example Using default builder
+   * ```typescript
+   * const agent = createAgent({
+   *   model,
+   *   // No systemPrompt or promptBuilder = uses default builder
+   * });
+   * ```
+   *
+   * @example Customizing default builder
+   * ```typescript
+   * import { createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
+   *
+   * const builder = createDefaultPromptBuilder()
+   *   .register({
+   *     name: 'custom-instructions',
+   *     priority: 90,
+   *     render: (ctx) => `You are an expert in ${ctx.backend?.type} operations.`,
+   *   });
+   *
+   * const agent = createAgent({
+   *   model,
+   *   promptBuilder: builder,
+   * });
+   * ```
+   *
+   * @example Building from scratch
+   * ```typescript
+   * import { PromptBuilder } from "@lleverage-ai/agent-sdk";
+   *
+   * const builder = new PromptBuilder().registerMany([
+   *   {
+   *     name: 'identity',
+   *     priority: 100,
+   *     render: () => 'You are a code review assistant.',
+   *   },
+   *   {
+   *     name: 'tools',
+   *     priority: 80,
+   *     condition: (ctx) => ctx.tools && ctx.tools.length > 0,
+   *     render: (ctx) => `Available tools: ${ctx.tools!.map(t => t.name).join(', ')}`,
+   *   },
+   * ]);
+   *
+   * const agent = createAgent({
+   *   model,
+   *   promptBuilder: builder,
+   * });
+   * ```
+   *
+   * @see {@link PromptBuilder}
+   * @see {@link createDefaultPromptBuilder}
+   * @defaultValue undefined (uses default builder)
+   */
+  promptBuilder?: import("./prompt-builder/index.js").PromptBuilder;
 
   /**
    * Maximum number of tool call steps allowed per generation.

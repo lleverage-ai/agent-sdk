@@ -47,6 +47,8 @@ import {
 } from "./hooks.js";
 import { MCPManager } from "./mcp/manager.js";
 import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index.js";
+import { createDefaultPromptBuilder } from "./prompt-builder/components.js";
+import type { PromptContext } from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { TaskManager } from "./task-manager.js";
 import {
@@ -738,6 +740,22 @@ function isBackendFactory(value: BackendProtocol | BackendFactory): value is Bac
 export function createAgent(options: AgentOptions): Agent {
   const id = `agent-${++agentIdCounter}`;
 
+  // Validate mutually exclusive prompt options
+  if (options.systemPrompt && options.promptBuilder) {
+    throw new Error(
+      "Cannot specify both systemPrompt and promptBuilder - they are mutually exclusive",
+    );
+  }
+
+  // Determine prompt mode
+  // - 'static': Use systemPrompt string directly
+  // - 'builder': Use PromptBuilder to generate dynamic prompts
+  const promptMode: "static" | "builder" = options.systemPrompt ? "static" : "builder";
+
+  // Get or create prompt builder
+  const promptBuilder =
+    options.promptBuilder ?? (promptMode === "builder" ? createDefaultPromptBuilder() : undefined);
+
   // Process middleware to get hooks (middleware hooks come before explicit hooks)
   const middleware = options.middleware ?? [];
   const middlewareHooks = applyMiddleware(middleware);
@@ -1053,6 +1071,65 @@ export function createAgent(options: AgentOptions): Agent {
     }
 
     return filtered;
+  };
+
+  // Helper to build prompt context from current agent state
+  const buildPromptContext = (messages?: ModelMessage[], threadId?: string): PromptContext => {
+    // Get all available tools (including MCP and dynamically loaded)
+    const allToolsForContext: ToolSet = { ...coreTools };
+    Object.assign(allToolsForContext, mcpManager.getToolSet());
+    if (toolRegistry) {
+      Object.assign(allToolsForContext, toolRegistry.getLoadedTools());
+    }
+
+    // Extract tool metadata for context
+    const toolsMetadata = Object.entries(allToolsForContext).map(([name, tool]) => ({
+      name,
+      description: tool.description ?? "",
+    }));
+
+    // Extract skills metadata from the skills array
+    const skillsMetadata = skills.map((skill) => ({
+      name: skill.name,
+      description: skill.description,
+    }));
+
+    // Extract plugins metadata
+    const pluginsMetadata = (options.plugins ?? []).map((plugin) => ({
+      name: plugin.name,
+      description: plugin.description ?? "",
+    }));
+
+    // Build backend info
+    const backendInfo = {
+      type: backend.constructor.name.toLowerCase().replace("backend", "") || "unknown",
+      hasExecuteCapability: hasExecuteCapability(backend),
+      rootDir: "rootDir" in backend ? (backend.rootDir as string | undefined) : undefined,
+    };
+
+    return {
+      tools: toolsMetadata.length > 0 ? toolsMetadata : undefined,
+      skills: skillsMetadata.length > 0 ? skillsMetadata : undefined,
+      plugins: pluginsMetadata.length > 0 ? pluginsMetadata : undefined,
+      backend: backendInfo,
+      state,
+      // Model ID extraction is not reliable across all LanguageModel types
+      // Users can access the full model via their custom context if needed
+      model: undefined,
+      maxSteps: options.maxSteps,
+      permissionMode,
+      currentMessages: messages,
+      threadId,
+    };
+  };
+
+  // Helper to get system prompt (either static or built from context)
+  const getSystemPrompt = (context: PromptContext): string | undefined => {
+    if (promptMode === "static") {
+      return options.systemPrompt;
+    }
+    // Build prompt using prompt builder
+    return promptBuilder!.build(context);
   };
 
   // Helper to get current active tools (core + MCP + dynamically loaded from registry)
@@ -1521,8 +1598,13 @@ export function createAgent(options: AgentOptions): Agent {
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
           );
+
+          // Build prompt context and generate system prompt
+          const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+          const systemPrompt = getSystemPrompt(promptContext);
+
           const initialParams = {
-            system: options.systemPrompt,
+            system: systemPrompt,
             messages,
             tools: activeTools,
             maxTokens: effectiveGenOptions.maxTokens,
@@ -1846,8 +1928,13 @@ export function createAgent(options: AgentOptions): Agent {
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
           );
+
+          // Build prompt context and generate system prompt
+          const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+          const systemPrompt = getSystemPrompt(promptContext);
+
           const initialParams = {
-            system: options.systemPrompt,
+            system: systemPrompt,
             messages,
             tools: activeTools,
             maxTokens: effectiveGenOptions.maxTokens,
@@ -2043,8 +2130,13 @@ export function createAgent(options: AgentOptions): Agent {
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
           );
+
+          // Build prompt context and generate system prompt
+          const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+          const systemPrompt = getSystemPrompt(promptContext);
+
           const initialParams = {
-            system: options.systemPrompt,
+            system: systemPrompt,
             messages,
             tools: activeTools,
             maxTokens: effectiveGenOptions.maxTokens,
@@ -2214,8 +2306,13 @@ export function createAgent(options: AgentOptions): Agent {
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
           );
+
+          // Build prompt context and generate system prompt
+          const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+          const systemPrompt = getSystemPrompt(promptContext);
+
           const initialParams = {
-            system: options.systemPrompt,
+            system: systemPrompt,
             messages,
             tools: activeTools,
             maxTokens: effectiveGenOptions.maxTokens,
@@ -2411,9 +2508,13 @@ export function createAgent(options: AgentOptions): Agent {
                 effectiveGenOptions.threadId,
               );
 
+              // Build prompt context and generate system prompt
+              const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+              const systemPrompt = getSystemPrompt(promptContext);
+
               // Build initial params with streaming-aware tools
               const initialParams = {
-                system: options.systemPrompt,
+                system: systemPrompt,
                 messages,
                 tools: streamingTools,
                 maxTokens: effectiveGenOptions.maxTokens,
