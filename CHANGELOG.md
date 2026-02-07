@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.0.3] - 2026-02-07
+## [0.0.2] - 2026-02-07
 
 ### Added
 
@@ -17,11 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 7 default components: identity, tools, skills, capabilities, guidelines, context, custom
   - Full backward compatibility with string `systemPrompt`
   - Auto-uses default builder when neither `systemPrompt` nor `promptBuilder` provided
-
-## [0.0.2] - 2026-02-07
-
-### Added
-
 - `AgentSession` class for event-driven agent interactions
   - Async generator interface for processing agent events
   - Automatic handling of background task completions
@@ -91,7 +86,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.3...HEAD
-[0.0.3]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.2...v0.0.3
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.2...HEAD
 [0.0.2]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/lleverage-ai/agent-sdk/releases/tag/v0.0.1
