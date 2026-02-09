@@ -38,7 +38,8 @@ export type SessionOutput =
   | { type: "generation_complete"; fullText: string }
   | { type: "interrupt"; interrupt: Interrupt }
   | { type: "error"; error: Error }
-  | { type: "waiting_for_input" };
+  | { type: "waiting_for_input" }
+  | { type: "agent_handoff"; context?: string };
 
 /**
  * Options for creating an AgentSession.
@@ -162,6 +163,9 @@ export class AgentSession {
 
   // Track pending interrupt for resumption
   private pendingInterrupt: Interrupt | null = null;
+
+  // Agent stack for handoff/handback support
+  private agentStack: Agent[] = [];
 
   constructor(options: AgentSessionOptions) {
     this.agent = options.agent;
@@ -384,6 +388,39 @@ export class AgentSession {
         return;
       }
 
+      if (result.status === "handoff") {
+        // Yield partial text if available
+        if (result.partial?.text) {
+          yield { type: "text_delta", text: result.partial.text };
+        }
+
+        if (result.isHandback) {
+          // Pop previous agent from stack
+          const prevAgent = this.agentStack.pop();
+          if (prevAgent) {
+            this.agent = prevAgent;
+          }
+        } else {
+          // Push current agent onto stack and swap
+          if (result.resumable) {
+            this.agentStack.push(this.agent);
+          }
+          this.agent = result.targetAgent!;
+        }
+
+        // Yield notification
+        yield { type: "agent_handoff", context: result.context };
+
+        // Update messages with the current prompt
+        this.messages.push({ role: "user", content: prompt });
+
+        // Continue generating with the new agent, using context as the next prompt
+        if (result.context) {
+          yield* this.generate(result.context);
+        }
+        return;
+      }
+
       // Generation complete
       this.turnCount++;
 
@@ -431,6 +468,32 @@ export class AgentSession {
         }
 
         yield { type: "interrupt", interrupt: result.interrupt };
+        return;
+      }
+
+      if (result.status === "handoff") {
+        // Handle handoff during interrupt resume
+        if (result.partial?.text) {
+          yield { type: "text_delta", text: result.partial.text };
+        }
+
+        if (result.isHandback) {
+          const prevAgent = this.agentStack.pop();
+          if (prevAgent) {
+            this.agent = prevAgent;
+          }
+        } else {
+          if (result.resumable) {
+            this.agentStack.push(this.agent);
+          }
+          this.agent = result.targetAgent!;
+        }
+
+        yield { type: "agent_handoff", context: result.context };
+
+        if (result.context) {
+          yield* this.generate(result.context);
+        }
         return;
       }
 

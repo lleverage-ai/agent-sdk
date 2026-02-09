@@ -50,6 +50,7 @@ export function createMiddlewareContext(): MiddlewareContextResult {
   const mcpConnectionRestored: HookCallback[] = [];
   const interruptRequested: HookCallback[] = [];
   const interruptResolved: HookCallback[] = [];
+  const customHooks: Record<string, HookCallback[]> = {};
 
   /**
    * Helper to add a tool hook with optional matcher.
@@ -131,6 +132,13 @@ export function createMiddlewareContext(): MiddlewareContextResult {
     onInterruptResolved(callback: HookCallback): void {
       interruptResolved.push(callback);
     },
+
+    onCustom(eventName: string, callback: HookCallback): void {
+      if (!customHooks[eventName]) {
+        customHooks[eventName] = [];
+      }
+      customHooks[eventName].push(callback);
+    },
   };
 
   function getHooks(): HookRegistration {
@@ -196,6 +204,11 @@ export function createMiddlewareContext(): MiddlewareContextResult {
     }
     if (interruptResolved.length > 0) {
       hooks.InterruptResolved = interruptResolved;
+    }
+
+    // Add custom hooks if any were registered
+    if (Object.keys(customHooks).length > 0) {
+      hooks.Custom = { ...customHooks };
     }
 
     return hooks;

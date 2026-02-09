@@ -20,7 +20,7 @@ import {
   type SecurityPolicy,
   type SecurityPolicyPreset,
 } from "../security/index.js";
-import type { Agent, AgentOptions, HookCallback, HookMatcher, HookRegistration } from "../types.js";
+import type { Agent, AgentOptions, HookRegistration } from "../types.js";
 
 /**
  * Type-safe helper to merge hook registrations.
@@ -44,11 +44,13 @@ function mergeHooks(target: HookRegistration, source: Partial<HookRegistration>)
     const sourceCallbacks = source[event];
     if (sourceCallbacks) {
       if (!target[event]) {
-        target[event] = sourceCallbacks as HookMatcher[] & HookCallback[];
+        // biome-ignore lint/suspicious/noExplicitAny: Hook types vary per event
+        (target as any)[event] = sourceCallbacks;
       } else {
-        target[event] = [
-          ...(target[event] as HookMatcher[] & HookCallback[]),
-          ...(sourceCallbacks as HookMatcher[] & HookCallback[]),
+        // biome-ignore lint/suspicious/noExplicitAny: Hook types vary per event
+        (target as any)[event] = [
+          ...(target[event] as unknown[]),
+          ...(sourceCallbacks as unknown[]),
         ];
       }
     }

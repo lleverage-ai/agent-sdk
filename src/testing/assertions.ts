@@ -31,6 +31,9 @@ function ensureComplete(result: GenerateResult): GenerateResultComplete {
       { interruptType: result.interrupt.type },
     );
   }
+  if (result.status === "handoff") {
+    throw new AgentAssertionError("Cannot assert on handoff result", "complete", "handoff");
+  }
   return result;
 }
 

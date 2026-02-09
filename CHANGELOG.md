@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Plugin hook support: plugins can now define `hooks` in their configuration, automatically merged into the agent's hook registration
+- Custom hook system: `HookRegistration.Custom` field and `invokeCustomHook()` for plugin-defined lifecycle events
+- Middleware `onCustom()` method for subscribing to custom hook events
+- Agent handoff mechanism: `handoff()` and `handback()` functions available in tool execution context for swapping the active agent mid-conversation
+- `GenerateResultHandoff` result type and `isHandoffResult()` type guard
+- Agent Teams plugin (`createAgentTeamsPlugin()`) for multi-agent team coordination via handoff
+  - `InMemoryTeamCoordinator` for task management, messaging, and teammate tracking
+  - `HeadlessSessionRunner` for running teammate agents in the background
+  - Team tools: `start_team`, `end_team`, `team_spawn`, `team_message`, `team_task_create`, `team_task_claim`, `team_task_complete`, and more
+  - Custom hook events: `TeammateSpawned`, `TeammateIdle`, `TeammateStopped`, `TeamTaskCreated`, `TeamTaskClaimed`, `TeamTaskCompleted`, `TeamMessageSent`
+
+### Known Limitations
+
+- **Agent handoff does not work with real AI SDK v6 `generateText`**: The throw-based `HandoffSignal` mechanism (and `InterruptSignal`) are intercepted by AI SDK v6's internal tool error handling, which catches errors thrown during tool execution and converts them to tool-result messages sent back to the model. This means handoffs work correctly in tests with mocked `generateText`, but with the real SDK the model sees a tool error result and responds textually instead of triggering a handoff. A redesign using a cooperative return-based approach is planned.
+
 ## [0.0.3] - 2026-02-07
 
 ### Added

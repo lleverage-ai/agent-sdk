@@ -645,8 +645,13 @@ ${subagentDescriptions}`;
             prompt: description,
             maxTokens: (max_turns ?? defaultMaxTurns) * 4096,
           });
-          resultText =
-            result.status === "complete" ? result.text : `Interrupted: ${result.interrupt.type}`;
+          if (result.status === "complete") {
+            resultText = result.text;
+          } else if (result.status === "interrupted") {
+            resultText = `Interrupted: ${result.interrupt.type}`;
+          } else {
+            resultText = `Handoff: ${result.context ?? "agent handoff"}`;
+          }
         }
 
         return resultText;

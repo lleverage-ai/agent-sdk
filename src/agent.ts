@@ -67,6 +67,7 @@ import type {
   GenerateOptions,
   GenerateResult,
   GenerateResultComplete,
+  GenerateResultHandoff,
   GenerateResultInterrupted,
   GenerateStep,
   HookRegistration,
@@ -115,6 +116,56 @@ class InterruptSignal extends Error {
  */
 function isInterruptSignal(error: unknown): error is InterruptSignal {
   return error instanceof InterruptSignal;
+}
+
+/**
+ * Internal signal for agent handoff flow control.
+ *
+ * This is thrown when a tool requests handing off to a different agent.
+ * It's caught by the generate() function and converted to a handoff result.
+ *
+ * **Known limitation:** AI SDK v6's `generateText` catches errors thrown
+ * during tool execution internally and converts them to tool-result messages
+ * sent back to the model. This means HandoffSignal is intercepted by the SDK
+ * before `generate()` can catch it, causing the model to see a tool error
+ * result ("Agent handoff") and respond textually instead of triggering a
+ * handoff. The same issue affects `InterruptSignal`.
+ *
+ * This throw-based mechanism works correctly when `generateText` is mocked
+ * (unit/integration tests), but does NOT work with the real AI SDK.
+ * A redesign using a cooperative return-based approach is needed.
+ *
+ * @internal
+ */
+class HandoffSignal extends Error {
+  readonly targetAgent: Agent | null;
+  readonly context?: string;
+  readonly resumable: boolean;
+  readonly isHandback: boolean;
+
+  constructor(
+    targetAgent: Agent | null,
+    options?: {
+      context?: string;
+      resumable?: boolean;
+      handback?: boolean;
+    },
+  ) {
+    super("Agent handoff");
+    this.name = "HandoffSignal";
+    this.targetAgent = targetAgent;
+    this.context = options?.context;
+    this.resumable = options?.resumable ?? true;
+    this.isHandback = options?.handback ?? false;
+  }
+}
+
+/**
+ * Check if an error is a HandoffSignal.
+ * @internal
+ */
+function isHandoffSignal(error: unknown): error is HandoffSignal {
+  return error instanceof HandoffSignal;
 }
 
 /**
@@ -349,10 +400,27 @@ function wrapToolsWithPermissionMode(
           throw new InterruptSignal(interruptData);
         };
 
-        // Create extended options with the interrupt function
+        // Create handoff/handback functions
+        const handoff = (
+          targetAgent: Agent,
+          handoffOpts?: { context?: string; resumable?: boolean },
+        ): never => {
+          throw new HandoffSignal(targetAgent, {
+            ...handoffOpts,
+            resumable: handoffOpts?.resumable ?? true,
+          });
+        };
+
+        const handback = (handbackOpts?: { context?: string }): never => {
+          throw new HandoffSignal(null, { ...handbackOpts, handback: true });
+        };
+
+        // Create extended options with the interrupt and handoff functions
         const extendedOptions = {
           ...options,
           interrupt,
+          handoff,
+          handback,
         };
 
         // If permission mode gives a definitive answer, use it
@@ -760,7 +828,8 @@ export function createAgent(options: AgentOptions): Agent {
   // Process middleware to get hooks (middleware hooks come before explicit hooks)
   const middleware = options.middleware ?? [];
   const middlewareHooks = applyMiddleware(middleware);
-  const mergedHooks = mergeHooks(middlewareHooks, options.hooks);
+  const pluginHooks = (options.plugins ?? []).filter((p) => p.hooks).map((p) => p.hooks!);
+  const mergedHooks = mergeHooks(middlewareHooks, ...pluginHooks, options.hooks);
 
   // Create options with merged hooks for all hook lookups
   const effectiveHooks = mergedHooks;
@@ -1713,6 +1782,19 @@ export function createAgent(options: AgentOptions): Agent {
 
           return finalResult;
         } catch (error) {
+          // Check if this is a HandoffSignal (agent handoff)
+          if (isHandoffSignal(error)) {
+            const handoffResult: GenerateResultHandoff = {
+              status: "handoff",
+              targetAgent: error.targetAgent,
+              context: error.context,
+              resumable: error.resumable,
+              isHandback: error.isHandback,
+              partial: { text: "", steps: [], usage: undefined },
+            };
+            return handoffResult;
+          }
+
           // Check if this is an InterruptSignal (new interrupt system)
           if (isInterruptSignal(error)) {
             const interrupt = error.interrupt;
