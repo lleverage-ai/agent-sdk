@@ -158,8 +158,7 @@ function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignal
 
     wrapped[name] = {
       ...toolDef,
-      // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-      execute: async (input: unknown, options?: any) => {
+      execute: async (input: unknown, options: ToolExecutionOptions) => {
         try {
           return await originalExecute.call(toolDef, input, options);
         } catch (error) {

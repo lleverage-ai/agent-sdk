@@ -40,18 +40,17 @@ function mergeHooks(target: HookRegistration, source: Partial<HookRegistration>)
     "SubagentStop",
   ];
 
+  // Cast to Record for dynamic key assignment — all HookRegistration values are arrays
+  const t = target as Record<string, unknown[]>;
+  const s = source as Record<string, unknown[] | undefined>;
+
   for (const event of hookEvents) {
-    const sourceCallbacks = source[event];
+    const sourceCallbacks = s[event];
     if (sourceCallbacks) {
-      if (!target[event]) {
-        // biome-ignore lint/suspicious/noExplicitAny: Hook types vary per event
-        (target as any)[event] = sourceCallbacks;
+      if (!t[event]) {
+        t[event] = sourceCallbacks;
       } else {
-        // biome-ignore lint/suspicious/noExplicitAny: Hook types vary per event
-        (target as any)[event] = [
-          ...(target[event] as unknown[]),
-          ...(sourceCallbacks as unknown[]),
-        ];
+        t[event] = [...t[event], ...sourceCallbacks];
       }
     }
   }
