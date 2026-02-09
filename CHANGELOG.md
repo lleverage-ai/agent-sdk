@@ -20,9 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Team tools: `start_team`, `end_team`, `team_spawn`, `team_message`, `team_task_create`, `team_task_claim`, `team_task_complete`, and more
   - Custom hook events: `TeammateSpawned`, `TeammateIdle`, `TeammateStopped`, `TeamTaskCreated`, `TeamTaskClaimed`, `TeamTaskCompleted`, `TeamMessageSent`
 
-### Known Limitations
+### Changed
 
-- **Agent handoff does not work with real AI SDK v6 `generateText`**: The throw-based `HandoffSignal` mechanism (and `InterruptSignal`) are intercepted by AI SDK v6's internal tool error handling, which catches errors thrown during tool execution and converts them to tool-result messages sent back to the model. This means handoffs work correctly in tests with mocked `generateText`, but with the real SDK the model sees a tool error result and responds textually instead of triggering a handoff. A redesign using a cooperative return-based approach is planned.
+- Handoff and interrupt signals now use a cooperative signal-catching approach (`wrapToolsWithSignalCatching`) that intercepts `HandoffSignal`/`InterruptSignal` before the AI SDK's internal tool error handling can convert them to tool-error results, combined with a custom `stopWhen` condition to cleanly stop generation
 
 ## [0.0.3] - 2026-02-07
 

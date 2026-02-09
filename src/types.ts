@@ -1580,10 +1580,10 @@ export interface GenerateResultInterrupted {
  * Returned when a tool calls `handoff()` or `handback()` during execution.
  * The session handles this by swapping the active agent.
  *
- * **Known limitation:** The current throw-based HandoffSignal mechanism is
- * intercepted by AI SDK v6's internal tool error handling before `generate()`
- * can catch it. This works with mocked `generateText` but not with the real
- * AI SDK. See HandoffSignal in `agent.ts` for details.
+ * **Implementation note:** Tools throw `HandoffSignal`, which is intercepted
+ * by the cooperative signal-catching wrapper (`wrapToolsWithSignalCatching`)
+ * before the AI SDK can convert it to a tool-error result. A `stopWhen`
+ * condition then cleanly stops generation. See `agent.ts` for details.
  *
  * @category Agent
  */

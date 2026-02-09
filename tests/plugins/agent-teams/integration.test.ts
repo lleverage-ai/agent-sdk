@@ -10,6 +10,12 @@
  * `mcp__agent-teams__start_team` in the primary agent's tool set.
  * The leader agent's tools are passed directly via `tools:`, so they
  * are NOT prefixed.
+ *
+ * NOTE: The handoff mechanism uses a cooperative signal-catching approach.
+ * When a tool throws HandoffSignal, the outermost wrapper catches it,
+ * stores it in shared state, and returns a placeholder. The mock must
+ * return a valid response object after calling execute() — `generate()`
+ * checks the signal state before processing the response.
  */
 
 import { generateText, tool } from "ai";
@@ -51,6 +57,36 @@ function findTool(tools: Record<string, any>, name: string) {
  */
 function mockGenerateTextPlain(text = "OK") {
   mockedGenerateText.mockImplementationOnce(async () => {
+    return {
+      text,
+      finishReason: "stop",
+      usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+      response: {
+        id: `r-${Date.now()}`,
+        timestamp: new Date(),
+        modelId: "mock",
+      },
+      steps: [],
+      warnings: [],
+      sources: [],
+      toolCalls: [],
+      toolResults: [],
+      request: { body: {} },
+    } as any;
+  });
+}
+
+/**
+ * Helper: Create a generateText mock that calls a tool, then returns a
+ * valid response. The signal-catching wrapper intercepts HandoffSignal
+ * before it propagates, so the mock must return normally.
+ */
+function mockGenerateTextWithToolCall(
+  toolCallFn: (opts: any) => Promise<void>,
+  text = "tool call step",
+) {
+  mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+    await toolCallFn(opts);
     return {
       text,
       finishReason: "stop",
@@ -152,8 +188,8 @@ describe("Agent Teams Integration Tests", () => {
         permissionMode: "bypassPermissions",
       });
 
-      // Call 1: primary agent calls start_team → throws HandoffSignal
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      // Call 1: primary agent calls start_team → HandoffSignal caught cooperatively
+      mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         expect(startTeam).toBeDefined();
         await startTeam.execute(
@@ -168,8 +204,6 @@ describe("Agent Teams Integration Tests", () => {
           },
           { toolCallId: "tc-start" },
         );
-        // HandoffSignal should have been thrown above, this line should not execute
-        throw new Error("should not reach here after handoff");
       });
 
       // Call 2: team leader agent generates a response
@@ -203,13 +237,13 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       // Call 1: primary calls start_team → handoff to leader
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         await startTeam.execute({ reason: "Team work needed" }, { toolCallId: "tc-start" });
       });
 
       // Call 2: leader calls end_team → handback to primary
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         // Leader tools are NOT MCP-prefixed (they're in tools: directly)
         await opts.tools.end_team.execute(
           { summary: "All work completed successfully" },
@@ -276,7 +310,7 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       // Call 1: primary calls start_team with initial tasks
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         await startTeam.execute(
           {
@@ -291,7 +325,7 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       // Call 2: leader creates an additional task, sends a message, then ends team
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         // Leader tools are NOT MCP-prefixed
         await opts.tools.team_task_create.execute(
           { subject: "Task C", description: "Do C" },
@@ -352,13 +386,13 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       // Call 1: start_team
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         await startTeam.execute({ reason: "Need researchers" }, { toolCallId: "tc-start" });
       });
 
       // Call 2: leader spawns a teammate, then ends team
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         // Leader tools are NOT MCP-prefixed
         await opts.tools.team_spawn.execute(
           {
@@ -420,7 +454,7 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       // Call 1: start_team → handoff to leader
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         await startTeam.execute({ reason: "Test" }, { toolCallId: "tc-start" });
       });
@@ -492,7 +526,7 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       // Call 1: start_team with initial tasks
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         await startTeam.execute(
           {
@@ -514,7 +548,7 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       // Call 2: leader lists tasks, then ends team
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         leaderTaskList = await opts.tools.team_task_list.execute(
           { status: undefined, assignee: undefined },
           { toolCallId: "tc-list" },
@@ -561,7 +595,7 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       // Call 1: start_team
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+      mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         await startTeam.execute({ reason: "Test system prompt" }, { toolCallId: "tc-start" });
       });

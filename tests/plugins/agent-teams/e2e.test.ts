@@ -10,11 +10,9 @@
  * Run with:
  *   RUN_E2E_TESTS=1 bun test tests/plugins/agent-teams/e2e.test.ts
  *
- * NOTE: The throw-based HandoffSignal mechanism is caught by AI SDK v6's
- * internal tool error handling (which converts tool errors to tool results
- * for the model). Full handoff flow testing is covered by mock-based
- * integration tests. These e2e tests verify plugin loading, tool visibility,
- * and basic generation with the plugin.
+ * NOTE: Full handoff flow testing is covered by mock-based integration tests.
+ * These e2e tests verify plugin loading, tool visibility, and basic generation
+ * with the plugin.
  */
 
 import * as fs from "node:fs";
