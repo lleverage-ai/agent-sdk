@@ -109,6 +109,7 @@ describe("Plugin Exports", () => {
     expect(mod.InMemoryTeamCoordinator).toBeDefined();
     expect(mod.HeadlessSessionRunner).toBeDefined();
     expect(mod.TEAM_HOOKS).toBeDefined();
+    expect(mod.tasksToMermaid).toBeDefined();
   });
 
   it("TEAM_HOOKS has all expected events", () => {
