@@ -242,8 +242,95 @@ const agent = createAgent({
 - `PreGenerate`, `PostGenerate`, `PostGenerateFailure` — Generation lifecycle
 - `PreToolUse`, `PostToolUse`, `PostToolUseFailure` — Tool execution lifecycle
 - `MCPConnectionFailed`, `MCPConnectionRestored` — MCP server connection lifecycle
+- `Custom` — Plugin-defined custom events (see below)
 
 **Hook utilities:** `createRetryHooks`, `createRateLimitHooks`, `createLoggingHooks`, `createGuardrailsHooks`, `createSecretsFilterHooks`, `createToolHook`
+
+**Plugin hooks:** Plugins can define hooks in their configuration, which are automatically merged into the agent's hook registration:
+
+```typescript
+const myPlugin = definePlugin({
+  name: "my-plugin",
+  tools: { /* ... */ },
+  hooks: {
+    PostToolUse: [async ({ tool_name }) => {
+      console.log("Tool used:", tool_name);
+    }],
+  },
+});
+```
+
+**Custom hooks:** Plugins can define their own lifecycle events via `Custom` hooks and `invokeCustomHook()`:
+
+```typescript
+import { invokeCustomHook, TEAM_HOOKS } from "@lleverage-ai/agent-sdk";
+
+// Subscribe to custom events
+const agent = createAgent({
+  model,
+  hooks: {
+    Custom: {
+      [TEAM_HOOKS.TeammateSpawned]: [async (input) => {
+        console.log("Teammate spawned:", input.payload);
+      }],
+    },
+  },
+});
+```
+
+### Background Tasks
+
+Background tasks (bash commands and subagents) are automatically handled. When `generate()`, `stream()`, `streamResponse()`, or `streamDataResponse()` spawns a background task, the agent waits for completion and triggers follow-up generations to process results.
+
+```typescript
+const agent = createAgent({
+  model,
+  subagents: [researcherSubagent],
+
+  // These are the defaults:
+  waitForBackgroundTasks: true,
+
+  // Customize follow-up prompt formatting
+  formatTaskCompletion: (task) => `Task ${task.id} done: ${task.result}`,
+  formatTaskFailure: (task) => `Task ${task.id} failed: ${task.error}`,
+});
+
+// generate() returns only after all background tasks are processed
+const result = await agent.generate({ prompt: "Research this in the background" });
+```
+
+### Agent Teams
+
+Multi-agent coordination where the primary agent becomes a team lead:
+
+```typescript
+import {
+  createAgent,
+  createAgentTeamsPlugin,
+  InMemoryTeamCoordinator,
+} from "@lleverage-ai/agent-sdk";
+
+const teamsPlugin = createAgentTeamsPlugin({
+  teammates: [
+    {
+      id: "researcher",
+      name: "Researcher",
+      description: "Researches topics",
+      create: ({ model }) => createAgent({ model, systemPrompt: "You research topics." }),
+    },
+  ],
+  coordinator: new InMemoryTeamCoordinator(),
+});
+
+const agent = createAgent({
+  model,
+  plugins: [teamsPlugin],
+});
+```
+
+The agent gets a `start_team` tool. When called, it gains team management tools (`team_spawn`, `team_message`, `team_task_create`, etc.) at runtime. Teammates run in background sessions and communicate via mailboxes.
+
+See [Subagents & Teams](./docs/subagents.md) for full details.
 
 ### Streaming
 
