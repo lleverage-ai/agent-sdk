@@ -1790,7 +1790,7 @@ export function createAgent(options: AgentOptions): Agent {
               const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
               const finalMessages: ModelMessage[] = [
                 ...messages,
-                { role: "assistant" as const, content: response.text },
+                ...(response.text ? [{ role: "assistant" as const, content: response.text }] : []),
               ];
               const savedCheckpoint = await saveCheckpoint(
                 checkpointThreadId,
@@ -1868,10 +1868,12 @@ export function createAgent(options: AgentOptions): Agent {
           // Save checkpoint - use forked session ID if forking, otherwise use original threadId
           const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
           if (checkpointThreadId && options.checkpointer) {
-            // Build final messages including the assistant response
+            // Build final messages including the assistant response.
+            // Skip empty text to avoid invalid content blocks (e.g. when
+            // the model finishes with only tool calls).
             const finalMessages: ModelMessage[] = [
               ...messages,
-              { role: "assistant" as const, content: response.text },
+              ...(response.text ? [{ role: "assistant" as const, content: response.text }] : []),
             ];
             await saveCheckpoint(
               checkpointThreadId,
@@ -1919,7 +1921,12 @@ export function createAgent(options: AgentOptions): Agent {
           let lastResult: GenerateResult = finalResult;
           let runningMessages: ModelMessage[] = hasCheckpointing
             ? []
-            : [...messages, { role: "assistant" as const, content: finalResult.text }];
+            : [
+                ...messages,
+                ...(finalResult.text
+                  ? [{ role: "assistant" as const, content: finalResult.text }]
+                  : []),
+              ];
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
@@ -1937,7 +1944,9 @@ export function createAgent(options: AgentOptions): Agent {
               runningMessages = [
                 ...runningMessages,
                 { role: "user" as const, content: followUpPrompt },
-                { role: "assistant" as const, content: lastResult.text },
+                ...(lastResult.text
+                  ? [{ role: "assistant" as const, content: lastResult.text }]
+                  : []),
               ];
             }
 
