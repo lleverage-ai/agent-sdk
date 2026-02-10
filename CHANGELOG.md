@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.4] - 2026-02-10
+
 ### Added
 
 - Plugin hook support: plugins can now define `hooks` in their configuration, automatically merged into the agent's hook registration
@@ -110,7 +112,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/lleverage-ai/agent-sdk/releases/tag/v0.0.1
