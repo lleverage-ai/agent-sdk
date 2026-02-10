@@ -1869,7 +1869,7 @@ export function createAgent(options: AgentOptions): Agent {
             { role: "assistant" as const, content: finalResult.text },
           ];
 
-          while (taskManager.hasActiveTasks()) {
+          while (taskManager.hasActiveTasks() || taskManager.hasTerminalTasks()) {
             const completedTask = await taskManager.waitForNextCompletion();
 
             // Dedup: skip if already consumed via task_output tool
@@ -2264,7 +2264,7 @@ export function createAgent(options: AgentOptions): Agent {
           }
 
           // --- Background task completion loop ---
-          if (!waitForBackgroundTasks) {
+          if (!waitForBackgroundTasks || signalState.interrupt) {
             return;
           }
 
@@ -2273,7 +2273,7 @@ export function createAgent(options: AgentOptions): Agent {
             { role: "assistant" as const, content: text },
           ];
 
-          while (taskManager.hasActiveTasks()) {
+          while (taskManager.hasActiveTasks() || taskManager.hasTerminalTasks()) {
             const completedTask = await taskManager.waitForNextCompletion();
 
             if (!taskManager.getTask(completedTask.id)) continue;
@@ -2522,7 +2522,7 @@ export function createAgent(options: AgentOptions): Agent {
                   { role: "assistant" as const, content: text },
                 ];
 
-                while (taskManager.hasActiveTasks()) {
+                while (taskManager.hasActiveTasks() || taskManager.hasTerminalTasks()) {
                   const completedTask = await taskManager.waitForNextCompletion();
 
                   if (!taskManager.getTask(completedTask.id)) continue;
@@ -2980,7 +2980,7 @@ export function createAgent(options: AgentOptions): Agent {
                   { role: "assistant" as const, content: text },
                 ];
 
-                while (taskManager.hasActiveTasks()) {
+                while (taskManager.hasActiveTasks() || taskManager.hasTerminalTasks()) {
                   const completedTask = await taskManager.waitForNextCompletion();
 
                   if (!taskManager.getTask(completedTask.id)) continue;

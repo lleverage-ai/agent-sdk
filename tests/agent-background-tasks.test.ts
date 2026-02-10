@@ -2,51 +2,13 @@
  * Tests for agent.generate() / stream() automatic background task handling.
  */
 
-import type { LanguageModel } from "ai";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { TaskManager } from "../src/task-manager.js";
 import type { BackgroundTask } from "../src/task-store/types.js";
-import type { Agent, GenerateResult } from "../src/types.js";
 
 // =============================================================================
 // Helpers
 // =============================================================================
-
-/**
- * Create a mock agent whose generate/stream methods can be controlled per-call.
- * Each call to generate/stream records the invocation and can return custom results.
- */
-function createMockAgent(overrides: Partial<Agent> = {}): Agent {
-  return {
-    id: "mock-agent",
-    options: { model: {} as LanguageModel },
-    backend: {} as any,
-    state: { todos: [], files: {} },
-    ready: Promise.resolve(),
-    generate: vi.fn().mockResolvedValue({
-      status: "complete",
-      text: "Agent response",
-      steps: [],
-      finishReason: "stop",
-      usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
-    } satisfies GenerateResult),
-    resume: vi.fn().mockResolvedValue({
-      status: "complete",
-      text: "Resumed response",
-      steps: [],
-      finishReason: "stop",
-      usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
-    }),
-    stream: vi.fn() as any,
-    streamResponse: vi.fn() as any,
-    streamRaw: vi.fn() as any,
-    streamDataResponse: vi.fn() as any,
-    getSkills: vi.fn().mockReturnValue([]),
-    taskManager: new TaskManager(),
-    dispose: vi.fn().mockResolvedValue(undefined),
-    ...overrides,
-  };
-}
 
 function createRunningTask(id: string, metadata?: Record<string, unknown>): BackgroundTask {
   return {
@@ -123,16 +85,14 @@ describe("TaskManager.waitForNextCompletion", () => {
     // Should get the first one
     expect(result.id).toBe("t1");
 
-    // Second call should get the second one
+    // Remove t1 (as the drain loop would) so the next call picks up t2
+    tm.removeTask("t1");
+
+    // Second call should resolve immediately with the already-terminal t2
     const secondPromise = tm.waitForNextCompletion();
-    // t2 already completed, but the event was already emitted.
-    // We need to trigger a new event for the second call.
-    // Since t2 was already completed, we need a new task.
-    tm.registerTask(createRunningTask("t3"), {});
-    tm.updateTask("t3", { status: "completed", result: "third" });
 
     const result2 = await secondPromise;
-    expect(result2.id).toBe("t3");
+    expect(result2.id).toBe("t2");
   });
 });
 

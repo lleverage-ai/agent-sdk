@@ -960,12 +960,13 @@ export interface AgentOptions {
   };
 
   /**
-   * Whether generate() should wait for background tasks to complete
+   * Whether agent methods should wait for background tasks to complete
    * and automatically trigger follow-up generations with their results.
    *
-   * When true (default), generate() won't return until all background
-   * tasks have completed and been processed — including tasks spawned
-   * by follow-up generations.
+   * When true (default), generate(), stream(), streamResponse(), and
+   * streamDataResponse() won't return until all background tasks have
+   * completed and been processed — including tasks spawned by follow-up
+   * generations.
    *
    * Set to false for fire-and-forget behavior.
    *
