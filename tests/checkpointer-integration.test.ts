@@ -702,11 +702,11 @@ describe("Checkpointer Agent Integration", () => {
           toolCallId,
           toolName: "dangerousTool",
         });
-        // Check output contains denial
+        // Check output contains denial (ToolResultOutput format)
         const output = (toolMsg.content[0] as { output: unknown }).output;
         expect(output).toMatchObject({
-          denied: true,
-          message: expect.stringContaining("denied"),
+          type: "text",
+          value: expect.stringContaining("denied"),
         });
       }
 
@@ -767,8 +767,8 @@ describe("Checkpointer Agent Integration", () => {
       if (Array.isArray(toolMsg?.content)) {
         const output = (toolMsg.content[0] as { output: unknown }).output;
         expect(output).toMatchObject({
-          error: true,
-          message: "Tool execution failed",
+          type: "text",
+          value: expect.stringContaining("Tool execution failed"),
         });
       }
 
