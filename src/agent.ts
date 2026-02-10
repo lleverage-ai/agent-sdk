@@ -67,6 +67,7 @@ import type {
   GenerateOptions,
   GenerateResult,
   GenerateResultComplete,
+  GenerateResultHandoff,
   GenerateResultInterrupted,
   GenerateStep,
   HookRegistration,
@@ -115,6 +116,113 @@ class InterruptSignal extends Error {
  */
 function isInterruptSignal(error: unknown): error is InterruptSignal {
   return error instanceof InterruptSignal;
+}
+
+/**
+ * Shared state for intercepting flow-control signals thrown by tools.
+ *
+ * AI SDK v6's `generateText` catches all errors from tool execution and converts
+ * them to tool-result messages. To work around this, our outermost tool wrapper
+ * (`wrapToolsWithSignalCatching`) intercepts InterruptSignal/HandoffSignal before
+ * the AI SDK sees them, stores them here, and returns a placeholder result.
+ * A custom `stopWhen` condition then stops generation after the current step.
+ *
+ * @internal
+ */
+interface GenerateSignalState {
+  handoff?: HandoffSignal;
+  interrupt?: InterruptSignal;
+}
+
+/**
+ * Outermost tool wrapper that intercepts flow-control signals.
+ *
+ * When a tool throws `InterruptSignal` or `HandoffSignal`, this wrapper catches
+ * it before the AI SDK can, stores it in the shared `signalState`, and returns a
+ * placeholder string. Combined with a custom `stopWhen` condition, this cleanly
+ * stops generation and allows `generate()` to inspect `signalState` in the normal
+ * return path (not the catch block).
+ *
+ * @internal
+ */
+function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignalState): ToolSet {
+  const wrapped: ToolSet = {};
+
+  for (const [name, toolDef] of Object.entries(tools)) {
+    if (!toolDef.execute) {
+      wrapped[name] = toolDef;
+      continue;
+    }
+
+    const originalExecute = toolDef.execute;
+
+    wrapped[name] = {
+      ...toolDef,
+      execute: async (input: unknown, options: ToolExecutionOptions) => {
+        try {
+          return await originalExecute.call(toolDef, input, options);
+        } catch (error) {
+          if (isHandoffSignal(error)) {
+            if (signalState.handoff || signalState.interrupt) {
+              throw error; // Already have a signal — let AI SDK handle this one
+            }
+            signalState.handoff = error;
+            return "[Agent handoff requested]";
+          }
+          if (isInterruptSignal(error)) {
+            if (signalState.handoff || signalState.interrupt) {
+              throw error; // Already have a signal — let AI SDK handle this one
+            }
+            signalState.interrupt = error;
+            return "[Interrupt requested]";
+          }
+          throw error;
+        }
+      },
+    } as Tool;
+  }
+
+  return wrapped;
+}
+
+/**
+ * Internal signal for agent handoff flow control.
+ *
+ * This is thrown when a tool requests handing off to a different agent.
+ * The outermost tool wrapper (`wrapToolsWithSignalCatching`) intercepts this
+ * before the AI SDK can catch it, and stores it in `GenerateSignalState`.
+ *
+ * @internal
+ */
+class HandoffSignal extends Error {
+  readonly targetAgent: Agent | null;
+  readonly context?: string;
+  readonly resumable: boolean;
+  readonly isHandback: boolean;
+
+  constructor(
+    targetAgent: Agent | null,
+    options?: {
+      context?: string;
+      resumable?: boolean;
+      handback?: boolean;
+    },
+  ) {
+    super("Agent handoff");
+    this.name = "HandoffSignal";
+    this.targetAgent = targetAgent;
+    this.context = options?.context;
+    this.resumable = options?.resumable ?? true;
+    this.isHandback = options?.handback ?? false;
+  }
+}
+
+/**
+ * Check if an error is a HandoffSignal.
+ * @internal
+ */
+function isHandoffSignal(error: unknown): error is HandoffSignal {
+  return error instanceof HandoffSignal;
 }
 
 /**
@@ -349,10 +457,27 @@ function wrapToolsWithPermissionMode(
           throw new InterruptSignal(interruptData);
         };
 
-        // Create extended options with the interrupt function
+        // Create handoff/handback functions
+        const handoff = (
+          targetAgent: Agent,
+          handoffOpts?: { context?: string; resumable?: boolean },
+        ): never => {
+          throw new HandoffSignal(targetAgent, {
+            ...handoffOpts,
+            resumable: handoffOpts?.resumable ?? true,
+          });
+        };
+
+        const handback = (handbackOpts?: { context?: string }): never => {
+          throw new HandoffSignal(null, { ...handbackOpts, handback: true });
+        };
+
+        // Create extended options with the interrupt and handoff functions
         const extendedOptions = {
           ...options,
           interrupt,
+          handoff,
+          handback,
         };
 
         // If permission mode gives a definitive answer, use it
@@ -657,24 +782,28 @@ function wrapToolsWithHooks(
 
           return output;
         } catch (error) {
-          // Invoke PostToolUseFailure hooks
-          if (hookRegistration?.PostToolUseFailure?.length) {
-            const failureInput: PostToolUseFailureInput = {
-              hook_event_name: "PostToolUseFailure",
-              session_id: sessionId,
-              cwd: process.cwd(),
-              tool_name: name,
-              tool_input: input as Record<string, unknown>,
-              error: error instanceof Error ? error : new Error(String(error)),
-            };
+          // Skip PostToolUseFailure for flow-control signals — these are not
+          // actual failures but intentional control flow (handoff/interrupt).
+          if (!isHandoffSignal(error) && !isInterruptSignal(error)) {
+            // Invoke PostToolUseFailure hooks
+            if (hookRegistration?.PostToolUseFailure?.length) {
+              const failureInput: PostToolUseFailureInput = {
+                hook_event_name: "PostToolUseFailure",
+                session_id: sessionId,
+                cwd: process.cwd(),
+                tool_name: name,
+                tool_input: input as Record<string, unknown>,
+                error: error instanceof Error ? error : new Error(String(error)),
+              };
 
-            await invokeMatchingHooks(
-              hookRegistration.PostToolUseFailure,
-              name,
-              failureInput,
-              toolUseId,
-              agent,
-            );
+              await invokeMatchingHooks(
+                hookRegistration.PostToolUseFailure,
+                name,
+                failureInput,
+                toolUseId,
+                agent,
+              );
+            }
           }
 
           throw error;
@@ -760,7 +889,8 @@ export function createAgent(options: AgentOptions): Agent {
   // Process middleware to get hooks (middleware hooks come before explicit hooks)
   const middleware = options.middleware ?? [];
   const middlewareHooks = applyMiddleware(middleware);
-  const mergedHooks = mergeHooks(middlewareHooks, options.hooks);
+  const pluginHooks = (options.plugins ?? []).filter((p) => p.hooks).map((p) => p.hooks!);
+  const mergedHooks = mergeHooks(middlewareHooks, ...pluginHooks, options.hooks);
 
   // Create options with merged hooks for all hook lookups
   const effectiveHooks = mergedHooks;
@@ -1081,6 +1211,7 @@ export function createAgent(options: AgentOptions): Agent {
     const filteredTools = filterToolsByAllowed(
       (() => {
         const allTools: ToolSet = { ...coreTools };
+        Object.assign(allTools, runtimeTools);
         Object.assign(allTools, mcpManager.getToolSet());
         if (toolRegistry) {
           Object.assign(allTools, toolRegistry.getLoadedTools());
@@ -1139,10 +1270,16 @@ export function createAgent(options: AgentOptions): Agent {
     return promptBuilder!.build(context);
   };
 
-  // Helper to get current active tools (core + MCP + dynamically loaded from registry)
+  // Runtime tools added/removed dynamically by plugins at runtime
+  const runtimeTools: ToolSet = {};
+
+  // Helper to get current active tools (core + runtime + MCP + dynamically loaded from registry)
   const getActiveToolSet = (threadId?: string): ToolSet => {
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
+
+    // Add runtime tools (added by plugins at runtime)
+    Object.assign(allTools, runtimeTools);
 
     // Add MCP tools from plugin registrations
     const mcpTools = mcpManager.getToolSet();
@@ -1186,6 +1323,9 @@ export function createAgent(options: AgentOptions): Agent {
   ): ToolSet => {
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
+
+    // Add runtime tools (added by plugins at runtime)
+    Object.assign(allTools, runtimeTools);
 
     // Process plugins - invoke function-based tools with streaming context
     for (const plugin of options.plugins ?? []) {
@@ -1599,12 +1739,21 @@ export function createAgent(options: AgentOptions): Agent {
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
 
+          // Shared signal state: flow-control signals (handoff/interrupt) thrown by
+          // tools are caught by the outermost wrapper and stored here. A custom
+          // stopWhen condition stops generation after the current step completes.
+          const signalState: GenerateSignalState = {};
+
           // Build initial params - use active tools (core + dynamically loaded + task)
-          // Apply hooks AFTER adding task tool so task tool is also wrapped
-          const activeTools = applyToolHooks(
+          // Apply hooks AFTER adding task tool so task tool is also wrapped.
+          // Then wrap with signal catching as the outermost layer so that
+          // InterruptSignal/HandoffSignal are intercepted before the AI SDK can
+          // catch them and convert them to tool-error results.
+          const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
           );
+          const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
@@ -1622,6 +1771,11 @@ export function createAgent(options: AgentOptions): Agent {
             headers: effectiveGenOptions.headers,
           };
 
+          // Stop condition: stop when a flow-control signal was caught, OR when
+          // the step count reaches maxSteps (whichever comes first).
+          const signalStopCondition = () =>
+            signalState.handoff != null || signalState.interrupt != null;
+
           // Execute generation
           const response = await generateText({
             model: retryState.currentModel,
@@ -1632,13 +1786,75 @@ export function createAgent(options: AgentOptions): Agent {
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
             abortSignal: initialParams.abortSignal,
-            stopWhen: stepCountIs(maxSteps),
+            stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
             // Passthrough AI SDK options
             output: effectiveGenOptions.output,
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
           });
+
+          // Check for intercepted handoff signal (cooperative path)
+          if (signalState.handoff) {
+            const hs = signalState.handoff;
+            const handoffResult: GenerateResultHandoff = {
+              status: "handoff",
+              targetAgent: hs.targetAgent,
+              context: hs.context,
+              resumable: hs.resumable,
+              isHandback: hs.isHandback,
+              partial: {
+                text: response.text,
+                steps: mapSteps(response.steps),
+                usage: response.usage,
+              },
+            };
+            return handoffResult;
+          }
+
+          // Check for intercepted interrupt signal (cooperative path)
+          if (signalState.interrupt) {
+            const interrupt = signalState.interrupt.interrupt;
+
+            // Save the interrupt to checkpoint
+            if (effectiveGenOptions.threadId && options.checkpointer) {
+              const checkpoint = await options.checkpointer.load(effectiveGenOptions.threadId);
+              if (checkpoint) {
+                const updatedCheckpoint = updateCheckpoint(checkpoint, {
+                  pendingInterrupt: interrupt,
+                });
+                await options.checkpointer.save(updatedCheckpoint);
+              }
+            }
+
+            // Emit InterruptRequested hook
+            const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
+            if (interruptRequestedHooks.length > 0) {
+              const hookInput: InterruptRequestedInput = {
+                hook_event_name: "InterruptRequested",
+                session_id: effectiveGenOptions.threadId ?? "default",
+                cwd: process.cwd(),
+                interrupt_id: interrupt.id,
+                interrupt_type: interrupt.type,
+                tool_call_id: interrupt.toolCallId,
+                tool_name: interrupt.toolName,
+                request: interrupt.request,
+              };
+              await invokeHooksWithTimeout(interruptRequestedHooks, hookInput, null, agent);
+            }
+
+            // Return interrupted result with partial results from the response
+            const interruptedResult: GenerateResultInterrupted = {
+              status: "interrupted",
+              interrupt,
+              partial: {
+                text: response.text,
+                steps: mapSteps(response.steps),
+                usage: response.usage,
+              },
+            };
+            return interruptedResult;
+          }
 
           // Only access output if an output schema was provided
           // (accessing response.output throws AI_NoOutputGeneratedError otherwise)
@@ -1713,6 +1929,19 @@ export function createAgent(options: AgentOptions): Agent {
 
           return finalResult;
         } catch (error) {
+          // Check if this is a HandoffSignal (agent handoff)
+          if (isHandoffSignal(error)) {
+            const handoffResult: GenerateResultHandoff = {
+              status: "handoff",
+              targetAgent: error.targetAgent,
+              context: error.context,
+              resumable: error.resumable,
+              isHandback: error.isHandback,
+              partial: { text: "", steps: [], usage: undefined },
+            };
+            return handoffResult;
+          }
+
           // Check if this is an InterruptSignal (new interrupt system)
           if (isInterruptSignal(error)) {
             const interrupt = error.interrupt;
@@ -1929,12 +2158,17 @@ export function createAgent(options: AgentOptions): Agent {
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
 
+          // Signal state for cooperative signal catching in streaming mode
+          const signalState: GenerateSignalState = {};
+
           // Build initial params - use active tools (core + dynamically loaded + task)
-          // Apply hooks AFTER adding task tool so task tool is also wrapped
-          const activeTools = applyToolHooks(
+          // Apply hooks AFTER adding task tool so task tool is also wrapped.
+          // Then wrap with signal catching as the outermost layer.
+          const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
           );
+          const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
@@ -1952,6 +2186,11 @@ export function createAgent(options: AgentOptions): Agent {
             headers: effectiveGenOptions.headers,
           };
 
+          // Stop condition: stop when a flow-control signal was caught, OR when
+          // the step count reaches maxSteps.
+          const signalStopCondition = () =>
+            signalState.handoff != null || signalState.interrupt != null;
+
           // Execute stream
           const response = streamText({
             model: retryState.currentModel,
@@ -1962,7 +2201,7 @@ export function createAgent(options: AgentOptions): Agent {
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
             abortSignal: initialParams.abortSignal,
-            stopWhen: stepCountIs(maxSteps),
+            stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
             // Passthrough AI SDK options
             output: genOptions.output,
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -2131,12 +2370,17 @@ export function createAgent(options: AgentOptions): Agent {
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
 
+          // Signal state for cooperative signal catching in streaming mode
+          const signalState: GenerateSignalState = {};
+
           // Build initial params - use active tools (core + dynamically loaded + task)
-          // Apply hooks AFTER adding task tool so task tool is also wrapped
-          const activeTools = applyToolHooks(
+          // Apply hooks AFTER adding task tool so task tool is also wrapped.
+          // Then wrap with signal catching as the outermost layer.
+          const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
           );
+          const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
@@ -2157,6 +2401,11 @@ export function createAgent(options: AgentOptions): Agent {
           // Track step count for incremental checkpointing
           let currentStepCount = 0;
 
+          // Stop condition: stop when a flow-control signal was caught, OR when
+          // the step count reaches maxSteps.
+          const signalStopCondition = () =>
+            signalState.handoff != null || signalState.interrupt != null;
+
           // Execute stream
           const result = streamText({
             model: retryState.currentModel,
@@ -2167,7 +2416,7 @@ export function createAgent(options: AgentOptions): Agent {
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
             abortSignal: initialParams.abortSignal,
-            stopWhen: stepCountIs(maxSteps),
+            stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
             // Passthrough AI SDK options
             output: effectiveGenOptions.output,
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -2307,12 +2556,17 @@ export function createAgent(options: AgentOptions): Agent {
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
 
+          // Signal state for cooperative signal catching in streaming mode
+          const signalState: GenerateSignalState = {};
+
           // Build initial params - use active tools (core + dynamically loaded + task)
-          // Apply hooks AFTER adding task tool so task tool is also wrapped
-          const activeTools = applyToolHooks(
+          // Apply hooks AFTER adding task tool so task tool is also wrapped.
+          // Then wrap with signal catching as the outermost layer.
+          const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
           );
+          const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
@@ -2333,6 +2587,11 @@ export function createAgent(options: AgentOptions): Agent {
           // Track step count for incremental checkpointing
           let currentStepCount = 0;
 
+          // Stop condition: stop when a flow-control signal was caught, OR when
+          // the step count reaches maxSteps.
+          const signalStopCondition = () =>
+            signalState.handoff != null || signalState.interrupt != null;
+
           // Execute stream
           const result = streamText({
             model: retryState.currentModel,
@@ -2343,7 +2602,7 @@ export function createAgent(options: AgentOptions): Agent {
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
             abortSignal: initialParams.abortSignal,
-            stopWhen: stepCountIs(maxSteps),
+            stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
             // Passthrough AI SDK options
             output: effectiveGenOptions.output,
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -2505,15 +2764,20 @@ export function createAgent(options: AgentOptions): Agent {
               // Create streaming context for tools
               const streamingContext: StreamingContext = { writer };
 
+              // Signal state for cooperative signal catching in streaming mode
+              const signalState: GenerateSignalState = {};
+
               // Build tools with streaming context and task tool
-              // Apply hooks AFTER adding task tool so task tool is also wrapped
-              const streamingTools = applyToolHooks(
+              // Apply hooks AFTER adding task tool so task tool is also wrapped.
+              // Then wrap with signal catching as the outermost layer.
+              const hookedStreamingTools = applyToolHooks(
                 addTaskToolIfConfigured(
                   getActiveToolSetWithStreaming(streamingContext, effectiveGenOptions.threadId),
                   streamingContext, // Pass streaming context for streaming subagents
                 ),
                 effectiveGenOptions.threadId,
               );
+              const streamingTools = wrapToolsWithSignalCatching(hookedStreamingTools, signalState);
 
               // Build prompt context and generate system prompt
               const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
@@ -2535,6 +2799,11 @@ export function createAgent(options: AgentOptions): Agent {
               // Track step count for incremental checkpointing
               let currentStepCount = 0;
 
+              // Stop condition: stop when a flow-control signal was caught, OR when
+              // the step count reaches maxSteps.
+              const signalStopCondition = () =>
+                signalState.handoff != null || signalState.interrupt != null;
+
               // Execute stream
               const result = streamText({
                 model: modelToUse,
@@ -2545,7 +2814,7 @@ export function createAgent(options: AgentOptions): Agent {
                 temperature: initialParams.temperature,
                 stopSequences: initialParams.stopSequences,
                 abortSignal: initialParams.abortSignal,
-                stopWhen: stepCountIs(maxSteps),
+                stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
                 // Passthrough AI SDK options
                 output: effectiveGenOptions.output,
                 // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -2670,6 +2939,16 @@ export function createAgent(options: AgentOptions): Agent {
 
     getActiveTools() {
       return getActiveToolSet();
+    },
+
+    addRuntimeTools(tools: ToolSet) {
+      Object.assign(runtimeTools, tools);
+    },
+
+    removeRuntimeTools(toolNames: string[]) {
+      for (const name of toolNames) {
+        delete runtimeTools[name];
+      }
     },
 
     loadTools(toolNames: string[]) {

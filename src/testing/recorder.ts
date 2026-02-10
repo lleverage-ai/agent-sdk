@@ -374,6 +374,14 @@ export function createRecordingAgent(
       return agent.taskManager;
     },
 
+    addRuntimeTools(tools) {
+      agent.addRuntimeTools(tools);
+    },
+
+    removeRuntimeTools(toolNames) {
+      agent.removeRuntimeTools(toolNames);
+    },
+
     // Delegate to wrapped agent's dispose
     async dispose() {
       return agent.dispose();

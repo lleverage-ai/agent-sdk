@@ -20,7 +20,7 @@ import {
   type SecurityPolicy,
   type SecurityPolicyPreset,
 } from "../security/index.js";
-import type { Agent, AgentOptions, HookCallback, HookMatcher, HookRegistration } from "../types.js";
+import type { Agent, AgentOptions, HookRegistration } from "../types.js";
 
 /**
  * Type-safe helper to merge hook registrations.
@@ -40,16 +40,17 @@ function mergeHooks(target: HookRegistration, source: Partial<HookRegistration>)
     "SubagentStop",
   ];
 
+  // Cast to Record for dynamic key assignment — all HookRegistration values are arrays
+  const t = target as Record<string, unknown[]>;
+  const s = source as Record<string, unknown[] | undefined>;
+
   for (const event of hookEvents) {
-    const sourceCallbacks = source[event];
+    const sourceCallbacks = s[event];
     if (sourceCallbacks) {
-      if (!target[event]) {
-        target[event] = sourceCallbacks as HookMatcher[] & HookCallback[];
+      if (!t[event]) {
+        t[event] = sourceCallbacks;
       } else {
-        target[event] = [
-          ...(target[event] as HookMatcher[] & HookCallback[]),
-          ...(sourceCallbacks as HookMatcher[] & HookCallback[]),
-        ];
+        t[event] = [...t[event], ...sourceCallbacks];
       }
     }
   }

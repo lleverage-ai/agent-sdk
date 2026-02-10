@@ -124,6 +124,15 @@ export interface MiddlewareContext {
    * Called when an interrupt is resolved (approved, denied, or custom response).
    */
   onInterruptResolved(callback: HookCallback): void;
+
+  /**
+   * Register a custom hook for a plugin-defined event.
+   * Called when `invokeCustomHook()` fires the given event name.
+   *
+   * @param eventName - The custom event name (e.g., "team:TeammateIdle")
+   * @param callback - The hook callback to invoke
+   */
+  onCustom(eventName: string, callback: HookCallback): void;
 }
 
 /**

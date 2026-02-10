@@ -194,6 +194,14 @@ export function mergeHooks(...registrations: (HookRegistration | undefined)[]): 
     if (reg.ToolLoadError) {
       result.ToolLoadError = [...(result.ToolLoadError ?? []), ...reg.ToolLoadError];
     }
+
+    // Merge custom hooks
+    if (reg.Custom) {
+      if (!result.Custom) result.Custom = {};
+      for (const [name, callbacks] of Object.entries(reg.Custom)) {
+        result.Custom[name] = [...(result.Custom[name] ?? []), ...callbacks];
+      }
+    }
   }
 
   return result;

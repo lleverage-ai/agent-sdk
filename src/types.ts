@@ -132,6 +132,23 @@ export interface ExtendedToolExecutionOptions extends ToolExecutionOptions {
    * Used by bash tool for run_in_background support.
    */
   taskManager?: import("./task-manager.js").TaskManager;
+
+  /**
+   * Hand off to a different agent. The session swaps the active agent.
+   * Throws (never returns).
+   *
+   * @param targetAgent - The agent to hand off to
+   * @param options - Optional handoff options
+   */
+  handoff: (targetAgent: Agent, options?: { context?: string; resumable?: boolean }) => never;
+
+  /**
+   * Hand back to the previous agent (before last handoff).
+   * Throws (never returns).
+   *
+   * @param options - Optional handback options
+   */
+  handback: (options?: { context?: string }) => never;
 }
 
 // =============================================================================
@@ -1275,6 +1292,46 @@ export interface Agent {
   readonly taskManager: import("./task-manager.js").TaskManager;
 
   /**
+   * Add tools to the agent at runtime.
+   *
+   * Runtime tools are included in the active tool set alongside core tools,
+   * MCP tools, and registry tools. Adding a tool with the same name as an
+   * existing runtime tool overwrites it.
+   *
+   * This is primarily used by plugins that need to dynamically inject tools
+   * (e.g., team management tools that appear only when a team is active).
+   *
+   * @param tools - The tools to add
+   *
+   * @example
+   * ```typescript
+   * agent.addRuntimeTools({
+   *   my_tool: tool({
+   *     description: "A dynamically added tool",
+   *     inputSchema: z.object({ input: z.string() }),
+   *     execute: async ({ input }) => `Result: ${input}`,
+   *   }),
+   * });
+   * ```
+   */
+  addRuntimeTools(tools: ToolSet): void;
+
+  /**
+   * Remove runtime tools by name.
+   *
+   * Removes tools previously added via {@link addRuntimeTools}.
+   * Removing a tool name that doesn't exist is a no-op.
+   *
+   * @param toolNames - Names of the tools to remove
+   *
+   * @example
+   * ```typescript
+   * agent.removeRuntimeTools(["my_tool"]);
+   * ```
+   */
+  removeRuntimeTools(toolNames: string[]): void;
+
+  /**
    * Dispose the agent and clean up resources.
    *
    * This method should be called when the agent is no longer needed,
@@ -1558,11 +1615,40 @@ export interface GenerateResultInterrupted {
 }
 
 /**
+ * Result from a generation that triggered an agent handoff.
+ *
+ * Returned when a tool calls `handoff()` or `handback()` during execution.
+ * The session handles this by swapping the active agent.
+ *
+ * **Implementation note:** Tools throw `HandoffSignal`, which is intercepted
+ * by the cooperative signal-catching wrapper (`wrapToolsWithSignalCatching`)
+ * before the AI SDK can convert it to a tool-error result. A `stopWhen`
+ * condition then cleanly stops generation. See `agent.ts` for details.
+ *
+ * @category Agent
+ */
+export interface GenerateResultHandoff {
+  /** Status indicating an agent handoff was requested */
+  status: "handoff";
+  /** The agent to hand off to (null for handback) */
+  targetAgent: Agent | null;
+  /** Context/summary to pass to the target agent */
+  context?: string;
+  /** Whether the original agent should resume after handoff completes */
+  resumable: boolean;
+  /** True when handing back to the previous agent */
+  isHandback: boolean;
+  /** Partial results from the current generation */
+  partial?: PartialGenerateResult;
+}
+
+/**
  * Result from a generation request.
  *
  * This is a discriminated union - check `status` to determine the result type:
  * - `"complete"`: Generation finished successfully
  * - `"interrupted"`: Generation paused for user input
+ * - `"handoff"`: Agent handoff requested
  *
  * @example
  * ```typescript
@@ -1570,16 +1656,21 @@ export interface GenerateResultInterrupted {
  *
  * if (result.status === "complete") {
  *   console.log(result.text);
- * } else {
+ * } else if (result.status === "interrupted") {
  *   // Handle interrupt
  *   const response = await handleInterrupt(result.interrupt);
  *   return agent.resume(threadId, result.interrupt.id, response);
+ * } else if (result.status === "handoff") {
+ *   // Handle handoff (typically done by AgentSession)
  * }
  * ```
  *
  * @category Agent
  */
-export type GenerateResult = GenerateResultComplete | GenerateResultInterrupted;
+export type GenerateResult =
+  | GenerateResultComplete
+  | GenerateResultInterrupted
+  | GenerateResultHandoff;
 
 // =============================================================================
 // Result Type Guards
@@ -1628,6 +1719,18 @@ export function isCompleteResult(result: GenerateResult): result is GenerateResu
  */
 export function isInterruptedResult(result: GenerateResult): result is GenerateResultInterrupted {
   return result.status === "interrupted";
+}
+
+/**
+ * Type guard to check if a generation result is a handoff.
+ *
+ * @param result - The generation result to check
+ * @returns True if the result is a handoff result
+ *
+ * @category Agent
+ */
+export function isHandoffResult(result: GenerateResult): result is GenerateResultHandoff {
+  return result.status === "handoff";
 }
 
 /**
@@ -1821,6 +1924,9 @@ export interface AgentPlugin {
 
   /** Skills provided by this plugin */
   skills?: import("./tools/skills.js").SkillDefinition[];
+
+  /** Hooks provided by this plugin. Merged into the agent's hook registration during initialization. */
+  hooks?: HookRegistration;
 }
 
 /**
@@ -1856,6 +1962,9 @@ export interface PluginOptions {
 
   /** Skills provided by this plugin */
   skills?: import("./tools/skills.js").SkillDefinition[];
+
+  /** Hooks provided by this plugin. Merged into the agent's hook registration during initialization. */
+  hooks?: HookRegistration;
 }
 
 // =============================================================================
@@ -1962,7 +2071,10 @@ export type HookEvent =
 
   // Tool registry lifecycle
   | "ToolRegistered"
-  | "ToolLoadError";
+  | "ToolLoadError"
+
+  // Plugin-defined custom hook events
+  | "Custom";
 
 // =============================================================================
 // New Unified Hook System Types
@@ -2216,6 +2328,22 @@ export interface InterruptResolvedInput extends BaseHookInput {
 }
 
 /**
+ * Input for Custom hooks defined by plugins.
+ *
+ * Plugins can define arbitrary custom hook events with string-keyed names.
+ * The custom_event field identifies the specific event (e.g., "team:TeammateIdle").
+ *
+ * @category Hooks
+ */
+export interface CustomHookInput extends BaseHookInput {
+  hook_event_name: "Custom";
+  /** The custom event name (e.g., "team:TeammateIdle") */
+  custom_event: string;
+  /** Event payload */
+  payload: Record<string, unknown>;
+}
+
+/**
  * Union type of all hook input types.
  * @category Hooks
  */
@@ -2235,7 +2363,8 @@ export type HookInput =
   | PreCompactInput
   | PostCompactInput
   | InterruptRequestedInput
-  | InterruptResolvedInput;
+  | InterruptResolvedInput
+  | CustomHookInput;
 
 /**
  * Permission decision for a tool or generation operation.
@@ -2426,6 +2555,22 @@ export interface HookRegistration {
    */
   InterruptRequested?: HookCallback[];
   InterruptResolved?: HookCallback[];
+
+  /**
+   * Custom hooks defined by plugins, keyed by event name.
+   *
+   * Plugins can register callbacks for arbitrary custom events.
+   * Use `invokeCustomHook()` to fire these hooks.
+   *
+   * @example
+   * ```typescript
+   * Custom: {
+   *   "team:TeammateIdle": [handleTeammateIdle],
+   *   "team:TaskCompleted": [logTaskCompletion],
+   * }
+   * ```
+   */
+  Custom?: Record<string, HookCallback[]>;
 }
 
 // =============================================================================

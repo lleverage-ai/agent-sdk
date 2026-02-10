@@ -284,6 +284,7 @@ export {
   extractUpdatedInput,
   extractUpdatedResult,
   HookTimeoutError,
+  invokeCustomHook,
   invokeHooksWithTimeout,
   invokeMatchingHooks,
   matchesToolName,
@@ -659,12 +660,14 @@ export type {
   AgentUIMessage,
   BackendFactory,
   CoreToolName,
+  CustomHookInput,
   ExtendedToolExecutionOptions,
   FinishReason,
   // Generation types
   GenerateOptions,
   GenerateResult,
   GenerateResultComplete,
+  GenerateResultHandoff,
   GenerateResultInterrupted,
   GenerateStep,
   HookCallback,
@@ -732,5 +735,19 @@ export type {
 export {
   // Result type guards
   isCompleteResult,
+  isHandoffResult,
   isInterruptedResult,
 } from "./types.js";
+
+// Agent Teams Plugin
+export { createAgentTeamsPlugin, InMemoryTeamCoordinator, TEAM_HOOKS, HeadlessSessionRunner } from "./plugins/agent-teams/index.js";
+export type {
+  AgentTeamsPluginOptions,
+  TeamCoordinator,
+  TeamTask,
+  TeamTaskStatus,
+  TeamMessage,
+  TeammateInfo,
+  TeammateDefinition,
+  TeammateStatus,
+} from "./plugins/agent-teams/types.js";

@@ -4,7 +4,15 @@
  * @packageDocumentation
  */
 
-import type { Agent, HookCallback, HookInput, HookMatcher, HookOutput } from "./types.js";
+import type {
+  Agent,
+  CustomHookInput,
+  HookCallback,
+  HookInput,
+  HookMatcher,
+  HookOutput,
+  HookRegistration,
+} from "./types.js";
 
 // =============================================================================
 // Unified Hook System with Matchers
@@ -462,4 +470,53 @@ export function createToolHook(
     hooks: [callback],
     timeout: options.timeout,
   };
+}
+
+/**
+ * Invokes custom hook callbacks registered under a specific event name.
+ *
+ * Custom hooks are defined by plugins via the `Custom` field on `HookRegistration`.
+ * This function looks up callbacks for the given event name and invokes them
+ * with a `CustomHookInput`.
+ *
+ * @param registration - The hook registration containing custom hooks
+ * @param eventName - The custom event name (e.g., "team:TeammateIdle")
+ * @param payload - Event payload data
+ * @param agent - The agent instance
+ * @param timeout - Optional timeout in milliseconds (default: 60000)
+ * @returns Array of hook outputs. Empty array if no callbacks registered.
+ *
+ * @example
+ * ```typescript
+ * const outputs = await invokeCustomHook(
+ *   agent.hooks,
+ *   "team:TeammateSpawned",
+ *   { teammateId: "researcher-1", role: "researcher" },
+ *   agent,
+ * );
+ * ```
+ *
+ * @category Hooks
+ */
+export async function invokeCustomHook(
+  registration: HookRegistration | undefined,
+  eventName: string,
+  payload: Record<string, unknown>,
+  agent: Agent,
+  timeout?: number,
+): Promise<HookOutput[]> {
+  const callbacks = registration?.Custom?.[eventName];
+  if (!callbacks || callbacks.length === 0) {
+    return [];
+  }
+
+  const input: CustomHookInput = {
+    hook_event_name: "Custom",
+    session_id: "default",
+    cwd: process.cwd(),
+    custom_event: eventName,
+    payload,
+  };
+
+  return invokeHooksWithTimeout(callbacks, input, null, agent, timeout);
 }
