@@ -51,6 +51,7 @@ import { createDefaultPromptBuilder } from "./prompt-builder/components.js";
 import type { PromptContext } from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { TaskManager } from "./task-manager.js";
+import type { BackgroundTask } from "./task-store/types.js";
 import {
   coreToolsToToolSet,
   createCoreTools,
@@ -860,6 +861,21 @@ export function createAgent(options: AgentOptions): Agent {
 
   // Initialize task manager for background task tracking
   const taskManager = new TaskManager();
+
+  // Background task completion options
+  const waitForBackgroundTasks = options.waitForBackgroundTasks ?? true;
+  const formatTaskCompletion =
+    options.formatTaskCompletion ??
+    ((task: BackgroundTask): string => {
+      const command = task.metadata?.command ?? "unknown command";
+      return `[Background task completed: ${task.id}]\nCommand: ${command}\nOutput:\n${task.result ?? "(no output)"}`;
+    });
+  const formatTaskFailure =
+    options.formatTaskFailure ??
+    ((task: BackgroundTask): string => {
+      const command = task.metadata?.command ?? "unknown command";
+      return `[Background task failed: ${task.id}]\nCommand: ${command}\nError: ${task.error ?? "Unknown error"}`;
+    });
 
   // Determine plugin loading mode
   // Track whether it was explicitly set to distinguish from default
@@ -1842,7 +1858,58 @@ export function createAgent(options: AgentOptions): Agent {
             }
           }
 
-          return finalResult;
+          // --- Background task completion loop ---
+          if (!waitForBackgroundTasks) {
+            return finalResult;
+          }
+
+          let lastResult: GenerateResult = finalResult;
+          let runningMessages: ModelMessage[] = [
+            ...messages,
+            { role: "assistant" as const, content: finalResult.text },
+          ];
+
+          while (taskManager.hasActiveTasks()) {
+            const completedTask = await taskManager.waitForNextCompletion();
+
+            // Dedup: skip if already consumed via task_output tool
+            if (!taskManager.getTask(completedTask.id)) {
+              continue;
+            }
+
+            // Skip killed tasks (user already knows)
+            if (completedTask.status === "killed") {
+              taskManager.removeTask(completedTask.id);
+              continue;
+            }
+
+            // Format as follow-up prompt
+            const followUpPrompt =
+              completedTask.status === "completed"
+                ? formatTaskCompletion(completedTask)
+                : formatTaskFailure(completedTask);
+
+            taskManager.removeTask(completedTask.id);
+
+            // Re-generate with task result
+            lastResult = await agent.generate({
+              ...genOptions,
+              prompt: followUpPrompt,
+              messages: runningMessages,
+            });
+
+            if (lastResult.status === "interrupted") {
+              return lastResult;
+            }
+
+            runningMessages = [
+              ...runningMessages,
+              { role: "user" as const, content: followUpPrompt },
+              { role: "assistant" as const, content: lastResult.text },
+            ];
+          }
+
+          return lastResult;
         } catch (error) {
           // Check if this is an InterruptSignal (new interrupt system)
           if (isInterruptSignal(error)) {
@@ -2196,7 +2263,51 @@ export function createAgent(options: AgentOptions): Agent {
             // Note: updatedResult is not applied for streaming since the stream has already been sent
           }
 
-          // Success - break out of retry loop
+          // --- Background task completion loop ---
+          if (!waitForBackgroundTasks) {
+            return;
+          }
+
+          let currentMessages: ModelMessage[] = [
+            ...messages,
+            { role: "assistant" as const, content: text },
+          ];
+
+          while (taskManager.hasActiveTasks()) {
+            const completedTask = await taskManager.waitForNextCompletion();
+
+            if (!taskManager.getTask(completedTask.id)) continue;
+            if (completedTask.status === "killed") {
+              taskManager.removeTask(completedTask.id);
+              continue;
+            }
+
+            const followUpPrompt =
+              completedTask.status === "completed"
+                ? formatTaskCompletion(completedTask)
+                : formatTaskFailure(completedTask);
+            taskManager.removeTask(completedTask.id);
+
+            // Stream the follow-up generation
+            const followUpGen = agent.stream({
+              ...genOptions,
+              prompt: followUpPrompt,
+              messages: currentMessages,
+            });
+
+            let followUpText = "";
+            for await (const part of followUpGen) {
+              yield part;
+              if (part.type === "text-delta") followUpText += part.text;
+            }
+
+            currentMessages = [
+              ...currentMessages,
+              { role: "user" as const, content: followUpPrompt },
+              { role: "assistant" as const, content: followUpText },
+            ];
+          }
+
           return;
         } catch (error) {
           // Normalize error to AgentError
@@ -2299,16 +2410,21 @@ export function createAgent(options: AgentOptions): Agent {
             headers: effectiveGenOptions.headers,
           };
 
-          // Track step count for incremental checkpointing
-          let currentStepCount = 0;
+          // Capture currentModel for use in the callback closure
+          const modelToUse = retryState.currentModel;
 
           // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
           const signalStopCondition = () => signalState.interrupt != null;
 
-          // Execute stream
+          // Track step count for incremental checkpointing
+          let currentStepCount = 0;
+
+          // Execute streamText OUTSIDE createUIMessageStream so errors propagate
+          // to the retry loop (if streamText throws synchronously on creation,
+          // e.g. rate limit, the catch block handles retry/fallback).
           const result = streamText({
-            model: retryState.currentModel,
+            model: modelToUse,
             system: initialParams.system,
             messages: initialParams.messages,
             tools: initialParams.tools as ToolSet,
@@ -2390,10 +2506,71 @@ export function createAgent(options: AgentOptions): Agent {
             },
           });
 
-          // Return AI SDK compatible response for use with useChat
-          // Note: Not passing originalMessages since ModelMessage[] != UIMessage[]
-          // The AI SDK will reconstruct messages from the stream
-          return result.toUIMessageStreamResponse();
+          // Use createUIMessageStream to control stream lifecycle for background task follow-ups
+          const stream = createUIMessageStream({
+            execute: async ({ writer }) => {
+              // Merge initial generation into the stream
+              writer.merge(result.toUIMessageStream());
+
+              // Wait for initial generation to complete to get final text
+              const text = await result.text;
+
+              // --- Background task completion loop ---
+              if (waitForBackgroundTasks) {
+                let currentMessages: ModelMessage[] = [
+                  ...messages,
+                  { role: "assistant" as const, content: text },
+                ];
+
+                while (taskManager.hasActiveTasks()) {
+                  const completedTask = await taskManager.waitForNextCompletion();
+
+                  if (!taskManager.getTask(completedTask.id)) continue;
+                  if (completedTask.status === "killed") {
+                    taskManager.removeTask(completedTask.id);
+                    continue;
+                  }
+
+                  const followUpPrompt =
+                    completedTask.status === "completed"
+                      ? formatTaskCompletion(completedTask)
+                      : formatTaskFailure(completedTask);
+                  taskManager.removeTask(completedTask.id);
+
+                  // Stream follow-up generation into the same writer
+                  const followUpResult = streamText({
+                    model: modelToUse,
+                    system: initialParams.system,
+                    messages: [
+                      ...currentMessages,
+                      { role: "user" as const, content: followUpPrompt },
+                    ],
+                    tools: initialParams.tools as ToolSet,
+                    maxOutputTokens: initialParams.maxTokens,
+                    temperature: initialParams.temperature,
+                    stopSequences: initialParams.stopSequences,
+                    abortSignal: initialParams.abortSignal,
+                    stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                    // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                    providerOptions: initialParams.providerOptions as any,
+                    headers: initialParams.headers,
+                  });
+
+                  writer.merge(followUpResult.toUIMessageStream());
+                  const followUpText = await followUpResult.text;
+
+                  currentMessages = [
+                    ...currentMessages,
+                    { role: "user" as const, content: followUpPrompt },
+                    { role: "assistant" as const, content: followUpText },
+                  ];
+                }
+              }
+            },
+          });
+
+          // Convert the stream to a Response
+          return createUIMessageStreamResponse({ stream });
         } catch (error) {
           // Normalize error to AgentError
           const normalizedError = normalizeError(
@@ -2792,6 +2969,61 @@ export function createAgent(options: AgentOptions): Agent {
 
               // Merge the streamText output into the UI message stream
               writer.merge(result.toUIMessageStream());
+
+              // Wait for initial generation to complete to get final text
+              const text = await result.text;
+
+              // --- Background task completion loop ---
+              if (waitForBackgroundTasks) {
+                let currentMessages: ModelMessage[] = [
+                  ...messages,
+                  { role: "assistant" as const, content: text },
+                ];
+
+                while (taskManager.hasActiveTasks()) {
+                  const completedTask = await taskManager.waitForNextCompletion();
+
+                  if (!taskManager.getTask(completedTask.id)) continue;
+                  if (completedTask.status === "killed") {
+                    taskManager.removeTask(completedTask.id);
+                    continue;
+                  }
+
+                  const followUpPrompt =
+                    completedTask.status === "completed"
+                      ? formatTaskCompletion(completedTask)
+                      : formatTaskFailure(completedTask);
+                  taskManager.removeTask(completedTask.id);
+
+                  // Stream follow-up generation into the same writer
+                  const followUpResult = streamText({
+                    model: modelToUse,
+                    system: initialParams.system,
+                    messages: [
+                      ...currentMessages,
+                      { role: "user" as const, content: followUpPrompt },
+                    ],
+                    tools: initialParams.tools as ToolSet,
+                    maxOutputTokens: initialParams.maxTokens,
+                    temperature: initialParams.temperature,
+                    stopSequences: initialParams.stopSequences,
+                    abortSignal: initialParams.abortSignal,
+                    stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                    // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                    providerOptions: initialParams.providerOptions as any,
+                    headers: initialParams.headers,
+                  });
+
+                  writer.merge(followUpResult.toUIMessageStream());
+                  const followUpText = await followUpResult.text;
+
+                  currentMessages = [
+                    ...currentMessages,
+                    { role: "user" as const, content: followUpPrompt },
+                    { role: "assistant" as const, content: followUpText },
+                  ];
+                }
+              }
             },
           });
 

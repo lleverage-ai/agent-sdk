@@ -261,6 +261,29 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
     return this.listTasks({ status: ["running", "pending"] }).length > 0;
   }
 
+  /**
+   * Wait for the next task to reach a terminal state.
+   *
+   * Returns a promise that resolves with the completed/failed/killed task.
+   * If there are no active tasks, this will hang indefinitely — always check
+   * `hasActiveTasks()` before calling.
+   *
+   * @returns Promise resolving with the task that reached a terminal state
+   */
+  waitForNextCompletion(): Promise<BackgroundTask> {
+    return new Promise((resolve) => {
+      const onTerminal = (task: BackgroundTask) => {
+        this.off("taskCompleted", onTerminal);
+        this.off("taskFailed", onTerminal);
+        this.off("taskKilled", onTerminal);
+        resolve(task);
+      };
+      this.on("taskCompleted", onTerminal);
+      this.on("taskFailed", onTerminal);
+      this.on("taskKilled", onTerminal);
+    });
+  }
+
   // ===========================================================================
   // Control
   // ===========================================================================
