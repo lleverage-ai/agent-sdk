@@ -3250,11 +3250,11 @@ export function createAgent(options: AgentOptions): Agent {
         );
       }
 
-      // Store the response for the tool wrapper to use
-      const toolCallId = interrupt.toolCallId;
-      if (toolCallId) {
-        pendingResponses.set(toolCallId, response);
-      }
+      // Store the response keyed by interrupt ID (format: "int_<toolCallId>").
+      // The interrupt() function in the tool wrapper looks up responses using
+      // this exact key format, so we must use interrupt.id — NOT the raw
+      // toolCallId which would never match.
+      pendingResponses.set(interrupt.id, response);
 
       // Emit InterruptResolved hook
       const interruptResolvedHooks = effectiveHooks?.InterruptResolved ?? [];
@@ -3322,22 +3322,23 @@ export function createAgent(options: AgentOptions): Agent {
               abortSignal: genOptions?.signal,
             } as ToolExecutionOptions);
           } catch (error) {
-            toolResultOutput = {
-              error: true,
-              message: error instanceof Error ? error.message : String(error),
-            };
+            toolResultOutput = `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
           }
         } else {
           // Denied: Create a synthetic denial result
-          toolResultOutput = {
-            denied: true,
-            message: `Tool "${interrupt.toolName}" was denied by user${
-              approvalResponse.reason ? `: ${approvalResponse.reason}` : ""
-            }`,
-          };
+          toolResultOutput = `Tool "${interrupt.toolName}" was denied by user${
+            approvalResponse.reason ? `: ${approvalResponse.reason}` : ""
+          }`;
         }
 
-        // Build the tool result message
+        // Build the tool result message with proper ToolResultOutput format.
+        // The AI SDK validates messages against modelMessageSchema which
+        // requires output to be { type: 'text', value } or { type: 'json', value }.
+        const approvalOutput =
+          typeof toolResultOutput === "string"
+            ? { type: "text" as const, value: toolResultOutput }
+            : { type: "json" as const, value: toolResultOutput };
+
         const toolResultMessage = {
           role: "tool" as const,
           content: [
@@ -3345,7 +3346,7 @@ export function createAgent(options: AgentOptions): Agent {
               type: "tool-result" as const,
               toolCallId: interrupt.toolCallId,
               toolName: interrupt.toolName,
-              output: toolResultOutput,
+              output: approvalOutput,
             },
           ],
         } as ModelMessage;
@@ -3365,7 +3366,7 @@ export function createAgent(options: AgentOptions): Agent {
         await options.checkpointer.save(updatedCheckpoint);
 
         // Clean up the response from our maps
-        pendingResponses.delete(interrupt.toolCallId);
+        pendingResponses.delete(interrupt.id);
         approvalDecisions.delete(interrupt.toolCallId);
 
         // Continue generation from the updated checkpoint
@@ -3376,21 +3377,127 @@ export function createAgent(options: AgentOptions): Agent {
         });
       }
 
-      // For custom interrupts, the tool's interrupt() call will receive the response
-      // Store it and re-run generation - the tool will get the response
+      // For custom interrupts (e.g. ask_user), manually execute the tool so
+      // that its interrupt() call receives the stored response deterministically.
+      // Re-running generate() would rely on the model re-calling the same tool,
+      // but tool call IDs change each generation so pendingResponses would never
+      // be matched.
+      {
+        const customToolCallId = interrupt.toolCallId;
+        const customToolName = interrupt.toolName;
 
-      // Clear the interrupt from checkpoint before continuing
-      const updatedCheckpoint = updateCheckpoint(checkpoint, {
-        pendingInterrupt: undefined,
-      });
-      await options.checkpointer.save(updatedCheckpoint);
+        if (!customToolCallId || !customToolName) {
+          throw new Error(
+            "Cannot resume custom interrupt: missing toolCallId or toolName on interrupt",
+          );
+        }
 
-      // Continue generation - the wrapped tool will pick up the response from pendingResponses
-      return agent.generate({
-        threadId,
-        ...genOptions,
-        prompt: undefined,
-      });
+        // Build the assistant message with the original tool call
+        const customAssistantMessage: ModelMessage = {
+          role: "assistant" as const,
+          content: [
+            {
+              type: "tool-call" as const,
+              toolCallId: customToolCallId,
+              toolName: customToolName,
+              input: interrupt.request,
+            },
+          ],
+        };
+
+        // Collect all tools (same pattern as the approval path above)
+        const customTools: ToolSet = { ...coreTools };
+        for (const plugin of options.plugins ?? []) {
+          if (plugin.tools && typeof plugin.tools !== "function") {
+            Object.assign(customTools, plugin.tools);
+          }
+        }
+        const customMcpTools = mcpManager.getToolSet();
+        Object.assign(customTools, customMcpTools);
+
+        const customTool = customTools[customToolName];
+        if (!customTool || !customTool.execute) {
+          throw new Error(
+            `Cannot resume: tool "${customToolName}" not found or has no execute function`,
+          );
+        }
+
+        let customToolResult: unknown;
+        try {
+          // Execute the tool, providing an interrupt function that returns
+          // the stored user response. This mirrors what happens inside the
+          // permission-mode tool wrapper when pendingResponses has a match.
+          customToolResult = await customTool.execute(interrupt.request, {
+            toolCallId: customToolCallId,
+            messages: checkpoint.messages,
+            abortSignal: genOptions?.signal,
+            interrupt: async () => {
+              const stored = pendingResponses.get(interrupt.id);
+              pendingResponses.delete(interrupt.id);
+              return stored;
+            },
+          } as ToolExecutionOptions);
+        } catch (executeError) {
+          if (isInterruptSignal(executeError)) {
+            // Tool threw another interrupt — persist it and return interrupted
+            const newInterrupt = executeError.interrupt;
+            const reInterruptCheckpoint = updateCheckpoint(checkpoint, {
+              pendingInterrupt: newInterrupt,
+            });
+            await options.checkpointer.save(reInterruptCheckpoint);
+            threadCheckpoints.set(threadId, reInterruptCheckpoint);
+            return {
+              status: "interrupted",
+              interrupt: newInterrupt,
+              partial: undefined,
+            } as GenerateResultInterrupted;
+          }
+          customToolResult = `Tool execution failed: ${executeError instanceof Error ? executeError.message : String(executeError)}`;
+        }
+
+        // Build tool result message with proper ToolResultOutput format.
+        const customOutput =
+          typeof customToolResult === "string"
+            ? { type: "text" as const, value: customToolResult }
+            : { type: "json" as const, value: customToolResult };
+
+        const customToolResultMessage = {
+          role: "tool" as const,
+          content: [
+            {
+              type: "tool-result" as const,
+              toolCallId: customToolCallId,
+              toolName: customToolName,
+              output: customOutput,
+            },
+          ],
+        } as ModelMessage;
+
+        // Update checkpoint with tool call + result, clear interrupt
+        const customUpdatedMessages: ModelMessage[] = [
+          ...checkpoint.messages,
+          customAssistantMessage,
+          customToolResultMessage,
+        ];
+
+        const customUpdatedCheckpoint = updateCheckpoint(checkpoint, {
+          messages: customUpdatedMessages,
+          pendingInterrupt: undefined,
+          step: checkpoint.step + 1,
+        });
+        await options.checkpointer.save(customUpdatedCheckpoint);
+        threadCheckpoints.set(threadId, customUpdatedCheckpoint);
+
+        // Clean up
+        pendingResponses.delete(interrupt.id);
+
+        // Continue generation from the updated checkpoint
+        return agent.generate({
+          threadId,
+          ...genOptions,
+          prompt: undefined,
+        });
+      }
     },
 
     async dispose(): Promise<void> {
