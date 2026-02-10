@@ -173,6 +173,83 @@ describe("HeadlessSessionRunner", () => {
     consoleSpy.mockRestore();
   });
 
+  it("calls onError callback instead of console.error when provided", async () => {
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const onError = vi.fn();
+
+    mockSessionOutputs = [
+      { type: "error", error: new Error("test error") } as SessionOutput,
+      { type: "generation_complete", fullText: "" },
+    ];
+
+    const agent = createMockAgent();
+    const runner = new HeadlessSessionRunner({
+      agent,
+      teammateId,
+      coordinator,
+      initialPrompt: "test",
+      onError,
+    });
+
+    await runner.start();
+
+    expect(onError).toHaveBeenCalledWith(teammateId, expect.any(Error));
+    expect(consoleSpy).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  it("treats interrupts as errors in headless mode", async () => {
+    const onError = vi.fn();
+
+    mockSessionOutputs = [
+      {
+        type: "interrupt",
+        interrupt: { id: "int-1", type: "custom", toolCallId: "tc-1", toolName: "test" },
+      } as unknown as SessionOutput,
+    ];
+
+    const agent = createMockAgent();
+    const runner = new HeadlessSessionRunner({
+      agent,
+      teammateId,
+      coordinator,
+      initialPrompt: "test",
+      onError,
+    });
+
+    await runner.start();
+
+    expect(onError).toHaveBeenCalledWith(
+      teammateId,
+      expect.objectContaining({
+        message: expect.stringContaining("Unexpected interrupt"),
+      }),
+    );
+  });
+
+  it("passes custom idleTimeoutMs to coordinator.waitForMessage", async () => {
+    const waitSpy = vi.spyOn(coordinator, "waitForMessage").mockResolvedValue(null);
+
+    mockSessionOutputs = [
+      { type: "waiting_for_input" } as SessionOutput,
+      // After waitForMessage returns null (timeout), the runner stops
+    ];
+
+    const agent = createMockAgent();
+    const runner = new HeadlessSessionRunner({
+      agent,
+      teammateId,
+      coordinator,
+      initialPrompt: "test",
+      idleTimeoutMs: 5000,
+    });
+
+    await runner.start();
+
+    expect(waitSpy).toHaveBeenCalledWith(teammateId, 5000);
+    waitSpy.mockRestore();
+  });
+
   it("injects messages when waiting_for_input and messages exist", async () => {
     // Pre-send a message to the teammate
     coordinator.sendMessage({

@@ -8,125 +8,22 @@ import type { ToolSet } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import { invokeCustomHook } from "../../hooks.js";
-import type { Agent, ExtendedToolExecutionOptions, HookRegistration } from "../../types.js";
+import type { Agent, HookRegistration } from "../../types.js";
 import { TEAM_HOOKS } from "./hooks.js";
 import type { HeadlessSessionRunner } from "./session-runner.js";
-import type { TeamCoordinator, TeammateDefinition } from "./types.js";
-
-// =============================================================================
-// Start Team Tool
-// =============================================================================
+import type { AgentRef, TeamCoordinator, TeammateDefinition } from "./types.js";
 
 /**
- * Creates the `start_team` tool that transitions the primary agent into team leader mode.
- *
- * When called, this tool:
- * 1. Creates a team leader agent that extends the primary agent's config with team management tools
- * 2. Calls `handoff(teamLeaderAgent)` to swap the active agent
- *
- * @category Agent Teams
- * @internal
+ * Resolve the agent from an AgentRef, throwing a descriptive error if unset.
+ * Used by teammate tools where the agent is created after tools are defined.
  */
-export function createStartTeamTool(options: {
-  teammates: TeammateDefinition[];
-  coordinator: TeamCoordinator;
-  hooks?: HookRegistration;
-  maxConcurrentTeammates?: number;
-  createLeaderAgent: (
-    reason: string,
-    initialTasks?: Array<{ subject: string; description: string; blocked_by?: string[] }>,
-  ) => Agent;
-}) {
-  return tool({
-    description:
-      "Start a team of specialized agents to work on a complex task in parallel. " +
-      "Use this when the task benefits from multiple agents working concurrently.",
-    inputSchema: z.object({
-      reason: z.string().describe("Why a team is needed for this task"),
-      initial_tasks: z
-        .array(
-          z.object({
-            subject: z.string().describe("Brief task title"),
-            description: z.string().describe("Detailed task description"),
-            blocked_by: z.array(z.string()).optional().describe("Task subjects this depends on"),
-          }),
-        )
-        .optional()
-        .describe("Initial tasks to create for the team"),
-    }),
-    execute: async ({ reason, initial_tasks }, execOptions) => {
-      const extOpts = execOptions as ExtendedToolExecutionOptions;
-
-      // Create the team leader agent
-      const leaderAgent = options.createLeaderAgent(reason, initial_tasks);
-
-      // Build context message for the leader
-      let context = `Team mode activated. Reason: ${reason}\n`;
-      context += `Available teammate roles: ${options.teammates.map((t) => `${t.role} (${t.description})`).join(", ")}\n`;
-
-      if (initial_tasks && initial_tasks.length > 0) {
-        context += `\nInitial tasks have been created:\n`;
-        for (const task of initial_tasks) {
-          context += `- ${task.subject}: ${task.description}\n`;
-        }
-      }
-
-      // Hand off to the team leader
-      extOpts.handoff(leaderAgent, {
-        context,
-        resumable: true,
-      });
-    },
-  });
-}
-
-// =============================================================================
-// End Team Tool
-// =============================================================================
-
-/**
- * Creates the `end_team` tool that shuts down the team and hands back.
- *
- * @category Agent Teams
- * @internal
- */
-export function createEndTeamTool(options: {
-  coordinator: TeamCoordinator;
-  runners: Map<string, HeadlessSessionRunner>;
-  hooks?: HookRegistration;
-  agent: Agent;
-}) {
-  return tool({
-    description:
-      "End the team session. Shuts down all active teammates and hands back to the primary agent. " +
-      "Call this when all team work is complete.",
-    inputSchema: z.object({
-      summary: z.string().describe("Summary of team results to pass back to the primary agent"),
-    }),
-    execute: async ({ summary }, execOptions) => {
-      const extOpts = execOptions as ExtendedToolExecutionOptions;
-
-      // Stop all active teammates
-      for (const [id, runner] of options.runners) {
-        if (runner.isRunning()) {
-          runner.stop();
-        }
-        await invokeCustomHook(
-          options.hooks,
-          TEAM_HOOKS.TeammateStopped,
-          { teammateId: id },
-          options.agent,
-        );
-      }
-      options.runners.clear();
-
-      // Dispose the coordinator
-      options.coordinator.dispose();
-
-      // Hand back to the primary agent
-      extOpts.handback({ context: summary });
-    },
-  });
+function resolveAgent(agentRef: AgentRef): Agent {
+  if (!agentRef.current) {
+    throw new Error(
+      "Agent reference is not set. This is a bug in agent-teams plugin initialization.",
+    );
+  }
+  return agentRef.current;
 }
 
 // =============================================================================
@@ -134,7 +31,11 @@ export function createEndTeamTool(options: {
 // =============================================================================
 
 /**
- * Creates the full set of team management tools available to the team leader.
+ * Creates the team management tools available to the team leader.
+ *
+ * These tools are dynamically added to the primary agent via
+ * `addRuntimeTools()` when `start_team` is called, and removed
+ * when `end_team` is called.
  *
  * @category Agent Teams
  * @internal
@@ -326,13 +227,6 @@ export function createLeadTools(options: {
         return messages.map((m) => `[${m.from}]: ${m.content}`).join("\n");
       },
     }),
-
-    end_team: createEndTeamTool({
-      coordinator,
-      runners,
-      hooks,
-      agent,
-    }),
   };
 }
 
@@ -350,9 +244,9 @@ export function createTeammateTools(options: {
   teammateId: string;
   coordinator: TeamCoordinator;
   hooks?: HookRegistration;
-  agent: Agent;
+  agentRef: AgentRef;
 }): ToolSet {
-  const { teammateId, coordinator, hooks, agent } = options;
+  const { teammateId, coordinator, hooks, agentRef } = options;
 
   return {
     team_message: tool({
@@ -375,7 +269,7 @@ export function createTeammateTools(options: {
           hooks,
           TEAM_HOOKS.TeamMessageSent,
           { messageId: msg.id, from: teammateId, to, content },
-          agent,
+          resolveAgent(agentRef),
         );
 
         return `Message sent (${msg.id})`;
@@ -443,7 +337,7 @@ export function createTeammateTools(options: {
           hooks,
           TEAM_HOOKS.TeamTaskClaimed,
           { taskId: task_id, teammateId },
-          agent,
+          resolveAgent(agentRef),
         );
 
         const task = coordinator.getTask(task_id);
@@ -469,7 +363,7 @@ export function createTeammateTools(options: {
           hooks,
           TEAM_HOOKS.TeamTaskCompleted,
           { taskId: task_id, teammateId, result },
-          agent,
+          resolveAgent(agentRef),
         );
 
         return `Task ${task_id} completed${result ? `: ${result}` : ""}`;

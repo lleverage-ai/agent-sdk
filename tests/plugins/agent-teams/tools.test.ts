@@ -2,20 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InMemoryTeamCoordinator } from "../../../src/plugins/agent-teams/coordinator.js";
 import { TEAM_HOOKS } from "../../../src/plugins/agent-teams/hooks.js";
 import type { HeadlessSessionRunner } from "../../../src/plugins/agent-teams/session-runner.js";
-import {
-  createEndTeamTool,
-  createLeadTools,
-  createStartTeamTool,
-  createTeammateTools,
-} from "../../../src/plugins/agent-teams/tools.js";
+import { createLeadTools, createTeammateTools } from "../../../src/plugins/agent-teams/tools.js";
 import type { TeammateDefinition } from "../../../src/plugins/agent-teams/types.js";
-import type { Agent, ExtendedToolExecutionOptions, HookRegistration } from "../../../src/types.js";
+import type { Agent } from "../../../src/types.js";
 
 function createMockAgent(): Agent {
   return {
     generate: vi.fn(),
     resume: vi.fn(),
     options: { model: {} as any },
+    addRuntimeTools: vi.fn(),
+    removeRuntimeTools: vi.fn(),
   } as unknown as Agent;
 }
 
@@ -28,15 +25,6 @@ function createMockRunner(running = true): HeadlessSessionRunner {
   } as unknown as HeadlessSessionRunner;
 }
 
-function createMockExecOptions(): ExtendedToolExecutionOptions {
-  return {
-    toolCallId: "tc-1",
-    interrupt: vi.fn(),
-    handoff: vi.fn() as any,
-    handback: vi.fn() as any,
-  } as unknown as ExtendedToolExecutionOptions;
-}
-
 describe("Team Tools", () => {
   let coordinator: InMemoryTeamCoordinator;
 
@@ -46,175 +34,6 @@ describe("Team Tools", () => {
 
   afterEach(() => {
     coordinator.dispose();
-  });
-
-  // ===========================================================================
-  // Start Team Tool
-  // ===========================================================================
-
-  describe("createStartTeamTool", () => {
-    it("calls createLeaderAgent and handoff on execute", async () => {
-      const mockLeader = createMockAgent();
-      const createLeaderAgent = vi.fn().mockReturnValue(mockLeader);
-      const execOptions = createMockExecOptions();
-
-      const teammates: TeammateDefinition[] = [
-        {
-          role: "researcher",
-          description: "Researches topics",
-          agentOptions: { systemPrompt: "Research" },
-        },
-      ];
-
-      const startTool = createStartTeamTool({
-        teammates,
-        coordinator,
-        createLeaderAgent,
-      });
-
-      await startTool.execute(
-        { reason: "Complex task", initial_tasks: undefined },
-        execOptions as any,
-      );
-
-      expect(createLeaderAgent).toHaveBeenCalledWith("Complex task", undefined);
-      expect(execOptions.handoff).toHaveBeenCalledWith(mockLeader, {
-        context: expect.stringContaining("Complex task"),
-        resumable: true,
-      });
-    });
-
-    it("passes initial_tasks to createLeaderAgent", async () => {
-      const mockLeader = createMockAgent();
-      const createLeaderAgent = vi.fn().mockReturnValue(mockLeader);
-      const execOptions = createMockExecOptions();
-
-      const startTool = createStartTeamTool({
-        teammates: [],
-        coordinator,
-        createLeaderAgent,
-      });
-
-      const tasks = [
-        { subject: "Task A", description: "Do A" },
-        { subject: "Task B", description: "Do B", blocked_by: ["Task A"] },
-      ];
-
-      await startTool.execute(
-        { reason: "Parallel work", initial_tasks: tasks },
-        execOptions as any,
-      );
-
-      expect(createLeaderAgent).toHaveBeenCalledWith("Parallel work", tasks);
-    });
-
-    it("includes task info in handoff context", async () => {
-      const mockLeader = createMockAgent();
-      const createLeaderAgent = vi.fn().mockReturnValue(mockLeader);
-      const execOptions = createMockExecOptions();
-
-      const startTool = createStartTeamTool({
-        teammates: [],
-        coordinator,
-        createLeaderAgent,
-      });
-
-      await startTool.execute(
-        {
-          reason: "test",
-          initial_tasks: [{ subject: "Research", description: "Research topic" }],
-        },
-        execOptions as any,
-      );
-
-      const handoffCall = vi.mocked(execOptions.handoff).mock.calls[0];
-      expect(handoffCall[1].context).toContain("Research");
-      expect(handoffCall[1].context).toContain("Research topic");
-    });
-  });
-
-  // ===========================================================================
-  // End Team Tool
-  // ===========================================================================
-
-  describe("createEndTeamTool", () => {
-    it("stops all runners and calls handback", async () => {
-      const runners = new Map<string, HeadlessSessionRunner>();
-      const runner1 = createMockRunner(true);
-      const runner2 = createMockRunner(false);
-      runners.set("tm-1", runner1);
-      runners.set("tm-2", runner2);
-
-      const agent = createMockAgent();
-      const execOptions = createMockExecOptions();
-
-      const endTool = createEndTeamTool({
-        coordinator,
-        runners,
-        agent,
-      });
-
-      await endTool.execute({ summary: "All done" }, execOptions as any);
-
-      expect(runner1.stop).toHaveBeenCalled();
-      // runner2 is not running, so stop is still called (stop is idempotent)
-      expect(runners.size).toBe(0);
-      expect(execOptions.handback).toHaveBeenCalledWith({
-        context: "All done",
-      });
-    });
-
-    it("disposes the coordinator", async () => {
-      const runners = new Map<string, HeadlessSessionRunner>();
-      const agent = createMockAgent();
-      const execOptions = createMockExecOptions();
-
-      // Add some state to coordinator
-      coordinator.createTask({
-        subject: "Task",
-        description: "",
-        status: "pending",
-        createdBy: "lead",
-        blockedBy: [],
-      });
-
-      const endTool = createEndTeamTool({
-        coordinator,
-        runners,
-        agent,
-      });
-
-      await endTool.execute({ summary: "Done" }, execOptions as any);
-
-      expect(coordinator.listTasks()).toHaveLength(0);
-    });
-
-    it("fires TeammateStopped hook for each runner", async () => {
-      const runners = new Map<string, HeadlessSessionRunner>();
-      runners.set("tm-1", createMockRunner());
-      runners.set("tm-2", createMockRunner());
-
-      const hookFn = vi.fn();
-      const hooks: HookRegistration = {
-        Custom: {
-          [TEAM_HOOKS.TeammateStopped]: [hookFn],
-        },
-      };
-
-      const agent = createMockAgent();
-      const execOptions = createMockExecOptions();
-
-      const endTool = createEndTeamTool({
-        coordinator,
-        runners,
-        hooks,
-        agent,
-      });
-
-      await endTool.execute({ summary: "Done" }, execOptions as any);
-
-      expect(hookFn).toHaveBeenCalledTimes(2);
-    });
   });
 
   // ===========================================================================
@@ -580,7 +399,7 @@ describe("Team Tools", () => {
       return createTeammateTools({
         teammateId,
         coordinator,
-        agent,
+        agentRef: { current: agent },
       });
     }
 
@@ -741,7 +560,7 @@ describe("Team Tools", () => {
           hooks: {
             Custom: { [TEAM_HOOKS.TeamTaskClaimed]: [hookFn] },
           },
-          agent,
+          agentRef: { current: agent },
         });
 
         const task = coordinator.createTask({
@@ -834,7 +653,7 @@ describe("Team Tools", () => {
           hooks: {
             Custom: { [TEAM_HOOKS.TeamTaskCompleted]: [hookFn] },
           },
-          agent,
+          agentRef: { current: agent },
         });
 
         const task = coordinator.createTask({

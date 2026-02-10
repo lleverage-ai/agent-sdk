@@ -163,10 +163,16 @@ function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignal
           return await originalExecute.call(toolDef, input, options);
         } catch (error) {
           if (isHandoffSignal(error)) {
+            if (signalState.handoff || signalState.interrupt) {
+              throw error; // Already have a signal — let AI SDK handle this one
+            }
             signalState.handoff = error;
             return "[Agent handoff requested]";
           }
           if (isInterruptSignal(error)) {
+            if (signalState.handoff || signalState.interrupt) {
+              throw error; // Already have a signal — let AI SDK handle this one
+            }
             signalState.interrupt = error;
             return "[Interrupt requested]";
           }
@@ -1205,6 +1211,7 @@ export function createAgent(options: AgentOptions): Agent {
     const filteredTools = filterToolsByAllowed(
       (() => {
         const allTools: ToolSet = { ...coreTools };
+        Object.assign(allTools, runtimeTools);
         Object.assign(allTools, mcpManager.getToolSet());
         if (toolRegistry) {
           Object.assign(allTools, toolRegistry.getLoadedTools());
@@ -1263,10 +1270,16 @@ export function createAgent(options: AgentOptions): Agent {
     return promptBuilder!.build(context);
   };
 
-  // Helper to get current active tools (core + MCP + dynamically loaded from registry)
+  // Runtime tools added/removed dynamically by plugins at runtime
+  const runtimeTools: ToolSet = {};
+
+  // Helper to get current active tools (core + runtime + MCP + dynamically loaded from registry)
   const getActiveToolSet = (threadId?: string): ToolSet => {
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
+
+    // Add runtime tools (added by plugins at runtime)
+    Object.assign(allTools, runtimeTools);
 
     // Add MCP tools from plugin registrations
     const mcpTools = mcpManager.getToolSet();
@@ -1310,6 +1323,9 @@ export function createAgent(options: AgentOptions): Agent {
   ): ToolSet => {
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
+
+    // Add runtime tools (added by plugins at runtime)
+    Object.assign(allTools, runtimeTools);
 
     // Process plugins - invoke function-based tools with streaming context
     for (const plugin of options.plugins ?? []) {
@@ -2923,6 +2939,16 @@ export function createAgent(options: AgentOptions): Agent {
 
     getActiveTools() {
       return getActiveToolSet();
+    },
+
+    addRuntimeTools(tools: ToolSet) {
+      Object.assign(runtimeTools, tools);
+    },
+
+    removeRuntimeTools(toolNames: string[]) {
+      for (const name of toolNames) {
+        delete runtimeTools[name];
+      }
     },
 
     loadTools(toolNames: string[]) {

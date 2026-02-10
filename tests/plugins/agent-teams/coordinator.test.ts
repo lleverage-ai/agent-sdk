@@ -403,6 +403,31 @@ describe("InMemoryTeamCoordinator", () => {
       expect(messages).toBeNull();
     });
 
+    it("cancels existing waiter when called twice for the same agent", async () => {
+      // First wait — will be cancelled by the second call
+      const firstPromise = coordinator.waitForMessage("tm-1", 60000);
+
+      // Second wait — should cancel the first
+      const secondPromise = coordinator.waitForMessage("tm-1", 60000);
+
+      // First should resolve with empty array (cancelled)
+      const firstResult = await firstPromise;
+      expect(firstResult).toEqual([]);
+
+      // Send a message — should resolve the second waiter
+      setTimeout(() => {
+        coordinator.sendMessage({
+          from: "lead",
+          to: "tm-1",
+          content: "After double wait",
+        });
+      }, 50);
+
+      const secondResult = await secondPromise;
+      expect(secondResult).not.toBeNull();
+      expect(secondResult![0].content).toBe("After double wait");
+    });
+
     it("resolves when broadcast arrives", async () => {
       const promise = coordinator.waitForMessage("tm-1", 5000);
 

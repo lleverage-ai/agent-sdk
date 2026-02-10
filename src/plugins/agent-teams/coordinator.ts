@@ -251,6 +251,14 @@ export class InMemoryTeamCoordinator implements TeamCoordinator {
       return existing;
     }
 
+    // Cancel any existing waiter for this agent to prevent orphaned promises
+    const existingWaiter = this.waiters.get(agentId);
+    if (existingWaiter) {
+      clearTimeout(existingWaiter.timer);
+      existingWaiter.resolve([]);
+      this.waiters.delete(agentId);
+    }
+
     // Wait for new messages
     return new Promise<TeamMessage[] | null>((resolve) => {
       const timer = setTimeout(() => {

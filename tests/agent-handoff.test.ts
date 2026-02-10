@@ -247,6 +247,101 @@ describe("Agent Handoff Mechanism", () => {
       expect(handoffOutputs[1].context).toBe("Handing back with results");
     });
 
+    it("yields error when non-handback handoff has null targetAgent", async () => {
+      const primaryModel = createMockModel();
+      const primaryAgent = createAgent({
+        model: primaryModel,
+        systemPrompt: "Primary agent",
+      });
+
+      primaryAgent.generate = async (_opts) => {
+        return {
+          status: "handoff" as const,
+          targetAgent: null,
+          context: "Handoff with null target",
+          resumable: true,
+          isHandback: false,
+          partial: { text: "", steps: [], usage: undefined },
+        };
+      };
+
+      const session = new AgentSession({ agent: primaryAgent });
+      session.sendMessage("test");
+
+      const outputs: Array<{ type: string; [key: string]: unknown }> = [];
+      let count = 0;
+      for await (const output of session.run()) {
+        outputs.push(output);
+        count++;
+        if (count > 10) {
+          session.stop();
+          break;
+        }
+        if (output.type === "error" || output.type === "generation_complete") {
+          session.stop();
+        }
+      }
+
+      const errorOutput = outputs.find((o) => o.type === "error");
+      expect(errorOutput).toBeDefined();
+      expect((errorOutput?.error as Error).message).toContain("Handoff target agent is null");
+    });
+
+    it("yields error when max handoff depth is exceeded", async () => {
+      const primaryModel = createMockModel();
+      const primaryAgent = createAgent({
+        model: primaryModel,
+        systemPrompt: "Primary agent",
+      });
+
+      const secondModel = createMockModel();
+      const secondAgent = createAgent({
+        model: secondModel,
+        systemPrompt: "Second agent",
+      });
+
+      // Every generate call triggers a handoff to the other agent
+      let toggle = false;
+      const makeHandoff = async (_opts: any) => {
+        toggle = !toggle;
+        return {
+          status: "handoff" as const,
+          targetAgent: toggle ? secondAgent : primaryAgent,
+          context: "Ping-pong handoff",
+          resumable: true,
+          isHandback: false,
+          partial: { text: "", steps: [], usage: undefined },
+        };
+      };
+
+      primaryAgent.generate = makeHandoff;
+      secondAgent.generate = makeHandoff;
+
+      const session = new AgentSession({
+        agent: primaryAgent,
+        maxHandoffDepth: 3,
+      });
+      session.sendMessage("test");
+
+      const outputs: Array<{ type: string; [key: string]: unknown }> = [];
+      let count = 0;
+      for await (const output of session.run()) {
+        outputs.push(output);
+        count++;
+        if (count > 20) {
+          session.stop();
+          break;
+        }
+        if (output.type === "error" || output.type === "generation_complete") {
+          session.stop();
+        }
+      }
+
+      const errorOutput = outputs.find((o) => o.type === "error");
+      expect(errorOutput).toBeDefined();
+      expect((errorOutput?.error as Error).message).toContain("Maximum handoff depth (3) exceeded");
+    });
+
     it("non-resumable handoff does not push to stack", async () => {
       const primaryModel = createMockModel();
       const primaryAgent = createAgent({

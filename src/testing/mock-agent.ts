@@ -591,6 +591,14 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
       });
     },
 
+    addRuntimeTools(_tools) {
+      // no-op in mock
+    },
+
+    removeRuntimeTools(_toolNames) {
+      // no-op in mock
+    },
+
     async dispose(): Promise<void> {
       // Kill all running background tasks
       await taskManager.killAllTasks();

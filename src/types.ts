@@ -1292,6 +1292,46 @@ export interface Agent {
   readonly taskManager: import("./task-manager.js").TaskManager;
 
   /**
+   * Add tools to the agent at runtime.
+   *
+   * Runtime tools are included in the active tool set alongside core tools,
+   * MCP tools, and registry tools. Adding a tool with the same name as an
+   * existing runtime tool overwrites it.
+   *
+   * This is primarily used by plugins that need to dynamically inject tools
+   * (e.g., team management tools that appear only when a team is active).
+   *
+   * @param tools - The tools to add
+   *
+   * @example
+   * ```typescript
+   * agent.addRuntimeTools({
+   *   my_tool: tool({
+   *     description: "A dynamically added tool",
+   *     inputSchema: z.object({ input: z.string() }),
+   *     execute: async ({ input }) => `Result: ${input}`,
+   *   }),
+   * });
+   * ```
+   */
+  addRuntimeTools(tools: ToolSet): void;
+
+  /**
+   * Remove runtime tools by name.
+   *
+   * Removes tools previously added via {@link addRuntimeTools}.
+   * Removing a tool name that doesn't exist is a no-op.
+   *
+   * @param toolNames - Names of the tools to remove
+   *
+   * @example
+   * ```typescript
+   * agent.removeRuntimeTools(["my_tool"]);
+   * ```
+   */
+  removeRuntimeTools(toolNames: string[]): void;
+
+  /**
    * Dispose the agent and clean up resources.
    *
    * This method should be called when the agent is no longer needed,

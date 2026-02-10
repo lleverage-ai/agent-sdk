@@ -5,7 +5,21 @@
  */
 
 import type { LanguageModel } from "ai";
-import type { AgentOptions, HookRegistration } from "../../types.js";
+import type { Agent, AgentOptions, HookRegistration } from "../../types.js";
+
+// =============================================================================
+// Agent Reference
+// =============================================================================
+
+/**
+ * Mutable reference to an agent, used by tools that need access to an agent
+ * that hasn't been created yet at tool-definition time.
+ *
+ * @category Agent Teams
+ */
+export interface AgentRef {
+  current: Agent | undefined;
+}
 
 // =============================================================================
 // Team Task
@@ -187,4 +201,8 @@ export interface AgentTeamsPluginOptions {
   hooks?: HookRegistration;
   /** Maximum concurrent teammates (default: Infinity) */
   maxConcurrentTeammates?: number;
+  /** Milliseconds to wait for messages before considering a teammate idle. @default 30000 */
+  idleTimeoutMs?: number;
+  /** Callback when a teammate session error occurs. If not provided, errors are logged to console. */
+  onError?: (teammateId: string, error: Error) => void;
 }

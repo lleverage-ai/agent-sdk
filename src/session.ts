@@ -87,6 +87,13 @@ export interface AgentSessionOptions {
    * @default Infinity
    */
   maxTurns?: number;
+
+  /**
+   * Maximum depth of recursive handoffs before stopping with an error.
+   * Prevents infinite handoff loops from causing a stack overflow.
+   * @default 10
+   */
+  maxHandoffDepth?: number;
 }
 
 // =============================================================================
@@ -160,6 +167,8 @@ export class AgentSession {
   private formatTaskCompletion: (task: BackgroundTask) => string;
   private formatTaskFailure: (task: BackgroundTask) => string;
   private maxTurns: number;
+  private maxHandoffDepth: number;
+  private handoffDepth = 0;
 
   // Track pending interrupt for resumption
   private pendingInterrupt: Interrupt | null = null;
@@ -175,6 +184,7 @@ export class AgentSession {
     this.formatTaskFailure = options.formatTaskFailure ?? defaultFormatTaskFailure;
     this.messages = options.initialMessages ? [...options.initialMessages] : [];
     this.maxTurns = options.maxTurns ?? Infinity;
+    this.maxHandoffDepth = options.maxHandoffDepth ?? 10;
 
     // Subscribe to task manager events
     if (this.autoProcessTaskCompletions) {
@@ -286,6 +296,7 @@ export class AgentSession {
 
     this.running = true;
     this.stopped = false;
+    this.handoffDepth = 0;
 
     try {
       while (!this.stopped && this.turnCount < this.maxTurns) {
@@ -401,11 +412,15 @@ export class AgentSession {
             this.agent = prevAgent;
           }
         } else {
+          if (!result.targetAgent) {
+            yield { type: "error", error: new Error("Handoff target agent is null") };
+            return;
+          }
           // Push current agent onto stack and swap
           if (result.resumable) {
             this.agentStack.push(this.agent);
           }
-          this.agent = result.targetAgent!;
+          this.agent = result.targetAgent;
         }
 
         // Yield notification
@@ -414,9 +429,23 @@ export class AgentSession {
         // Update messages with the current prompt
         this.messages.push({ role: "user", content: prompt });
 
-        // Continue generating with the new agent, using context as the next prompt
+        // Continue generating with the new agent, using context as the next prompt.
+        // When context is undefined, there is no recursive generate() call so
+        // depth tracking is not needed — the session simply waits for the next event.
         if (result.context) {
-          yield* this.generate(result.context);
+          if (this.handoffDepth >= this.maxHandoffDepth) {
+            yield {
+              type: "error",
+              error: new Error(`Maximum handoff depth (${this.maxHandoffDepth}) exceeded`),
+            };
+            return;
+          }
+          this.handoffDepth++;
+          try {
+            yield* this.generate(result.context);
+          } finally {
+            this.handoffDepth--;
+          }
         }
         return;
       }
@@ -483,16 +512,33 @@ export class AgentSession {
             this.agent = prevAgent;
           }
         } else {
+          if (!result.targetAgent) {
+            yield { type: "error", error: new Error("Handoff target agent is null") };
+            return;
+          }
           if (result.resumable) {
             this.agentStack.push(this.agent);
           }
-          this.agent = result.targetAgent!;
+          this.agent = result.targetAgent;
         }
 
         yield { type: "agent_handoff", context: result.context };
 
+        // See comment in generate() — context: undefined means no recursion.
         if (result.context) {
-          yield* this.generate(result.context);
+          if (this.handoffDepth >= this.maxHandoffDepth) {
+            yield {
+              type: "error",
+              error: new Error(`Maximum handoff depth (${this.maxHandoffDepth}) exceeded`),
+            };
+            return;
+          }
+          this.handoffDepth++;
+          try {
+            yield* this.generate(result.context);
+          } finally {
+            this.handoffDepth--;
+          }
         }
         return;
       }

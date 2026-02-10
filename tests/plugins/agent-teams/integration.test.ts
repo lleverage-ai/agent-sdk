@@ -1,21 +1,14 @@
 /**
- * Mock-based integration tests for Agent Teams plugin.
+ * Integration tests for Agent Teams plugin with runtime tools.
  *
- * These tests wire up real `createAgent` + `AgentSession` with a mocked
- * `generateText` to verify the full handoff flow, team coordination,
- * and hook observability without needing API keys.
+ * These tests verify that `start_team` dynamically adds team tools to the
+ * primary agent and `end_team` removes them. No handoff occurs — the
+ * primary agent gains/loses tools at runtime.
  *
  * NOTE: Plugin tools are registered through the MCP manager and get
  * prefixed with `mcp__<pluginName>__`. So `start_team` becomes
  * `mcp__agent-teams__start_team` in the primary agent's tool set.
- * The leader agent's tools are passed directly via `tools:`, so they
- * are NOT prefixed.
- *
- * NOTE: The handoff mechanism uses a cooperative signal-catching approach.
- * When a tool throws HandoffSignal, the outermost wrapper catches it,
- * stores it in shared state, and returns a placeholder. The mock must
- * return a valid response object after calling execute() — `generate()`
- * checks the signal state before processing the response.
+ * The dynamically added team tools (via addRuntimeTools) are NOT prefixed.
  */
 
 import { generateText, tool } from "ai";
@@ -25,8 +18,6 @@ import { createAgent } from "../../../src/agent.js";
 import { TEAM_HOOKS } from "../../../src/plugins/agent-teams/hooks.js";
 import { createAgentTeamsPlugin } from "../../../src/plugins/agent-teams/index.js";
 import type { TeammateDefinition } from "../../../src/plugins/agent-teams/types.js";
-import type { SessionOutput } from "../../../src/session.js";
-import { AgentSession } from "../../../src/session.js";
 import type { HookRegistration } from "../../../src/types.js";
 import { createMockModel, resetMocks } from "../../setup.js";
 
@@ -78,8 +69,7 @@ function mockGenerateTextPlain(text = "OK") {
 
 /**
  * Helper: Create a generateText mock that calls a tool, then returns a
- * valid response. The signal-catching wrapper intercepts HandoffSignal
- * before it propagates, so the mock must return normally.
+ * valid response.
  */
 function mockGenerateTextWithToolCall(
   toolCallFn: (opts: any) => Promise<void>,
@@ -106,34 +96,6 @@ function mockGenerateTextWithToolCall(
   });
 }
 
-/**
- * Helper: Collect session outputs until generation_complete or error.
- */
-async function collectOutputs(
-  agent: { ready: Promise<void> },
-  session: AgentSession,
-  prompt: string,
-  maxIterations = 30,
-): Promise<SessionOutput[]> {
-  await agent.ready;
-  session.sendMessage(prompt);
-  const outputs: SessionOutput[] = [];
-  let count = 0;
-  for await (const output of session.run()) {
-    outputs.push(output);
-    count++;
-    if (count >= maxIterations) {
-      session.stop();
-      break;
-    }
-    if (output.type === "generation_complete" || output.type === "error") {
-      session.stop();
-      break;
-    }
-  }
-  return outputs;
-}
-
 describe("Agent Teams Integration Tests", () => {
   const teammates: TeammateDefinition[] = [
     {
@@ -150,8 +112,7 @@ describe("Agent Teams Integration Tests", () => {
 
   beforeEach(() => {
     resetMocks();
-    // Set a default fallback for generateText in case extra calls happen
-    // (e.g., from HeadlessSessionRunner background runs)
+    // Set a default fallback for generateText
     mockedGenerateText.mockImplementation(async () => {
       return {
         text: "fallback response",
@@ -173,11 +134,11 @@ describe("Agent Teams Integration Tests", () => {
   });
 
   // ===========================================================================
-  // Handoff Flow
+  // Runtime Tools Flow
   // ===========================================================================
 
-  describe("full handoff flow", () => {
-    it("primary agent hands off to team leader via start_team", async () => {
+  describe("runtime tools flow", () => {
+    it("start_team adds team tools to the primary agent", async () => {
       const model = createMockModel();
       const plugin = createAgentTeamsPlugin({ teammates });
 
@@ -187,89 +148,271 @@ describe("Agent Teams Integration Tests", () => {
         plugins: [plugin],
         permissionMode: "bypassPermissions",
       });
+      await agent.ready;
 
-      // Call 1: primary agent calls start_team → HandoffSignal caught cooperatively
+      // Before start_team: no team tools
+      const toolsBefore = agent.getActiveTools();
+      expect(toolsBefore.team_spawn).toBeUndefined();
+      expect(toolsBefore.team_message).toBeUndefined();
+      expect(toolsBefore.end_team).toBeUndefined();
+
+      // Call start_team via generate
       mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         expect(startTeam).toBeDefined();
-        await startTeam.execute(
-          {
-            reason: "Need parallel research",
-            initial_tasks: [
-              {
-                subject: "Research TS",
-                description: "Research TypeScript generics",
-              },
-            ],
-          },
+        const result = await startTeam.execute(
+          { reason: "Need parallel research" },
           { toolCallId: "tc-start" },
         );
+
+        // Tool result should contain team activation info
+        expect(result).toContain("Team mode activated");
+        expect(result).toContain("researcher");
+        expect(result).toContain("coder");
       });
 
-      // Call 2: team leader agent generates a response
-      mockGenerateTextPlain("Team leader: coordinating work...");
+      await agent.generate({ prompt: "Research TypeScript features" });
 
-      const session = new AgentSession({ agent });
-      const outputs = await collectOutputs(agent, session, "Research TypeScript features");
-
-      // Should have agent_handoff event
-      const handoffs = outputs.filter((o) => o.type === "agent_handoff");
-      expect(handoffs.length).toBeGreaterThanOrEqual(1);
-      expect(handoffs[0]).toMatchObject({
-        type: "agent_handoff",
-        context: expect.stringContaining("parallel research"),
-      });
-
-      // Should eventually get generation_complete from the leader
-      const complete = outputs.find((o) => o.type === "generation_complete");
-      expect(complete).toBeDefined();
+      // After start_team: team tools should be in getActiveTools
+      const toolsAfter = agent.getActiveTools();
+      expect(toolsAfter.team_spawn).toBeDefined();
+      expect(toolsAfter.team_message).toBeDefined();
+      expect(toolsAfter.team_shutdown).toBeDefined();
+      expect(toolsAfter.team_list_teammates).toBeDefined();
+      expect(toolsAfter.team_task_create).toBeDefined();
+      expect(toolsAfter.team_task_list).toBeDefined();
+      expect(toolsAfter.team_task_get).toBeDefined();
+      expect(toolsAfter.team_read_messages).toBeDefined();
+      expect(toolsAfter.end_team).toBeDefined();
     });
 
-    it("team leader hands back to primary agent via end_team", async () => {
+    it("end_team removes team tools from the primary agent", async () => {
       const model = createMockModel();
       const plugin = createAgentTeamsPlugin({ teammates });
 
-      const primaryAgent = createAgent({
+      const agent = createAgent({
         model,
         systemPrompt: "Primary agent",
         plugins: [plugin],
         permissionMode: "bypassPermissions",
       });
+      await agent.ready;
 
-      // Call 1: primary calls start_team → handoff to leader
+      // Call 1: start_team
       mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         await startTeam.execute({ reason: "Team work needed" }, { toolCallId: "tc-start" });
       });
 
-      // Call 2: leader calls end_team → handback to primary
+      await agent.generate({ prompt: "Start team" });
+
+      // Team tools should be present
+      expect(agent.getActiveTools().team_spawn).toBeDefined();
+
+      // Call 2: end_team (now available as a runtime tool)
       mockGenerateTextWithToolCall(async (opts) => {
-        // Leader tools are NOT MCP-prefixed (they're in tools: directly)
-        await opts.tools.end_team.execute(
+        expect(opts.tools.end_team).toBeDefined();
+        const result = await opts.tools.end_team.execute(
           { summary: "All work completed successfully" },
           { toolCallId: "tc-end" },
         );
+        expect(result).toBe("All work completed successfully");
       });
 
-      // Call 3: primary agent resumes with the summary as context
-      mockGenerateTextPlain("Here are the consolidated results from the team.");
+      await agent.generate({ prompt: "End team" });
 
-      const session = new AgentSession({ agent: primaryAgent });
-      const outputs = await collectOutputs(primaryAgent, session, "Do team work");
+      // After end_team: team tools should be gone
+      const toolsAfter = agent.getActiveTools();
+      expect(toolsAfter.team_spawn).toBeUndefined();
+      expect(toolsAfter.end_team).toBeUndefined();
+      expect(toolsAfter.team_message).toBeUndefined();
+    });
 
-      // Should have 2 handoff events: handoff + handback
-      const handoffs = outputs.filter((o) => o.type === "agent_handoff");
-      expect(handoffs.length).toBe(2);
+    it("double start_team returns error message", async () => {
+      const model = createMockModel();
+      const plugin = createAgentTeamsPlugin({ teammates });
 
-      // First: handoff to leader
-      expect(handoffs[0].context).toContain("Team work needed");
+      const agent = createAgent({
+        model,
+        systemPrompt: "Primary agent",
+        plugins: [plugin],
+        permissionMode: "bypassPermissions",
+      });
+      await agent.ready;
 
-      // Second: handback with summary
-      expect(handoffs[1].context).toBe("All work completed successfully");
+      // First start_team
+      mockGenerateTextWithToolCall(async (opts) => {
+        const startTeam = findTool(opts.tools, "start_team");
+        await startTeam.execute({ reason: "First team" }, { toolCallId: "tc-1" });
+      });
 
-      // Final generation_complete should be from the primary agent
-      const complete = outputs.find((o) => o.type === "generation_complete");
-      expect(complete).toBeDefined();
+      await agent.generate({ prompt: "Start team" });
+
+      // Second start_team should return error
+      mockGenerateTextWithToolCall(async (opts) => {
+        const startTeam = findTool(opts.tools, "start_team");
+        const result = await startTeam.execute({ reason: "Second team" }, { toolCallId: "tc-2" });
+        expect(result).toContain("Team already active");
+      });
+
+      await agent.generate({ prompt: "Start another team" });
+    });
+
+    it("no agent_handoff events are emitted", async () => {
+      const model = createMockModel();
+      const plugin = createAgentTeamsPlugin({ teammates });
+
+      const agent = createAgent({
+        model,
+        systemPrompt: "Primary agent",
+        plugins: [plugin],
+        permissionMode: "bypassPermissions",
+      });
+      await agent.ready;
+
+      // start_team should just return a result, not trigger handoff
+      mockGenerateTextWithToolCall(async (opts) => {
+        const startTeam = findTool(opts.tools, "start_team");
+        await startTeam.execute({ reason: "Test" }, { toolCallId: "tc-start" });
+      });
+
+      const result = await agent.generate({ prompt: "Start team" });
+
+      // Should NOT be a handoff result
+      expect(result.status).toBe("complete");
+    });
+  });
+
+  // ===========================================================================
+  // Initial Tasks
+  // ===========================================================================
+
+  describe("initial tasks", () => {
+    it("initial_tasks are created in the coordinator on start_team", async () => {
+      const model = createMockModel();
+      const plugin = createAgentTeamsPlugin({ teammates });
+
+      const agent = createAgent({
+        model,
+        systemPrompt: "Primary",
+        plugins: [plugin],
+        permissionMode: "bypassPermissions",
+      });
+      await agent.ready;
+
+      // start_team with initial tasks
+      mockGenerateTextWithToolCall(async (opts) => {
+        const startTeam = findTool(opts.tools, "start_team");
+        const result = await startTeam.execute(
+          {
+            reason: "Parallel research",
+            initial_tasks: [
+              {
+                subject: "Research TypeScript",
+                description: "Deep dive into TS generics",
+              },
+              {
+                subject: "Research Rust",
+                description: "Compare Rust traits with TS interfaces",
+                blocked_by: ["Research TypeScript"],
+              },
+            ],
+          },
+          { toolCallId: "tc-start" },
+        );
+
+        // Result should mention the tasks
+        expect(result).toContain("Research TypeScript");
+        expect(result).toContain("Research Rust");
+      });
+
+      await agent.generate({ prompt: "Start research" });
+
+      // Verify team_task_list shows the tasks
+      mockGenerateTextWithToolCall(async (opts) => {
+        expect(opts.tools.team_task_list).toBeDefined();
+        const taskList = await opts.tools.team_task_list.execute(
+          { status: undefined, assignee: undefined },
+          { toolCallId: "tc-list" },
+        );
+        expect(taskList).toContain("Research TypeScript");
+        expect(taskList).toContain("Research Rust");
+        expect(taskList).toContain("blocked by");
+      });
+
+      await agent.generate({ prompt: "List tasks" });
+    });
+  });
+
+  // ===========================================================================
+  // Team Tools Available During Generation
+  // ===========================================================================
+
+  describe("team tools during generation", () => {
+    it("team tools are passed to generateText after start_team", async () => {
+      const model = createMockModel();
+      let toolNamesInGeneration: string[] = [];
+
+      const primaryCustomTool = tool({
+        description: "A custom tool from the primary agent",
+        inputSchema: z.object({ input: z.string() }),
+        execute: async ({ input }) => `Processed: ${input}`,
+      });
+
+      const plugin = createAgentTeamsPlugin({ teammates });
+
+      const agent = createAgent({
+        model,
+        systemPrompt: "Primary agent",
+        tools: { custom_tool: primaryCustomTool },
+        plugins: [plugin],
+        permissionMode: "bypassPermissions",
+      });
+      await agent.ready;
+
+      // Call 1: start_team
+      mockGenerateTextWithToolCall(async (opts) => {
+        const startTeam = findTool(opts.tools, "start_team");
+        await startTeam.execute({ reason: "Test" }, { toolCallId: "tc-start" });
+      });
+
+      await agent.generate({ prompt: "Start team" });
+
+      // Call 2: capture tools available in generation
+      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
+        toolNamesInGeneration = Object.keys(opts.tools || {});
+        return {
+          text: "Team active",
+          finishReason: "stop",
+          usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
+          response: { id: "r1", timestamp: new Date(), modelId: "mock" },
+          steps: [],
+          warnings: [],
+          sources: [],
+          toolCalls: [],
+          toolResults: [],
+          request: { body: {} },
+        } as any;
+      });
+
+      await agent.generate({ prompt: "Do team work" });
+
+      // Should have team management tools
+      expect(toolNamesInGeneration).toContain("team_spawn");
+      expect(toolNamesInGeneration).toContain("team_message");
+      expect(toolNamesInGeneration).toContain("team_shutdown");
+      expect(toolNamesInGeneration).toContain("team_list_teammates");
+      expect(toolNamesInGeneration).toContain("team_task_create");
+      expect(toolNamesInGeneration).toContain("team_task_list");
+      expect(toolNamesInGeneration).toContain("team_task_get");
+      expect(toolNamesInGeneration).toContain("team_read_messages");
+      expect(toolNamesInGeneration).toContain("end_team");
+
+      // Should also have primary agent's custom tools
+      expect(toolNamesInGeneration).toContain("custom_tool");
+
+      // start_team should still be present (as MCP-prefixed)
+      expect(toolNamesInGeneration).toContain(START_TEAM);
     });
   });
 
@@ -308,8 +451,9 @@ describe("Agent Teams Integration Tests", () => {
         plugins: [plugin],
         permissionMode: "bypassPermissions",
       });
+      await agent.ready;
 
-      // Call 1: primary calls start_team with initial tasks
+      // Call 1: start_team with initial tasks
       mockGenerateTextWithToolCall(async (opts) => {
         const startTeam = findTool(opts.tools, "start_team");
         await startTeam.execute(
@@ -324,9 +468,10 @@ describe("Agent Teams Integration Tests", () => {
         );
       });
 
-      // Call 2: leader creates an additional task, sends a message, then ends team
+      await agent.generate({ prompt: "Start team" });
+
+      // Call 2: create a task, send a message, end team
       mockGenerateTextWithToolCall(async (opts) => {
-        // Leader tools are NOT MCP-prefixed
         await opts.tools.team_task_create.execute(
           { subject: "Task C", description: "Do C" },
           { toolCallId: "tc-task" },
@@ -337,28 +482,15 @@ describe("Agent Teams Integration Tests", () => {
           { toolCallId: "tc-msg" },
         );
 
-        // End the team
         await opts.tools.end_team.execute({ summary: "Done" }, { toolCallId: "tc-end" });
       });
 
-      // Call 3: primary resumes
-      mockGenerateTextPlain("Results processed.");
-
-      const session = new AgentSession({ agent });
-      const outputs = await collectOutputs(agent, session, "Start team work");
+      await agent.generate({ prompt: "Do work and end" });
 
       // Verify hooks fired
       const eventNames = hookEvents.map((e) => e.event);
-
-      // TeamTaskCreated should fire for the tool-created task
       expect(eventNames).toContain(TEAM_HOOKS.TeamTaskCreated);
-
-      // TeamMessageSent should fire
       expect(eventNames).toContain(TEAM_HOOKS.TeamMessageSent);
-
-      // No errors
-      const errors = outputs.filter((o) => o.type === "error");
-      expect(errors).toHaveLength(0);
     });
 
     it("fires TeammateSpawned hook when team_spawn is called", async () => {
@@ -384,6 +516,7 @@ describe("Agent Teams Integration Tests", () => {
         plugins: [plugin],
         permissionMode: "bypassPermissions",
       });
+      await agent.ready;
 
       // Call 1: start_team
       mockGenerateTextWithToolCall(async (opts) => {
@@ -391,9 +524,10 @@ describe("Agent Teams Integration Tests", () => {
         await startTeam.execute({ reason: "Need researchers" }, { toolCallId: "tc-start" });
       });
 
-      // Call 2: leader spawns a teammate, then ends team
+      await agent.generate({ prompt: "Start team" });
+
+      // Call 2: spawn a teammate, then end team
       mockGenerateTextWithToolCall(async (opts) => {
-        // Leader tools are NOT MCP-prefixed
         await opts.tools.team_spawn.execute(
           {
             role: "researcher",
@@ -402,243 +536,19 @@ describe("Agent Teams Integration Tests", () => {
           { toolCallId: "tc-spawn" },
         );
 
-        // End team (this stops all runners)
+        // End team
         await opts.tools.end_team.execute(
           { summary: "Spawned and stopped" },
           { toolCallId: "tc-end" },
         );
       });
 
-      // Call 3: primary resumes
-      mockGenerateTextPlain("OK");
-
-      const session = new AgentSession({ agent });
-      const outputs = await collectOutputs(agent, session, "Do parallel research");
-
-      // No errors
-      const errors = outputs.filter((o) => o.type === "error");
-      expect(errors).toHaveLength(0);
+      await agent.generate({ prompt: "Do parallel research" });
 
       // Verify TeammateSpawned hook was called
       expect(spawnHook).toHaveBeenCalled();
       expect(spawnedEvents.length).toBeGreaterThanOrEqual(1);
-      expect(spawnedEvents[0]).toMatchObject({
-        role: "researcher",
-      });
-    });
-  });
-
-  // ===========================================================================
-  // Team Leader Tools
-  // ===========================================================================
-
-  describe("team leader has correct tools", () => {
-    it("leader agent receives team management tools plus primary agent tools", async () => {
-      const model = createMockModel();
-      let leaderToolNames: string[] = [];
-
-      const primaryCustomTool = tool({
-        description: "A custom tool from the primary agent",
-        inputSchema: z.object({ input: z.string() }),
-        execute: async ({ input }) => `Processed: ${input}`,
-      });
-
-      const plugin = createAgentTeamsPlugin({ teammates });
-
-      const agent = createAgent({
-        model,
-        systemPrompt: "Primary agent",
-        tools: { custom_tool: primaryCustomTool },
-        plugins: [plugin],
-        permissionMode: "bypassPermissions",
-      });
-
-      // Call 1: start_team → handoff to leader
-      mockGenerateTextWithToolCall(async (opts) => {
-        const startTeam = findTool(opts.tools, "start_team");
-        await startTeam.execute({ reason: "Test" }, { toolCallId: "tc-start" });
-      });
-
-      // Call 2: capture the tools available to the leader
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
-        leaderToolNames = Object.keys(opts.tools || {});
-        return {
-          text: "Leader done",
-          finishReason: "stop",
-          usage: {
-            inputTokens: 10,
-            outputTokens: 20,
-            totalTokens: 30,
-          },
-          response: {
-            id: "r1",
-            timestamp: new Date(),
-            modelId: "mock",
-          },
-          steps: [],
-          warnings: [],
-          sources: [],
-          toolCalls: [],
-          toolResults: [],
-          request: { body: {} },
-        } as any;
-      });
-
-      const session = new AgentSession({ agent });
-      const outputs = await collectOutputs(agent, session, "Test team tools");
-
-      // Leader should have team management tools (NOT MCP-prefixed)
-      expect(leaderToolNames).toContain("team_spawn");
-      expect(leaderToolNames).toContain("team_message");
-      expect(leaderToolNames).toContain("team_shutdown");
-      expect(leaderToolNames).toContain("team_list_teammates");
-      expect(leaderToolNames).toContain("team_task_create");
-      expect(leaderToolNames).toContain("team_task_list");
-      expect(leaderToolNames).toContain("team_task_get");
-      expect(leaderToolNames).toContain("team_read_messages");
-      expect(leaderToolNames).toContain("end_team");
-
-      // Leader should also inherit primary agent's custom tools
-      expect(leaderToolNames).toContain("custom_tool");
-
-      // Leader should NOT have start_team (that's for the primary)
-      expect(leaderToolNames).not.toContain("start_team");
-      expect(leaderToolNames).not.toContain(START_TEAM);
-    });
-  });
-
-  // ===========================================================================
-  // Task Management through Handoff
-  // ===========================================================================
-
-  describe("task management through handoff", () => {
-    it("initial_tasks are created in the coordinator on start_team", async () => {
-      const model = createMockModel();
-      let leaderTaskList = "";
-
-      const plugin = createAgentTeamsPlugin({ teammates });
-
-      const agent = createAgent({
-        model,
-        systemPrompt: "Primary",
-        plugins: [plugin],
-        permissionMode: "bypassPermissions",
-      });
-
-      // Call 1: start_team with initial tasks
-      mockGenerateTextWithToolCall(async (opts) => {
-        const startTeam = findTool(opts.tools, "start_team");
-        await startTeam.execute(
-          {
-            reason: "Parallel research",
-            initial_tasks: [
-              {
-                subject: "Research TypeScript",
-                description: "Deep dive into TS generics",
-              },
-              {
-                subject: "Research Rust",
-                description: "Compare Rust traits with TS interfaces",
-                blocked_by: ["Research TypeScript"],
-              },
-            ],
-          },
-          { toolCallId: "tc-start" },
-        );
-      });
-
-      // Call 2: leader lists tasks, then ends team
-      mockGenerateTextWithToolCall(async (opts) => {
-        leaderTaskList = await opts.tools.team_task_list.execute(
-          { status: undefined, assignee: undefined },
-          { toolCallId: "tc-list" },
-        );
-
-        // End team
-        await opts.tools.end_team.execute({ summary: "Done" }, { toolCallId: "tc-end" });
-      });
-
-      // Call 3: primary resumes
-      mockGenerateTextPlain("OK");
-
-      const session = new AgentSession({ agent });
-      const outputs = await collectOutputs(agent, session, "Start research");
-
-      // No errors
-      const errors = outputs.filter((o) => o.type === "error");
-      expect(errors).toHaveLength(0);
-
-      // Verify tasks were created
-      expect(leaderTaskList).toContain("Research TypeScript");
-      expect(leaderTaskList).toContain("Research Rust");
-      // The second task should show as blocked
-      expect(leaderTaskList).toContain("blocked by");
-    });
-  });
-
-  // ===========================================================================
-  // Leader System Prompt
-  // ===========================================================================
-
-  describe("system prompt augmentation", () => {
-    it("leader system prompt includes teammate roles and workflow", async () => {
-      const model = createMockModel();
-      let leaderSystemPrompt = "";
-
-      const plugin = createAgentTeamsPlugin({ teammates });
-
-      const agent = createAgent({
-        model,
-        systemPrompt: "You are a helpful assistant.",
-        plugins: [plugin],
-        permissionMode: "bypassPermissions",
-      });
-
-      // Call 1: start_team
-      mockGenerateTextWithToolCall(async (opts) => {
-        const startTeam = findTool(opts.tools, "start_team");
-        await startTeam.execute({ reason: "Test system prompt" }, { toolCallId: "tc-start" });
-      });
-
-      // Call 2: capture leader's system prompt
-      mockedGenerateText.mockImplementationOnce(async (opts: any) => {
-        leaderSystemPrompt = opts.system ?? "";
-        return {
-          text: "Leader active",
-          finishReason: "stop",
-          usage: {
-            inputTokens: 10,
-            outputTokens: 20,
-            totalTokens: 30,
-          },
-          response: {
-            id: "r1",
-            timestamp: new Date(),
-            modelId: "mock",
-          },
-          steps: [],
-          warnings: [],
-          sources: [],
-          toolCalls: [],
-          toolResults: [],
-          request: { body: {} },
-        } as any;
-      });
-
-      const session = new AgentSession({ agent });
-      const outputs = await collectOutputs(agent, session, "Test prompt");
-
-      // No errors
-      const errors = outputs.filter((o) => o.type === "error");
-      expect(errors).toHaveLength(0);
-
-      // Leader prompt should include team coordination instructions
-      expect(leaderSystemPrompt).toContain("Team Leader Mode");
-      expect(leaderSystemPrompt).toContain("researcher");
-      expect(leaderSystemPrompt).toContain("coder");
-      expect(leaderSystemPrompt).toContain("team_task_create");
-      expect(leaderSystemPrompt).toContain("team_spawn");
-      expect(leaderSystemPrompt).toContain("end_team");
+      expect(spawnedEvents[0]).toMatchObject({ role: "researcher" });
     });
   });
 });

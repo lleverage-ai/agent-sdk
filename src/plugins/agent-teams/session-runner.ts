@@ -10,7 +10,7 @@ import { invokeCustomHook } from "../../hooks.js";
 import { AgentSession } from "../../session.js";
 import type { Agent, HookRegistration } from "../../types.js";
 import { TEAM_HOOKS } from "./hooks.js";
-import type { TeamCoordinator } from "./types.js";
+import type { TeamCoordinator, TeamMessage } from "./types.js";
 
 /**
  * Options for creating a HeadlessSessionRunner.
@@ -34,6 +34,10 @@ export interface HeadlessSessionRunnerOptions {
   onOutput?: (text: string) => void;
   /** Callback when teammate enters idle state */
   onIdle?: (teammateId: string) => void;
+  /** Milliseconds to wait for messages before considering teammate idle. @default 30000 */
+  idleTimeoutMs?: number;
+  /** Callback when a session error occurs. If not provided, errors are logged to console. */
+  onError?: (teammateId: string, error: Error) => void;
 }
 
 /**
@@ -59,6 +63,8 @@ export class HeadlessSessionRunner {
   private maxTurns: number;
   private onOutput?: (text: string) => void;
   private onIdle?: (teammateId: string) => void;
+  private idleTimeoutMs: number;
+  private onError?: (teammateId: string, error: Error) => void;
 
   constructor(options: HeadlessSessionRunnerOptions) {
     this.teammateId = options.teammateId;
@@ -69,6 +75,8 @@ export class HeadlessSessionRunner {
     this.maxTurns = options.maxTurns ?? 50;
     this.onOutput = options.onOutput;
     this.onIdle = options.onIdle;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 30000;
+    this.onError = options.onError;
 
     this.session = new AgentSession({
       agent: options.agent,
@@ -108,15 +116,7 @@ export class HeadlessSessionRunner {
             const messages = this.coordinator.getMessages(this.teammateId, true);
 
             if (messages.length > 0) {
-              // Mark as read and inject
-              const formattedMessages = messages
-                .map((m) => {
-                  this.coordinator.markRead(m.id);
-                  return `[Message from ${m.from}]: ${m.content}`;
-                })
-                .join("\n");
-
-              this.session.sendMessage(formattedMessages);
+              this.session.sendMessage(this.formatMessages(messages));
             } else {
               // Update status to idle
               this.coordinator.updateTeammateStatus(this.teammateId, "idle");
@@ -129,20 +129,16 @@ export class HeadlessSessionRunner {
                 this.agent,
               );
 
-              // Wait for messages with timeout
-              const newMessages = await this.coordinator.waitForMessage(this.teammateId, 30000);
+              // Wait for messages with configurable timeout
+              const newMessages = await this.coordinator.waitForMessage(
+                this.teammateId,
+                this.idleTimeoutMs,
+              );
 
               if (this.stopped) break;
 
               if (newMessages && newMessages.length > 0) {
-                const formatted = newMessages
-                  .map((m) => {
-                    this.coordinator.markRead(m.id);
-                    return `[Message from ${m.from}]: ${m.content}`;
-                  })
-                  .join("\n");
-
-                this.session.sendMessage(formatted);
+                this.session.sendMessage(this.formatMessages(newMessages));
               } else {
                 // No messages after timeout - notify idle callback
                 this.onIdle?.(this.teammateId);
@@ -157,16 +153,18 @@ export class HeadlessSessionRunner {
             // Teammate agents shouldn't normally handoff, but handle gracefully
             break;
 
-          case "interrupt":
-            // Auto-approve in headless mode (no human operator)
-            this.session.respondToInterrupt(output.interrupt.id, {
-              approved: true,
-            });
+          case "interrupt": {
+            // Teammates run with bypassPermissions — interrupts are unexpected
+            const interruptError = new Error(
+              `Unexpected interrupt in headless mode: ${output.interrupt.type}`,
+            );
+            this.reportError(interruptError);
+            this.session.stop();
             break;
+          }
 
           case "error":
-            // Log error and continue
-            console.error(`[team:${this.teammateId}] Error:`, output.error);
+            this.reportError(output.error);
             break;
         }
       }
@@ -197,5 +195,29 @@ export class HeadlessSessionRunner {
    */
   isRunning(): boolean {
     return this.running;
+  }
+
+  /**
+   * Format team messages for injection into the session.
+   * Marks each message as read and formats with sender info.
+   */
+  private formatMessages(messages: TeamMessage[]): string {
+    return messages
+      .map((m) => {
+        this.coordinator.markRead(m.id);
+        return `[Message from ${m.from}]: ${m.content}`;
+      })
+      .join("\n");
+  }
+
+  /**
+   * Report an error via the onError callback, falling back to console.error.
+   */
+  private reportError(error: Error): void {
+    if (this.onError) {
+      this.onError(this.teammateId, error);
+    } else {
+      console.error(`[team:${this.teammateId}] Error:`, error);
+    }
   }
 }
