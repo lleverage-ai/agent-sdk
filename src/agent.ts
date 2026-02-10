@@ -1782,14 +1782,27 @@ export function createAgent(options: AgentOptions): Agent {
           if (signalState.interrupt) {
             const interrupt = signalState.interrupt.interrupt;
 
-            // Save the interrupt to checkpoint
+            // Save checkpoint with messages AND the pending interrupt.
+            // The normal completion path saves messages at the end of generate(),
+            // but when interrupted we return early. Without saving here, resume()
+            // cannot find the checkpoint (or finds one without messages/interrupt).
             if (effectiveGenOptions.threadId && options.checkpointer) {
-              const checkpoint = await options.checkpointer.load(effectiveGenOptions.threadId);
-              if (checkpoint) {
-                const updatedCheckpoint = updateCheckpoint(checkpoint, {
+              const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
+              const finalMessages: ModelMessage[] = [
+                ...messages,
+                { role: "assistant" as const, content: response.text },
+              ];
+              const savedCheckpoint = await saveCheckpoint(
+                checkpointThreadId,
+                finalMessages,
+                startStep + response.steps.length,
+              );
+              if (savedCheckpoint) {
+                const withInterrupt = updateCheckpoint(savedCheckpoint, {
                   pendingInterrupt: interrupt,
                 });
-                await options.checkpointer.save(updatedCheckpoint);
+                await options.checkpointer.save(withInterrupt);
+                threadCheckpoints.set(checkpointThreadId, withInterrupt);
               }
             }
 
@@ -1937,14 +1950,20 @@ export function createAgent(options: AgentOptions): Agent {
           if (isInterruptSignal(error)) {
             const interrupt = error.interrupt;
 
-            // Save the interrupt to checkpoint
+            // Save checkpoint with messages AND the pending interrupt (catch-block path).
+            // lastBuiltMessages holds the messages built before generateText was called.
             if (effectiveGenOptions.threadId && options.checkpointer) {
-              const checkpoint = await options.checkpointer.load(effectiveGenOptions.threadId);
-              if (checkpoint) {
-                const updatedCheckpoint = updateCheckpoint(checkpoint, {
+              const savedCheckpoint = await saveCheckpoint(
+                effectiveGenOptions.threadId,
+                lastBuiltMessages ?? [],
+                0,
+              );
+              if (savedCheckpoint) {
+                const withInterrupt = updateCheckpoint(savedCheckpoint, {
                   pendingInterrupt: interrupt,
                 });
-                await options.checkpointer.save(updatedCheckpoint);
+                await options.checkpointer.save(withInterrupt);
+                threadCheckpoints.set(effectiveGenOptions.threadId, withInterrupt);
               }
             }
 
