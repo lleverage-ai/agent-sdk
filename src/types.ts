@@ -132,23 +132,6 @@ export interface ExtendedToolExecutionOptions extends ToolExecutionOptions {
    * Used by bash tool for run_in_background support.
    */
   taskManager?: import("./task-manager.js").TaskManager;
-
-  /**
-   * Hand off to a different agent. The session swaps the active agent.
-   * Throws (never returns).
-   *
-   * @param targetAgent - The agent to hand off to
-   * @param options - Optional handoff options
-   */
-  handoff: (targetAgent: Agent, options?: { context?: string; resumable?: boolean }) => never;
-
-  /**
-   * Hand back to the previous agent (before last handoff).
-   * Throws (never returns).
-   *
-   * @param options - Optional handback options
-   */
-  handback: (options?: { context?: string }) => never;
 }
 
 // =============================================================================
@@ -1615,40 +1598,11 @@ export interface GenerateResultInterrupted {
 }
 
 /**
- * Result from a generation that triggered an agent handoff.
- *
- * Returned when a tool calls `handoff()` or `handback()` during execution.
- * The session handles this by swapping the active agent.
- *
- * **Implementation note:** Tools throw `HandoffSignal`, which is intercepted
- * by the cooperative signal-catching wrapper (`wrapToolsWithSignalCatching`)
- * before the AI SDK can convert it to a tool-error result. A `stopWhen`
- * condition then cleanly stops generation. See `agent.ts` for details.
- *
- * @category Agent
- */
-export interface GenerateResultHandoff {
-  /** Status indicating an agent handoff was requested */
-  status: "handoff";
-  /** The agent to hand off to (null for handback) */
-  targetAgent: Agent | null;
-  /** Context/summary to pass to the target agent */
-  context?: string;
-  /** Whether the original agent should resume after handoff completes */
-  resumable: boolean;
-  /** True when handing back to the previous agent */
-  isHandback: boolean;
-  /** Partial results from the current generation */
-  partial?: PartialGenerateResult;
-}
-
-/**
  * Result from a generation request.
  *
  * This is a discriminated union - check `status` to determine the result type:
  * - `"complete"`: Generation finished successfully
  * - `"interrupted"`: Generation paused for user input
- * - `"handoff"`: Agent handoff requested
  *
  * @example
  * ```typescript
@@ -1660,17 +1614,12 @@ export interface GenerateResultHandoff {
  *   // Handle interrupt
  *   const response = await handleInterrupt(result.interrupt);
  *   return agent.resume(threadId, result.interrupt.id, response);
- * } else if (result.status === "handoff") {
- *   // Handle handoff (typically done by AgentSession)
  * }
  * ```
  *
  * @category Agent
  */
-export type GenerateResult =
-  | GenerateResultComplete
-  | GenerateResultInterrupted
-  | GenerateResultHandoff;
+export type GenerateResult = GenerateResultComplete | GenerateResultInterrupted;
 
 // =============================================================================
 // Result Type Guards
@@ -1719,18 +1668,6 @@ export function isCompleteResult(result: GenerateResult): result is GenerateResu
  */
 export function isInterruptedResult(result: GenerateResult): result is GenerateResultInterrupted {
   return result.status === "interrupted";
-}
-
-/**
- * Type guard to check if a generation result is a handoff.
- *
- * @param result - The generation result to check
- * @returns True if the result is a handoff result
- *
- * @category Agent
- */
-export function isHandoffResult(result: GenerateResult): result is GenerateResultHandoff {
-  return result.status === "handoff";
 }
 
 /**

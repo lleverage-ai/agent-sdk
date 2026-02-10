@@ -530,22 +530,6 @@ export async function executeSubagent(
       };
     }
 
-    // Handle handoff results
-    if (result.status === "handoff") {
-      const duration = Date.now() - startTime;
-      return {
-        success: false,
-        text: result.partial?.text ?? "",
-        output: undefined,
-        steps: result.partial?.steps?.length ?? 0,
-        finishReason: "other" as const,
-        duration,
-        context,
-        result,
-        error: `Subagent requested handoff: ${result.context ?? "agent handoff"}`,
-      };
-    }
-
     // Emit step events for each step
     let stepNumber = 0;
     for (const step of result.steps) {

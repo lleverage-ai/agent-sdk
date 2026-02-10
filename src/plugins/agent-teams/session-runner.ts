@@ -149,10 +149,6 @@ export class HeadlessSessionRunner {
             break;
           }
 
-          case "agent_handoff":
-            // Teammate agents shouldn't normally handoff, but handle gracefully
-            break;
-
           case "interrupt": {
             // Teammates run with bypassPermissions — interrupts are unexpected
             const interruptError = new Error(

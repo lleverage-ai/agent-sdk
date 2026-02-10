@@ -647,10 +647,8 @@ ${subagentDescriptions}`;
           });
           if (result.status === "complete") {
             resultText = result.text;
-          } else if (result.status === "interrupted") {
-            resultText = `Interrupted: ${result.interrupt.type}`;
           } else {
-            resultText = `Handoff: ${result.context ?? "agent handoff"}`;
+            resultText = `Interrupted: ${result.interrupt.type}`;
           }
         }
 

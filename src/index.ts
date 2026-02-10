@@ -667,7 +667,6 @@ export type {
   GenerateOptions,
   GenerateResult,
   GenerateResultComplete,
-  GenerateResultHandoff,
   GenerateResultInterrupted,
   GenerateStep,
   HookCallback,
@@ -735,7 +734,6 @@ export type {
 export {
   // Result type guards
   isCompleteResult,
-  isHandoffResult,
   isInterruptedResult,
 } from "./types.js";
 
