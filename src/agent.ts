@@ -3431,10 +3431,27 @@ export function createAgent(options: AgentOptions): Agent {
             toolCallId: customToolCallId,
             messages: checkpoint.messages,
             abortSignal: genOptions?.signal,
-            interrupt: async () => {
-              const stored = pendingResponses.get(interrupt.id);
-              pendingResponses.delete(interrupt.id);
-              return stored;
+            interrupt: async (request: unknown) => {
+              // First call: return the stored user response (mirrors the
+              // permission-mode wrapper when pendingResponses has a match).
+              if (pendingResponses.has(interrupt.id)) {
+                const stored = pendingResponses.get(interrupt.id);
+                pendingResponses.delete(interrupt.id);
+                return stored;
+              }
+
+              // Subsequent calls: no stored response — throw InterruptSignal
+              // so the tool can pause again (e.g. multi-step wizards).
+              const newInterruptData = createInterrupt({
+                id: `int_${customToolCallId}`,
+                threadId,
+                type: "custom",
+                toolCallId: customToolCallId,
+                toolName: customToolName,
+                request,
+                step: checkpoint.step,
+              });
+              throw new InterruptSignal(newInterruptData);
             },
           } as ToolExecutionOptions);
         } catch (executeError) {

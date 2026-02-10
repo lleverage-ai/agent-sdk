@@ -114,12 +114,7 @@ describe("Interrupt resume flow bugs", () => {
       expect(updatedCheckpoint?.messages.length).toBeGreaterThan(1);
     });
 
-    // Known gap: the interrupt() function provided during custom resume only
-    // returns the stored response — it doesn't throw InterruptSignal on
-    // subsequent calls when no response is pending (unlike the original
-    // permission-mode wrapper). This means multi-step wizards that call
-    // interrupt() multiple times in one execute() won't re-interrupt properly.
-    it.fails("should handle a tool that throws another interrupt on resume", async () => {
+    it("should handle a tool that throws another interrupt on resume", async () => {
       const checkpointer = new MemorySaver();
       const threadId = "re-interrupt-thread";
       const toolCallId = "call_wizard";
