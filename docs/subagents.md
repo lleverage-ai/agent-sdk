@@ -222,7 +222,46 @@ async function initializeAgent() {
 
 ## Automatic Task Completion Handling
 
-For interactive agents that should automatically respond when background tasks complete, use `AgentSession`. See [Agent Session](./agent-session.md) for details.
+By default, `agent.generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` automatically wait for background tasks to complete and trigger follow-up generations. No manual polling or AgentSession required.
+
+```typescript
+const agent = createAgent({
+  model,
+  subagents: [researcherSubagent],
+});
+
+// Background tasks are automatically drained after generation completes.
+// If the agent spawns a background task, generate() will:
+// 1. Wait for the task to complete
+// 2. Format the result as a follow-up prompt
+// 3. Trigger another generation so the agent can process the result
+// 4. Repeat until no active tasks remain
+const result = await agent.generate({ prompt: "Research AI trends in the background" });
+```
+
+### Configuring Background Task Behavior
+
+```typescript
+const agent = createAgent({
+  model,
+  subagents: [researcherSubagent],
+
+  // Disable automatic waiting (fire-and-forget)
+  waitForBackgroundTasks: false,
+
+  // Custom formatters for task completion follow-up prompts
+  formatTaskCompletion: (task) =>
+    `Task ${task.id} completed:\n${task.result}`,
+  formatTaskFailure: (task) =>
+    `Task ${task.id} failed:\n${task.error}`,
+});
+```
+
+**Note:** Killed tasks (via `kill_task`) do NOT trigger follow-up generations — only completed and failed tasks do.
+
+### AgentSession (Interactive Use)
+
+For interactive CLI agents that need an event loop with user input, use `AgentSession`. See [Agent Session](./agent-session.md) for details.
 
 ```typescript
 import { createAgentSession } from "@lleverage-ai/agent-sdk";
@@ -232,11 +271,9 @@ const session = createAgentSession({
   threadId: "session-123",
 });
 
-// Session automatically handles task completions
 for await (const output of session.run()) {
   switch (output.type) {
     case "text_delta":
-      // Includes responses to background task completions
       process.stdout.write(output.text);
       break;
     case "waiting_for_input":
@@ -246,15 +283,108 @@ for await (const output of session.run()) {
 }
 ```
 
-Without AgentSession, you must poll for task status or subscribe to TaskManager events manually:
+## Agent Teams
+
+The agent-teams plugin enables multi-agent team coordination where the primary agent becomes a team lead that can spawn and manage teammate agents.
 
 ```typescript
-// Manual approach (without AgentSession)
-agent.taskManager.on("taskCompleted", async (task) => {
-  // Manually trigger follow-up generation
-  await agent.generate({
-    prompt: `Background task completed: ${task.result}`,
-    messages: currentMessages,
-  });
+import {
+  createAgent,
+  createAgentTeamsPlugin,
+  InMemoryTeamCoordinator,
+} from "@lleverage-ai/agent-sdk";
+
+const teamsPlugin = createAgentTeamsPlugin({
+  teammates: [
+    {
+      id: "researcher",
+      name: "Researcher",
+      description: "Researches topics and gathers information",
+      create: ({ model }) =>
+        createAgent({
+          model,
+          systemPrompt: "You are a research specialist.",
+        }),
+    },
+    {
+      id: "writer",
+      name: "Writer",
+      description: "Writes content based on research",
+      create: ({ model }) =>
+        createAgent({
+          model,
+          systemPrompt: "You are a content writer.",
+        }),
+    },
+  ],
+  coordinator: new InMemoryTeamCoordinator(),
+});
+
+const agent = createAgent({
+  model,
+  systemPrompt: "You are a team lead. Coordinate research and writing.",
+  plugins: [teamsPlugin],
 });
 ```
+
+### How Teams Work
+
+1. The agent receives a `start_team` tool. When called, team management tools are added dynamically at runtime.
+2. The primary agent becomes the **team lead** — no handoff occurs.
+3. Teammates run independently in background sessions via `HeadlessSessionRunner`.
+4. Communication happens through **mailboxes** — the lead and teammates exchange messages via the `TeamCoordinator`.
+5. A **shared task list** with dependencies coordinates work across the team.
+6. When `end_team` is called, team tools are removed and teammates are shut down.
+
+### Team Tools
+
+**Lead tools** (added when `start_team` is called):
+- `team_spawn` — Spawn a new teammate
+- `team_message` — Send a message to a teammate
+- `team_read_messages` — Read messages from teammates
+- `team_list_teammates` — List active teammates
+- `team_task_create` — Create a task in the shared task list
+- `team_task_list` — List all team tasks
+- `team_task_get` — Get details of a specific task
+- `team_shutdown` — Shut down a specific teammate
+- `end_team` — End team mode and shut down all teammates
+
+**Teammate tools** (available to each teammate):
+- `team_message` — Send a message to the lead or other teammates
+- `team_read_messages` — Read messages from the mailbox
+- `team_list_teammates` — List other teammates
+- `team_task_list` — List all team tasks
+- `team_task_claim` — Claim a task from the shared list
+- `team_task_complete` — Mark a claimed task as completed
+
+### Team Hooks
+
+Subscribe to team lifecycle events via custom hooks:
+
+```typescript
+import { TEAM_HOOKS } from "@lleverage-ai/agent-sdk";
+
+const teamsPlugin = createAgentTeamsPlugin({
+  teammates: [...],
+  coordinator: new InMemoryTeamCoordinator(),
+  hooks: {
+    Custom: {
+      [TEAM_HOOKS.TeammateSpawned]: [async (input) => {
+        console.log("Teammate spawned:", input.payload);
+      }],
+      [TEAM_HOOKS.TeamTaskCompleted]: [async (input) => {
+        console.log("Task completed:", input.payload);
+      }],
+    },
+  },
+});
+```
+
+Available team hook events:
+- `TEAM_HOOKS.TeammateSpawned` — A teammate was created
+- `TEAM_HOOKS.TeammateIdle` — A teammate has no more work
+- `TEAM_HOOKS.TeammateStopped` — A teammate was shut down
+- `TEAM_HOOKS.TeamTaskCreated` — A task was added to the shared list
+- `TEAM_HOOKS.TeamTaskClaimed` — A teammate claimed a task
+- `TEAM_HOOKS.TeamTaskCompleted` — A task was completed
+- `TEAM_HOOKS.TeamMessageSent` — A message was sent between agents

@@ -85,6 +85,8 @@ agent-sdk/
 │   ├── memory/              # Memory systems & permissions
 │   ├── middleware/          # Middleware pipeline
 │   ├── observability/       # Logging, tracing, metrics, events
+│   ├── plugins/
+│   │   └── agent-teams/     # Multi-agent team coordination plugin
 │   ├── presets/             # Production agent presets
 │   ├── security/            # Security policy presets
 │   ├── subagents/           # Advanced subagent utilities
@@ -346,9 +348,18 @@ const myPlugin = definePlugin({
   skills: [
     /* skills */
   ],
-  hooks: [
-    /* hooks */
-  ],
+  // Plugin hooks are automatically merged into the agent's hook registration
+  hooks: {
+    PostToolUse: [async ({ tool_name }) => {
+      console.log("Tool used:", tool_name);
+    }],
+    // Custom hook events defined by this plugin
+    Custom: {
+      "my-plugin:SomethingHappened": [async (input) => {
+        console.log("Custom event:", input.payload);
+      }],
+    },
+  },
   setup: async (agent) => {
     // initialization logic
   },
@@ -451,6 +462,97 @@ for await (const output of session.run()) {
 ```
 
 See [Agent Session docs](./docs/agent-session.md) for full details.
+
+### Background Task Handling
+
+By default, `generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` automatically wait for background tasks to complete and trigger follow-up generations:
+
+```typescript
+const agent = createAgent({
+  model,
+  subagents: [researcherSubagent],
+
+  // Default: true — agent waits for background tasks and processes results
+  waitForBackgroundTasks: true,
+
+  // Custom formatters for task completion follow-up prompts
+  formatTaskCompletion: (task) =>
+    `Task ${task.id} completed:\n${task.result}`,
+  formatTaskFailure: (task) =>
+    `Task ${task.id} failed:\n${task.error}`,
+});
+
+// generate() will not return until all background tasks are drained
+const result = await agent.generate({ prompt: "Research AI trends in the background" });
+```
+
+### Agent Teams Plugin
+
+Multi-agent team coordination where the primary agent becomes a team lead:
+
+```typescript
+import {
+  createAgent,
+  createAgentTeamsPlugin,
+  InMemoryTeamCoordinator,
+  TEAM_HOOKS,
+} from "@lleverage-ai/agent-sdk";
+
+const teamsPlugin = createAgentTeamsPlugin({
+  teammates: [
+    {
+      id: "researcher",
+      name: "Researcher",
+      description: "Researches topics and gathers information",
+      create: ({ model }) =>
+        createAgent({
+          model,
+          systemPrompt: "You are a research specialist.",
+        }),
+    },
+  ],
+  coordinator: new InMemoryTeamCoordinator(),
+  // Optional: subscribe to team lifecycle events
+  hooks: {
+    Custom: {
+      [TEAM_HOOKS.TeammateSpawned]: [async (input) => {
+        console.log("Teammate spawned:", input.payload);
+      }],
+    },
+  },
+});
+
+const agent = createAgent({
+  model,
+  systemPrompt: "You are a team lead.",
+  plugins: [teamsPlugin],
+});
+```
+
+The agent receives a `start_team` tool. When called, team management tools (`team_spawn`, `team_message`, `team_task_create`, etc.) are added at runtime. Teammates run in background sessions and communicate via mailboxes. See [Subagents & Teams](./docs/subagents.md) for full details.
+
+### Custom Hooks
+
+Plugins can define custom lifecycle events via `HookRegistration.Custom` and `invokeCustomHook()`:
+
+```typescript
+import { invokeCustomHook } from "@lleverage-ai/agent-sdk";
+
+// Subscribe to custom events
+const agent = createAgent({
+  model,
+  hooks: {
+    Custom: {
+      "my-event": [async (input) => {
+        console.log("Event fired:", input.payload);
+      }],
+    },
+  },
+});
+
+// Fire a custom event from plugin code
+await invokeCustomHook(agent.hooks, "my-event", { key: "value" }, agent);
+```
 
 ## Backend & Bash Execution
 

@@ -4,11 +4,13 @@ AgentSession provides an event-driven wrapper around an Agent for interactive, l
 
 ## When to Use AgentSession
 
+> **Note:** Since v0.0.4, `agent.generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` automatically wait for background tasks and trigger follow-up generations. You no longer need AgentSession just for background task handling. AgentSession is primarily useful for interactive event loops.
+
 | Scenario | Use AgentSession? |
 |----------|-------------------|
-| Interactive chat/CLI | Yes |
-| Background tasks that should trigger responses | Yes |
+| Interactive chat/CLI with user input loop | Yes |
 | Approval flows with interrupts | Yes |
+| Background tasks in API endpoints | No - `generate()` handles this automatically |
 | Simple request/response (API endpoint) | No - use Agent directly |
 | Serverless functions | No - use Agent directly |
 | One-shot queries | No - use Agent directly |
@@ -88,21 +90,17 @@ for await (const output of session.run()) {
 }
 ```
 
-### Without AgentSession (Manual)
+### Without AgentSession (Automatic)
+
+Since v0.0.4, `agent.generate()` automatically waits for background tasks and triggers follow-up generations. No manual polling needed:
 
 ```typescript
-// You must poll or manage task completions yourself
+// generate() will automatically wait for background tasks to complete
+// and trigger follow-up generations to process the results
 const result = await agent.generate({ prompt: "Run this in background" });
 
-// Later, check task status manually
-const taskStatus = await agent.taskManager.getTask(taskId);
-if (taskStatus.status === "completed") {
-  // Manually trigger another generation with the result
-  const followUp = await agent.generate({
-    prompt: `Task completed: ${taskStatus.result}`,
-    messages: previousMessages,
-  });
-}
+// By the time generate() returns, all background tasks have been processed.
+// Set waitForBackgroundTasks: false on the agent for fire-and-forget behavior.
 ```
 
 ## Task Status Types
