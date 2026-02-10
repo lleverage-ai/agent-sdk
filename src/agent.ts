@@ -67,7 +67,6 @@ import type {
   GenerateOptions,
   GenerateResult,
   GenerateResultComplete,
-  GenerateResultHandoff,
   GenerateResultInterrupted,
   GenerateStep,
   HookRegistration,
@@ -123,24 +122,23 @@ function isInterruptSignal(error: unknown): error is InterruptSignal {
  *
  * AI SDK v6's `generateText` catches all errors from tool execution and converts
  * them to tool-result messages. To work around this, our outermost tool wrapper
- * (`wrapToolsWithSignalCatching`) intercepts InterruptSignal/HandoffSignal before
- * the AI SDK sees them, stores them here, and returns a placeholder result.
- * A custom `stopWhen` condition then stops generation after the current step.
+ * (`wrapToolsWithSignalCatching`) intercepts InterruptSignal before the AI SDK
+ * sees them, stores them here, and returns a placeholder result. A custom
+ * `stopWhen` condition then stops generation after the current step.
  *
  * @internal
  */
 interface GenerateSignalState {
-  handoff?: HandoffSignal;
   interrupt?: InterruptSignal;
 }
 
 /**
  * Outermost tool wrapper that intercepts flow-control signals.
  *
- * When a tool throws `InterruptSignal` or `HandoffSignal`, this wrapper catches
- * it before the AI SDK can, stores it in the shared `signalState`, and returns a
- * placeholder string. Combined with a custom `stopWhen` condition, this cleanly
- * stops generation and allows `generate()` to inspect `signalState` in the normal
+ * When a tool throws `InterruptSignal`, this wrapper catches it before the AI
+ * SDK can, stores it in the shared `signalState`, and returns a placeholder
+ * string. Combined with a custom `stopWhen` condition, this cleanly stops
+ * generation and allows `generate()` to inspect `signalState` in the normal
  * return path (not the catch block).
  *
  * @internal
@@ -162,15 +160,8 @@ function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignal
         try {
           return await originalExecute.call(toolDef, input, options);
         } catch (error) {
-          if (isHandoffSignal(error)) {
-            if (signalState.handoff || signalState.interrupt) {
-              throw error; // Already have a signal — let AI SDK handle this one
-            }
-            signalState.handoff = error;
-            return "[Agent handoff requested]";
-          }
           if (isInterruptSignal(error)) {
-            if (signalState.handoff || signalState.interrupt) {
+            if (signalState.interrupt) {
               throw error; // Already have a signal — let AI SDK handle this one
             }
             signalState.interrupt = error;
@@ -183,46 +174,6 @@ function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignal
   }
 
   return wrapped;
-}
-
-/**
- * Internal signal for agent handoff flow control.
- *
- * This is thrown when a tool requests handing off to a different agent.
- * The outermost tool wrapper (`wrapToolsWithSignalCatching`) intercepts this
- * before the AI SDK can catch it, and stores it in `GenerateSignalState`.
- *
- * @internal
- */
-class HandoffSignal extends Error {
-  readonly targetAgent: Agent | null;
-  readonly context?: string;
-  readonly resumable: boolean;
-  readonly isHandback: boolean;
-
-  constructor(
-    targetAgent: Agent | null,
-    options?: {
-      context?: string;
-      resumable?: boolean;
-      handback?: boolean;
-    },
-  ) {
-    super("Agent handoff");
-    this.name = "HandoffSignal";
-    this.targetAgent = targetAgent;
-    this.context = options?.context;
-    this.resumable = options?.resumable ?? true;
-    this.isHandback = options?.handback ?? false;
-  }
-}
-
-/**
- * Check if an error is a HandoffSignal.
- * @internal
- */
-function isHandoffSignal(error: unknown): error is HandoffSignal {
-  return error instanceof HandoffSignal;
 }
 
 /**
@@ -457,27 +408,10 @@ function wrapToolsWithPermissionMode(
           throw new InterruptSignal(interruptData);
         };
 
-        // Create handoff/handback functions
-        const handoff = (
-          targetAgent: Agent,
-          handoffOpts?: { context?: string; resumable?: boolean },
-        ): never => {
-          throw new HandoffSignal(targetAgent, {
-            ...handoffOpts,
-            resumable: handoffOpts?.resumable ?? true,
-          });
-        };
-
-        const handback = (handbackOpts?: { context?: string }): never => {
-          throw new HandoffSignal(null, { ...handbackOpts, handback: true });
-        };
-
-        // Create extended options with the interrupt and handoff functions
+        // Create extended options with the interrupt function
         const extendedOptions = {
           ...options,
           interrupt,
-          handoff,
-          handback,
         };
 
         // If permission mode gives a definitive answer, use it
@@ -783,8 +717,8 @@ function wrapToolsWithHooks(
           return output;
         } catch (error) {
           // Skip PostToolUseFailure for flow-control signals — these are not
-          // actual failures but intentional control flow (handoff/interrupt).
-          if (!isHandoffSignal(error) && !isInterruptSignal(error)) {
+          // actual failures but intentional control flow (interrupt).
+          if (!isInterruptSignal(error)) {
             // Invoke PostToolUseFailure hooks
             if (hookRegistration?.PostToolUseFailure?.length) {
               const failureInput: PostToolUseFailureInput = {
@@ -1739,16 +1673,16 @@ export function createAgent(options: AgentOptions): Agent {
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
 
-          // Shared signal state: flow-control signals (handoff/interrupt) thrown by
-          // tools are caught by the outermost wrapper and stored here. A custom
+          // Shared signal state: flow-control signals (interrupt) thrown by tools
+          // are caught by the outermost wrapper and stored here. A custom
           // stopWhen condition stops generation after the current step completes.
           const signalState: GenerateSignalState = {};
 
           // Build initial params - use active tools (core + dynamically loaded + task)
           // Apply hooks AFTER adding task tool so task tool is also wrapped.
           // Then wrap with signal catching as the outermost layer so that
-          // InterruptSignal/HandoffSignal are intercepted before the AI SDK can
-          // catch them and convert them to tool-error results.
+          // InterruptSignal is intercepted before the AI SDK can catch it and
+          // convert it to a tool-error result.
           const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
@@ -1771,10 +1705,9 @@ export function createAgent(options: AgentOptions): Agent {
             headers: effectiveGenOptions.headers,
           };
 
-          // Stop condition: stop when a flow-control signal was caught, OR when
+          // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps (whichever comes first).
-          const signalStopCondition = () =>
-            signalState.handoff != null || signalState.interrupt != null;
+          const signalStopCondition = () => signalState.interrupt != null;
 
           // Execute generation
           const response = await generateText({
@@ -1793,24 +1726,6 @@ export function createAgent(options: AgentOptions): Agent {
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
           });
-
-          // Check for intercepted handoff signal (cooperative path)
-          if (signalState.handoff) {
-            const hs = signalState.handoff;
-            const handoffResult: GenerateResultHandoff = {
-              status: "handoff",
-              targetAgent: hs.targetAgent,
-              context: hs.context,
-              resumable: hs.resumable,
-              isHandback: hs.isHandback,
-              partial: {
-                text: response.text,
-                steps: mapSteps(response.steps),
-                usage: response.usage,
-              },
-            };
-            return handoffResult;
-          }
 
           // Check for intercepted interrupt signal (cooperative path)
           if (signalState.interrupt) {
@@ -1929,19 +1844,6 @@ export function createAgent(options: AgentOptions): Agent {
 
           return finalResult;
         } catch (error) {
-          // Check if this is a HandoffSignal (agent handoff)
-          if (isHandoffSignal(error)) {
-            const handoffResult: GenerateResultHandoff = {
-              status: "handoff",
-              targetAgent: error.targetAgent,
-              context: error.context,
-              resumable: error.resumable,
-              isHandback: error.isHandback,
-              partial: { text: "", steps: [], usage: undefined },
-            };
-            return handoffResult;
-          }
-
           // Check if this is an InterruptSignal (new interrupt system)
           if (isInterruptSignal(error)) {
             const interrupt = error.interrupt;
@@ -2186,10 +2088,9 @@ export function createAgent(options: AgentOptions): Agent {
             headers: effectiveGenOptions.headers,
           };
 
-          // Stop condition: stop when a flow-control signal was caught, OR when
+          // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
-          const signalStopCondition = () =>
-            signalState.handoff != null || signalState.interrupt != null;
+          const signalStopCondition = () => signalState.interrupt != null;
 
           // Execute stream
           const response = streamText({
@@ -2401,10 +2302,9 @@ export function createAgent(options: AgentOptions): Agent {
           // Track step count for incremental checkpointing
           let currentStepCount = 0;
 
-          // Stop condition: stop when a flow-control signal was caught, OR when
+          // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
-          const signalStopCondition = () =>
-            signalState.handoff != null || signalState.interrupt != null;
+          const signalStopCondition = () => signalState.interrupt != null;
 
           // Execute stream
           const result = streamText({
@@ -2587,10 +2487,9 @@ export function createAgent(options: AgentOptions): Agent {
           // Track step count for incremental checkpointing
           let currentStepCount = 0;
 
-          // Stop condition: stop when a flow-control signal was caught, OR when
+          // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
-          const signalStopCondition = () =>
-            signalState.handoff != null || signalState.interrupt != null;
+          const signalStopCondition = () => signalState.interrupt != null;
 
           // Execute stream
           const result = streamText({
@@ -2801,8 +2700,7 @@ export function createAgent(options: AgentOptions): Agent {
 
               // Stop condition: stop when a flow-control signal was caught, OR when
               // the step count reaches maxSteps.
-              const signalStopCondition = () =>
-                signalState.handoff != null || signalState.interrupt != null;
+              const signalStopCondition = () => signalState.interrupt != null;
 
               // Execute stream
               const result = streamText({

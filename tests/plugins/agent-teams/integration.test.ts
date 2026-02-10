@@ -2,8 +2,8 @@
  * Integration tests for Agent Teams plugin with runtime tools.
  *
  * These tests verify that `start_team` dynamically adds team tools to the
- * primary agent and `end_team` removes them. No handoff occurs — the
- * primary agent gains/loses tools at runtime.
+ * primary agent and `end_team` removes them. The primary agent gains/loses
+ * tools at runtime.
  *
  * NOTE: Plugin tools are registered through the MCP manager and get
  * prefixed with `mcp__<pluginName>__`. So `start_team` becomes
@@ -256,30 +256,6 @@ describe("Agent Teams Integration Tests", () => {
       });
 
       await agent.generate({ prompt: "Start another team" });
-    });
-
-    it("no agent_handoff events are emitted", async () => {
-      const model = createMockModel();
-      const plugin = createAgentTeamsPlugin({ teammates });
-
-      const agent = createAgent({
-        model,
-        systemPrompt: "Primary agent",
-        plugins: [plugin],
-        permissionMode: "bypassPermissions",
-      });
-      await agent.ready;
-
-      // start_team should just return a result, not trigger handoff
-      mockGenerateTextWithToolCall(async (opts) => {
-        const startTeam = findTool(opts.tools, "start_team");
-        await startTeam.execute({ reason: "Test" }, { toolCallId: "tc-start" });
-      });
-
-      const result = await agent.generate({ prompt: "Start team" });
-
-      // Should NOT be a handoff result
-      expect(result.status).toBe("complete");
     });
   });
 

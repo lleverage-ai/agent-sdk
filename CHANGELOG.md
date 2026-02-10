@@ -12,9 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plugin hook support: plugins can now define `hooks` in their configuration, automatically merged into the agent's hook registration
 - Custom hook system: `HookRegistration.Custom` field and `invokeCustomHook()` for plugin-defined lifecycle events
 - Middleware `onCustom()` method for subscribing to custom hook events
-- Agent handoff mechanism: `handoff()` and `handback()` functions available in tool execution context for swapping the active agent mid-conversation
-- `GenerateResultHandoff` result type and `isHandoffResult()` type guard
-- Agent Teams plugin (`createAgentTeamsPlugin()`) for multi-agent team coordination via handoff
+- Agent Teams plugin (`createAgentTeamsPlugin()`) for multi-agent team coordination
   - `InMemoryTeamCoordinator` for task management, messaging, and teammate tracking
   - `HeadlessSessionRunner` for running teammate agents in the background
   - Team tools: `start_team`, `end_team`, `team_spawn`, `team_message`, `team_task_create`, `team_task_claim`, `team_task_complete`, and more
@@ -22,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Handoff and interrupt signals now use a cooperative signal-catching approach (`wrapToolsWithSignalCatching`) that intercepts `HandoffSignal`/`InterruptSignal` before the AI SDK's internal tool error handling can convert them to tool-error results, combined with a custom `stopWhen` condition to cleanly stop generation
+- Interrupt signals now use a cooperative signal-catching approach (`wrapToolsWithSignalCatching`) that intercepts `InterruptSignal` before the AI SDK's internal tool error handling can convert it to a tool-error result, combined with a custom `stopWhen` condition to cleanly stop generation
 
 ## [0.0.3] - 2026-02-07
 
