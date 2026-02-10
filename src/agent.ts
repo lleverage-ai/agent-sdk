@@ -2486,10 +2486,9 @@ export function createAgent(options: AgentOptions): Agent {
                     // Build messages including this step's results
                     const stepMessages: ModelMessage[] = [
                       ...initialParams.messages,
-                      {
-                        role: "assistant" as const,
-                        content: stepResult.text,
-                      },
+                      ...(stepResult.text
+                        ? [{ role: "assistant" as const, content: stepResult.text }]
+                        : []),
                     ];
                     await saveCheckpoint(
                       effectiveGenOptions.threadId!,
@@ -2513,7 +2512,9 @@ export function createAgent(options: AgentOptions): Agent {
               if (effectiveGenOptions.threadId && options.checkpointer) {
                 const finalMessages: ModelMessage[] = [
                   ...initialParams.messages,
-                  { role: "assistant" as const, content: finishResult.text },
+                  ...(finishResult.text
+                    ? [{ role: "assistant" as const, content: finishResult.text }]
+                    : []),
                 ];
                 await saveCheckpoint(
                   effectiveGenOptions.threadId!,
@@ -2775,10 +2776,9 @@ export function createAgent(options: AgentOptions): Agent {
                     // Build messages including this step's results
                     const stepMessages: ModelMessage[] = [
                       ...initialParams.messages,
-                      {
-                        role: "assistant" as const,
-                        content: stepResult.text,
-                      },
+                      ...(stepResult.text
+                        ? [{ role: "assistant" as const, content: stepResult.text }]
+                        : []),
                     ];
                     await saveCheckpoint(
                       effectiveGenOptions.threadId!,
@@ -2802,7 +2802,9 @@ export function createAgent(options: AgentOptions): Agent {
               if (effectiveGenOptions.threadId && options.checkpointer) {
                 const finalMessages: ModelMessage[] = [
                   ...initialParams.messages,
-                  { role: "assistant" as const, content: finishResult.text },
+                  ...(finishResult.text
+                    ? [{ role: "assistant" as const, content: finishResult.text }]
+                    : []),
                 ];
                 await saveCheckpoint(
                   effectiveGenOptions.threadId!,
