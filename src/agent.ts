@@ -51,6 +51,7 @@ import { createDefaultPromptBuilder } from "./prompt-builder/components.js";
 import type { PromptContext } from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { TaskManager } from "./task-manager.js";
+import type { BackgroundTask } from "./task-store/types.js";
 import {
   coreToolsToToolSet,
   createCoreTools,
@@ -861,6 +862,21 @@ export function createAgent(options: AgentOptions): Agent {
   // Initialize task manager for background task tracking
   const taskManager = new TaskManager();
 
+  // Background task completion options
+  const waitForBackgroundTasks = options.waitForBackgroundTasks ?? true;
+  const formatTaskCompletion =
+    options.formatTaskCompletion ??
+    ((task: BackgroundTask): string => {
+      const command = task.metadata?.command ?? "unknown command";
+      return `[Background task completed: ${task.id}]\nCommand: ${command}\nOutput:\n${task.result ?? "(no output)"}`;
+    });
+  const formatTaskFailure =
+    options.formatTaskFailure ??
+    ((task: BackgroundTask): string => {
+      const command = task.metadata?.command ?? "unknown command";
+      return `[Background task failed: ${task.id}]\nCommand: ${command}\nError: ${task.error ?? "Unknown error"}`;
+    });
+
   // Determine plugin loading mode
   // Track whether it was explicitly set to distinguish from default
   const explicitPluginLoading = options.pluginLoading !== undefined;
@@ -1632,6 +1648,41 @@ export function createAgent(options: AgentOptions): Agent {
     }));
   }
 
+  /**
+   * Get the next actionable task prompt from the background task queue.
+   *
+   * Waits for a task to reach terminal state, skips already-consumed and killed
+   * tasks, formats the result as a prompt, removes the task, and returns it.
+   * Returns null when no more tasks need processing.
+   */
+  async function getNextTaskPrompt(): Promise<string | null> {
+    while (taskManager.hasActiveTasks() || taskManager.hasTerminalTasks()) {
+      const completedTask = await taskManager.waitForNextCompletion();
+
+      // Dedup: skip if already consumed via task_output tool
+      if (!taskManager.getTask(completedTask.id)) {
+        continue;
+      }
+
+      // Skip killed tasks (user already knows)
+      if (completedTask.status === "killed") {
+        taskManager.removeTask(completedTask.id);
+        continue;
+      }
+
+      // Format as follow-up prompt
+      const prompt =
+        completedTask.status === "completed"
+          ? formatTaskCompletion(completedTask)
+          : formatTaskFailure(completedTask);
+
+      taskManager.removeTask(completedTask.id);
+      return prompt;
+    }
+
+    return null;
+  }
+
   const agent: Agent = {
     id,
     options,
@@ -1842,7 +1893,45 @@ export function createAgent(options: AgentOptions): Agent {
             }
           }
 
-          return finalResult;
+          // --- Background task completion loop ---
+          if (!waitForBackgroundTasks) {
+            return finalResult;
+          }
+
+          // When checkpointing is active, the checkpoint already contains the
+          // full conversation history (saved above). Passing explicit messages
+          // would cause buildMessages() to load checkpoint messages AND append
+          // the same messages again, causing duplication.
+          const hasCheckpointing = !!(effectiveGenOptions.threadId && options.checkpointer);
+          let lastResult: GenerateResult = finalResult;
+          let runningMessages: ModelMessage[] = hasCheckpointing
+            ? []
+            : [...messages, { role: "assistant" as const, content: finalResult.text }];
+
+          let followUpPrompt = await getNextTaskPrompt();
+          while (followUpPrompt !== null) {
+            lastResult = await agent.generate({
+              ...genOptions,
+              prompt: followUpPrompt,
+              messages: hasCheckpointing ? undefined : runningMessages,
+            });
+
+            if (lastResult.status === "interrupted") {
+              return lastResult;
+            }
+
+            if (!hasCheckpointing) {
+              runningMessages = [
+                ...runningMessages,
+                { role: "user" as const, content: followUpPrompt },
+                { role: "assistant" as const, content: lastResult.text },
+              ];
+            }
+
+            followUpPrompt = await getNextTaskPrompt();
+          }
+
+          return lastResult;
         } catch (error) {
           // Check if this is an InterruptSignal (new interrupt system)
           if (isInterruptSignal(error)) {
@@ -2196,7 +2285,41 @@ export function createAgent(options: AgentOptions): Agent {
             // Note: updatedResult is not applied for streaming since the stream has already been sent
           }
 
-          // Success - break out of retry loop
+          // --- Background task completion loop ---
+          if (!waitForBackgroundTasks || signalState.interrupt) {
+            return;
+          }
+
+          const hasCheckpointing = !!(effectiveGenOptions.threadId && options.checkpointer);
+          let currentMessages: ModelMessage[] = hasCheckpointing
+            ? []
+            : [...messages, { role: "assistant" as const, content: text }];
+
+          let followUpPrompt = await getNextTaskPrompt();
+          while (followUpPrompt !== null) {
+            const followUpGen = agent.stream({
+              ...genOptions,
+              prompt: followUpPrompt,
+              messages: hasCheckpointing ? undefined : currentMessages,
+            });
+
+            let followUpText = "";
+            for await (const part of followUpGen) {
+              yield part;
+              if (part.type === "text-delta") followUpText += part.text;
+            }
+
+            if (!hasCheckpointing) {
+              currentMessages = [
+                ...currentMessages,
+                { role: "user" as const, content: followUpPrompt },
+                { role: "assistant" as const, content: followUpText },
+              ];
+            }
+
+            followUpPrompt = await getNextTaskPrompt();
+          }
+
           return;
         } catch (error) {
           // Normalize error to AgentError
@@ -2299,16 +2422,21 @@ export function createAgent(options: AgentOptions): Agent {
             headers: effectiveGenOptions.headers,
           };
 
-          // Track step count for incremental checkpointing
-          let currentStepCount = 0;
+          // Capture currentModel for use in the callback closure
+          const modelToUse = retryState.currentModel;
 
           // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
           const signalStopCondition = () => signalState.interrupt != null;
 
-          // Execute stream
+          // Track step count for incremental checkpointing
+          let currentStepCount = 0;
+
+          // Execute streamText OUTSIDE createUIMessageStream so errors propagate
+          // to the retry loop (if streamText throws synchronously on creation,
+          // e.g. rate limit, the catch block handles retry/fallback).
           const result = streamText({
-            model: retryState.currentModel,
+            model: modelToUse,
             system: initialParams.system,
             messages: initialParams.messages,
             tools: initialParams.tools as ToolSet,
@@ -2390,10 +2518,114 @@ export function createAgent(options: AgentOptions): Agent {
             },
           });
 
-          // Return AI SDK compatible response for use with useChat
-          // Note: Not passing originalMessages since ModelMessage[] != UIMessage[]
-          // The AI SDK will reconstruct messages from the stream
-          return result.toUIMessageStreamResponse();
+          // Use createUIMessageStream to control stream lifecycle for background task follow-ups
+          const stream = createUIMessageStream({
+            execute: async ({ writer }) => {
+              // Merge initial generation into the stream
+              writer.merge(result.toUIMessageStream());
+
+              // Wait for initial generation to complete to get final text
+              const text = await result.text;
+
+              // --- Background task completion loop ---
+              if (waitForBackgroundTasks) {
+                // Track accumulated steps for checkpoint saves
+                const initialSteps = await result.steps;
+                let accumulatedStepCount = initialSteps.length;
+
+                let currentMessages: ModelMessage[] = [
+                  ...messages,
+                  { role: "assistant" as const, content: text },
+                ];
+
+                let followUpPrompt = await getNextTaskPrompt();
+                while (followUpPrompt !== null) {
+                  // Stream follow-up generation into the same writer
+                  const followUpResult = streamText({
+                    model: modelToUse,
+                    system: initialParams.system,
+                    messages: [
+                      ...currentMessages,
+                      { role: "user" as const, content: followUpPrompt },
+                    ],
+                    tools: initialParams.tools as ToolSet,
+                    maxOutputTokens: initialParams.maxTokens,
+                    temperature: initialParams.temperature,
+                    stopSequences: initialParams.stopSequences,
+                    abortSignal: initialParams.abortSignal,
+                    stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                    // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                    providerOptions: initialParams.providerOptions as any,
+                    headers: initialParams.headers,
+                  });
+
+                  writer.merge(followUpResult.toUIMessageStream());
+                  const followUpText = await followUpResult.text;
+
+                  currentMessages = [
+                    ...currentMessages,
+                    { role: "user" as const, content: followUpPrompt },
+                    { role: "assistant" as const, content: followUpText },
+                  ];
+
+                  // --- Post-completion bookkeeping for follow-ups ---
+                  const followUpSteps = await followUpResult.steps;
+                  accumulatedStepCount += followUpSteps.length;
+
+                  // Checkpoint save
+                  if (effectiveGenOptions.threadId && options.checkpointer) {
+                    await saveCheckpoint(
+                      effectiveGenOptions.threadId,
+                      currentMessages,
+                      startStep + accumulatedStepCount,
+                    );
+                  }
+
+                  // Context manager update
+                  const followUpUsage = await followUpResult.usage;
+                  if (options.contextManager?.updateUsage && followUpUsage) {
+                    options.contextManager.updateUsage({
+                      inputTokens: followUpUsage.inputTokens,
+                      outputTokens: followUpUsage.outputTokens,
+                      totalTokens: followUpUsage.totalTokens,
+                    });
+                  }
+
+                  // PostGenerate hooks
+                  const followUpPostGenerateHooks = effectiveHooks?.PostGenerate ?? [];
+                  if (followUpPostGenerateHooks.length > 0) {
+                    const followUpFinishReason = await followUpResult.finishReason;
+                    const followUpHookResult: GenerateResultComplete = {
+                      status: "complete",
+                      text: followUpText,
+                      usage: followUpUsage,
+                      finishReason: followUpFinishReason as GenerateResultComplete["finishReason"],
+                      output: undefined,
+                      steps: mapSteps(followUpSteps),
+                    };
+                    const followUpPostGenerateInput: PostGenerateInput = {
+                      hook_event_name: "PostGenerate",
+                      session_id: effectiveGenOptions.threadId ?? "default",
+                      cwd: process.cwd(),
+                      options: effectiveGenOptions,
+                      result: followUpHookResult,
+                    };
+                    await invokeHooksWithTimeout(
+                      followUpPostGenerateHooks,
+                      followUpPostGenerateInput,
+                      null,
+                      agent,
+                    );
+                  }
+
+                  followUpPrompt = await getNextTaskPrompt();
+                }
+              }
+            },
+          });
+
+          // Convert the stream to a Response
+          return createUIMessageStreamResponse({ stream });
         } catch (error) {
           // Normalize error to AgentError
           const normalizedError = normalizeError(
@@ -2792,6 +3024,104 @@ export function createAgent(options: AgentOptions): Agent {
 
               // Merge the streamText output into the UI message stream
               writer.merge(result.toUIMessageStream());
+
+              // Wait for initial generation to complete to get final text
+              const text = await result.text;
+
+              // --- Background task completion loop ---
+              if (waitForBackgroundTasks) {
+                // Track accumulated steps for checkpoint saves
+                const initialSteps = await result.steps;
+                let accumulatedStepCount = initialSteps.length;
+
+                let currentMessages: ModelMessage[] = [
+                  ...messages,
+                  { role: "assistant" as const, content: text },
+                ];
+
+                let followUpPrompt = await getNextTaskPrompt();
+                while (followUpPrompt !== null) {
+                  // Stream follow-up generation into the same writer
+                  const followUpResult = streamText({
+                    model: modelToUse,
+                    system: initialParams.system,
+                    messages: [
+                      ...currentMessages,
+                      { role: "user" as const, content: followUpPrompt },
+                    ],
+                    tools: initialParams.tools as ToolSet,
+                    maxOutputTokens: initialParams.maxTokens,
+                    temperature: initialParams.temperature,
+                    stopSequences: initialParams.stopSequences,
+                    abortSignal: initialParams.abortSignal,
+                    stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                    // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                    providerOptions: initialParams.providerOptions as any,
+                    headers: initialParams.headers,
+                  });
+
+                  writer.merge(followUpResult.toUIMessageStream());
+                  const followUpText = await followUpResult.text;
+
+                  currentMessages = [
+                    ...currentMessages,
+                    { role: "user" as const, content: followUpPrompt },
+                    { role: "assistant" as const, content: followUpText },
+                  ];
+
+                  // --- Post-completion bookkeeping for follow-ups ---
+                  const followUpSteps = await followUpResult.steps;
+                  accumulatedStepCount += followUpSteps.length;
+
+                  // Checkpoint save
+                  if (effectiveGenOptions.threadId && options.checkpointer) {
+                    await saveCheckpoint(
+                      effectiveGenOptions.threadId,
+                      currentMessages,
+                      startStep + accumulatedStepCount,
+                    );
+                  }
+
+                  // Context manager update
+                  const followUpUsage = await followUpResult.usage;
+                  if (options.contextManager?.updateUsage && followUpUsage) {
+                    options.contextManager.updateUsage({
+                      inputTokens: followUpUsage.inputTokens,
+                      outputTokens: followUpUsage.outputTokens,
+                      totalTokens: followUpUsage.totalTokens,
+                    });
+                  }
+
+                  // PostGenerate hooks
+                  const followUpPostGenerateHooks = effectiveHooks?.PostGenerate ?? [];
+                  if (followUpPostGenerateHooks.length > 0) {
+                    const followUpFinishReason = await followUpResult.finishReason;
+                    const followUpHookResult: GenerateResultComplete = {
+                      status: "complete",
+                      text: followUpText,
+                      usage: followUpUsage,
+                      finishReason: followUpFinishReason as GenerateResultComplete["finishReason"],
+                      output: undefined,
+                      steps: mapSteps(followUpSteps),
+                    };
+                    const followUpPostGenerateInput: PostGenerateInput = {
+                      hook_event_name: "PostGenerate",
+                      session_id: effectiveGenOptions.threadId ?? "default",
+                      cwd: process.cwd(),
+                      options: effectiveGenOptions,
+                      result: followUpHookResult,
+                    };
+                    await invokeHooksWithTimeout(
+                      followUpPostGenerateHooks,
+                      followUpPostGenerateInput,
+                      null,
+                      agent,
+                    );
+                  }
+
+                  followUpPrompt = await getNextTaskPrompt();
+                }
+              }
             },
           });
 

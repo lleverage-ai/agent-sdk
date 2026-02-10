@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `HeadlessSessionRunner` for running teammate agents in the background
   - Team tools: `start_team`, `end_team`, `team_spawn`, `team_message`, `team_task_create`, `team_task_claim`, `team_task_complete`, and more
   - Custom hook events: `TeammateSpawned`, `TeammateIdle`, `TeammateStopped`, `TeamTaskCreated`, `TeamTaskClaimed`, `TeamTaskCompleted`, `TeamMessageSent`
+- Automatic background task handling in `agent.generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()`
+  - `waitForBackgroundTasks` option (default: `true`) — agent automatically waits for background tasks and triggers follow-up generations
+  - `formatTaskCompletion` / `formatTaskFailure` options for custom task result formatting
+  - `TaskManager.waitForNextCompletion()` method for awaiting the next terminal task event
 
 ### Changed
 

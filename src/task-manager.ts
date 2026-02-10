@@ -261,6 +261,45 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
     return this.listTasks({ status: ["running", "pending"] }).length > 0;
   }
 
+  /**
+   * Check if there are any terminal tasks still in the manager (not yet removed).
+   *
+   * @returns True if there are unprocessed terminal tasks
+   */
+  hasTerminalTasks(): boolean {
+    return this.listTasks({ status: ["completed", "failed", "killed"] }).length > 0;
+  }
+
+  /**
+   * Wait for the next task to reach a terminal state.
+   *
+   * If a task is already in a terminal state, resolves immediately with it.
+   * Otherwise, subscribes to events and waits for the next terminal transition.
+   *
+   * @returns Promise resolving with the task that reached a terminal state
+   */
+  waitForNextCompletion(): Promise<BackgroundTask> {
+    // Check for already-terminal tasks first to avoid missing events
+    // that fired while no listener was attached.
+    const terminal = this.listTasks({ status: ["completed", "failed", "killed"] });
+    if (terminal.length > 0) {
+      // biome-ignore lint/style/noNonNullAssertion: length > 0 guarantees element exists
+      return Promise.resolve(terminal[0]!);
+    }
+
+    return new Promise((resolve) => {
+      const onTerminal = (task: BackgroundTask) => {
+        this.off("taskCompleted", onTerminal);
+        this.off("taskFailed", onTerminal);
+        this.off("taskKilled", onTerminal);
+        resolve(task);
+      };
+      this.on("taskCompleted", onTerminal);
+      this.on("taskFailed", onTerminal);
+      this.on("taskKilled", onTerminal);
+    });
+  }
+
   // ===========================================================================
   // Control
   // ===========================================================================

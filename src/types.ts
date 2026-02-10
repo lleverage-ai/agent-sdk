@@ -960,6 +960,37 @@ export interface AgentOptions {
   };
 
   /**
+   * Whether agent methods should wait for background tasks to complete
+   * and automatically trigger follow-up generations with their results.
+   *
+   * When true (default), generate(), stream(), streamResponse(), and
+   * streamDataResponse() won't return until all background tasks have
+   * completed and been processed — including tasks spawned by follow-up
+   * generations.
+   *
+   * Set to false for fire-and-forget behavior.
+   *
+   * @defaultValue true
+   */
+  waitForBackgroundTasks?: boolean;
+
+  /**
+   * Custom formatter for task completion follow-up prompts.
+   *
+   * @param task - The completed background task
+   * @returns The prompt string to send as a follow-up generation
+   */
+  formatTaskCompletion?: (task: import("./task-store/types.js").BackgroundTask) => string;
+
+  /**
+   * Custom formatter for task failure follow-up prompts.
+   *
+   * @param task - The failed background task
+   * @returns The prompt string to send as a follow-up generation
+   */
+  formatTaskFailure?: (task: import("./task-store/types.js").BackgroundTask) => string;
+
+  /**
    * Subagent definitions for task delegation.
    *
    * When provided, a `task` tool is automatically created that allows
