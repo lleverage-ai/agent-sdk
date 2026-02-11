@@ -1790,7 +1790,7 @@ export function createAgent(options: AgentOptions): Agent {
               const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
               const finalMessages: ModelMessage[] = [
                 ...messages,
-                { role: "assistant" as const, content: response.text },
+                ...(response.text ? [{ role: "assistant" as const, content: response.text }] : []),
               ];
               const savedCheckpoint = await saveCheckpoint(
                 checkpointThreadId,
@@ -1868,10 +1868,12 @@ export function createAgent(options: AgentOptions): Agent {
           // Save checkpoint - use forked session ID if forking, otherwise use original threadId
           const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
           if (checkpointThreadId && options.checkpointer) {
-            // Build final messages including the assistant response
+            // Build final messages including the assistant response.
+            // Skip empty text to avoid invalid content blocks (e.g. when
+            // the model finishes with only tool calls).
             const finalMessages: ModelMessage[] = [
               ...messages,
-              { role: "assistant" as const, content: response.text },
+              ...(response.text ? [{ role: "assistant" as const, content: response.text }] : []),
             ];
             await saveCheckpoint(
               checkpointThreadId,
@@ -1919,7 +1921,12 @@ export function createAgent(options: AgentOptions): Agent {
           let lastResult: GenerateResult = finalResult;
           let runningMessages: ModelMessage[] = hasCheckpointing
             ? []
-            : [...messages, { role: "assistant" as const, content: finalResult.text }];
+            : [
+                ...messages,
+                ...(finalResult.text
+                  ? [{ role: "assistant" as const, content: finalResult.text }]
+                  : []),
+              ];
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
@@ -1937,7 +1944,9 @@ export function createAgent(options: AgentOptions): Agent {
               runningMessages = [
                 ...runningMessages,
                 { role: "user" as const, content: followUpPrompt },
-                { role: "assistant" as const, content: lastResult.text },
+                ...(lastResult.text
+                  ? [{ role: "assistant" as const, content: lastResult.text }]
+                  : []),
               ];
             }
 
@@ -2281,7 +2290,7 @@ export function createAgent(options: AgentOptions): Agent {
           if (effectiveGenOptions.threadId && options.checkpointer) {
             const finalMessages: ModelMessage[] = [
               ...messages,
-              { role: "assistant" as const, content: text },
+              ...(text ? [{ role: "assistant" as const, content: text }] : []),
             ];
             await saveCheckpoint(
               effectiveGenOptions.threadId,
@@ -2312,7 +2321,7 @@ export function createAgent(options: AgentOptions): Agent {
           const hasCheckpointing = !!(effectiveGenOptions.threadId && options.checkpointer);
           let currentMessages: ModelMessage[] = hasCheckpointing
             ? []
-            : [...messages, { role: "assistant" as const, content: text }];
+            : [...messages, ...(text ? [{ role: "assistant" as const, content: text }] : [])];
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
@@ -2332,7 +2341,7 @@ export function createAgent(options: AgentOptions): Agent {
               currentMessages = [
                 ...currentMessages,
                 { role: "user" as const, content: followUpPrompt },
-                { role: "assistant" as const, content: followUpText },
+                ...(followUpText ? [{ role: "assistant" as const, content: followUpText }] : []),
               ];
             }
 
@@ -2477,10 +2486,9 @@ export function createAgent(options: AgentOptions): Agent {
                     // Build messages including this step's results
                     const stepMessages: ModelMessage[] = [
                       ...initialParams.messages,
-                      {
-                        role: "assistant" as const,
-                        content: stepResult.text,
-                      },
+                      ...(stepResult.text
+                        ? [{ role: "assistant" as const, content: stepResult.text }]
+                        : []),
                     ];
                     await saveCheckpoint(
                       effectiveGenOptions.threadId!,
@@ -2504,7 +2512,9 @@ export function createAgent(options: AgentOptions): Agent {
               if (effectiveGenOptions.threadId && options.checkpointer) {
                 const finalMessages: ModelMessage[] = [
                   ...initialParams.messages,
-                  { role: "assistant" as const, content: finishResult.text },
+                  ...(finishResult.text
+                    ? [{ role: "assistant" as const, content: finishResult.text }]
+                    : []),
                 ];
                 await saveCheckpoint(
                   effectiveGenOptions.threadId!,
@@ -2554,7 +2564,7 @@ export function createAgent(options: AgentOptions): Agent {
 
                 let currentMessages: ModelMessage[] = [
                   ...messages,
-                  { role: "assistant" as const, content: text },
+                  ...(text ? [{ role: "assistant" as const, content: text }] : []),
                 ];
 
                 let followUpPrompt = await getNextTaskPrompt();
@@ -2584,7 +2594,9 @@ export function createAgent(options: AgentOptions): Agent {
                   currentMessages = [
                     ...currentMessages,
                     { role: "user" as const, content: followUpPrompt },
-                    { role: "assistant" as const, content: followUpText },
+                    ...(followUpText
+                      ? [{ role: "assistant" as const, content: followUpText }]
+                      : []),
                   ];
 
                   // --- Post-completion bookkeeping for follow-ups ---
@@ -2766,10 +2778,9 @@ export function createAgent(options: AgentOptions): Agent {
                     // Build messages including this step's results
                     const stepMessages: ModelMessage[] = [
                       ...initialParams.messages,
-                      {
-                        role: "assistant" as const,
-                        content: stepResult.text,
-                      },
+                      ...(stepResult.text
+                        ? [{ role: "assistant" as const, content: stepResult.text }]
+                        : []),
                     ];
                     await saveCheckpoint(
                       effectiveGenOptions.threadId!,
@@ -2793,7 +2804,9 @@ export function createAgent(options: AgentOptions): Agent {
               if (effectiveGenOptions.threadId && options.checkpointer) {
                 const finalMessages: ModelMessage[] = [
                   ...initialParams.messages,
-                  { role: "assistant" as const, content: finishResult.text },
+                  ...(finishResult.text
+                    ? [{ role: "assistant" as const, content: finishResult.text }]
+                    : []),
                 ];
                 await saveCheckpoint(
                   effectiveGenOptions.threadId!,
@@ -3055,7 +3068,7 @@ export function createAgent(options: AgentOptions): Agent {
 
                 let currentMessages: ModelMessage[] = [
                   ...messages,
-                  { role: "assistant" as const, content: text },
+                  ...(text ? [{ role: "assistant" as const, content: text }] : []),
                 ];
 
                 let followUpPrompt = await getNextTaskPrompt();
@@ -3085,7 +3098,9 @@ export function createAgent(options: AgentOptions): Agent {
                   currentMessages = [
                     ...currentMessages,
                     { role: "user" as const, content: followUpPrompt },
-                    { role: "assistant" as const, content: followUpText },
+                    ...(followUpText
+                      ? [{ role: "assistant" as const, content: followUpText }]
+                      : []),
                   ];
 
                   // --- Post-completion bookkeeping for follow-ups ---
