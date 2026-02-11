@@ -579,6 +579,56 @@ export class ToolRegistry {
   }
 
   /**
+   * Get the full tool definition for a registered tool.
+   *
+   * Returns the tool without marking it as loaded — useful for
+   * proxy execution via `call_tool`.
+   *
+   * @param name - The tool name
+   * @returns Tool definition or undefined if not found
+   */
+  getTool(name: string): Tool | undefined {
+    return this.entries.get(name)?.tool;
+  }
+
+  /**
+   * Get the input schema (Zod) for a registered tool.
+   *
+   * @param name - The tool name
+   * @returns The Zod input schema or undefined if not found
+   */
+  getInputSchema(name: string): unknown | undefined {
+    const entry = this.entries.get(name);
+    if (!entry) return undefined;
+    // AI SDK Tool has `inputSchema` which is a Zod schema
+    return (entry.tool as { inputSchema?: unknown }).inputSchema;
+  }
+
+  /**
+   * Execute a tool without loading it into the active set.
+   *
+   * This calls the tool's execute function directly, bypassing
+   * the load mechanism. Used by `call_tool` proxy.
+   *
+   * @param name - The tool name
+   * @param args - Arguments to pass to the tool
+   * @returns The tool execution result
+   * @throws Error if tool is not found or has no execute function
+   */
+  async executeTool(name: string, args: Record<string, unknown>): Promise<unknown> {
+    const entry = this.entries.get(name);
+    if (!entry) {
+      throw new Error(`Tool '${name}' not found in registry`);
+    }
+    const execute = entry.tool.execute;
+    if (!execute) {
+      throw new Error(`Tool '${name}' has no execute function`);
+    }
+    // biome-ignore lint/suspicious/noExplicitAny: Minimal options for proxy execution
+    return execute(args, { toolCallId: `proxy_${Date.now()}`, messages: [] } as any);
+  }
+
+  /**
    * Reset all tools to unloaded state.
    *
    * Does not unregister tools, only marks them as unloaded.

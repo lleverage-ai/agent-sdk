@@ -13,6 +13,10 @@ import {
   skillsComponent,
   toolsComponent,
 } from "../src/prompt-builder/components.js";
+import {
+  DEFAULT_DELEGATION_INSTRUCTIONS,
+  delegationComponent,
+} from "../src/prompt-builder/delegation-component.js";
 import type { PromptComponent, PromptContext } from "../src/prompt-builder/index.js";
 import { PromptBuilder } from "../src/prompt-builder/index.js";
 
@@ -393,6 +397,7 @@ describe("createDefaultPromptBuilder", () => {
     expect(names).toContain("capabilities");
     expect(names).toContain("permission-mode");
     expect(names).toContain("context");
+    expect(names).toContain("delegation-instructions");
   });
 
   it("should build a complete prompt with all components", () => {
@@ -507,5 +512,61 @@ describe("Integration scenarios", () => {
 
     expect(index.high).toBeLessThan(index.mid);
     expect(index.mid).toBeLessThan(index.low);
+  });
+});
+
+describe("delegationComponent", () => {
+  it("should not render when hasSubagents is false", () => {
+    const condition = delegationComponent.condition?.({ custom: { hasSubagents: false } });
+    expect(condition).toBe(false);
+  });
+
+  it("should not render when custom is undefined", () => {
+    const condition = delegationComponent.condition?.({});
+    expect(condition).toBe(false);
+  });
+
+  it("should render when hasSubagents is true", () => {
+    const condition = delegationComponent.condition?.({ custom: { hasSubagents: true } });
+    expect(condition).toBe(true);
+  });
+
+  it("should render default delegation instructions", () => {
+    const result = delegationComponent.render({ custom: { hasSubagents: true } });
+    expect(result).toContain("# Task Delegation");
+    expect(result).toContain("When to delegate");
+    expect(result).toContain("How to delegate");
+    expect(result).toBe(DEFAULT_DELEGATION_INSTRUCTIONS);
+  });
+
+  it("should render custom delegation instructions", () => {
+    const customInstructions = "Custom delegation instructions here.";
+    const result = delegationComponent.render({
+      custom: { hasSubagents: true, delegationInstructions: customInstructions },
+    });
+    expect(result).toBe(customInstructions);
+  });
+
+  it("should disable delegation instructions with empty string", () => {
+    const result = delegationComponent.render({
+      custom: { hasSubagents: true, delegationInstructions: "" },
+    });
+    expect(result).toBe("");
+  });
+
+  it("should have priority 75", () => {
+    expect(delegationComponent.priority).toBe(75);
+  });
+
+  it("should be included in default prompt builder", () => {
+    const builder = createDefaultPromptBuilder();
+    const prompt = builder.build({ custom: { hasSubagents: true } });
+    expect(prompt).toContain("# Task Delegation");
+  });
+
+  it("should not appear in prompt when no subagents", () => {
+    const builder = createDefaultPromptBuilder();
+    const prompt = builder.build({});
+    expect(prompt).not.toContain("# Task Delegation");
   });
 });

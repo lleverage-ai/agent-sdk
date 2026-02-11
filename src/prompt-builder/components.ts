@@ -4,6 +4,7 @@
  * @packageDocumentation
  */
 
+import { delegationComponent } from "./delegation-component.js";
 import type { PromptComponent } from "./index.js";
 import { PromptBuilder } from "./index.js";
 
@@ -257,6 +258,7 @@ export const permissionModeComponent: PromptComponent = {
 export function createDefaultPromptBuilder(): PromptBuilder {
   return new PromptBuilder().registerMany([
     identityComponent,
+    delegationComponent,
     toolsComponent,
     skillsComponent,
     pluginsComponent,

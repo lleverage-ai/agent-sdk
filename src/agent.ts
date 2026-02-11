@@ -52,6 +52,8 @@ import type { PromptContext } from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
+import { createSubagent } from "./subagents.js";
+import { createCallToolTool } from "./tools/call-tool.js";
 import {
   coreToolsToToolSet,
   createCoreTools,
@@ -84,6 +86,7 @@ import type {
   StreamingContext,
   StreamingToolsFactory,
   StreamPart,
+  SubagentDefinition,
   ToolCallResult,
   ToolLoadErrorInput,
   ToolRegisteredInput,
@@ -883,9 +886,9 @@ export function createAgent(options: AgentOptions): Agent {
   const pluginLoadingMode = options.pluginLoading ?? "eager";
   const preloadPlugins = new Set(options.preloadPlugins ?? []);
 
-  // Initialize tool registry for lazy/explicit loading modes
+  // Initialize tool registry for lazy/explicit/proxy loading modes
   const toolRegistry =
-    pluginLoadingMode !== "eager"
+    pluginLoadingMode !== "eager" || (options.plugins ?? []).some((p) => p.deferred)
       ? new ToolRegistry({
           onToolRegistered: async (input) => {
             const hooks = effectiveHooks?.ToolRegistered ?? [];
@@ -991,6 +994,20 @@ export function createAgent(options: AgentOptions): Agent {
   // Track whether deferred loading is active
   let deferredLoadingActive = false;
 
+  // Determine which plugins should be delegated to subagents
+  const delegatePluginTools = options.delegatePluginTools;
+  const shouldDelegatePlugin = (pluginName: string): boolean => {
+    if (delegatePluginTools === true) return true;
+    if (Array.isArray(delegatePluginTools)) return delegatePluginTools.includes(pluginName);
+    return false;
+  };
+
+  // Track whether any deferred or proxy plugins exist (for call_tool creation)
+  let hasProxiedTools = false;
+
+  // Auto-created subagent definitions from delegated plugins
+  const autoSubagents: SubagentDefinition[] = [];
+
   // Count total plugin tools for threshold calculation and collect plugin skills.
   // Note: Function-based (streaming) tools are not counted since we don't know
   // their count until they're invoked with a streaming context.
@@ -999,7 +1016,10 @@ export function createAgent(options: AgentOptions): Agent {
   let totalPluginToolCount = 0;
   for (const plugin of options.plugins ?? []) {
     if (plugin.tools && typeof plugin.tools !== "function") {
-      totalPluginToolCount += Object.keys(plugin.tools).length;
+      // Don't count delegated plugin tools toward threshold — they won't be loaded
+      if (!plugin.delegateToSubagent && !shouldDelegatePlugin(plugin.name)) {
+        totalPluginToolCount += Object.keys(plugin.tools).length;
+      }
     }
     // Collect plugin skills early so they're available for skill tool creation
     if (plugin.skills) {
@@ -1010,7 +1030,7 @@ export function createAgent(options: AgentOptions): Agent {
   // Determine if we should use deferred loading based on tool search settings
   // Note: Only activate deferred loading if explicitly requested, not based on auto threshold
   // The auto threshold should only affect whether search_tools is created, not loading behavior
-  if (toolSearchEnabled === "always") {
+  if (toolSearchEnabled === "always" || pluginLoadingMode === "proxy") {
     deferredLoadingActive = true;
   }
   // Removed: auto threshold no longer forces deferred loading
@@ -1034,7 +1054,7 @@ export function createAgent(options: AgentOptions): Agent {
     ...(options.tools ?? {}),
   };
 
-  // Process plugins based on loading mode and deferred loading
+  // Process plugins based on loading mode, deferred, and delegation settings
   // Note: Plugin skills are collected earlier (before createCoreTools) so
   // the skill tool can include them in progressive disclosure.
   for (const plugin of options.plugins ?? []) {
@@ -1044,16 +1064,51 @@ export function createAgent(options: AgentOptions): Agent {
     if (plugin.tools && typeof plugin.tools !== "function") {
       const shouldPreload = preloadPlugins.has(plugin.name);
 
+      // Check if this plugin should be delegated to a subagent
+      const isDelegated = plugin.delegateToSubagent || shouldDelegatePlugin(plugin.name);
+      if (isDelegated) {
+        // Don't register tools in main agent — create a subagent instead
+        const subagentModel = plugin.subagentModel ?? options.defaultSubagentModel;
+        autoSubagents.push({
+          type: `plugin-${plugin.name}`,
+          description: plugin.description ?? `Specialized agent for ${plugin.name} operations`,
+          sourcePlugin: plugin.name,
+          model: subagentModel ?? "inherit",
+          create: (_ctx) =>
+            createSubagent(agent, {
+              name: `plugin-${plugin.name}`,
+              description: plugin.description ?? `${plugin.name} specialist`,
+              model: _ctx.model,
+              plugins: [plugin],
+              systemPrompt:
+                plugin.subagentPrompt ??
+                `You are a ${plugin.name} specialist. Complete the requested task using available tools and return a clear summary.`,
+            }),
+        });
+        continue; // Skip normal registration
+      }
+
+      // Check if this plugin is deferred (proxy mode or per-plugin opt-in)
+      const isDeferred =
+        plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
+
       // Priority order:
       // 1. Explicit mode - don't register
-      // 2. Preload - always load immediately
-      // 3. Explicit eager - always load immediately
-      // 4. Lazy mode - register with tool registry
-      // 5. Deferred loading - register but don't load
-      // 6. Default eager - load immediately
+      // 2. Deferred/proxy - register but don't load (accessible via call_tool)
+      // 3. Preload - always load immediately
+      // 4. Explicit eager - always load immediately
+      // 5. Lazy mode - register with tool registry
+      // 6. Deferred loading - register but don't load
+      // 7. Default eager - load immediately
       if (pluginLoadingMode === "explicit") {
         // Explicit mode: don't auto-register, user must do it manually
         // Skip registration entirely
+      } else if (isDeferred) {
+        // Deferred plugin: register in MCP for discovery via search_tools + call_tool
+        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
+          autoLoad: false,
+        });
+        hasProxiedTools = true;
       } else if (shouldPreload) {
         // Preloaded plugins: always load immediately, regardless of other settings
         mcpManager.registerPluginTools(plugin.name, plugin.tools, {
@@ -1067,8 +1122,9 @@ export function createAgent(options: AgentOptions): Agent {
       } else if (pluginLoadingMode === "lazy" && toolRegistry) {
         // Lazy mode: register with registry for on-demand loading
         toolRegistry.registerPlugin(plugin.name, plugin.tools);
-      } else if (deferredLoadingActive) {
+      } else if (deferredLoadingActive && plugin.deferred !== false) {
         // Deferred loading (auto threshold or always enabled): register tools but don't load them initially
+        // Respect explicit deferred: false opt-out
         mcpManager.registerPluginTools(plugin.name, plugin.tools, {
           autoLoad: false,
         });
@@ -1081,18 +1137,36 @@ export function createAgent(options: AgentOptions): Agent {
     }
   }
 
+  // Merge auto-created subagents with user-provided ones
+  const allSubagents: SubagentDefinition[] = [
+    ...(options.subagents ?? []),
+    ...autoSubagents,
+  ];
+  const hasSubagents = allSubagents.length > 0;
+
+  // In proxy mode, create call_tool and configure search_tools with schema disclosure
+  const isProxyMode = pluginLoadingMode === "proxy" || hasProxiedTools;
+  if (isProxyMode && !options.disabledCoreTools?.includes("call_tool")) {
+    coreTools.call_tool = createCallToolTool({
+      mcpManager,
+      toolRegistry: toolRegistry ?? undefined,
+    });
+  }
+
   // Create search_tools for MCP tool discovery and/or plugin loading
   // New behavior:
   // - Create when auto threshold is exceeded (for lazy discovery)
   // - Create when deferred loading is active (explicitly requested)
+  // - Create when proxy mode is active (for call_tool discovery)
   // - Create when external MCP servers exist (for MCP tool search)
-  // - Always auto-load tools when found (no manual load step)
+  // - Always auto-load tools when found (no manual load step) — unless proxy mode
   const shouldCreateSearchToolsForAutoThreshold =
     toolSearchEnabled === "auto" && totalPluginToolCount > toolSearchThreshold;
 
   const shouldCreateSearchTools =
     !options.disabledCoreTools?.includes("search_tools") &&
     (deferredLoadingActive ||
+      isProxyMode ||
       shouldCreateSearchToolsForAutoThreshold ||
       (mcpManager.hasExternalServers() && toolSearchEnabled !== "never"));
 
@@ -1100,8 +1174,10 @@ export function createAgent(options: AgentOptions): Agent {
     coreTools.search_tools = createSearchToolsTool({
       manager: mcpManager,
       maxResults: toolSearchMaxResults,
-      enableLoad: true, // Always enable auto-loading
-      autoLoad: true, // NEW: Auto-load tools after searching
+      // In proxy mode: don't auto-load, include schema for call_tool usage
+      enableLoad: !isProxyMode,
+      autoLoad: !isProxyMode,
+      includeSchema: isProxyMode,
       onToolsLoaded: (toolNames) => {
         // Tools are now loaded in MCPManager and will be included in getActiveToolSet()
         // This callback can be used for logging/notifications
@@ -1208,6 +1284,10 @@ export function createAgent(options: AgentOptions): Agent {
       permissionMode,
       currentMessages: messages,
       threadId,
+      custom: {
+        hasSubagents,
+        delegationInstructions: options.delegationInstructions,
+      },
     };
   };
 
@@ -1365,7 +1445,7 @@ export function createAgent(options: AgentOptions): Agent {
     const result: ToolSet = {
       ...tools,
       task: createTaskTool({
-        subagents: options.subagents ?? [],
+        subagents: allSubagents,
         defaultModel: options.model,
         parentAgent: agent,
         // Always include general-purpose subagent so agents can delegate tasks

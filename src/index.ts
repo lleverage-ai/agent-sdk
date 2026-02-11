@@ -320,6 +320,10 @@ export {
   skillsComponent,
   toolsComponent,
 } from "./prompt-builder/components.js";
+export {
+  DEFAULT_DELEGATION_INSTRUCTIONS,
+  delegationComponent,
+} from "./prompt-builder/delegation-component.js";
 // Memory types
 export type {
   AdditionalMemoryFile,
@@ -564,6 +568,8 @@ export { TaskManager } from "./task-manager.js";
 export type {
   BashResult,
   BashToolOptions,
+  // Call tool types (proxy)
+  CallToolOptions,
   FilesystemTools,
   FilesystemToolsOptions,
   // Task management tool types
@@ -610,6 +616,8 @@ export {
   createListTasksTool,
   // Filesystem tools
   createReadTool,
+  // Call tool (proxy for registered-but-not-loaded tools)
+  createCallToolTool,
   // Search tools (MCP integration)
   createSearchToolsTool,
   createSkillRegistry,

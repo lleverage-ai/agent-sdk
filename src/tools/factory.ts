@@ -26,6 +26,7 @@ import {
   type FilesystemTools,
   type FilesystemToolsOptions,
 } from "./filesystem.js";
+import { type CallToolOptions, createCallToolTool } from "./call-tool.js";
 import { createSearchToolsTool, type SearchToolsOptions } from "./search.js";
 
 import {
@@ -217,6 +218,14 @@ export interface CoreToolsOptions {
 
   /** Options for the search_tools tool */
   searchToolsOptions?: Omit<SearchToolsOptions, "manager">;
+
+  // === Call Tool (Proxy) Options ===
+
+  /**
+   * Options for the call_tool proxy tool.
+   * If provided, call_tool tool is included.
+   */
+  callToolOptions?: CallToolOptions;
 }
 
 /**
@@ -278,6 +287,11 @@ export interface CoreTools {
 
   /** Tool search/discovery (if mcpManager provided) */
   search_tools?: Tool;
+
+  // === Call Tool (Proxy) ===
+
+  /** Proxy tool for calling registered-but-not-loaded tools */
+  call_tool?: Tool;
 }
 
 /**
@@ -521,6 +535,14 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
     });
   }
 
+  // =========================================================================
+  // Call Tool (Proxy)
+  // =========================================================================
+
+  if (!isDisabled("call_tool") && options.callToolOptions) {
+    tools.call_tool = createCallToolTool(options.callToolOptions);
+  }
+
   return {
     tools,
     skillRegistry: resultSkillRegistry,
@@ -612,6 +634,8 @@ export {
   createListTasksTool,
   // Search
   createSearchToolsTool,
+  // Call Tool (Proxy)
+  createCallToolTool,
 };
 
 // Re-export types
@@ -635,4 +659,6 @@ export type {
   ListTasksToolOptions,
   // Search
   SearchToolsOptions,
+  // Call Tool (Proxy)
+  CallToolOptions,
 };
