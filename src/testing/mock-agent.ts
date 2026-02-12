@@ -564,11 +564,6 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
       return { ...(options.tools ?? {}) };
     },
 
-    loadTools(_toolNames: string[]) {
-      // Mock agent doesn't support lazy loading
-      return { loaded: [], notFound: _toolNames };
-    },
-
     setPermissionMode(_mode) {
       // Mock agent permission mode setter (no-op in mock)
     },

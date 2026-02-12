@@ -78,19 +78,9 @@ export type {
 } from "./todos.js";
 // Todo tool
 export { createTodoWriteTool } from "./todos.js";
-export type {
-  ToolLoadResult,
-  ToolMetadata,
-  ToolRegistryOptions,
-  ToolSearchOptions,
-  UseToolsToolOptions,
-} from "./tool-registry.js";
-// Tool registry (deferred tool loading)
-export {
-  createToolRegistry,
-  createUseToolsTool,
-  ToolRegistry,
-} from "./tool-registry.js";
+export type { CallToolOptions } from "./call-tool.js";
+// Call tool (proxy for registered-but-not-loaded tools)
+export { createCallToolTool } from "./call-tool.js";
 export type { ToolReference } from "./utils.js";
 // Tool utilities (DX helpers)
 export { mcpTools, mcpToolsFor, toolsFrom, toolsFromPlugin } from "./utils.js";

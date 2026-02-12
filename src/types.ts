@@ -662,12 +662,9 @@ export interface AgentOptions {
    * Plugin loading mode for tool registration.
    *
    * Controls how plugin tools are made available to the agent:
-   * - `"eager"` - Load all plugin tools immediately (current behavior)
-   * - `"lazy"` - Register tools with metadata only, load on-demand via use_tools
-   * - `"explicit"` - Don't register plugin tools, require manual registration
-   *
-   * When using "lazy" mode, the agent gets a `use_tools` tool that allows
-   * it to search and load tools on-demand, keeping initial context small.
+   * - `"eager"` - Load all plugin tools immediately into the active tool set (default)
+   * - `"proxy"` - Keep tools out of the active set; discoverable via `search_tools`,
+   *   callable via `call_tool`. Keeps the schema stable for prompt caching.
    *
    * @defaultValue "eager"
    *
@@ -676,29 +673,11 @@ export interface AgentOptions {
    * const agent = createAgent({
    *   model,
    *   plugins: [stripePlugin, twilioPlugin, ...manyPlugins],
-   *   pluginLoading: "lazy", // Tools loaded on-demand
+   *   pluginLoading: "proxy", // Stable schema, tools via call_tool
    * });
    * ```
    */
   pluginLoading?: PluginLoadingMode;
-
-  /**
-   * Plugins to preload when using lazy loading mode.
-   *
-   * These plugins will have their tools loaded immediately regardless
-   * of the pluginLoading setting.
-   *
-   * @example
-   * ```typescript
-   * const agent = createAgent({
-   *   model,
-   *   plugins: [stripePlugin, twilioPlugin, coreUtilsPlugin],
-   *   pluginLoading: "lazy",
-   *   preloadPlugins: ["core-utils"], // Always load core-utils
-   * });
-   * ```
-   */
-  preloadPlugins?: string[];
 
   /**
    * Restrict which tools the agent can use.
@@ -1024,18 +1003,25 @@ export interface AgentOptions {
    * ```
    */
   subagents?: SubagentDefinition[];
+
+  /**
+   * Custom delegation instructions to include in the system prompt when subagents exist.
+   *
+   * When provided, overrides the default delegation guidance. Set to empty string to disable.
+   */
+  delegationInstructions?: string;
 }
 
 /**
  * Plugin loading mode.
  *
- * - `"eager"` - Load all plugin tools immediately into context
- * - `"lazy"` - Register tools with metadata only, load on-demand
- * - `"explicit"` - Don't auto-register, require manual registration
+ * - `"eager"` - Load all plugin tools immediately into context (default)
+ * - `"proxy"` - Keep tools out of the active set; discoverable via `search_tools`,
+ *   callable via `call_tool`
  *
  * @category Plugins
  */
-export type PluginLoadingMode = "eager" | "lazy" | "explicit";
+export type PluginLoadingMode = "eager" | "proxy";
 
 /**
  * An agent instance capable of generating responses and executing tools.
@@ -1177,26 +1163,11 @@ export interface Agent {
   /**
    * Get all currently active tools.
    *
-   * Returns the combined set of core tools and dynamically loaded tools.
-   * In lazy loading mode, this includes tools loaded via use_tools.
+   * Returns the combined set of core tools, runtime tools, and MCP tools.
    *
    * @returns ToolSet containing all active tools
    */
   getActiveTools(): ToolSet;
-
-  /**
-   * Load tools from the registry by name.
-   *
-   * Only available when using lazy plugin loading mode.
-   * Tools loaded through this method become available for use.
-   *
-   * @param toolNames - Names of tools to load
-   * @returns Object with loaded tool names and any errors
-   */
-  loadTools(toolNames: string[]): {
-    loaded: string[];
-    notFound: string[];
-  };
 
   /**
    * Dynamically change the permission mode.
@@ -1786,7 +1757,8 @@ export type CoreToolName =
   | "kill_task"
   | "list_tasks"
   | "skill"
-  | "search_tools";
+  | "search_tools"
+  | "call_tool";
 
 /**
  * A part from streaming generation.
@@ -1808,6 +1780,45 @@ export type StreamPart =
 // =============================================================================
 // Plugins
 // =============================================================================
+
+/**
+ * Configuration for a plugin's dedicated subagent.
+ *
+ * When a plugin defines a `subagent`, the tools listed here are scoped to
+ * an auto-created subagent instead of the main agent's context. The main
+ * agent delegates to this subagent via the `task` tool.
+ *
+ * @example
+ * ```typescript
+ * definePlugin({
+ *   name: "github",
+ *   subagent: {
+ *     description: "GitHub specialist",
+ *     prompt: "You handle GitHub operations.",
+ *     model: haiku,
+ *     tools: { list_issues, create_pr },
+ *   },
+ * });
+ * ```
+ *
+ * @category Plugins
+ */
+export interface PluginSubagent {
+  /** Description of what this subagent specializes in */
+  description: string;
+
+  /**
+   * System prompt for the subagent.
+   * @defaultValue `You are a ${plugin.name} specialist. Complete the requested task using available tools and return a clear summary.`
+   */
+  prompt?: string;
+
+  /** Model override for the subagent. Inherits from parent agent if omitted. */
+  model?: LanguageModel;
+
+  /** Tools scoped to this subagent */
+  tools: ToolSet;
+}
 
 /**
  * A plugin that extends agent functionality.
@@ -1895,6 +1906,45 @@ export interface AgentPlugin {
 
   /** Hooks provided by this plugin. Merged into the agent's hook registration during initialization. */
   hooks?: HookRegistration;
+
+  /**
+   * When true, this plugin's tools are accessible only via `call_tool` proxy.
+   *
+   * In `pluginLoading: "proxy"` mode, all plugins are deferred by default.
+   * In `pluginLoading: "eager"` (default), only plugins with `deferred: true`
+   * are proxied; the rest load eagerly as before.
+   *
+   * Deferred tools are discoverable via `search_tools` and callable via `call_tool`,
+   * but never added to the active tool set — keeping the schema stable and cacheable.
+   *
+   * @defaultValue false
+   */
+  deferred?: boolean;
+
+  /**
+   * Subagent configuration for this plugin.
+   *
+   * When provided, the tools defined here are scoped to an auto-created subagent
+   * instead of being loaded into the main agent's context. The main agent
+   * delegates to this subagent via the `task` tool.
+   *
+   * Tools on `plugin.tools` go to the main agent; tools on `plugin.subagent.tools`
+   * go to a dedicated subagent. A plugin can have both.
+   *
+   * @example
+   * ```typescript
+   * definePlugin({
+   *   name: "github",
+   *   subagent: {
+   *     description: "GitHub specialist",
+   *     prompt: "You handle GitHub operations.",
+   *     model: haiku,
+   *     tools: { list_issues, create_pr },
+   *   },
+   * });
+   * ```
+   */
+  subagent?: PluginSubagent;
 }
 
 /**
@@ -1933,6 +1983,19 @@ export interface PluginOptions {
 
   /** Hooks provided by this plugin. Merged into the agent's hook registration during initialization. */
   hooks?: HookRegistration;
+
+  /**
+   * When true, this plugin's tools are accessible only via `call_tool` proxy.
+   * @see {@link AgentPlugin.deferred}
+   * @defaultValue false
+   */
+  deferred?: boolean;
+
+  /**
+   * Subagent configuration for this plugin.
+   * @see {@link AgentPlugin.subagent}
+   */
+  subagent?: PluginSubagent;
 }
 
 // =============================================================================

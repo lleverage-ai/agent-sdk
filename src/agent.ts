@@ -50,8 +50,10 @@ import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index
 import { createDefaultPromptBuilder } from "./prompt-builder/components.js";
 import type { PromptContext } from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
+import { createSubagent } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
+import { createCallToolTool } from "./tools/call-tool.js";
 import {
   coreToolsToToolSet,
   createCoreTools,
@@ -60,7 +62,6 @@ import {
   createTaskTool,
 } from "./tools/factory.js";
 import type { SkillDefinition } from "./tools/skills.js";
-import { createUseToolsTool, ToolRegistry } from "./tools/tool-registry.js";
 import type {
   Agent,
   AgentOptions,
@@ -84,9 +85,8 @@ import type {
   StreamingContext,
   StreamingToolsFactory,
   StreamPart,
+  SubagentDefinition,
   ToolCallResult,
-  ToolLoadErrorInput,
-  ToolRegisteredInput,
   ToolResultPart,
 } from "./types.js";
 
@@ -878,47 +878,7 @@ export function createAgent(options: AgentOptions): Agent {
     });
 
   // Determine plugin loading mode
-  // Track whether it was explicitly set to distinguish from default
-  const explicitPluginLoading = options.pluginLoading !== undefined;
   const pluginLoadingMode = options.pluginLoading ?? "eager";
-  const preloadPlugins = new Set(options.preloadPlugins ?? []);
-
-  // Initialize tool registry for lazy/explicit loading modes
-  const toolRegistry =
-    pluginLoadingMode !== "eager"
-      ? new ToolRegistry({
-          onToolRegistered: async (input) => {
-            const hooks = effectiveHooks?.ToolRegistered ?? [];
-            if (hooks.length === 0) return;
-
-            const hookInput: ToolRegisteredInput = {
-              hook_event_name: "ToolRegistered",
-              session_id: "default",
-              cwd: process.cwd(),
-              tool_name: input.tool_name,
-              description: input.description,
-              source: input.source,
-            };
-
-            await invokeHooksWithTimeout(hooks, hookInput, null, agent);
-          },
-          onToolLoadError: async (input) => {
-            const hooks = effectiveHooks?.ToolLoadError ?? [];
-            if (hooks.length === 0) return;
-
-            const hookInput: ToolLoadErrorInput = {
-              hook_event_name: "ToolLoadError",
-              session_id: "default",
-              cwd: process.cwd(),
-              tool_name: input.tool_name,
-              error: input.error,
-              source: input.source,
-            };
-
-            await invokeHooksWithTimeout(hooks, hookInput, null, agent);
-          },
-        })
-      : undefined;
 
   // Collect skills from options and plugins
   const skills: SkillDefinition[] = [...(options.skills ?? [])];
@@ -991,6 +951,12 @@ export function createAgent(options: AgentOptions): Agent {
   // Track whether deferred loading is active
   let deferredLoadingActive = false;
 
+  // Track whether any deferred or proxy plugins exist (for call_tool creation)
+  let hasProxiedTools = false;
+
+  // Auto-created subagent definitions from delegated plugins
+  const autoSubagents: SubagentDefinition[] = [];
+
   // Count total plugin tools for threshold calculation and collect plugin skills.
   // Note: Function-based (streaming) tools are not counted since we don't know
   // their count until they're invoked with a streaming context.
@@ -1010,7 +976,7 @@ export function createAgent(options: AgentOptions): Agent {
   // Determine if we should use deferred loading based on tool search settings
   // Note: Only activate deferred loading if explicitly requested, not based on auto threshold
   // The auto threshold should only affect whether search_tools is created, not loading behavior
-  if (toolSearchEnabled === "always") {
+  if (toolSearchEnabled === "always" || pluginLoadingMode === "proxy") {
     deferredLoadingActive = true;
   }
   // Removed: auto threshold no longer forces deferred loading
@@ -1034,7 +1000,7 @@ export function createAgent(options: AgentOptions): Agent {
     ...(options.tools ?? {}),
   };
 
-  // Process plugins based on loading mode and deferred loading
+  // Process plugins based on loading mode, deferred, and delegation settings
   // Note: Plugin skills are collected earlier (before createCoreTools) so
   // the skill tool can include them in progressive disclosure.
   for (const plugin of options.plugins ?? []) {
@@ -1042,33 +1008,19 @@ export function createAgent(options: AgentOptions): Agent {
     // Note: Function-based (streaming) tools are handled separately in
     // getActiveToolSetWithStreaming() and are not registered here
     if (plugin.tools && typeof plugin.tools !== "function") {
-      const shouldPreload = preloadPlugins.has(plugin.name);
+      // Check if this plugin is deferred (proxy mode or per-plugin opt-in)
+      const isDeferred =
+        plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
 
-      // Priority order:
-      // 1. Explicit mode - don't register
-      // 2. Preload - always load immediately
-      // 3. Explicit eager - always load immediately
-      // 4. Lazy mode - register with tool registry
-      // 5. Deferred loading - register but don't load
-      // 6. Default eager - load immediately
-      if (pluginLoadingMode === "explicit") {
-        // Explicit mode: don't auto-register, user must do it manually
-        // Skip registration entirely
-      } else if (shouldPreload) {
-        // Preloaded plugins: always load immediately, regardless of other settings
+      if (isDeferred) {
+        // Deferred plugin: register in MCP for discovery via search_tools + call_tool
         mcpManager.registerPluginTools(plugin.name, plugin.tools, {
-          autoLoad: true,
+          autoLoad: false,
         });
-      } else if (explicitPluginLoading && pluginLoadingMode === "eager") {
-        // Explicit eager mode: always load immediately, regardless of toolSearch settings
-        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
-          autoLoad: true,
-        });
-      } else if (pluginLoadingMode === "lazy" && toolRegistry) {
-        // Lazy mode: register with registry for on-demand loading
-        toolRegistry.registerPlugin(plugin.name, plugin.tools);
-      } else if (deferredLoadingActive) {
+        hasProxiedTools = true;
+      } else if (deferredLoadingActive && plugin.deferred !== false) {
         // Deferred loading (auto threshold or always enabled): register tools but don't load them initially
+        // Respect explicit deferred: false opt-out
         mcpManager.registerPluginTools(plugin.name, plugin.tools, {
           autoLoad: false,
         });
@@ -1081,18 +1033,53 @@ export function createAgent(options: AgentOptions): Agent {
     }
   }
 
+  // Create subagent definitions from plugins with subagent config
+  for (const plugin of options.plugins ?? []) {
+    if (plugin.subagent) {
+      autoSubagents.push({
+        type: `plugin-${plugin.name}`,
+        description: plugin.subagent.description,
+        model: plugin.subagent.model ?? "inherit",
+        create: (_ctx) =>
+          createSubagent(agent, {
+            name: `plugin-${plugin.name}`,
+            description: plugin.subagent!.description,
+            model: _ctx.model,
+            tools: plugin.subagent!.tools,
+            systemPrompt:
+              plugin.subagent!.prompt ??
+              `You are a ${plugin.name} specialist. Complete the requested task using available tools and return a clear summary.`,
+          }),
+      });
+    }
+  }
+
+  // Merge auto-created subagents with user-provided ones
+  const allSubagents: SubagentDefinition[] = [...(options.subagents ?? []), ...autoSubagents];
+  const hasSubagents = allSubagents.length > 0;
+
+  // In proxy mode, create call_tool and configure search_tools with schema disclosure
+  const isProxyMode = pluginLoadingMode === "proxy" || hasProxiedTools;
+  if (isProxyMode && !options.disabledCoreTools?.includes("call_tool")) {
+    coreTools.call_tool = createCallToolTool({
+      mcpManager,
+    });
+  }
+
   // Create search_tools for MCP tool discovery and/or plugin loading
   // New behavior:
   // - Create when auto threshold is exceeded (for lazy discovery)
   // - Create when deferred loading is active (explicitly requested)
+  // - Create when proxy mode is active (for call_tool discovery)
   // - Create when external MCP servers exist (for MCP tool search)
-  // - Always auto-load tools when found (no manual load step)
+  // - Always auto-load tools when found (no manual load step) — unless proxy mode
   const shouldCreateSearchToolsForAutoThreshold =
     toolSearchEnabled === "auto" && totalPluginToolCount > toolSearchThreshold;
 
   const shouldCreateSearchTools =
     !options.disabledCoreTools?.includes("search_tools") &&
     (deferredLoadingActive ||
+      isProxyMode ||
       shouldCreateSearchToolsForAutoThreshold ||
       (mcpManager.hasExternalServers() && toolSearchEnabled !== "never"));
 
@@ -1100,18 +1087,15 @@ export function createAgent(options: AgentOptions): Agent {
     coreTools.search_tools = createSearchToolsTool({
       manager: mcpManager,
       maxResults: toolSearchMaxResults,
-      enableLoad: true, // Always enable auto-loading
-      autoLoad: true, // NEW: Auto-load tools after searching
+      // In proxy mode: don't auto-load, include schema for call_tool usage
+      enableLoad: !isProxyMode,
+      autoLoad: !isProxyMode,
+      includeSchema: isProxyMode,
       onToolsLoaded: (toolNames) => {
         // Tools are now loaded in MCPManager and will be included in getActiveToolSet()
         // This callback can be used for logging/notifications
       },
     });
-  }
-
-  // Add use_tools meta-tool in lazy mode
-  if (pluginLoadingMode === "lazy" && toolRegistry) {
-    coreTools.use_tools = createUseToolsTool({ registry: toolRegistry });
   }
 
   /**
@@ -1163,9 +1147,6 @@ export function createAgent(options: AgentOptions): Agent {
         const allTools: ToolSet = { ...coreTools };
         Object.assign(allTools, runtimeTools);
         Object.assign(allTools, mcpManager.getToolSet());
-        if (toolRegistry) {
-          Object.assign(allTools, toolRegistry.getLoadedTools());
-        }
         return allTools;
       })(),
     );
@@ -1208,6 +1189,10 @@ export function createAgent(options: AgentOptions): Agent {
       permissionMode,
       currentMessages: messages,
       threadId,
+      custom: {
+        hasSubagents,
+        delegationInstructions: options.delegationInstructions,
+      },
     };
   };
 
@@ -1234,11 +1219,6 @@ export function createAgent(options: AgentOptions): Agent {
     // Add MCP tools from plugin registrations
     const mcpTools = mcpManager.getToolSet();
     Object.assign(allTools, mcpTools);
-
-    // Add dynamically loaded tools from registry (lazy mode)
-    if (toolRegistry) {
-      Object.assign(allTools, toolRegistry.getLoadedTools());
-    }
 
     // Apply allowedTools filtering
     const filtered = filterToolsByAllowed(allTools);
@@ -1294,11 +1274,6 @@ export function createAgent(options: AgentOptions): Agent {
     // Add MCP tools from plugin registrations
     const mcpTools = mcpManager.getToolSet();
     Object.assign(allTools, mcpTools);
-
-    // Add dynamically loaded tools from registry (lazy mode)
-    if (toolRegistry) {
-      Object.assign(allTools, toolRegistry.getLoadedTools());
-    }
 
     // Apply allowedTools filtering
     const filtered = filterToolsByAllowed(allTools);
@@ -1365,7 +1340,7 @@ export function createAgent(options: AgentOptions): Agent {
     const result: ToolSet = {
       ...tools,
       task: createTaskTool({
-        subagents: options.subagents ?? [],
+        subagents: allSubagents,
         defaultModel: options.model,
         parentAgent: agent,
         // Always include general-purpose subagent so agents can delegate tasks
@@ -3211,19 +3186,6 @@ export function createAgent(options: AgentOptions): Agent {
       for (const name of toolNames) {
         delete runtimeTools[name];
       }
-    },
-
-    loadTools(toolNames: string[]) {
-      if (!toolRegistry) {
-        // No registry in eager mode - all tools already loaded
-        return { loaded: [], notFound: toolNames };
-      }
-
-      const result = toolRegistry.load(toolNames);
-      return {
-        loaded: result.loaded,
-        notFound: result.notFound,
-      };
     },
 
     setPermissionMode(mode) {

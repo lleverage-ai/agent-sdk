@@ -343,10 +343,6 @@ export function createRecordingAgent(
       return agent.getActiveTools();
     },
 
-    loadTools(toolNames: string[]) {
-      return agent.loadTools(toolNames);
-    },
-
     setPermissionMode(mode) {
       agent.setPermissionMode(mode);
     },

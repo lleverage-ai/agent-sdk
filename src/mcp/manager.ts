@@ -319,6 +319,27 @@ export class MCPManager {
   }
 
   /**
+   * Check if a specific tool is currently loaded.
+   *
+   * @param name - MCP tool name to check
+   * @returns True if the tool is loaded and available
+   */
+  isToolLoaded(name: string): boolean {
+    return this.loadedTools.has(name);
+  }
+
+  /**
+   * Get metadata for a specific tool by name.
+   *
+   * @param name - MCP tool name
+   * @returns Tool metadata or undefined if not found
+   */
+  getToolMetadata(name: string): MCPToolMetadata | undefined {
+    this.refreshCacheIfNeeded();
+    return this.toolMetadataCache.find((t) => t.name === name);
+  }
+
+  /**
    * List all available tools from all sources.
    *
    * @returns Array of tool metadata

@@ -320,6 +320,10 @@ export {
   skillsComponent,
   toolsComponent,
 } from "./prompt-builder/components.js";
+export {
+  DEFAULT_DELEGATION_INSTRUCTIONS,
+  delegationComponent,
+} from "./prompt-builder/delegation-component.js";
 // Memory types
 export type {
   AdditionalMemoryFile,
@@ -564,6 +568,8 @@ export { TaskManager } from "./task-manager.js";
 export type {
   BashResult,
   BashToolOptions,
+  // Call tool types (proxy)
+  CallToolOptions,
   FilesystemTools,
   FilesystemToolsOptions,
   // Task management tool types
@@ -585,14 +591,8 @@ export type {
   TodoInput,
   TodosChangedData,
   TodoWriteToolOptions,
-  ToolLoadResult,
-  // Tool registry types (deferred loading)
-  ToolMetadata,
   // Tool utilities types
   ToolReference,
-  ToolRegistryOptions,
-  ToolSearchOptions,
-  UseToolsToolOptions,
 } from "./tools/index.js";
 // Core Tools
 export {
@@ -610,6 +610,8 @@ export {
   createListTasksTool,
   // Filesystem tools
   createReadTool,
+  // Call tool (proxy for registered-but-not-loaded tools)
+  createCallToolTool,
   // Search tools (MCP integration)
   createSearchToolsTool,
   createSkillRegistry,
@@ -619,8 +621,6 @@ export {
   createTaskTool,
   // Todo tool
   createTodoWriteTool,
-  createToolRegistry,
-  createUseToolsTool,
   createWriteTool,
   getBackgroundTask,
   listBackgroundTasks,
@@ -631,8 +631,6 @@ export {
   recoverRunningTasks,
   // Skill tool (progressive disclosure)
   SkillRegistry,
-  // Tool registry (deferred tool loading)
-  ToolRegistry,
   toolsFrom,
   toolsFromPlugin,
 } from "./tools/index.js";
@@ -696,6 +694,7 @@ export type {
   PermissionMode,
   PluginLoadingMode,
   PluginOptions,
+  PluginSubagent,
   PostCompactInput,
   PostGenerateFailureInput,
   PostGenerateInput,

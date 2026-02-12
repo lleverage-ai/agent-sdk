@@ -8,6 +8,7 @@ import type { Tool } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import type { MCPManager } from "../mcp/manager.js";
+import type { MCPToolMetadata } from "../mcp/types.js";
 
 /**
  * Options for creating the search_tools tool.
@@ -38,6 +39,15 @@ export interface SearchToolsOptions {
    * @defaultValue false
    */
   autoLoad?: boolean;
+
+  /**
+   * Whether to include parameter schema information in search results.
+   * When true, results include parameter details so the LLM can construct
+   * `call_tool` arguments without needing to load the tool.
+   *
+   * @defaultValue false
+   */
+  includeSchema?: boolean;
 
   /**
    * Callback when tools are loaded.
@@ -75,7 +85,14 @@ export interface SearchToolsOptions {
  * @category Tools
  */
 export function createSearchToolsTool(options: SearchToolsOptions): Tool {
-  const { manager, maxResults = 10, enableLoad = false, autoLoad = false, onToolsLoaded } = options;
+  const {
+    manager,
+    maxResults = 10,
+    enableLoad = false,
+    autoLoad = false,
+    includeSchema = false,
+    onToolsLoaded,
+  } = options;
 
   // Auto-load takes precedence - if enabled, tools are always loaded
   const shouldAutoLoad = autoLoad;
@@ -161,9 +178,55 @@ export function createSearchToolsTool(options: SearchToolsOptions): Tool {
       }
 
       // Search only - return results without loading
-      const formatted = results.map((t) => `- **${t.name}**: ${t.description}`).join("\n");
+      const formatted = results.map((t) => formatToolResult(t, manager, includeSchema)).join("\n");
 
       return `Found ${results.length} tool(s):\n\n${formatted}`;
     },
   });
+}
+
+/**
+ * Format a single tool result for display.
+ *
+ * When includeSchema is true, includes parameter descriptions and loaded status.
+ * @internal
+ */
+function formatToolResult(t: MCPToolMetadata, manager: MCPManager, includeSchema: boolean): string {
+  const loaded = manager.isToolLoaded(t.name);
+  const loadedTag = `[loaded: ${loaded}]`;
+
+  let line = `- **${t.name}** ${loadedTag}: ${t.description}`;
+
+  if (includeSchema && t.inputSchema) {
+    const schemaStr = formatSchemaCompact(t.inputSchema);
+    if (schemaStr) {
+      line += `\n  Parameters: ${schemaStr}`;
+    }
+  }
+
+  return line;
+}
+
+/**
+ * Format a JSON Schema as a compact parameter description.
+ * @internal
+ */
+function formatSchemaCompact(schema: unknown): string {
+  if (!schema || typeof schema !== "object") return "";
+  const s = schema as Record<string, unknown>;
+  const properties = s.properties as Record<string, Record<string, unknown>> | undefined;
+  if (!properties || Object.keys(properties).length === 0) {
+    return "";
+  }
+
+  const required = new Set((s.required as string[]) ?? []);
+  const parts: string[] = [];
+
+  for (const [name, prop] of Object.entries(properties)) {
+    const type = (prop.type as string) ?? "unknown";
+    const optional = required.has(name) ? "" : "?";
+    parts.push(`${name}${optional}: ${type}`);
+  }
+
+  return `{ ${parts.join(", ")} }`;
 }
