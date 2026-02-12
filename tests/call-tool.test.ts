@@ -24,8 +24,7 @@ describe("createCallToolTool", () => {
               amount: z.number(),
               currency: z.string(),
             }),
-            execute: async ({ amount, currency }) =>
-              `Payment created: ${amount} ${currency}`,
+            execute: async ({ amount, currency }) => `Payment created: ${amount} ${currency}`,
           }),
           refund: tool({
             description: "Refund a payment",
@@ -175,10 +174,7 @@ describe("createCallToolTool", () => {
         onBeforeCall,
       });
 
-      await callTool.execute!(
-        { tool_name: "mcp__test__my_tool", arguments: {} },
-        execOpts,
-      );
+      await callTool.execute!({ tool_name: "mcp__test__my_tool", arguments: {} }, execOpts);
 
       expect(onBeforeCall).toHaveBeenCalledWith("mcp__test__my_tool", {});
     });
@@ -203,10 +199,7 @@ describe("createCallToolTool", () => {
         onAfterCall,
       });
 
-      await callTool.execute!(
-        { tool_name: "mcp__test__my_tool", arguments: {} },
-        execOpts,
-      );
+      await callTool.execute!({ tool_name: "mcp__test__my_tool", arguments: {} }, execOpts);
 
       expect(onAfterCall).toHaveBeenCalledWith("mcp__test__my_tool", {}, "result-value");
     });

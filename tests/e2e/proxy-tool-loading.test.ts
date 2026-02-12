@@ -10,10 +10,10 @@
 import { tool } from "ai";
 import { beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
+import { createAgent, definePlugin } from "../../src/index.js";
 import { MCPManager } from "../../src/mcp/manager.js";
 import { createCallToolTool } from "../../src/tools/call-tool.js";
 import { createSearchToolsTool } from "../../src/tools/search.js";
-import { createAgent, definePlugin } from "../../src/index.js";
 import { createMockModel, resetMocks } from "../setup.js";
 
 const execOpts = {
@@ -40,8 +40,7 @@ describe("E2E: Proxy Tool Loading", () => {
               amount: z.number(),
               currency: z.string(),
             }),
-            execute: async ({ amount, currency }) =>
-              `Payment created: ${amount} ${currency}`,
+            execute: async ({ amount, currency }) => `Payment created: ${amount} ${currency}`,
           }),
           refund: tool({
             description: "Refund a payment",
@@ -63,10 +62,7 @@ describe("E2E: Proxy Tool Loading", () => {
       const callTool = createCallToolTool({ mcpManager: manager });
 
       // Step 1: Search for payment tools
-      const searchResult = await searchTool.execute!(
-        { query: "payment" },
-        execOpts,
-      );
+      const searchResult = await searchTool.execute!({ query: "payment" }, execOpts);
       expect(searchResult).toContain("create_payment");
       expect(searchResult).toContain("[loaded: false]");
       // Schema info should be included
@@ -157,10 +153,7 @@ describe("E2E: Proxy Tool Loading", () => {
       const manager = new MCPManager();
       const callTool = createCallToolTool({ mcpManager: manager });
 
-      const result = await callTool.execute!(
-        { tool_name: "nonexistent", arguments: {} },
-        execOpts,
-      );
+      const result = await callTool.execute!({ tool_name: "nonexistent", arguments: {} }, execOpts);
 
       expect(result).toContain("not found");
     });

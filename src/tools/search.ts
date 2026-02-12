@@ -191,11 +191,7 @@ export function createSearchToolsTool(options: SearchToolsOptions): Tool {
  * When includeSchema is true, includes parameter descriptions and loaded status.
  * @internal
  */
-function formatToolResult(
-  t: MCPToolMetadata,
-  manager: MCPManager,
-  includeSchema: boolean,
-): string {
+function formatToolResult(t: MCPToolMetadata, manager: MCPManager, includeSchema: boolean): string {
   const loaded = manager.isToolLoaded(t.name);
   const loadedTag = `[loaded: ${loaded}]`;
 

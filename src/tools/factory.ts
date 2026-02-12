@@ -14,6 +14,7 @@ import type { AgentState } from "../backends/state.js";
 import type { MCPManager } from "../mcp/manager.js";
 import type { TaskManager } from "../task-manager.js";
 import type { Agent, CoreToolName, SubagentDefinition } from "../types.js";
+import { type CallToolOptions, createCallToolTool } from "./call-tool.js";
 import { type BashToolOptions, createBashTool } from "./execute.js";
 // Tool creators
 import {
@@ -26,7 +27,6 @@ import {
   type FilesystemTools,
   type FilesystemToolsOptions,
 } from "./filesystem.js";
-import { type CallToolOptions, createCallToolTool } from "./call-tool.js";
 import { createSearchToolsTool, type SearchToolsOptions } from "./search.js";
 
 import {
