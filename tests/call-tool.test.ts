@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { MCPManager } from "../src/mcp/manager.js";
 import { createCallToolTool } from "../src/tools/call-tool.js";
-import { ToolRegistry } from "../src/tools/tool-registry.js";
 
 const execOpts = {
   toolCallId: "test",
@@ -91,65 +90,6 @@ describe("createCallToolTool", () => {
 
       expect(result).toContain("Error executing");
       expect(result).toContain("Intentional failure");
-    });
-  });
-
-  describe("with ToolRegistry", () => {
-    it("invokes a tool from ToolRegistry as fallback", async () => {
-      const registry = new ToolRegistry();
-      registry.register(
-        { name: "my_tool", description: "A test tool" },
-        tool({
-          description: "A test tool",
-          inputSchema: z.object({ msg: z.string() }),
-          execute: async ({ msg }) => `Hello: ${msg}`,
-        }),
-      );
-
-      const callTool = createCallToolTool({ toolRegistry: registry });
-      const result = await callTool.execute!(
-        { tool_name: "my_tool", arguments: { msg: "world" } },
-        execOpts,
-      );
-
-      expect(result).toContain("Hello: world");
-    });
-
-    it("prefers MCPManager over ToolRegistry", async () => {
-      const manager = new MCPManager();
-      manager.registerPluginTools(
-        "test",
-        {
-          shared: tool({
-            description: "MCP version",
-            inputSchema: z.object({}),
-            execute: async () => "from MCP",
-          }),
-        },
-        { autoLoad: false },
-      );
-
-      const registry = new ToolRegistry();
-      registry.register(
-        { name: "mcp__test__shared", description: "Registry version" },
-        tool({
-          description: "Registry version",
-          inputSchema: z.object({}),
-          execute: async () => "from Registry",
-        }),
-      );
-
-      const callTool = createCallToolTool({
-        mcpManager: manager,
-        toolRegistry: registry,
-      });
-
-      const result = await callTool.execute!(
-        { tool_name: "mcp__test__shared", arguments: {} },
-        execOpts,
-      );
-
-      expect(result).toContain("from MCP");
     });
   });
 

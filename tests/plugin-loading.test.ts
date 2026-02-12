@@ -2,7 +2,7 @@
  * Tests for plugin loading modes and tool availability.
  *
  * These tests verify that plugins are loaded correctly based on:
- * - pluginLoading mode (eager, lazy, explicit)
+ * - pluginLoading mode (eager, proxy)
  * - toolSearch settings (auto, always, never)
  * - Tool count thresholds
  */
@@ -80,7 +80,7 @@ describe("Plugin Loading Modes", () => {
     });
   });
 
-  describe("Explicit eager mode", () => {
+  describe("Eager mode (explicit)", () => {
     it("always loads tools immediately, even with many tools", () => {
       // Create a plugin with many tools (over threshold)
       const tools: Record<string, ReturnType<typeof tool>> = {};
@@ -135,178 +135,6 @@ describe("Plugin Loading Modes", () => {
       expect(activeTools).toHaveProperty("mcp__test-plugin__tool1");
       // search_tools should NOT be present
       expect(activeTools).not.toHaveProperty("search_tools");
-    });
-  });
-
-  describe("Lazy mode", () => {
-    it("registers tools in registry but doesn't load them", () => {
-      const plugin = definePlugin({
-        name: "test-plugin",
-        tools: {
-          tool1: tool({
-            description: "Tool 1",
-            parameters: z.object({}),
-            execute: async () => "result1",
-          }),
-        },
-      });
-
-      const model = createMockModel();
-      const agent = createAgent({
-        model,
-        plugins: [plugin],
-        pluginLoading: "lazy",
-      });
-
-      // Tools should NOT be immediately available
-      const activeTools = agent.getActiveTools();
-      expect(activeTools).not.toHaveProperty("mcp__test-plugin__tool1");
-
-      // But use_tools should be available for loading them
-      expect(activeTools).toHaveProperty("use_tools");
-    });
-
-    it("loads tools on demand via loadTools()", () => {
-      const plugin = definePlugin({
-        name: "test-plugin",
-        tools: {
-          tool1: tool({
-            description: "Tool 1",
-            parameters: z.object({}),
-            execute: async () => "result1",
-          }),
-        },
-      });
-
-      const model = createMockModel();
-      const agent = createAgent({
-        model,
-        plugins: [plugin],
-        pluginLoading: "lazy",
-      });
-
-      // Load the tool
-      const result = agent.loadTools(["tool1"]);
-      expect(result.loaded).toContain("tool1");
-      expect(result.notFound).toEqual([]);
-
-      // Now it should be available
-      const activeTools = agent.getActiveTools();
-      expect(activeTools).toHaveProperty("tool1");
-    });
-  });
-
-  describe("Explicit mode", () => {
-    it("does not auto-register plugin tools", () => {
-      const plugin = definePlugin({
-        name: "test-plugin",
-        tools: {
-          tool1: tool({
-            description: "Tool 1",
-            parameters: z.object({}),
-            execute: async () => "result1",
-          }),
-        },
-      });
-
-      const model = createMockModel();
-      const agent = createAgent({
-        model,
-        plugins: [plugin],
-        pluginLoading: "explicit",
-      });
-
-      // Tools should NOT be available
-      const activeTools = agent.getActiveTools();
-      expect(activeTools).not.toHaveProperty("mcp__test-plugin__tool1");
-      expect(activeTools).not.toHaveProperty("use_tools");
-      expect(activeTools).not.toHaveProperty("search_tools");
-    });
-  });
-
-  describe("Preload plugins", () => {
-    it("loads preloaded plugins even in lazy mode", () => {
-      const plugin1 = definePlugin({
-        name: "lazy-plugin",
-        tools: {
-          tool1: tool({
-            description: "Lazy tool",
-            parameters: z.object({}),
-            execute: async () => "lazy",
-          }),
-        },
-      });
-
-      const plugin2 = definePlugin({
-        name: "eager-plugin",
-        tools: {
-          tool2: tool({
-            description: "Eager tool",
-            parameters: z.object({}),
-            execute: async () => "eager",
-          }),
-        },
-      });
-
-      const model = createMockModel();
-      const agent = createAgent({
-        model,
-        plugins: [plugin1, plugin2],
-        pluginLoading: "lazy",
-        preloadPlugins: ["eager-plugin"],
-      });
-
-      const activeTools = agent.getActiveTools();
-
-      // Preloaded plugin should be available
-      expect(activeTools).toHaveProperty("mcp__eager-plugin__tool2");
-
-      // Non-preloaded plugin should NOT be available
-      expect(activeTools).not.toHaveProperty("mcp__lazy-plugin__tool1");
-    });
-
-    it("loads preloaded plugins with explicit deferred loading", () => {
-      // Create many tools
-      const tools: Record<string, ReturnType<typeof tool>> = {};
-      for (let i = 0; i < 25; i++) {
-        tools[`tool${i}`] = tool({
-          description: `Tool ${i}`,
-          parameters: z.object({}),
-          execute: async () => `result${i}`,
-        });
-      }
-
-      const largePlugin = definePlugin({
-        name: "large-plugin",
-        tools,
-      });
-
-      const criticalPlugin = definePlugin({
-        name: "critical-plugin",
-        tools: {
-          criticalTool: tool({
-            description: "Critical tool",
-            parameters: z.object({}),
-            execute: async () => "critical",
-          }),
-        },
-      });
-
-      const model = createMockModel();
-      const agent = createAgent({
-        model,
-        plugins: [largePlugin, criticalPlugin],
-        preloadPlugins: ["critical-plugin"],
-        toolSearch: { enabled: "always" }, // Explicitly enable deferred loading
-      });
-
-      const activeTools = agent.getActiveTools();
-
-      // Critical plugin should be loaded (preloaded)
-      expect(activeTools).toHaveProperty("mcp__critical-plugin__criticalTool");
-
-      // Large plugin tools should NOT be loaded (deferred)
-      expect(activeTools).not.toHaveProperty("mcp__large-plugin__tool0");
     });
   });
 
@@ -402,7 +230,7 @@ describe("Plugin Loading Modes", () => {
   });
 
   describe("Mixed configurations", () => {
-    it("handles multiple plugins with different loading strategies", () => {
+    it("handles multiple plugins with deferred per-plugin opt-in", () => {
       const plugin1 = definePlugin({
         name: "plugin1",
         tools: {
@@ -416,6 +244,7 @@ describe("Plugin Loading Modes", () => {
 
       const plugin2 = definePlugin({
         name: "plugin2",
+        deferred: true,
         tools: {
           tool2: tool({
             description: "Tool 2",
@@ -429,20 +258,19 @@ describe("Plugin Loading Modes", () => {
       const agent = createAgent({
         model,
         plugins: [plugin1, plugin2],
-        preloadPlugins: ["plugin1"],
-        pluginLoading: "lazy",
       });
 
       const activeTools = agent.getActiveTools();
 
-      // Preloaded plugin should be available
+      // Eager plugin should be available
       expect(activeTools).toHaveProperty("mcp__plugin1__tool1");
 
-      // Non-preloaded plugin should NOT be available
+      // Deferred plugin should NOT be in active tools
       expect(activeTools).not.toHaveProperty("mcp__plugin2__tool2");
 
-      // use_tools should be available for lazy loading
-      expect(activeTools).toHaveProperty("use_tools");
+      // call_tool and search_tools should be available for deferred plugins
+      expect(activeTools).toHaveProperty("call_tool");
+      expect(activeTools).toHaveProperty("search_tools");
     });
   });
 });

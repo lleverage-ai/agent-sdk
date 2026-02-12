@@ -14,7 +14,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeHooksWithTimeout } from "../src/hooks.js";
-import { createAgent, MCPManager, ToolRegistry } from "../src/index.js";
+import { createAgent, MCPManager } from "../src/index.js";
 import type {
   HookCallback,
   HookRegistration,
@@ -160,54 +160,6 @@ describe("Hook Routing Test Coverage Audit", () => {
   });
 
   describe("Tool Registry Hooks", () => {
-    it("ToolRegistry invokes onToolRegistered callback when tool is registered", async () => {
-      const registeredCallback = vi.fn();
-
-      const registry = new ToolRegistry({
-        onToolRegistered: registeredCallback,
-      });
-
-      // Register a plugin with tools
-      registry.registerPlugin("test-plugin", {
-        testTool: {
-          description: "A test tool",
-          parameters: {},
-          execute: async () => "result",
-        },
-      });
-
-      // Load the tool
-      registry.load(["testTool"]);
-
-      expect(registeredCallback).toHaveBeenCalledTimes(1);
-      expect(registeredCallback).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tool_name: "testTool",
-          description: "A test tool",
-          source: "test-plugin",
-        }),
-      );
-    });
-
-    it("ToolRegistry invokes onToolLoadError callback when tool not found", async () => {
-      const errorCallback = vi.fn();
-
-      const registry = new ToolRegistry({
-        onToolLoadError: errorCallback,
-      });
-
-      // Try to load a non-existent tool
-      registry.load(["nonExistentTool"]);
-
-      expect(errorCallback).toHaveBeenCalledTimes(1);
-      expect(errorCallback).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tool_name: "nonExistentTool",
-          error: expect.any(Error),
-        }),
-      );
-    });
-
     it("ToolRegisteredInput has correct shape", () => {
       const input: ToolRegisteredInput = {
         hook_event_name: "ToolRegistered",

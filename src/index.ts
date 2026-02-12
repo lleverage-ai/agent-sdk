@@ -591,14 +591,8 @@ export type {
   TodoInput,
   TodosChangedData,
   TodoWriteToolOptions,
-  ToolLoadResult,
-  // Tool registry types (deferred loading)
-  ToolMetadata,
   // Tool utilities types
   ToolReference,
-  ToolRegistryOptions,
-  ToolSearchOptions,
-  UseToolsToolOptions,
 } from "./tools/index.js";
 // Core Tools
 export {
@@ -627,8 +621,6 @@ export {
   createTaskTool,
   // Todo tool
   createTodoWriteTool,
-  createToolRegistry,
-  createUseToolsTool,
   createWriteTool,
   getBackgroundTask,
   listBackgroundTasks,
@@ -639,8 +631,6 @@ export {
   recoverRunningTasks,
   // Skill tool (progressive disclosure)
   SkillRegistry,
-  // Tool registry (deferred tool loading)
-  ToolRegistry,
   toolsFrom,
   toolsFromPlugin,
 } from "./tools/index.js";

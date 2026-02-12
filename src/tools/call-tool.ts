@@ -12,7 +12,6 @@ import type { Tool } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import type { MCPManager } from "../mcp/manager.js";
-import type { ToolRegistry } from "./tool-registry.js";
 
 /**
  * Options for creating the call_tool proxy tool.
@@ -23,15 +22,9 @@ export interface CallToolOptions {
   /**
    * MCP manager for looking up plugin/MCP tools.
    * Tools registered in MCP (both virtual plugin servers and external servers)
-   * are checked first.
+   * are used for tool lookup and execution.
    */
   mcpManager?: MCPManager;
-
-  /**
-   * Tool registry for looking up lazily-registered tools.
-   * Checked as fallback if the tool is not found in MCPManager.
-   */
-  toolRegistry?: ToolRegistry;
 
   /**
    * Hook callback to fire before executing the proxied tool.
@@ -64,7 +57,6 @@ export interface CallToolOptions {
  * ```typescript
  * const callTool = createCallToolTool({
  *   mcpManager,
- *   toolRegistry,
  * });
  *
  * // Agent uses:
@@ -75,7 +67,7 @@ export interface CallToolOptions {
  * @category Tools
  */
 export function createCallToolTool(options: CallToolOptions): Tool {
-  const { mcpManager, toolRegistry, onBeforeCall, onAfterCall } = options;
+  const { mcpManager, onBeforeCall, onAfterCall } = options;
 
   return tool({
     description:
@@ -101,26 +93,12 @@ export function createCallToolTool(options: CallToolOptions): Tool {
 
       let result: unknown;
 
-      // Try MCPManager first (covers both virtual plugin tools and external MCP)
+      // Look up tool in MCPManager (covers both virtual plugin tools and external MCP)
       if (mcpManager) {
         const metadata = mcpManager.getToolMetadata(tool_name);
         if (metadata) {
           try {
             result = await mcpManager.callTool(tool_name, args);
-            await onAfterCall?.(tool_name, args, result);
-            return formatResult(tool_name, result);
-          } catch (error) {
-            return formatError(tool_name, error);
-          }
-        }
-      }
-
-      // Fallback to ToolRegistry
-      if (toolRegistry) {
-        const toolDef = toolRegistry.getTool(tool_name);
-        if (toolDef) {
-          try {
-            result = await toolRegistry.executeTool(tool_name, args);
             await onAfterCall?.(tool_name, args, result);
             return formatResult(tool_name, result);
           } catch (error) {

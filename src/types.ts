@@ -662,12 +662,9 @@ export interface AgentOptions {
    * Plugin loading mode for tool registration.
    *
    * Controls how plugin tools are made available to the agent:
-   * - `"eager"` - Load all plugin tools immediately (current behavior)
-   * - `"lazy"` - Register tools with metadata only, load on-demand via use_tools
-   * - `"explicit"` - Don't register plugin tools, require manual registration
-   *
-   * When using "lazy" mode, the agent gets a `use_tools` tool that allows
-   * it to search and load tools on-demand, keeping initial context small.
+   * - `"eager"` - Load all plugin tools immediately into the active tool set (default)
+   * - `"proxy"` - Keep tools out of the active set; discoverable via `search_tools`,
+   *   callable via `call_tool`. Keeps the schema stable for prompt caching.
    *
    * @defaultValue "eager"
    *
@@ -676,29 +673,11 @@ export interface AgentOptions {
    * const agent = createAgent({
    *   model,
    *   plugins: [stripePlugin, twilioPlugin, ...manyPlugins],
-   *   pluginLoading: "lazy", // Tools loaded on-demand
+   *   pluginLoading: "proxy", // Stable schema, tools via call_tool
    * });
    * ```
    */
   pluginLoading?: PluginLoadingMode;
-
-  /**
-   * Plugins to preload when using lazy loading mode.
-   *
-   * These plugins will have their tools loaded immediately regardless
-   * of the pluginLoading setting.
-   *
-   * @example
-   * ```typescript
-   * const agent = createAgent({
-   *   model,
-   *   plugins: [stripePlugin, twilioPlugin, coreUtilsPlugin],
-   *   pluginLoading: "lazy",
-   *   preloadPlugins: ["core-utils"], // Always load core-utils
-   * });
-   * ```
-   */
-  preloadPlugins?: string[];
 
   /**
    * Restrict which tools the agent can use.
@@ -1036,13 +1015,13 @@ export interface AgentOptions {
 /**
  * Plugin loading mode.
  *
- * - `"eager"` - Load all plugin tools immediately into context
- * - `"lazy"` - Register tools with metadata only, load on-demand
- * - `"explicit"` - Don't auto-register, require manual registration
+ * - `"eager"` - Load all plugin tools immediately into context (default)
+ * - `"proxy"` - Keep tools out of the active set; discoverable via `search_tools`,
+ *   callable via `call_tool`
  *
  * @category Plugins
  */
-export type PluginLoadingMode = "eager" | "lazy" | "explicit" | "proxy";
+export type PluginLoadingMode = "eager" | "proxy";
 
 /**
  * An agent instance capable of generating responses and executing tools.
@@ -1184,26 +1163,11 @@ export interface Agent {
   /**
    * Get all currently active tools.
    *
-   * Returns the combined set of core tools and dynamically loaded tools.
-   * In lazy loading mode, this includes tools loaded via use_tools.
+   * Returns the combined set of core tools, runtime tools, and MCP tools.
    *
    * @returns ToolSet containing all active tools
    */
   getActiveTools(): ToolSet;
-
-  /**
-   * Load tools from the registry by name.
-   *
-   * Only available when using lazy plugin loading mode.
-   * Tools loaded through this method become available for use.
-   *
-   * @param toolNames - Names of tools to load
-   * @returns Object with loaded tool names and any errors
-   */
-  loadTools(toolNames: string[]): {
-    loaded: string[];
-    notFound: string[];
-  };
 
   /**
    * Dynamically change the permission mode.
