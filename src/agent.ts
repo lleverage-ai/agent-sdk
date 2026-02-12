@@ -50,9 +50,9 @@ import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index
 import { createDefaultPromptBuilder } from "./prompt-builder/components.js";
 import type { PromptContext } from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
+import { createSubagent } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
-import { createSubagent } from "./subagents.js";
 import { createCallToolTool } from "./tools/call-tool.js";
 import {
   coreToolsToToolSet,
@@ -994,14 +994,6 @@ export function createAgent(options: AgentOptions): Agent {
   // Track whether deferred loading is active
   let deferredLoadingActive = false;
 
-  // Determine which plugins should be delegated to subagents
-  const delegatePluginTools = options.delegatePluginTools;
-  const shouldDelegatePlugin = (pluginName: string): boolean => {
-    if (delegatePluginTools === true) return true;
-    if (Array.isArray(delegatePluginTools)) return delegatePluginTools.includes(pluginName);
-    return false;
-  };
-
   // Track whether any deferred or proxy plugins exist (for call_tool creation)
   let hasProxiedTools = false;
 
@@ -1016,10 +1008,7 @@ export function createAgent(options: AgentOptions): Agent {
   let totalPluginToolCount = 0;
   for (const plugin of options.plugins ?? []) {
     if (plugin.tools && typeof plugin.tools !== "function") {
-      // Don't count delegated plugin tools toward threshold — they won't be loaded
-      if (!plugin.delegateToSubagent && !shouldDelegatePlugin(plugin.name)) {
-        totalPluginToolCount += Object.keys(plugin.tools).length;
-      }
+      totalPluginToolCount += Object.keys(plugin.tools).length;
     }
     // Collect plugin skills early so they're available for skill tool creation
     if (plugin.skills) {
@@ -1063,30 +1052,6 @@ export function createAgent(options: AgentOptions): Agent {
     // getActiveToolSetWithStreaming() and are not registered here
     if (plugin.tools && typeof plugin.tools !== "function") {
       const shouldPreload = preloadPlugins.has(plugin.name);
-
-      // Check if this plugin should be delegated to a subagent
-      const isDelegated = plugin.delegateToSubagent || shouldDelegatePlugin(plugin.name);
-      if (isDelegated) {
-        // Don't register tools in main agent — create a subagent instead
-        const subagentModel = plugin.subagentModel ?? options.defaultSubagentModel;
-        autoSubagents.push({
-          type: `plugin-${plugin.name}`,
-          description: plugin.description ?? `Specialized agent for ${plugin.name} operations`,
-          sourcePlugin: plugin.name,
-          model: subagentModel ?? "inherit",
-          create: (_ctx) =>
-            createSubagent(agent, {
-              name: `plugin-${plugin.name}`,
-              description: plugin.description ?? `${plugin.name} specialist`,
-              model: _ctx.model,
-              plugins: [plugin],
-              systemPrompt:
-                plugin.subagentPrompt ??
-                `You are a ${plugin.name} specialist. Complete the requested task using available tools and return a clear summary.`,
-            }),
-        });
-        continue; // Skip normal registration
-      }
 
       // Check if this plugin is deferred (proxy mode or per-plugin opt-in)
       const isDeferred =
@@ -1137,11 +1102,29 @@ export function createAgent(options: AgentOptions): Agent {
     }
   }
 
+  // Create subagent definitions from plugins with subagent config
+  for (const plugin of options.plugins ?? []) {
+    if (plugin.subagent) {
+      autoSubagents.push({
+        type: `plugin-${plugin.name}`,
+        description: plugin.subagent.description,
+        model: plugin.subagent.model ?? "inherit",
+        create: (_ctx) =>
+          createSubagent(agent, {
+            name: `plugin-${plugin.name}`,
+            description: plugin.subagent!.description,
+            model: _ctx.model,
+            tools: plugin.subagent!.tools,
+            systemPrompt:
+              plugin.subagent!.prompt ??
+              `You are a ${plugin.name} specialist. Complete the requested task using available tools and return a clear summary.`,
+          }),
+      });
+    }
+  }
+
   // Merge auto-created subagents with user-provided ones
-  const allSubagents: SubagentDefinition[] = [
-    ...(options.subagents ?? []),
-    ...autoSubagents,
-  ];
+  const allSubagents: SubagentDefinition[] = [...(options.subagents ?? []), ...autoSubagents];
   const hasSubagents = allSubagents.length > 0;
 
   // In proxy mode, create call_tool and configure search_tools with schema disclosure

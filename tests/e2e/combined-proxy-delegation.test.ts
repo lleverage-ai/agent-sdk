@@ -16,7 +16,7 @@ describe("E2E: Combined Proxy + Delegation", () => {
     resetMocks();
   });
 
-  it("handles eager, deferred, and delegated plugins together", () => {
+  it("handles eager, deferred, and subagent plugins together", () => {
     const corePlugin = definePlugin({
       name: "core",
       deferred: false, // Explicitly eager, even in proxy mode
@@ -44,8 +44,7 @@ describe("E2E: Combined Proxy + Delegation", () => {
             amount: z.number(),
             currency: z.string(),
           }),
-          execute: async ({ amount, currency }) =>
-            `Payment: ${amount} ${currency}`,
+          execute: async ({ amount, currency }) => `Payment: ${amount} ${currency}`,
         }),
         refund: tool({
           description: "Refund a payment",
@@ -57,20 +56,21 @@ describe("E2E: Combined Proxy + Delegation", () => {
 
     const githubPlugin = definePlugin({
       name: "github",
-      description: "GitHub integration",
-      delegateToSubagent: true, // Only via subagent
-      subagentPrompt: "You are a GitHub specialist.",
-      tools: {
-        list_issues: tool({
-          description: "List issues",
-          parameters: z.object({ repo: z.string() }),
-          execute: async ({ repo }) => `Issues for ${repo}`,
-        }),
-        create_pr: tool({
-          description: "Create PR",
-          parameters: z.object({ title: z.string() }),
-          execute: async ({ title }) => `PR: ${title}`,
-        }),
+      subagent: {
+        description: "GitHub integration",
+        prompt: "You are a GitHub specialist.",
+        tools: {
+          list_issues: tool({
+            description: "List issues",
+            parameters: z.object({ repo: z.string() }),
+            execute: async ({ repo }) => `Issues for ${repo}`,
+          }),
+          create_pr: tool({
+            description: "Create PR",
+            parameters: z.object({ title: z.string() }),
+            execute: async ({ title }) => `PR: ${title}`,
+          }),
+        },
       },
     });
 
@@ -90,7 +90,7 @@ describe("E2E: Combined Proxy + Delegation", () => {
     expect(activeTools).not.toHaveProperty("mcp__stripe__create_payment");
     expect(activeTools).not.toHaveProperty("mcp__stripe__refund");
 
-    // GitHub plugin: delegated (not in active set at all)
+    // GitHub plugin: subagent (not in active set at all)
     expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
     expect(activeTools).not.toHaveProperty("mcp__github__create_pr");
 
@@ -99,60 +99,18 @@ describe("E2E: Combined Proxy + Delegation", () => {
     expect(activeTools).toHaveProperty("search_tools");
   });
 
-  it("handles proxy mode with delegatePluginTools for specific plugins", () => {
-    const stripe = definePlugin({
-      name: "stripe",
-      tools: {
-        charge: tool({
-          description: "Charge",
-          parameters: z.object({ amount: z.number() }),
-          execute: async ({ amount }) => `Charged ${amount}`,
-        }),
-      },
-    });
-
-    const github = definePlugin({
-      name: "github",
-      tools: {
-        issues: tool({
-          description: "List issues",
-          parameters: z.object({}),
-          execute: async () => "issues",
-        }),
-      },
-    });
-
-    const model = createMockModel();
-    const agent = createAgent({
-      model,
-      plugins: [stripe, github],
-      pluginLoading: "proxy",
-      delegatePluginTools: ["github"], // GitHub delegated, stripe proxied
-    });
-
-    const activeTools = agent.getActiveTools();
-
-    // Stripe: proxied (in MCP but not loaded)
-    expect(activeTools).not.toHaveProperty("mcp__stripe__charge");
-
-    // GitHub: delegated (not in MCP at all, goes to subagent)
-    expect(activeTools).not.toHaveProperty("mcp__github__issues");
-
-    // call_tool available for stripe
-    expect(activeTools).toHaveProperty("call_tool");
-    expect(activeTools).toHaveProperty("search_tools");
-  });
-
   it("delegation instructions appear in prompt when subagents exist", () => {
     const plugin = definePlugin({
       name: "github",
-      delegateToSubagent: true,
-      tools: {
-        list_issues: tool({
-          description: "List issues",
-          parameters: z.object({}),
-          execute: async () => "issues",
-        }),
+      subagent: {
+        description: "GitHub specialist",
+        tools: {
+          list_issues: tool({
+            description: "List issues",
+            parameters: z.object({}),
+            execute: async () => "issues",
+          }),
+        },
       },
     });
 
@@ -163,10 +121,6 @@ describe("E2E: Combined Proxy + Delegation", () => {
       promptMode: "builder",
     });
 
-    // Build the system prompt by triggering prompt context
-    // The prompt builder should include delegation instructions since hasSubagents = true
-    // We verify this indirectly by checking that the agent was created successfully
-    // and has no plugin tools in its active set
     const activeTools = agent.getActiveTools();
     expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
   });
@@ -174,13 +128,15 @@ describe("E2E: Combined Proxy + Delegation", () => {
   it("custom delegation instructions override default", () => {
     const plugin = definePlugin({
       name: "github",
-      delegateToSubagent: true,
-      tools: {
-        list_issues: tool({
-          description: "List issues",
-          parameters: z.object({}),
-          execute: async () => "issues",
-        }),
+      subagent: {
+        description: "GitHub specialist",
+        tools: {
+          list_issues: tool({
+            description: "List issues",
+            parameters: z.object({}),
+            execute: async () => "issues",
+          }),
+        },
       },
     });
 
@@ -189,7 +145,8 @@ describe("E2E: Combined Proxy + Delegation", () => {
     const agent = createAgent({
       model,
       plugins: [plugin],
-      delegationInstructions: "Always delegate to the GitHub specialist for any GitHub-related task.",
+      delegationInstructions:
+        "Always delegate to the GitHub specialist for any GitHub-related task.",
     });
 
     const activeTools = agent.getActiveTools();
@@ -221,22 +178,24 @@ describe("E2E: Combined Proxy + Delegation", () => {
       },
     });
 
-    const delegated = definePlugin({
+    const subagentPlugin = definePlugin({
       name: "delegated",
-      delegateToSubagent: true,
-      tools: {
-        external_op: tool({
-          description: "External operation",
-          parameters: z.object({}),
-          execute: async () => "result",
-        }),
+      subagent: {
+        description: "Delegated specialist",
+        tools: {
+          external_op: tool({
+            description: "External operation",
+            parameters: z.object({}),
+            execute: async () => "result",
+          }),
+        },
       },
     });
 
     const model = createMockModel();
     const agent = createAgent({
       model,
-      plugins: [eager, deferred, delegated],
+      plugins: [eager, deferred, subagentPlugin],
     });
 
     // Get active tools multiple times and verify stability

@@ -704,6 +704,7 @@ export type {
   PermissionMode,
   PluginLoadingMode,
   PluginOptions,
+  PluginSubagent,
   PostCompactInput,
   PostGenerateFailureInput,
   PostGenerateInput,

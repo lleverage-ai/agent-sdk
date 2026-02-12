@@ -1,12 +1,11 @@
 /**
- * Tests for delegateToSubagent and delegatePluginTools features.
+ * Tests for plugin.subagent delegation feature.
  *
  * Verifies that:
- * - Per-plugin delegateToSubagent creates a subagent definition
- * - delegatePluginTools: true delegates all plugins
- * - delegatePluginTools: string[] delegates named plugins
- * - Delegated plugin tools are NOT in the main agent's active set
- * - Auto-created subagent definitions have correct metadata
+ * - plugin.subagent keeps tools out of the main agent's active set
+ * - Plugin with both tools and subagent (main tools loaded, subagent tools not)
+ * - Subagent tools don't count toward tool search threshold
+ * - Multiple plugins with subagents
  */
 
 import { tool } from "ai";
@@ -15,26 +14,28 @@ import { z } from "zod";
 import { createAgent, definePlugin } from "../src/index.js";
 import { createMockModel, resetMocks } from "./setup.js";
 
-describe("Per-plugin delegateToSubagent", () => {
+describe("Plugin subagent delegation", () => {
   beforeEach(() => {
     resetMocks();
   });
 
-  it("does not load delegated plugin tools into active set", () => {
+  it("does not load subagent tools into active set", () => {
     const plugin = definePlugin({
       name: "github",
-      delegateToSubagent: true,
-      tools: {
-        list_issues: tool({
-          description: "List issues",
-          parameters: z.object({}),
-          execute: async () => "issues",
-        }),
-        create_pr: tool({
-          description: "Create PR",
-          parameters: z.object({ title: z.string() }),
-          execute: async ({ title }) => `PR: ${title}`,
-        }),
+      subagent: {
+        description: "GitHub specialist",
+        tools: {
+          list_issues: tool({
+            description: "List issues",
+            parameters: z.object({}),
+            execute: async () => "issues",
+          }),
+          create_pr: tool({
+            description: "Create PR",
+            parameters: z.object({ title: z.string() }),
+            execute: async ({ title }) => `PR: ${title}`,
+          }),
+        },
       },
     });
 
@@ -46,26 +47,68 @@ describe("Per-plugin delegateToSubagent", () => {
 
     const activeTools = agent.getActiveTools();
 
-    // Plugin tools should NOT be in the active set
+    // Subagent tools should NOT be in the active set
+    expect(activeTools).not.toHaveProperty("list_issues");
+    expect(activeTools).not.toHaveProperty("create_pr");
     expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
     expect(activeTools).not.toHaveProperty("mcp__github__create_pr");
   });
 
-  it("does not count delegated tools toward tool search threshold", () => {
-    // Create a large delegated plugin
-    const tools: Record<string, ReturnType<typeof tool>> = {};
+  it("loads plugin.tools but not plugin.subagent.tools", () => {
+    const plugin = definePlugin({
+      name: "github",
+      tools: {
+        ping: tool({
+          description: "Ping",
+          parameters: z.object({}),
+          execute: async () => "pong",
+        }),
+      },
+      subagent: {
+        description: "GitHub specialist",
+        tools: {
+          list_issues: tool({
+            description: "List issues",
+            parameters: z.object({}),
+            execute: async () => "issues",
+          }),
+        },
+      },
+    });
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      plugins: [plugin],
+    });
+
+    const activeTools = agent.getActiveTools();
+
+    // Main tools loaded
+    expect(activeTools).toHaveProperty("mcp__github__ping");
+
+    // Subagent tools NOT loaded
+    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+    expect(activeTools).not.toHaveProperty("list_issues");
+  });
+
+  it("subagent tools don't count toward tool search threshold", () => {
+    // Create a plugin with many subagent tools but few main tools
+    const subagentTools: Record<string, ReturnType<typeof tool>> = {};
     for (let i = 0; i < 25; i++) {
-      tools[`tool${i}`] = tool({
+      subagentTools[`tool${i}`] = tool({
         description: `Tool ${i}`,
         parameters: z.object({}),
         execute: async () => `result${i}`,
       });
     }
 
-    const delegatedPlugin = definePlugin({
-      name: "large-delegated",
-      delegateToSubagent: true,
-      tools,
+    const githubPlugin = definePlugin({
+      name: "github",
+      subagent: {
+        description: "GitHub specialist",
+        tools: subagentTools,
+      },
     });
 
     const smallPlugin = definePlugin({
@@ -82,7 +125,7 @@ describe("Per-plugin delegateToSubagent", () => {
     const model = createMockModel();
     const agent = createAgent({
       model,
-      plugins: [delegatedPlugin, smallPlugin],
+      plugins: [githubPlugin, smallPlugin],
       toolSearch: { enabled: "auto", threshold: 20 },
     });
 
@@ -91,12 +134,54 @@ describe("Per-plugin delegateToSubagent", () => {
     // Small plugin should be eagerly loaded
     expect(activeTools).toHaveProperty("mcp__small__ping");
 
-    // search_tools should NOT be created since only 1 tool counts
-    // (25 delegated tools don't count toward threshold)
+    // search_tools should NOT be created since only 1 main tool counts
+    // (subagent tools don't count toward threshold)
     expect(activeTools).not.toHaveProperty("search_tools");
   });
 
-  it("mixes delegated and eager plugins correctly", () => {
+  it("handles multiple plugins with subagents", () => {
+    const githubPlugin = definePlugin({
+      name: "github",
+      subagent: {
+        description: "GitHub specialist",
+        tools: {
+          list_issues: tool({
+            description: "List issues",
+            parameters: z.object({}),
+            execute: async () => "issues",
+          }),
+        },
+      },
+    });
+
+    const slackPlugin = definePlugin({
+      name: "slack",
+      subagent: {
+        description: "Slack specialist",
+        tools: {
+          send_message: tool({
+            description: "Send Slack message",
+            parameters: z.object({ channel: z.string(), text: z.string() }),
+            execute: async ({ channel, text }) => `Sent to ${channel}: ${text}`,
+          }),
+        },
+      },
+    });
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      plugins: [githubPlugin, slackPlugin],
+    });
+
+    const activeTools = agent.getActiveTools();
+
+    // Neither plugin's subagent tools should be in active set
+    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+    expect(activeTools).not.toHaveProperty("mcp__slack__send_message");
+  });
+
+  it("mixes eager and subagent plugins correctly", () => {
     const eagerPlugin = definePlugin({
       name: "core",
       tools: {
@@ -108,22 +193,24 @@ describe("Per-plugin delegateToSubagent", () => {
       },
     });
 
-    const delegatedPlugin = definePlugin({
+    const subagentPlugin = definePlugin({
       name: "github",
-      delegateToSubagent: true,
-      tools: {
-        list_issues: tool({
-          description: "List issues",
-          parameters: z.object({}),
-          execute: async () => "issues",
-        }),
+      subagent: {
+        description: "GitHub specialist",
+        tools: {
+          list_issues: tool({
+            description: "List issues",
+            parameters: z.object({}),
+            execute: async () => "issues",
+          }),
+        },
       },
     });
 
     const model = createMockModel();
     const agent = createAgent({
       model,
-      plugins: [eagerPlugin, delegatedPlugin],
+      plugins: [eagerPlugin, subagentPlugin],
     });
 
     const activeTools = agent.getActiveTools();
@@ -131,151 +218,7 @@ describe("Per-plugin delegateToSubagent", () => {
     // Eager plugin loaded
     expect(activeTools).toHaveProperty("mcp__core__ping");
 
-    // Delegated plugin NOT loaded
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
-  });
-});
-
-describe("Agent-level delegatePluginTools", () => {
-  beforeEach(() => {
-    resetMocks();
-  });
-
-  it("delegates all plugins when delegatePluginTools: true", () => {
-    const plugin1 = definePlugin({
-      name: "github",
-      tools: {
-        list_issues: tool({
-          description: "List issues",
-          parameters: z.object({}),
-          execute: async () => "issues",
-        }),
-      },
-    });
-
-    const plugin2 = definePlugin({
-      name: "stripe",
-      tools: {
-        charge: tool({
-          description: "Charge",
-          parameters: z.object({ amount: z.number() }),
-          execute: async ({ amount }) => `Charged ${amount}`,
-        }),
-      },
-    });
-
-    const model = createMockModel();
-    const agent = createAgent({
-      model,
-      plugins: [plugin1, plugin2],
-      delegatePluginTools: true,
-    });
-
-    const activeTools = agent.getActiveTools();
-
-    // No plugin tools should be loaded
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
-    expect(activeTools).not.toHaveProperty("mcp__stripe__charge");
-  });
-
-  it("delegates only named plugins when delegatePluginTools is a string array", () => {
-    const github = definePlugin({
-      name: "github",
-      tools: {
-        list_issues: tool({
-          description: "List issues",
-          parameters: z.object({}),
-          execute: async () => "issues",
-        }),
-      },
-    });
-
-    const stripe = definePlugin({
-      name: "stripe",
-      tools: {
-        charge: tool({
-          description: "Charge",
-          parameters: z.object({ amount: z.number() }),
-          execute: async ({ amount }) => `Charged ${amount}`,
-        }),
-      },
-    });
-
-    const model = createMockModel();
-    const agent = createAgent({
-      model,
-      plugins: [github, stripe],
-      delegatePluginTools: ["github"], // Only delegate github
-    });
-
-    const activeTools = agent.getActiveTools();
-
-    // github tools NOT loaded (delegated)
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
-
-    // stripe tools ARE loaded (not delegated)
-    expect(activeTools).toHaveProperty("mcp__stripe__charge");
-  });
-});
-
-describe("Combined proxy + delegation", () => {
-  beforeEach(() => {
-    resetMocks();
-  });
-
-  it("handles mix of eager, deferred, and delegated plugins", () => {
-    const corePlugin = definePlugin({
-      name: "core",
-      deferred: false, // Explicit eager
-      tools: {
-        ping: tool({
-          description: "Ping",
-          parameters: z.object({}),
-          execute: async () => "pong",
-        }),
-      },
-    });
-
-    const stripePlugin = definePlugin({
-      name: "stripe",
-      deferred: true, // Via call_tool proxy
-      tools: {
-        charge: tool({
-          description: "Charge",
-          parameters: z.object({ amount: z.number() }),
-          execute: async ({ amount }) => `Charged ${amount}`,
-        }),
-      },
-    });
-
-    const githubPlugin = definePlugin({
-      name: "github",
-      delegateToSubagent: true, // Via subagent
-      tools: {
-        list_issues: tool({
-          description: "List issues",
-          parameters: z.object({}),
-          execute: async () => "issues",
-        }),
-      },
-    });
-
-    const model = createMockModel();
-    const agent = createAgent({
-      model,
-      plugins: [corePlugin, stripePlugin, githubPlugin],
-    });
-
-    const activeTools = agent.getActiveTools();
-
-    // Core tools loaded eagerly
-    expect(activeTools).toHaveProperty("mcp__core__ping");
-
-    // Stripe accessible via call_tool (not directly loaded)
-    expect(activeTools).not.toHaveProperty("mcp__stripe__charge");
-    expect(activeTools).toHaveProperty("call_tool");
-
-    // Github delegated (not loaded, not in search)
+    // Subagent plugin NOT loaded
     expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
   });
 });

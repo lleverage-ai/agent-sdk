@@ -63,8 +63,6 @@ export function definePlugin(options: PluginOptions): AgentPlugin {
     skills: options.skills,
     hooks: options.hooks,
     deferred: options.deferred,
-    delegateToSubagent: options.delegateToSubagent,
-    subagentPrompt: options.subagentPrompt,
-    subagentModel: options.subagentModel,
+    subagent: options.subagent,
   };
 }

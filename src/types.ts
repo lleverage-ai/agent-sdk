@@ -1026,39 +1026,6 @@ export interface AgentOptions {
   subagents?: SubagentDefinition[];
 
   /**
-   * Delegate plugin tools to auto-created subagents for context hygiene.
-   *
-   * When enabled, plugin tools are NOT loaded into the main agent's context.
-   * Instead, each delegated plugin gets its own subagent, accessible via the `task` tool.
-   *
-   * - `true` — All plugins are delegated to subagents
-   * - `string[]` — Only named plugins are delegated
-   *
-   * @example
-   * ```typescript
-   * const agent = createAgent({
-   *   model,
-   *   plugins: [githubPlugin, jiraPlugin, slackPlugin],
-   *   delegatePluginTools: true, // All plugins → subagents
-   * });
-   * // Agent delegates via: task("List open issues", "plugin-github")
-   * ```
-   *
-   * @defaultValue undefined (no delegation)
-   */
-  delegatePluginTools?: boolean | string[];
-
-  /**
-   * Default model for auto-created plugin subagents.
-   *
-   * Applied when `delegatePluginTools` is enabled or plugins have `delegateToSubagent: true`.
-   * Per-plugin `subagentModel` takes precedence over this value.
-   *
-   * Resolution order: `plugin.subagentModel` > `defaultSubagentModel` > parent model.
-   */
-  defaultSubagentModel?: LanguageModel;
-
-  /**
    * Custom delegation instructions to include in the system prompt when subagents exist.
    *
    * When provided, overrides the default delegation guidance. Set to empty string to disable.
@@ -1851,6 +1818,45 @@ export type StreamPart =
 // =============================================================================
 
 /**
+ * Configuration for a plugin's dedicated subagent.
+ *
+ * When a plugin defines a `subagent`, the tools listed here are scoped to
+ * an auto-created subagent instead of the main agent's context. The main
+ * agent delegates to this subagent via the `task` tool.
+ *
+ * @example
+ * ```typescript
+ * definePlugin({
+ *   name: "github",
+ *   subagent: {
+ *     description: "GitHub specialist",
+ *     prompt: "You handle GitHub operations.",
+ *     model: haiku,
+ *     tools: { list_issues, create_pr },
+ *   },
+ * });
+ * ```
+ *
+ * @category Plugins
+ */
+export interface PluginSubagent {
+  /** Description of what this subagent specializes in */
+  description: string;
+
+  /**
+   * System prompt for the subagent.
+   * @defaultValue `You are a ${plugin.name} specialist. Complete the requested task using available tools and return a clear summary.`
+   */
+  prompt?: string;
+
+  /** Model override for the subagent. Inherits from parent agent if omitted. */
+  model?: LanguageModel;
+
+  /** Tools scoped to this subagent */
+  tools: ToolSet;
+}
+
+/**
  * A plugin that extends agent functionality.
  *
  * Plugins can provide tools, skills, hooks, and initialization logic.
@@ -1952,30 +1958,29 @@ export interface AgentPlugin {
   deferred?: boolean;
 
   /**
-   * When true, this plugin's tools are scoped to an auto-created subagent.
+   * Subagent configuration for this plugin.
    *
-   * The main agent delegates to this plugin's subagent via the `task` tool.
-   * Plugin tools are NOT registered in the main agent's context at all.
+   * When provided, the tools defined here are scoped to an auto-created subagent
+   * instead of being loaded into the main agent's context. The main agent
+   * delegates to this subagent via the `task` tool.
    *
-   * @defaultValue false
+   * Tools on `plugin.tools` go to the main agent; tools on `plugin.subagent.tools`
+   * go to a dedicated subagent. A plugin can have both.
+   *
+   * @example
+   * ```typescript
+   * definePlugin({
+   *   name: "github",
+   *   subagent: {
+   *     description: "GitHub specialist",
+   *     prompt: "You handle GitHub operations.",
+   *     model: haiku,
+   *     tools: { list_issues, create_pr },
+   *   },
+   * });
+   * ```
    */
-  delegateToSubagent?: boolean;
-
-  /**
-   * Custom system prompt for the auto-created subagent.
-   * Only used when `delegateToSubagent` is true.
-   *
-   * @defaultValue `You are a ${plugin.name} specialist. Complete the requested task using available tools and return a clear summary.`
-   */
-  subagentPrompt?: string;
-
-  /**
-   * Model override for the auto-created subagent.
-   * Only used when `delegateToSubagent` is true.
-   *
-   * Resolution order: `subagentModel` > `AgentOptions.defaultSubagentModel` > parent model.
-   */
-  subagentModel?: LanguageModel;
+  subagent?: PluginSubagent;
 }
 
 /**
@@ -2023,23 +2028,10 @@ export interface PluginOptions {
   deferred?: boolean;
 
   /**
-   * When true, this plugin's tools are scoped to an auto-created subagent.
-   * @see {@link AgentPlugin.delegateToSubagent}
-   * @defaultValue false
+   * Subagent configuration for this plugin.
+   * @see {@link AgentPlugin.subagent}
    */
-  delegateToSubagent?: boolean;
-
-  /**
-   * Custom system prompt for the auto-created subagent.
-   * @see {@link AgentPlugin.subagentPrompt}
-   */
-  subagentPrompt?: string;
-
-  /**
-   * Model override for the auto-created subagent.
-   * @see {@link AgentPlugin.subagentModel}
-   */
-  subagentModel?: LanguageModel;
+  subagent?: PluginSubagent;
 }
 
 // =============================================================================
@@ -2752,12 +2744,6 @@ export interface SubagentDefinition {
 
   /** Description of what this subagent specializes in */
   description: string;
-
-  /**
-   * Source plugin name when this subagent was auto-created from a delegated plugin.
-   * @internal
-   */
-  sourcePlugin?: string;
 
   /**
    * Model to use for this subagent.
