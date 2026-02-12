@@ -1,19 +1,18 @@
 /**
  * E2E tests for proxy tool loading flow.
  *
- * Verifies the full search → call_tool flow:
- * - Tool set stability across agent operations
- * - search_tools discovers deferred tools with schema info
- * - call_tool invokes deferred tools correctly
+ * Verifies the full agent-level search → call_tool flow:
+ * - Agent's own search_tools discovers deferred tools with schema info
+ * - Agent's own call_tool invokes deferred tools and returns results
+ * - Tool set remains stable before and after tool invocations
+ * - Multiple plugins with different tools all work through the proxy
+ * - Per-plugin deferred: true works the same way in eager mode
  */
 
 import { tool } from "ai";
 import { beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createAgent, definePlugin } from "../../src/index.js";
-import { MCPManager } from "../../src/mcp/manager.js";
-import { createCallToolTool } from "../../src/tools/call-tool.js";
-import { createSearchToolsTool } from "../../src/tools/search.js";
 import { createMockModel, resetMocks } from "../setup.js";
 
 const execOpts = {
@@ -27,13 +26,11 @@ describe("E2E: Proxy Tool Loading", () => {
     resetMocks();
   });
 
-  describe("search → call_tool flow", () => {
-    it("discovers tools via search_tools and invokes via call_tool", async () => {
-      // Set up MCP manager with deferred tools
-      const manager = new MCPManager();
-      manager.registerPluginTools(
-        "stripe",
-        {
+  describe("agent-level search → call_tool flow", () => {
+    it("searches and invokes a deferred tool through the agent's own tools", async () => {
+      const plugin = definePlugin({
+        name: "stripe",
+        tools: {
           create_payment: tool({
             description: "Create a payment intent",
             inputSchema: z.object({
@@ -48,29 +45,24 @@ describe("E2E: Proxy Tool Loading", () => {
             execute: async ({ id }) => `Refunded: ${id}`,
           }),
         },
-        { autoLoad: false },
-      );
-
-      // Create search_tools with schema disclosure (proxy mode config)
-      const searchTool = createSearchToolsTool({
-        manager,
-        autoLoad: false,
-        includeSchema: true,
       });
 
-      // Create call_tool
-      const callTool = createCallToolTool({ mcpManager: manager });
+      const agent = createAgent({
+        model: createMockModel(),
+        plugins: [plugin],
+        pluginLoading: "proxy",
+      });
 
-      // Step 1: Search for payment tools
-      const searchResult = await searchTool.execute!({ query: "payment" }, execOpts);
+      const activeTools = agent.getActiveTools();
+
+      // Step 1: Search for payment tools using the agent's search_tools
+      const searchResult = await activeTools.search_tools.execute!({ query: "payment" }, execOpts);
       expect(searchResult).toContain("create_payment");
-      expect(searchResult).toContain("[loaded: false]");
-      // Schema info should be included
       expect(searchResult).toContain("Parameters:");
       expect(searchResult).toContain("amount");
 
-      // Step 2: Invoke via call_tool
-      const callResult = await callTool.execute!(
+      // Step 2: Invoke via the agent's call_tool
+      const callResult = await activeTools.call_tool.execute!(
         {
           tool_name: "mcp__stripe__create_payment",
           arguments: { amount: 42, currency: "usd" },
@@ -80,89 +72,206 @@ describe("E2E: Proxy Tool Loading", () => {
       expect(callResult).toContain("Payment created: 42 usd");
     });
 
-    it("search_tools does not auto-load tools in proxy mode config", async () => {
-      const manager = new MCPManager();
-      manager.registerPluginTools(
-        "stripe",
-        {
+    it("invokes multiple tools from different plugins", async () => {
+      const stripe = definePlugin({
+        name: "stripe",
+        tools: {
+          charge: tool({
+            description: "Charge a card",
+            inputSchema: z.object({ amount: z.number() }),
+            execute: async ({ amount }) => `Charged $${amount}`,
+          }),
+        },
+      });
+
+      const github = definePlugin({
+        name: "github",
+        tools: {
+          create_issue: tool({
+            description: "Create a GitHub issue",
+            inputSchema: z.object({ title: z.string() }),
+            execute: async ({ title }) => `Issue created: ${title}`,
+          }),
+        },
+      });
+
+      const agent = createAgent({
+        model: createMockModel(),
+        plugins: [stripe, github],
+        pluginLoading: "proxy",
+      });
+
+      const activeTools = agent.getActiveTools();
+
+      // Invoke stripe tool
+      const chargeResult = await activeTools.call_tool.execute!(
+        { tool_name: "mcp__stripe__charge", arguments: { amount: 99 } },
+        execOpts,
+      );
+      expect(chargeResult).toContain("Charged $99");
+
+      // Invoke github tool
+      const issueResult = await activeTools.call_tool.execute!(
+        { tool_name: "mcp__github__create_issue", arguments: { title: "Fix bug" } },
+        execOpts,
+      );
+      expect(issueResult).toContain("Issue created: Fix bug");
+    });
+
+    it("works with per-plugin deferred: true in eager mode", async () => {
+      const eagerPlugin = definePlugin({
+        name: "core-utils",
+        tools: {
+          ping: tool({
+            description: "Ping",
+            inputSchema: z.object({}),
+            execute: async () => "pong",
+          }),
+        },
+      });
+
+      const deferredPlugin = definePlugin({
+        name: "stripe",
+        deferred: true,
+        tools: {
+          create_payment: tool({
+            description: "Create a payment",
+            inputSchema: z.object({ amount: z.number() }),
+            execute: async ({ amount }) => `Paid ${amount}`,
+          }),
+        },
+      });
+
+      const agent = createAgent({
+        model: createMockModel(),
+        plugins: [eagerPlugin, deferredPlugin],
+        // Default eager mode — only stripe is deferred
+      });
+
+      const activeTools = agent.getActiveTools();
+
+      // Eager plugin tool is directly available
+      expect(activeTools).toHaveProperty("mcp__core-utils__ping");
+
+      // Deferred tool is NOT in active set but IS callable via proxy
+      expect(activeTools).not.toHaveProperty("mcp__stripe__create_payment");
+      const result = await activeTools.call_tool.execute!(
+        { tool_name: "mcp__stripe__create_payment", arguments: { amount: 100 } },
+        execOpts,
+      );
+      expect(result).toContain("Paid 100");
+    });
+  });
+
+  describe("tool set stability across invocations", () => {
+    it("active tool set is identical before and after call_tool invocations", async () => {
+      const plugin = definePlugin({
+        name: "stripe",
+        tools: {
+          create_payment: tool({
+            description: "Create a payment",
+            inputSchema: z.object({ amount: z.number() }),
+            execute: async ({ amount }) => `Paid ${amount}`,
+          }),
+          refund: tool({
+            description: "Refund a payment",
+            inputSchema: z.object({ id: z.string() }),
+            execute: async ({ id }) => `Refunded ${id}`,
+          }),
+        },
+      });
+
+      const agent = createAgent({
+        model: createMockModel(),
+        plugins: [plugin],
+        pluginLoading: "proxy",
+      });
+
+      // Snapshot tool names BEFORE any proxy calls
+      const toolNamesBefore = Object.keys(agent.getActiveTools()).sort();
+
+      // Invoke both tools through call_tool
+      const activeTools = agent.getActiveTools();
+      await activeTools.call_tool.execute!(
+        { tool_name: "mcp__stripe__create_payment", arguments: { amount: 1 } },
+        execOpts,
+      );
+      await activeTools.call_tool.execute!(
+        { tool_name: "mcp__stripe__refund", arguments: { id: "pi_123" } },
+        execOpts,
+      );
+
+      // Snapshot tool names AFTER proxy calls
+      const toolNamesAfter = Object.keys(agent.getActiveTools()).sort();
+
+      // Tool set must be identical — this is the core value of proxy mode
+      expect(toolNamesAfter).toEqual(toolNamesBefore);
+
+      // Plugin tools must still NOT be in the active set
+      expect(toolNamesAfter).not.toContain("mcp__stripe__create_payment");
+      expect(toolNamesAfter).not.toContain("mcp__stripe__refund");
+    });
+
+    it("search_tools does not load tools into the active set", async () => {
+      const plugin = definePlugin({
+        name: "stripe",
+        tools: {
           charge: tool({
             description: "Charge a card",
             inputSchema: z.object({ amount: z.number() }),
             execute: async ({ amount }) => `Charged ${amount}`,
           }),
         },
-        { autoLoad: false },
-      );
-
-      const searchTool = createSearchToolsTool({
-        manager,
-        autoLoad: false,
-        includeSchema: true,
       });
 
-      // Search should find the tool but NOT load it
-      await searchTool.execute!({ query: "charge" }, execOpts);
-
-      // Tool should still not be loaded
-      expect(manager.isToolLoaded("mcp__stripe__charge")).toBe(false);
-    });
-  });
-
-  describe("tool set stability", () => {
-    it("active tools do not change after proxy mode setup", () => {
-      const plugin = definePlugin({
-        name: "stripe",
-        tools: {
-          create_payment: tool({
-            description: "Create a payment",
-            parameters: z.object({ amount: z.number() }),
-            execute: async ({ amount }) => `Paid ${amount}`,
-          }),
-          refund: tool({
-            description: "Refund",
-            parameters: z.object({ id: z.string() }),
-            execute: async ({ id }) => `Refunded ${id}`,
-          }),
-        },
-      });
-
-      const model = createMockModel();
       const agent = createAgent({
-        model,
+        model: createMockModel(),
         plugins: [plugin],
         pluginLoading: "proxy",
       });
 
-      // Capture tool names
-      const toolNames1 = Object.keys(agent.getActiveTools()).sort();
+      const toolNamesBefore = Object.keys(agent.getActiveTools()).sort();
 
-      // Get active tools again — should be identical
-      const toolNames2 = Object.keys(agent.getActiveTools()).sort();
+      // Search for the tool
+      await agent.getActiveTools().search_tools.execute!({ query: "charge" }, execOpts);
 
-      expect(toolNames1).toEqual(toolNames2);
-
-      // Should contain meta tools but no plugin tools
-      expect(toolNames1).toContain("call_tool");
-      expect(toolNames1).toContain("search_tools");
-      expect(toolNames1).not.toContain("mcp__stripe__create_payment");
+      const toolNamesAfter = Object.keys(agent.getActiveTools()).sort();
+      expect(toolNamesAfter).toEqual(toolNamesBefore);
+      expect(toolNamesAfter).not.toContain("mcp__stripe__charge");
     });
   });
 
-  describe("call_tool error handling", () => {
-    it("returns error for non-existent tool", async () => {
-      const manager = new MCPManager();
-      const callTool = createCallToolTool({ mcpManager: manager });
+  describe("error handling through agent tools", () => {
+    it("call_tool returns error for non-existent tool", async () => {
+      const plugin = definePlugin({
+        name: "stripe",
+        tools: {
+          charge: tool({
+            description: "Charge",
+            inputSchema: z.object({}),
+            execute: async () => "ok",
+          }),
+        },
+      });
 
-      const result = await callTool.execute!({ tool_name: "nonexistent", arguments: {} }, execOpts);
+      const agent = createAgent({
+        model: createMockModel(),
+        plugins: [plugin],
+        pluginLoading: "proxy",
+      });
+
+      const result = await agent.getActiveTools().call_tool.execute!(
+        { tool_name: "mcp__stripe__nonexistent", arguments: {} },
+        execOpts,
+      );
 
       expect(result).toContain("not found");
     });
 
-    it("handles execution errors gracefully", async () => {
-      const manager = new MCPManager();
-      manager.registerPluginTools(
-        "test",
-        {
+    it("call_tool surfaces execution errors", async () => {
+      const plugin = definePlugin({
+        name: "test",
+        tools: {
           fail: tool({
             description: "Always fails",
             inputSchema: z.object({}),
@@ -171,12 +280,15 @@ describe("E2E: Proxy Tool Loading", () => {
             },
           }),
         },
-        { autoLoad: false },
-      );
+      });
 
-      const callTool = createCallToolTool({ mcpManager: manager });
+      const agent = createAgent({
+        model: createMockModel(),
+        plugins: [plugin],
+        pluginLoading: "proxy",
+      });
 
-      const result = await callTool.execute!(
+      const result = await agent.getActiveTools().call_tool.execute!(
         { tool_name: "mcp__test__fail", arguments: {} },
         execOpts,
       );
