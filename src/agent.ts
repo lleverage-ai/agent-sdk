@@ -2148,9 +2148,11 @@ export function createAgent(options: AgentOptions): Agent {
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
+          const { messages, checkpoint, forkedSessionId } =
+            await buildMessages(effectiveGenOptions);
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
+          const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
 
           // Signal state for cooperative signal catching in streaming mode
           const signalState: GenerateSignalState = {};
@@ -2262,16 +2264,41 @@ export function createAgent(options: AgentOptions): Agent {
           };
 
           // Save checkpoint if threadId is provided
-          if (effectiveGenOptions.threadId && options.checkpointer) {
+          if (checkpointThreadId && options.checkpointer) {
             const finalMessages: ModelMessage[] = [
               ...messages,
               ...(text ? [{ role: "assistant" as const, content: text }] : []),
             ];
-            await saveCheckpoint(
-              effectiveGenOptions.threadId,
-              finalMessages,
-              startStep + steps.length,
-            );
+            await saveCheckpoint(checkpointThreadId, finalMessages, startStep + steps.length);
+          }
+
+          // Save pending interrupt to checkpoint (mirrors generate() pattern)
+          if (signalState.interrupt && checkpointThreadId && options.checkpointer) {
+            const interrupt = signalState.interrupt.interrupt;
+            const savedCheckpoint = threadCheckpoints.get(checkpointThreadId);
+            if (savedCheckpoint) {
+              const withInterrupt = updateCheckpoint(savedCheckpoint, {
+                pendingInterrupt: interrupt,
+              });
+              await options.checkpointer.save(withInterrupt);
+              threadCheckpoints.set(checkpointThreadId, withInterrupt);
+            }
+
+            // Emit InterruptRequested hook
+            const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
+            if (interruptRequestedHooks.length > 0) {
+              const hookInput: InterruptRequestedInput = {
+                hook_event_name: "InterruptRequested",
+                session_id: effectiveGenOptions.threadId ?? "default",
+                cwd: process.cwd(),
+                interrupt_id: interrupt.id,
+                interrupt_type: interrupt.type,
+                tool_call_id: interrupt.toolCallId,
+                tool_name: interrupt.toolName,
+                request: interrupt.request,
+              };
+              await invokeHooksWithTimeout(interruptRequestedHooks, hookInput, null, agent);
+            }
           }
 
           // Invoke unified PostGenerate hooks
