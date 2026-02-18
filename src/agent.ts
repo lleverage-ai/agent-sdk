@@ -1825,6 +1825,7 @@ export function createAgent(options: AgentOptions): Agent {
         step: checkpoint.step + 1,
       });
       await options.checkpointer.save(updatedCheckpoint);
+      threadCheckpoints.set(threadId, updatedCheckpoint);
 
       // Clean up the response from our maps
       pendingResponses.delete(interrupt.id);
