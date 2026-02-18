@@ -586,6 +586,19 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
       });
     },
 
+    async resumeDataResponse(
+      threadId: string,
+      _interruptId: string,
+      _response: unknown,
+      genOptions?: Partial<GenerateOptions>,
+    ): Promise<Response> {
+      // Mock implementation: just call streamDataResponse with the threadId
+      return mockAgent.streamDataResponse({
+        threadId,
+        ...genOptions,
+      });
+    },
+
     addRuntimeTools(_tools) {
       // no-op in mock
     },

@@ -1255,6 +1255,45 @@ export interface Agent {
   ): Promise<GenerateResult>;
 
   /**
+   * Resume execution after responding to an interrupt, returning a streaming Response.
+   *
+   * Works like `resume()` but returns a streaming `Response` compatible with
+   * `useChat` / AI SDK UI, similar to `streamDataResponse()`.
+   *
+   * If the tool throws another interrupt during resume (e.g. a multi-step wizard),
+   * the new interrupt is persisted to the checkpoint and a `204 No Content` Response
+   * is returned instead of a stream. The new interrupt is retrievable via
+   * `getInterrupt()`.
+   *
+   * @param threadId - The thread ID to resume
+   * @param interruptId - The ID of the interrupt being responded to
+   * @param response - The response to the interrupt
+   * @param options - Optional generation options to override defaults
+   * @returns A streaming Response, or a `204 No Content` Response if a re-interrupt occurred
+   *
+   * @example
+   * ```typescript
+   * // In an API route
+   * export async function POST(req: Request) {
+   *   const { threadId, interruptId, response } = await req.json();
+   *   const res = await agent.resumeDataResponse(threadId, interruptId, response);
+   *   if (res.status === 204) {
+   *     // Tool threw another interrupt — the new interrupt is in the checkpoint
+   *     const newInterrupt = await agent.getInterrupt(threadId);
+   *     // Handle the new interrupt (e.g. return it as JSON to the client)
+   *   }
+   *   return res;
+   * }
+   * ```
+   */
+  resumeDataResponse(
+    threadId: string,
+    interruptId: string,
+    response: unknown,
+    options?: Partial<GenerateOptions>,
+  ): Promise<Response>;
+
+  /**
    * The task manager for background task tracking.
    *
    * Provides access to background tasks (bash commands and subagents).
