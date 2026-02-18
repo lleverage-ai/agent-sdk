@@ -1658,6 +1658,308 @@ export function createAgent(options: AgentOptions): Agent {
     return null;
   }
 
+  /**
+   * Collect all tools (core + static plugin tools + MCP tools) for
+   * deterministic tool execution during resume. This is the unwrapped set
+   * — no permission mode, hooks, or signal-catching wrappers applied.
+   */
+  function collectAllTools(): ToolSet {
+    const allTools: ToolSet = { ...coreTools };
+    for (const plugin of options.plugins ?? []) {
+      if (plugin.tools && typeof plugin.tools !== "function") {
+        Object.assign(allTools, plugin.tools);
+      }
+    }
+    Object.assign(allTools, mcpManager.getToolSet());
+    return allTools;
+  }
+
+  /**
+   * Discriminated union returned by executeResumeCore.
+   *
+   * - `continue`: The tool executed successfully and generation should continue.
+   * - `re-interrupted`: The tool threw another interrupt during resume (e.g. a
+   *   multi-step wizard). The new interrupt has been persisted to the checkpoint.
+   */
+  type ResumeOutcome =
+    | { type: "continue"; threadId: string; genOptions?: Partial<GenerateOptions> }
+    | { type: "re-interrupted"; interrupt: Interrupt; checkpoint: Checkpoint };
+
+  /**
+   * Shared logic for resume() and resumeDataResponse().
+   *
+   * Validates the checkpoint/interrupt, stores the user response, emits hooks,
+   * executes the interrupted tool (approval or custom), updates the checkpoint,
+   * and returns a discriminated outcome so the caller can decide how to continue.
+   */
+  async function executeResumeCore(
+    threadId: string,
+    interruptId: string,
+    response: unknown,
+    genOptions?: Partial<GenerateOptions>,
+  ): Promise<ResumeOutcome> {
+    if (!options.checkpointer) {
+      throw new Error("Cannot resume: checkpointer is required");
+    }
+
+    const checkpoint = await options.checkpointer.load(threadId);
+    if (!checkpoint) {
+      throw new Error(`Cannot resume: no checkpoint found for thread ${threadId}`);
+    }
+
+    const interrupt = checkpoint.pendingInterrupt;
+    if (!interrupt) {
+      throw new Error(`Cannot resume: no pending interrupt found for thread ${threadId}`);
+    }
+
+    if (interrupt.id !== interruptId) {
+      throw new Error(
+        `Cannot resume: interrupt ID mismatch. Expected ${interrupt.id}, got ${interruptId}`,
+      );
+    }
+
+    // Store the response keyed by interrupt ID (format: "int_<toolCallId>").
+    // The interrupt() function in the tool wrapper looks up responses using
+    // this exact key format, so we must use interrupt.id — NOT the raw
+    // toolCallId which would never match.
+    pendingResponses.set(interrupt.id, response);
+
+    // Emit InterruptResolved hook
+    const interruptResolvedHooks = effectiveHooks?.InterruptResolved ?? [];
+    if (interruptResolvedHooks.length > 0) {
+      const isApproval = isApprovalInterrupt(interrupt);
+      const approvalResponse = isApproval ? (response as { approved: boolean }) : undefined;
+      const hookInput: InterruptResolvedInput = {
+        hook_event_name: "InterruptResolved",
+        session_id: threadId,
+        cwd: process.cwd(),
+        interrupt_id: interrupt.id,
+        interrupt_type: interrupt.type,
+        tool_call_id: interrupt.toolCallId,
+        tool_name: interrupt.toolName,
+        response,
+        approved: approvalResponse?.approved,
+      };
+      await invokeHooksWithTimeout(interruptResolvedHooks, hookInput, null, agent);
+    }
+
+    // Handle approval interrupt
+    if (isApprovalInterrupt(interrupt)) {
+      const approvalResponse = response as { approved: boolean; reason?: string };
+
+      // For backward compatibility, also store in approvalDecisions
+      approvalDecisions.set(interrupt.toolCallId, approvalResponse.approved);
+
+      // Build the assistant message with the tool call
+      const assistantMessage: ModelMessage = {
+        role: "assistant" as const,
+        content: [
+          {
+            type: "tool-call" as const,
+            toolCallId: interrupt.toolCallId,
+            toolName: interrupt.toolName,
+            input: interrupt.request.args,
+          },
+        ],
+      };
+
+      let toolResultOutput: unknown;
+
+      if (approvalResponse.approved) {
+        // Approved: Execute the tool deterministically
+        const unwrappedTools = collectAllTools();
+
+        const tool = unwrappedTools[interrupt.toolName];
+        if (!tool || !tool.execute) {
+          throw new Error(
+            `Cannot resume: tool "${interrupt.toolName}" not found or has no execute function`,
+          );
+        }
+
+        try {
+          toolResultOutput = await tool.execute(interrupt.request.args, {
+            toolCallId: interrupt.toolCallId,
+            messages: checkpoint.messages,
+            abortSignal: genOptions?.signal,
+          } as ToolExecutionOptions);
+        } catch (error) {
+          toolResultOutput = `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
+        }
+      } else {
+        // Denied: Create a synthetic denial result
+        toolResultOutput = `Tool "${interrupt.toolName}" was denied by user${
+          approvalResponse.reason ? `: ${approvalResponse.reason}` : ""
+        }`;
+      }
+
+      // Build the tool result message with proper ToolResultOutput format.
+      // The AI SDK validates messages against modelMessageSchema which
+      // requires output to be { type: 'text', value } or { type: 'json', value }.
+      const approvalOutput =
+        typeof toolResultOutput === "string"
+          ? { type: "text" as const, value: toolResultOutput }
+          : { type: "json" as const, value: toolResultOutput };
+
+      const toolResultMessage = {
+        role: "tool" as const,
+        content: [
+          {
+            type: "tool-result" as const,
+            toolCallId: interrupt.toolCallId,
+            toolName: interrupt.toolName,
+            output: approvalOutput,
+          },
+        ],
+      } as ModelMessage;
+
+      // Update checkpoint with the tool call and result messages, clear interrupt
+      const updatedMessages: ModelMessage[] = [
+        ...checkpoint.messages,
+        assistantMessage,
+        toolResultMessage,
+      ];
+
+      const updatedCheckpoint = updateCheckpoint(checkpoint, {
+        messages: updatedMessages,
+        pendingInterrupt: undefined,
+        step: checkpoint.step + 1,
+      });
+      await options.checkpointer.save(updatedCheckpoint);
+      threadCheckpoints.set(threadId, updatedCheckpoint);
+
+      // Clean up the response from our maps
+      pendingResponses.delete(interrupt.id);
+      approvalDecisions.delete(interrupt.toolCallId);
+
+      return { type: "continue", threadId, genOptions };
+    }
+
+    // For custom interrupts (e.g. ask_user), manually execute the tool so
+    // that its interrupt() call receives the stored response deterministically.
+    // Re-running generate() would rely on the model re-calling the same tool,
+    // but tool call IDs change each generation so pendingResponses would never
+    // be matched.
+    const customToolCallId = interrupt.toolCallId;
+    const customToolName = interrupt.toolName;
+
+    if (!customToolCallId || !customToolName) {
+      throw new Error(
+        "Cannot resume custom interrupt: missing toolCallId or toolName on interrupt",
+      );
+    }
+
+    // Build the assistant message with the original tool call
+    const customAssistantMessage: ModelMessage = {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "tool-call" as const,
+          toolCallId: customToolCallId,
+          toolName: customToolName,
+          input: interrupt.request,
+        },
+      ],
+    };
+
+    // Collect all tools
+    const customTools = collectAllTools();
+
+    const customTool = customTools[customToolName];
+    if (!customTool || !customTool.execute) {
+      throw new Error(
+        `Cannot resume: tool "${customToolName}" not found or has no execute function`,
+      );
+    }
+
+    let customToolResult: unknown;
+    try {
+      // Execute the tool, providing an interrupt function that returns
+      // the stored user response. This mirrors what happens inside the
+      // permission-mode tool wrapper when pendingResponses has a match.
+      customToolResult = await customTool.execute(interrupt.request, {
+        toolCallId: customToolCallId,
+        messages: checkpoint.messages,
+        abortSignal: genOptions?.signal,
+        interrupt: async (request: unknown) => {
+          // First call: return the stored user response (mirrors the
+          // permission-mode wrapper when pendingResponses has a match).
+          if (pendingResponses.has(interrupt.id)) {
+            const stored = pendingResponses.get(interrupt.id);
+            pendingResponses.delete(interrupt.id);
+            return stored;
+          }
+
+          // Subsequent calls: no stored response — throw InterruptSignal
+          // so the tool can pause again (e.g. multi-step wizards).
+          const newInterruptData = createInterrupt({
+            id: `int_${customToolCallId}`,
+            threadId,
+            type: "custom",
+            toolCallId: customToolCallId,
+            toolName: customToolName,
+            request,
+            step: checkpoint.step,
+          });
+          throw new InterruptSignal(newInterruptData);
+        },
+      } as ToolExecutionOptions);
+    } catch (executeError) {
+      if (isInterruptSignal(executeError)) {
+        // Tool threw another interrupt — persist it and return re-interrupted
+        const newInterrupt = executeError.interrupt;
+        const reInterruptCheckpoint = updateCheckpoint(checkpoint, {
+          pendingInterrupt: newInterrupt,
+        });
+        await options.checkpointer.save(reInterruptCheckpoint);
+        threadCheckpoints.set(threadId, reInterruptCheckpoint);
+        return {
+          type: "re-interrupted",
+          interrupt: newInterrupt,
+          checkpoint: reInterruptCheckpoint,
+        };
+      }
+      customToolResult = `Tool execution failed: ${executeError instanceof Error ? executeError.message : String(executeError)}`;
+    }
+
+    // Build tool result message with proper ToolResultOutput format.
+    const customOutput =
+      typeof customToolResult === "string"
+        ? { type: "text" as const, value: customToolResult }
+        : { type: "json" as const, value: customToolResult };
+
+    const customToolResultMessage = {
+      role: "tool" as const,
+      content: [
+        {
+          type: "tool-result" as const,
+          toolCallId: customToolCallId,
+          toolName: customToolName,
+          output: customOutput,
+        },
+      ],
+    } as ModelMessage;
+
+    // Update checkpoint with tool call + result, clear interrupt
+    const customUpdatedMessages: ModelMessage[] = [
+      ...checkpoint.messages,
+      customAssistantMessage,
+      customToolResultMessage,
+    ];
+
+    const customUpdatedCheckpoint = updateCheckpoint(checkpoint, {
+      messages: customUpdatedMessages,
+      pendingInterrupt: undefined,
+      step: checkpoint.step + 1,
+    });
+    await options.checkpointer.save(customUpdatedCheckpoint);
+    threadCheckpoints.set(threadId, customUpdatedCheckpoint);
+
+    // Clean up
+    pendingResponses.delete(interrupt.id);
+
+    return { type: "continue", threadId, genOptions };
+  }
+
   const agent: Agent = {
     id,
     options,
@@ -3062,8 +3364,37 @@ export function createAgent(options: AgentOptions): Agent {
               // Wait for initial generation to complete to get final text
               const text = await result.text;
 
+              // Save pending interrupt to checkpoint (mirrors stream() pattern)
+              if (signalState.interrupt && effectiveGenOptions.threadId && options.checkpointer) {
+                const interrupt = signalState.interrupt.interrupt;
+                const savedCheckpoint = threadCheckpoints.get(effectiveGenOptions.threadId);
+                if (savedCheckpoint) {
+                  const withInterrupt = updateCheckpoint(savedCheckpoint, {
+                    pendingInterrupt: interrupt,
+                  });
+                  await options.checkpointer.save(withInterrupt);
+                  threadCheckpoints.set(effectiveGenOptions.threadId, withInterrupt);
+                }
+
+                // Emit InterruptRequested hook
+                const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
+                if (interruptRequestedHooks.length > 0) {
+                  const hookInput: InterruptRequestedInput = {
+                    hook_event_name: "InterruptRequested",
+                    session_id: effectiveGenOptions.threadId ?? "default",
+                    cwd: process.cwd(),
+                    interrupt_id: interrupt.id,
+                    interrupt_type: interrupt.type,
+                    tool_call_id: interrupt.toolCallId,
+                    tool_name: interrupt.toolName,
+                    request: interrupt.request,
+                  };
+                  await invokeHooksWithTimeout(interruptRequestedHooks, hookInput, null, agent);
+                }
+              }
+
               // --- Background task completion loop ---
-              if (waitForBackgroundTasks) {
+              if (waitForBackgroundTasks && !signalState.interrupt) {
                 // Track accumulated steps for checkpoint saves
                 const initialSteps = await result.steps;
                 let accumulatedStepCount = initialSteps.length;
@@ -3234,291 +3565,43 @@ export function createAgent(options: AgentOptions): Agent {
       response: unknown,
       genOptions?: Partial<GenerateOptions>,
     ): Promise<GenerateResult> {
-      if (!options.checkpointer) {
-        throw new Error("Cannot resume: checkpointer is required");
+      const outcome = await executeResumeCore(threadId, interruptId, response, genOptions);
+
+      if (outcome.type === "re-interrupted") {
+        return {
+          status: "interrupted",
+          interrupt: outcome.interrupt,
+          partial: undefined,
+        } as GenerateResultInterrupted;
       }
 
-      const checkpoint = await options.checkpointer.load(threadId);
-      if (!checkpoint) {
-        throw new Error(`Cannot resume: no checkpoint found for thread ${threadId}`);
+      return agent.generate({
+        threadId: outcome.threadId,
+        ...outcome.genOptions,
+        prompt: undefined,
+      });
+    },
+
+    async resumeDataResponse(
+      threadId: string,
+      interruptId: string,
+      response: unknown,
+      genOptions?: Partial<GenerateOptions>,
+    ): Promise<Response> {
+      const outcome = await executeResumeCore(threadId, interruptId, response, genOptions);
+
+      if (outcome.type === "re-interrupted") {
+        // Return an empty response — the client already has the interrupt widget.
+        // The new interrupt is persisted to the checkpoint and retrievable
+        // via getInterrupt().
+        return new Response(null, { status: 204 });
       }
 
-      const interrupt = checkpoint.pendingInterrupt;
-      if (!interrupt) {
-        throw new Error(`Cannot resume: no pending interrupt found for thread ${threadId}`);
-      }
-
-      if (interrupt.id !== interruptId) {
-        throw new Error(
-          `Cannot resume: interrupt ID mismatch. Expected ${interrupt.id}, got ${interruptId}`,
-        );
-      }
-
-      // Store the response keyed by interrupt ID (format: "int_<toolCallId>").
-      // The interrupt() function in the tool wrapper looks up responses using
-      // this exact key format, so we must use interrupt.id — NOT the raw
-      // toolCallId which would never match.
-      pendingResponses.set(interrupt.id, response);
-
-      // Emit InterruptResolved hook
-      const interruptResolvedHooks = effectiveHooks?.InterruptResolved ?? [];
-      if (interruptResolvedHooks.length > 0) {
-        const isApproval = isApprovalInterrupt(interrupt);
-        const approvalResponse = isApproval ? (response as { approved: boolean }) : undefined;
-        const hookInput: InterruptResolvedInput = {
-          hook_event_name: "InterruptResolved",
-          session_id: threadId,
-          cwd: process.cwd(),
-          interrupt_id: interrupt.id,
-          interrupt_type: interrupt.type,
-          tool_call_id: interrupt.toolCallId,
-          tool_name: interrupt.toolName,
-          response,
-          approved: approvalResponse?.approved,
-        };
-        await invokeHooksWithTimeout(interruptResolvedHooks, hookInput, null, agent);
-      }
-
-      // Handle approval interrupt
-      if (isApprovalInterrupt(interrupt)) {
-        const approvalResponse = response as { approved: boolean; reason?: string };
-
-        // For backward compatibility, also store in approvalDecisions
-        approvalDecisions.set(interrupt.toolCallId, approvalResponse.approved);
-
-        // Build the assistant message with the tool call
-        const assistantMessage: ModelMessage = {
-          role: "assistant" as const,
-          content: [
-            {
-              type: "tool-call" as const,
-              toolCallId: interrupt.toolCallId,
-              toolName: interrupt.toolName,
-              input: interrupt.request.args,
-            },
-          ],
-        };
-
-        let toolResultOutput: unknown;
-
-        if (approvalResponse.approved) {
-          // Approved: Execute the tool deterministically
-          const unwrappedTools: ToolSet = { ...coreTools };
-          for (const plugin of options.plugins ?? []) {
-            if (plugin.tools && typeof plugin.tools !== "function") {
-              Object.assign(unwrappedTools, plugin.tools);
-            }
-          }
-          const mcpTools = mcpManager.getToolSet();
-          Object.assign(unwrappedTools, mcpTools);
-
-          const tool = unwrappedTools[interrupt.toolName];
-          if (!tool || !tool.execute) {
-            throw new Error(
-              `Cannot resume: tool "${interrupt.toolName}" not found or has no execute function`,
-            );
-          }
-
-          try {
-            toolResultOutput = await tool.execute(interrupt.request.args, {
-              toolCallId: interrupt.toolCallId,
-              messages: checkpoint.messages,
-              abortSignal: genOptions?.signal,
-            } as ToolExecutionOptions);
-          } catch (error) {
-            toolResultOutput = `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
-          }
-        } else {
-          // Denied: Create a synthetic denial result
-          toolResultOutput = `Tool "${interrupt.toolName}" was denied by user${
-            approvalResponse.reason ? `: ${approvalResponse.reason}` : ""
-          }`;
-        }
-
-        // Build the tool result message with proper ToolResultOutput format.
-        // The AI SDK validates messages against modelMessageSchema which
-        // requires output to be { type: 'text', value } or { type: 'json', value }.
-        const approvalOutput =
-          typeof toolResultOutput === "string"
-            ? { type: "text" as const, value: toolResultOutput }
-            : { type: "json" as const, value: toolResultOutput };
-
-        const toolResultMessage = {
-          role: "tool" as const,
-          content: [
-            {
-              type: "tool-result" as const,
-              toolCallId: interrupt.toolCallId,
-              toolName: interrupt.toolName,
-              output: approvalOutput,
-            },
-          ],
-        } as ModelMessage;
-
-        // Update checkpoint with the tool call and result messages, clear interrupt
-        const updatedMessages: ModelMessage[] = [
-          ...checkpoint.messages,
-          assistantMessage,
-          toolResultMessage,
-        ];
-
-        const updatedCheckpoint = updateCheckpoint(checkpoint, {
-          messages: updatedMessages,
-          pendingInterrupt: undefined,
-          step: checkpoint.step + 1,
-        });
-        await options.checkpointer.save(updatedCheckpoint);
-
-        // Clean up the response from our maps
-        pendingResponses.delete(interrupt.id);
-        approvalDecisions.delete(interrupt.toolCallId);
-
-        // Continue generation from the updated checkpoint
-        return agent.generate({
-          threadId,
-          ...genOptions,
-          prompt: undefined,
-        });
-      }
-
-      // For custom interrupts (e.g. ask_user), manually execute the tool so
-      // that its interrupt() call receives the stored response deterministically.
-      // Re-running generate() would rely on the model re-calling the same tool,
-      // but tool call IDs change each generation so pendingResponses would never
-      // be matched.
-      {
-        const customToolCallId = interrupt.toolCallId;
-        const customToolName = interrupt.toolName;
-
-        if (!customToolCallId || !customToolName) {
-          throw new Error(
-            "Cannot resume custom interrupt: missing toolCallId or toolName on interrupt",
-          );
-        }
-
-        // Build the assistant message with the original tool call
-        const customAssistantMessage: ModelMessage = {
-          role: "assistant" as const,
-          content: [
-            {
-              type: "tool-call" as const,
-              toolCallId: customToolCallId,
-              toolName: customToolName,
-              input: interrupt.request,
-            },
-          ],
-        };
-
-        // Collect all tools (same pattern as the approval path above)
-        const customTools: ToolSet = { ...coreTools };
-        for (const plugin of options.plugins ?? []) {
-          if (plugin.tools && typeof plugin.tools !== "function") {
-            Object.assign(customTools, plugin.tools);
-          }
-        }
-        const customMcpTools = mcpManager.getToolSet();
-        Object.assign(customTools, customMcpTools);
-
-        const customTool = customTools[customToolName];
-        if (!customTool || !customTool.execute) {
-          throw new Error(
-            `Cannot resume: tool "${customToolName}" not found or has no execute function`,
-          );
-        }
-
-        let customToolResult: unknown;
-        try {
-          // Execute the tool, providing an interrupt function that returns
-          // the stored user response. This mirrors what happens inside the
-          // permission-mode tool wrapper when pendingResponses has a match.
-          customToolResult = await customTool.execute(interrupt.request, {
-            toolCallId: customToolCallId,
-            messages: checkpoint.messages,
-            abortSignal: genOptions?.signal,
-            interrupt: async (request: unknown) => {
-              // First call: return the stored user response (mirrors the
-              // permission-mode wrapper when pendingResponses has a match).
-              if (pendingResponses.has(interrupt.id)) {
-                const stored = pendingResponses.get(interrupt.id);
-                pendingResponses.delete(interrupt.id);
-                return stored;
-              }
-
-              // Subsequent calls: no stored response — throw InterruptSignal
-              // so the tool can pause again (e.g. multi-step wizards).
-              const newInterruptData = createInterrupt({
-                id: `int_${customToolCallId}`,
-                threadId,
-                type: "custom",
-                toolCallId: customToolCallId,
-                toolName: customToolName,
-                request,
-                step: checkpoint.step,
-              });
-              throw new InterruptSignal(newInterruptData);
-            },
-          } as ToolExecutionOptions);
-        } catch (executeError) {
-          if (isInterruptSignal(executeError)) {
-            // Tool threw another interrupt — persist it and return interrupted
-            const newInterrupt = executeError.interrupt;
-            const reInterruptCheckpoint = updateCheckpoint(checkpoint, {
-              pendingInterrupt: newInterrupt,
-            });
-            await options.checkpointer.save(reInterruptCheckpoint);
-            threadCheckpoints.set(threadId, reInterruptCheckpoint);
-            return {
-              status: "interrupted",
-              interrupt: newInterrupt,
-              partial: undefined,
-            } as GenerateResultInterrupted;
-          }
-          customToolResult = `Tool execution failed: ${executeError instanceof Error ? executeError.message : String(executeError)}`;
-        }
-
-        // Build tool result message with proper ToolResultOutput format.
-        const customOutput =
-          typeof customToolResult === "string"
-            ? { type: "text" as const, value: customToolResult }
-            : { type: "json" as const, value: customToolResult };
-
-        const customToolResultMessage = {
-          role: "tool" as const,
-          content: [
-            {
-              type: "tool-result" as const,
-              toolCallId: customToolCallId,
-              toolName: customToolName,
-              output: customOutput,
-            },
-          ],
-        } as ModelMessage;
-
-        // Update checkpoint with tool call + result, clear interrupt
-        const customUpdatedMessages: ModelMessage[] = [
-          ...checkpoint.messages,
-          customAssistantMessage,
-          customToolResultMessage,
-        ];
-
-        const customUpdatedCheckpoint = updateCheckpoint(checkpoint, {
-          messages: customUpdatedMessages,
-          pendingInterrupt: undefined,
-          step: checkpoint.step + 1,
-        });
-        await options.checkpointer.save(customUpdatedCheckpoint);
-        threadCheckpoints.set(threadId, customUpdatedCheckpoint);
-
-        // Clean up
-        pendingResponses.delete(interrupt.id);
-
-        // Continue generation from the updated checkpoint
-        return agent.generate({
-          threadId,
-          ...genOptions,
-          prompt: undefined,
-        });
-      }
+      return agent.streamDataResponse({
+        threadId: outcome.threadId,
+        ...outcome.genOptions,
+        prompt: undefined,
+      });
     },
 
     async dispose(): Promise<void> {

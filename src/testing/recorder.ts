@@ -360,6 +360,15 @@ export function createRecordingAgent(
       return agent.resume(threadId, interruptId, response, genOptions);
     },
 
+    async resumeDataResponse(
+      threadId: string,
+      interruptId: string,
+      response: unknown,
+      genOptions?: Partial<GenerateOptions>,
+    ) {
+      return agent.resumeDataResponse(threadId, interruptId, response, genOptions);
+    },
+
     // Delegate to wrapped agent's ready promise
     get ready() {
       return agent.ready;
