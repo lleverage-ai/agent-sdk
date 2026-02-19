@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.10] - 2026-02-19
+
+### Changed
+
+- Replace hand-rolled YAML parser with `yaml` npm package for correct parsing of complex YAML features (e.g. inline JSON mappings in skill frontmatter)
+- Metadata values from skill frontmatter are now normalised to `Record<string, string>` for SDK compatibility
+
+## [0.0.9] - 2026-02-18
+
+### Changed
+
+- **BREAKING**: Move `ai` and `zod` from dependencies to peerDependencies — consumers must provide their own versions to avoid duplicate copies and version conflicts
+
+## [0.0.8] - 2026-02-18
+
+### Added
+
+- `resumeDataResponse()` method on Agent for resuming interrupts with a data-stream response
+- `executeResumeCore()` shared helper extracted from resume logic, reducing duplication (~270 lines)
+- `forkedSessionId` support in `stream()` checkpoint saves, matching the pattern in `generate()`
+
+### Fixed
+
+- `stream()` now saves `pendingInterrupt` to the checkpoint so `agent.getInterrupt(threadId)` works correctly after a streamed interrupt
+- `stream()` now emits `InterruptRequested` hooks on interrupt
+- `stream()` now uses the correct thread ID (`forkedSessionId ?? threadId`) for all checkpoint saves when session forking is active
+- In-memory `threadCheckpoints` cache is now updated in the approval resume path, preventing stale reads on subsequent `generate()` calls
+
+## [0.0.7] - 2026-02-16
+
+### Added
+
+- `call_tool` proxy for invoking plugin tools without loading them into the active ToolSet (`pluginLoading: "proxy"` or per-plugin `deferred: true`)
+- Subagent delegation (`plugin.subagent` field) — plugin tools can be scoped to auto-created subagents, keeping the main agent's context clean
+- `DelegationPromptComponent` for prompt builder — auto-generates delegation instructions when subagent plugins are present
+- `default` export condition in package exports for bundler/runtime compatibility
+
+### Changed
+
+- **BREAKING**: Removed `lazy` and `explicit` plugin loading modes — superseded by proxy mode which keeps the schema stable for prompt caching
+- **BREAKING**: Removed `ToolRegistry` class, `createUseToolsTool`, `preloadPlugins` option, and `loadTools()` method
+- Plugin registration cascade simplified from 7 branches to 3
+
+## [0.0.6] - 2026-02-11
+
+### Fixed
+
+- Empty assistant message in checkpoint causing API rejection on resume — when the model responds with only a tool call (no text), the checkpoint no longer saves `{ role: "assistant", content: "" }` which the Anthropic API rejects with "text content blocks must be non-empty"
+
+## [0.0.5] - 2026-02-10
+
+### Fixed
+
+- Interrupt resume flow for custom interrupts: fixed `pendingResponses` key mismatch (raw `toolCallId` vs `"int_" + toolCallId`), added manual tool execution on resume instead of relying on model re-calling the tool, and fixed `ToolResultOutput` format to use the discriminated union (`{ type: 'text', value }` / `{ type: 'json', value }`)
+- Re-interrupt during custom interrupt resume now works correctly — the interrupt function provided during resume mirrors the original permission-mode wrapper (returns stored response on first call, throws `InterruptSignal` on subsequent calls)
+- Interrupt checkpoint not saved on first generation — both the cooperative path and catch-block path now save messages before adding `pendingInterrupt`, ensuring `resume()` always finds a valid checkpoint
+
 ## [0.0.4] - 2026-02-10
 
 ### Added
@@ -112,7 +169,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.10...HEAD
+[0.0.10]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.9...v0.0.10
+[0.0.9]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.8...v0.0.9
+[0.0.8]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.7...v0.0.8
+[0.0.7]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.6...v0.0.7
+[0.0.6]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.5...v0.0.6
+[0.0.5]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.1...v0.0.2
