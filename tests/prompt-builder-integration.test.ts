@@ -92,8 +92,11 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     const callArgs = (generateText as any).mock.calls[0][0];
     const systemPrompt = callArgs.system;
 
-    expect(systemPrompt).toContain("# Available Skills");
-    expect(systemPrompt).toContain("- **git**: Git version control operations");
+    // Skills are registered in the skill registry and accessible via the skill tool,
+    // so they appear in the tools section rather than a separate skills section
+    expect(systemPrompt).toContain("# Available Tools");
+    expect(systemPrompt).toContain("skill");
+    expect(systemPrompt).toContain("git");
   });
 
   it("should pass plugin information to system prompt", async () => {
@@ -238,14 +241,15 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     // Verify all sections are present
     expect(systemPrompt).toContain("You are a helpful AI assistant");
     expect(systemPrompt).toContain("# Available Tools");
-    expect(systemPrompt).toContain("# Available Skills");
     expect(systemPrompt).toContain("# Loaded Plugins");
     expect(systemPrompt).toContain("# Capabilities");
     expect(systemPrompt).toContain("# Permission Mode");
 
     // Verify specific content
     expect(systemPrompt).toContain("- **read**: Read files");
-    expect(systemPrompt).toContain("- **git**: Git operations");
+    // The git skill is registered in the skill registry, accessible via the skill tool
+    expect(systemPrompt).toContain("skill");
+    expect(systemPrompt).toContain("git");
     expect(systemPrompt).toContain("- **custom-plugin**: Custom functionality");
     expect(systemPrompt).toContain("Execute shell commands (bash)");
     expect(systemPrompt).toContain("File editing tools are auto-approved");
@@ -397,16 +401,9 @@ describe("Prompt Builder Integration with Real Agents", () => {
 
       await agent.generate({ prompt: "Test prompt" });
 
-      expect(skillsInContext).toBeDefined();
-      expect(skillsInContext).toHaveLength(2);
-      expect(skillsInContext).toContainEqual({
-        name: "git",
-        description: "Git version control operations",
-      });
-      expect(skillsInContext).toContainEqual({
-        name: "npm",
-        description: "NPM package management",
-      });
+      // Skills are registered in the skill registry and excluded from prompt context
+      // (they're accessible via the skill tool instead)
+      expect(skillsInContext).toBeUndefined();
     });
   });
 

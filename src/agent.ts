@@ -984,7 +984,7 @@ export function createAgent(options: AgentOptions): Agent {
 
   // Auto-create core tools (unless user provides explicit tools)
   // Note: search_tools is created separately below based on loading mode
-  const { tools: autoCreatedCoreTools } = createCoreTools({
+  const { tools: autoCreatedCoreTools, skillRegistry: createdSkillRegistry } = createCoreTools({
     backend: effectiveBackend,
     state,
     taskManager,
@@ -1157,8 +1157,11 @@ export function createAgent(options: AgentOptions): Agent {
       description: tool.description ?? "",
     }));
 
-    // Extract skills metadata from the skills array
-    const skillsMetadata = skills.map((skill) => ({
+    // Extract skills metadata — exclude skills in the registry (accessible via skill tool)
+    const nonRegistrySkills = createdSkillRegistry
+      ? skills.filter((s) => !createdSkillRegistry.has(s.name))
+      : skills;
+    const skillsMetadata = nonRegistrySkills.map((skill) => ({
       name: skill.name,
       description: skill.description,
     }));
