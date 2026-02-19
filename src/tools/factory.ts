@@ -162,7 +162,7 @@ export interface CoreToolsOptions {
   /**
    * Array of skill definitions to auto-create a registry from.
    * Alternative to providing a skillRegistry directly.
-   * Only skills with tools will be included.
+   * All skills are registered, including instructions-only skills without tools.
    *
    * @example
    * ```typescript
@@ -456,18 +456,16 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
     let skillRegistry: SkillRegistry | undefined = providedSkillRegistry;
 
     if (!skillRegistry && skills.length > 0) {
-      // Only include skills that have tools defined
-      const skillsWithTools = skills.filter((s) => s.tools);
-      if (skillsWithTools.length > 0) {
-        skillRegistry = createSkillRegistry(
-          skillsWithTools.map((s) => ({
-            name: s.name,
-            description: s.description,
-            instructions: s.instructions,
-            tools: s.tools!, // Safe due to filter
-          })),
-        );
-      }
+      skillRegistry = createSkillRegistry(
+        skills.map((s) => ({
+          name: s.name,
+          description: s.description,
+          instructions: s.instructions,
+          tools: s.tools,
+          skillPath: s.skillPath,
+          metadata: s.metadata,
+        })),
+      );
     }
 
     if (skillRegistry) {

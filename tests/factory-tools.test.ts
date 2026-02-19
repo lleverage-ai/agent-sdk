@@ -616,7 +616,7 @@ describe("skills option (alternative to skillRegistry)", () => {
     expect(skillRegistry).toBeDefined();
   });
 
-  it("ignores skills without tools", () => {
+  it("registers instructions-only skills without tools", () => {
     const skills: SkillDefinition[] = [
       {
         name: "prompt-only-skill",
@@ -632,8 +632,64 @@ describe("skills option (alternative to skillRegistry)", () => {
       }),
     );
 
-    expect(tools.skill).toBeUndefined();
-    expect(skillRegistry).toBeUndefined();
+    expect(tools.skill).toBeDefined();
+    expect(skillRegistry).toBeDefined();
+    expect(skillRegistry!.has("prompt-only-skill")).toBe(true);
+  });
+
+  it("registers file-based skills with skillPath and no tools", () => {
+    const skills: SkillDefinition[] = [
+      {
+        name: "file-skill",
+        description: "A file-based skill",
+        instructions: "Loaded from SKILL.md",
+        skillPath: "/path/to/skills/file-skill",
+        metadata: { author: "test" },
+      },
+    ];
+
+    const { tools, skillRegistry } = createCoreTools(
+      createTestOptions({
+        skills,
+      }),
+    );
+
+    expect(tools.skill).toBeDefined();
+    expect(skillRegistry).toBeDefined();
+    expect(skillRegistry!.has("file-skill")).toBe(true);
+  });
+
+  it("registers mixed skills with and without tools", () => {
+    const skills: SkillDefinition[] = [
+      {
+        name: "with-tools",
+        description: "Has tools",
+        instructions: "Tool skill",
+        tools: {
+          my_tool: tool({
+            description: "A tool",
+            inputSchema: z.object({}),
+            execute: async () => "result",
+          }),
+        },
+      },
+      {
+        name: "without-tools",
+        description: "No tools",
+        instructions: "Instructions only",
+      },
+    ];
+
+    const { tools, skillRegistry } = createCoreTools(
+      createTestOptions({
+        skills,
+      }),
+    );
+
+    expect(tools.skill).toBeDefined();
+    expect(skillRegistry).toBeDefined();
+    expect(skillRegistry!.has("with-tools")).toBe(true);
+    expect(skillRegistry!.has("without-tools")).toBe(true);
   });
 
   it("skillRegistry takes precedence over skills array", () => {

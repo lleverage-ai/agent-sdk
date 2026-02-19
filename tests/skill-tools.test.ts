@@ -465,4 +465,32 @@ describe("Skill Tool Integration", () => {
 
     expect(skillTool.description).toBe("No skills available to load.");
   });
+
+  it("should load file-based skill with skillPath and no tools", async () => {
+    const fileSkill: SkillDefinition = {
+      name: "file-skill",
+      description: "A file-based skill loaded from disk",
+      instructions: "These are the file-based skill instructions.",
+      skillPath: "/path/to/skills/file-skill",
+      metadata: { author: "test" },
+    };
+
+    const registry = new SkillRegistry({ skills: [fileSkill] });
+    const skillTool = createSkillTool({ registry });
+
+    // Should appear in description
+    expect(skillTool.description).toContain("file-skill");
+    expect(skillTool.description).toContain("A file-based skill loaded from disk");
+
+    // Should load successfully and return instructions
+    const result = (await skillTool.execute({ skill_name: "file-skill" })) as {
+      success: boolean;
+      instructions: string;
+      message: string;
+    };
+
+    expect(result.success).toBe(true);
+    expect(result.instructions).toBe("These are the file-based skill instructions.");
+    expect(result.message).toContain("instructions only, no new tools");
+  });
 });
