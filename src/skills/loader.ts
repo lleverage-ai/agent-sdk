@@ -9,6 +9,7 @@
 
 import { readdir, readFile, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { parse as parseYamlString } from "yaml";
 import type { SkillDefinition } from "../tools/skills.js";
 
 // =============================================================================
@@ -281,90 +282,48 @@ function parseSkillMd(content: string): {
     throw new Error("Invalid SKILL.md format: malformed frontmatter structure");
   }
 
-  // Parse YAML frontmatter
-  let frontmatter: SkillFrontmatter;
+  // Parse YAML frontmatter using the yaml library
+  let parsed: unknown;
   try {
-    frontmatter = parseYaml(frontmatterYaml);
+    parsed = parseYamlString(frontmatterYaml);
   } catch (error) {
     throw new Error(
       `Invalid YAML frontmatter: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid SKILL.md format: frontmatter must be a YAML mapping");
+  }
+
+  const raw = parsed as Record<string, unknown>;
+
   // Validate required fields
-  if (!frontmatter.name || typeof frontmatter.name !== "string") {
+  if (!raw.name || typeof raw.name !== "string") {
     throw new Error("Frontmatter missing required field: name");
   }
-  if (!frontmatter.description || typeof frontmatter.description !== "string") {
+  if (!raw.description || typeof raw.description !== "string") {
     throw new Error("Frontmatter missing required field: description");
   }
 
+  // Normalise metadata to Record<string, string> for SDK compatibility
+  let metadata: Record<string, string> | undefined;
+  if (raw.metadata != null && typeof raw.metadata === "object" && !Array.isArray(raw.metadata)) {
+    metadata = {};
+    for (const [k, v] of Object.entries(raw.metadata as Record<string, unknown>)) {
+      metadata[k] = typeof v === "string" ? v : JSON.stringify(v);
+    }
+  }
+
+  const frontmatter: SkillFrontmatter = {
+    name: raw.name,
+    description: raw.description,
+    license: typeof raw.license === "string" ? raw.license : undefined,
+    compatibility: typeof raw.compatibility === "string" ? raw.compatibility : undefined,
+    metadata,
+  };
+
   return { frontmatter, body };
-}
-
-/**
- * Simple YAML parser for frontmatter.
- *
- * This is a lightweight parser that handles the subset of YAML used in
- * Agent Skills frontmatter. For more complex YAML, consider using a library.
- *
- * @param yaml - YAML string to parse
- * @returns Parsed object
- */
-function parseYaml(yaml: string): SkillFrontmatter {
-  const result: Record<string, unknown> = {};
-  let _currentKey = "";
-  let inMetadata = false;
-  const metadataObj: Record<string, string> = {};
-
-  for (const line of yaml.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-
-    // Check for metadata section
-    if (trimmed === "metadata:") {
-      inMetadata = true;
-      continue;
-    }
-
-    // Parse key-value pairs
-    const colonIndex = trimmed.indexOf(":");
-    if (colonIndex === -1) continue;
-
-    const key = trimmed.slice(0, colonIndex).trim();
-    const value = trimmed.slice(colonIndex + 1).trim();
-
-    if (inMetadata) {
-      // Metadata sub-key
-      if (line.startsWith("  ") && key && value) {
-        metadataObj[key] = value.replace(/^["']|["']$/g, ""); // Remove quotes
-      } else {
-        // End of metadata section
-        inMetadata = false;
-        result.metadata = metadataObj;
-      }
-    }
-
-    if (!inMetadata && value) {
-      _currentKey = key;
-      result[key] = value.replace(/^["']|["']$/g, ""); // Remove quotes
-    }
-  }
-
-  // Add metadata if we ended while in metadata section
-  if (inMetadata && Object.keys(metadataObj).length > 0) {
-    result.metadata = metadataObj;
-  }
-
-  // Ensure required fields are present
-  if (!result.name || typeof result.name !== "string") {
-    throw new Error("YAML frontmatter missing required field: name");
-  }
-  if (!result.description || typeof result.description !== "string") {
-    throw new Error("YAML frontmatter missing required field: description");
-  }
-
-  return result as unknown as SkillFrontmatter;
 }
 
 // =============================================================================
@@ -418,14 +377,7 @@ function validateSkillFrontmatter(frontmatter: SkillFrontmatter, directory: stri
   // Validate metadata if present
   if (frontmatter.metadata) {
     if (typeof frontmatter.metadata !== "object") {
-      throw new Error("Metadata must be an object");
-    }
-    for (const [key, value] of Object.entries(frontmatter.metadata)) {
-      if (typeof key !== "string" || typeof value !== "string") {
-        throw new Error(
-          `Metadata must contain string key-value pairs, got ${key}: ${typeof value}`,
-        );
-      }
+      frontmatter.metadata = undefined;
     }
   }
 }
