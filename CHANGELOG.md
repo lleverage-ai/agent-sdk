@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-02-19
+
+### Fixed
+
+- File-based skills (loaded via `loadSkillsFromDirectories`) are now registered in the skill registry and accessible via the `skill` tool — previously the `.tools` filter gate excluded them, dumping all instructions statically into the system prompt instead of using progressive disclosure
+
 ## [0.0.10] - 2026-02-19
 
 ### Changed
@@ -169,7 +175,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.10...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.11...HEAD
+[0.0.11]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.10...v0.0.11
 [0.0.10]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.9...v0.0.10
 [0.0.9]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.8...v0.0.9
 [0.0.8]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.7...v0.0.8
