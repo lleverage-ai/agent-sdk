@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent.stream()` now forwards reasoning stream parts (`reasoning-start`, `reasoning-delta`, `reasoning-end`) in `StreamPart`, preserving event ordering with text/tool chunks and normalizing `reasoning-delta` payloads across `text`/`delta` field variants
+
 ## [0.0.11] - 2026-02-19
 
 ### Fixed

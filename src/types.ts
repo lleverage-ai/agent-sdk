@@ -1807,6 +1807,9 @@ export type CoreToolName =
  */
 export type StreamPart =
   | { type: "text-delta"; text: string }
+  | { type: "reasoning-start"; id?: string }
+  | { type: "reasoning-delta"; id?: string; text: string }
+  | { type: "reasoning-end"; id?: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
   | { type: "finish"; finishReason: FinishReason; usage?: LanguageModelUsage }
