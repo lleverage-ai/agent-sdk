@@ -336,6 +336,150 @@ describe("agent.stream", () => {
     expect(finishChunk?.usage?.inputTokens).toBe(5);
     expect(finishChunk?.usage?.outputTokens).toBe(10);
   });
+
+  it("forwards reasoning chunks in order with other stream events", async () => {
+    const mockStreamText = vi.mocked(streamText);
+
+    const mockFullStream = (async function* () {
+      yield { type: "reasoning-start" as const, id: "reasoning-1" };
+      yield {
+        type: "reasoning-delta" as const,
+        id: "reasoning-1",
+        text: "Thinking...",
+      };
+      yield { type: "text-delta" as const, text: "Answer: " };
+      yield {
+        type: "tool-call" as const,
+        toolCallId: "tool-1",
+        toolName: "lookup",
+        input: { query: "x" },
+      };
+      yield {
+        type: "tool-result" as const,
+        toolCallId: "tool-1",
+        toolName: "lookup",
+        output: { value: 42 },
+      };
+      yield { type: "reasoning-end" as const, id: "reasoning-1" };
+      yield {
+        type: "finish" as const,
+        finishReason: "stop" as const,
+        totalUsage: {
+          inputTokens: 5,
+          outputTokens: 7,
+          inputTokenDetails: {},
+          outputTokenDetails: {},
+        },
+      };
+    })();
+
+    mockStreamText.mockReturnValue({
+      fullStream: mockFullStream,
+      usage: Promise.resolve({
+        inputTokens: 5,
+        outputTokens: 7,
+        inputTokenDetails: {},
+        outputTokenDetails: {},
+      }),
+      finishReason: Promise.resolve("stop" as const),
+      text: Promise.resolve("Answer: 42"),
+      toolCalls: Promise.resolve([]),
+      toolResults: Promise.resolve([]),
+      steps: Promise.resolve([]),
+      output: Promise.resolve(undefined),
+      response: Promise.resolve({
+        id: "test-id",
+        timestamp: new Date(),
+        modelId: "test-model",
+        messages: [],
+      }),
+      warnings: Promise.resolve([]),
+    } as never);
+
+    const model = createMockModel();
+    const agent = createAgent({ model });
+
+    const parts: string[] = [];
+    let reasoningText = "";
+
+    for await (const part of agent.stream({ prompt: "Test reasoning stream" })) {
+      parts.push(part.type);
+      if (part.type === "reasoning-delta") {
+        reasoningText += part.text;
+      }
+    }
+
+    expect(parts).toEqual([
+      "reasoning-start",
+      "reasoning-delta",
+      "text-delta",
+      "tool-call",
+      "tool-result",
+      "reasoning-end",
+      "finish",
+    ]);
+    expect(reasoningText).toBe("Thinking...");
+  });
+
+  it("normalizes reasoning delta chunks that use legacy delta field", async () => {
+    const mockStreamText = vi.mocked(streamText);
+
+    const mockFullStream = (async function* () {
+      yield { type: "reasoning-start" as const, id: "reasoning-1" };
+      yield {
+        type: "reasoning-delta" as const,
+        id: "reasoning-1",
+        delta: "Legacy shape",
+      } as unknown as { type: "reasoning-delta"; id: string; text: string };
+      yield { type: "reasoning-end" as const, id: "reasoning-1" };
+      yield {
+        type: "finish" as const,
+        finishReason: "stop" as const,
+        totalUsage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          inputTokenDetails: {},
+          outputTokenDetails: {},
+        },
+      };
+    })();
+
+    mockStreamText.mockReturnValue({
+      fullStream: mockFullStream,
+      usage: Promise.resolve({
+        inputTokens: 1,
+        outputTokens: 1,
+        inputTokenDetails: {},
+        outputTokenDetails: {},
+      }),
+      finishReason: Promise.resolve("stop" as const),
+      text: Promise.resolve(""),
+      toolCalls: Promise.resolve([]),
+      toolResults: Promise.resolve([]),
+      steps: Promise.resolve([]),
+      output: Promise.resolve(undefined),
+      response: Promise.resolve({
+        id: "test-id",
+        timestamp: new Date(),
+        modelId: "test-model",
+        messages: [],
+      }),
+      warnings: Promise.resolve([]),
+    } as never);
+
+    const model = createMockModel();
+    const agent = createAgent({ model });
+
+    const chunks: Array<{ type: string; text?: string }> = [];
+    for await (const part of agent.stream({ prompt: "Legacy reasoning" })) {
+      chunks.push({
+        type: part.type,
+        text: part.type === "reasoning-delta" ? part.text : undefined,
+      });
+    }
+
+    expect(chunks).toContainEqual({ type: "reasoning-delta", text: "Legacy shape" });
+  });
 });
 
 describe("agent.allowedTools", () => {

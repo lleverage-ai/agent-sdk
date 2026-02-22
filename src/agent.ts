@@ -2512,6 +2512,29 @@ export function createAgent(options: AgentOptions): Agent {
           for await (const part of response.fullStream) {
             if (part.type === "text-delta") {
               yield { type: "text-delta", text: part.text };
+            } else if (part.type === "reasoning-start") {
+              yield {
+                type: "reasoning-start",
+                id: typeof part.id === "string" ? part.id : undefined,
+              };
+            } else if (part.type === "reasoning-delta") {
+              // Normalize across SDK/provider variants (`text` vs `delta`).
+              const rawPart = part as unknown as { id?: unknown; text?: unknown; delta?: unknown };
+              yield {
+                type: "reasoning-delta",
+                id: typeof rawPart.id === "string" ? rawPart.id : undefined,
+                text:
+                  typeof rawPart.text === "string"
+                    ? rawPart.text
+                    : typeof rawPart.delta === "string"
+                      ? rawPart.delta
+                      : "",
+              };
+            } else if (part.type === "reasoning-end") {
+              yield {
+                type: "reasoning-end",
+                id: typeof part.id === "string" ? part.id : undefined,
+              };
             } else if (part.type === "tool-call") {
               yield {
                 type: "tool-call",
