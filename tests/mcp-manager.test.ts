@@ -100,6 +100,58 @@ describe("MCPManager", () => {
       const results = manager.searchTools("", 1);
       expect(results).toHaveLength(1);
     });
+
+    it("ranks tool-name intent higher than description-only matches", () => {
+      const localManager = new MCPManager();
+      localManager.registerPluginTools("payments", {
+        create_payment: tool({
+          description: "Create a payment intent",
+          inputSchema: z.object({ amount: z.number() }),
+          execute: async () => "ok",
+        }),
+      });
+      localManager.registerPluginTools("audit", {
+        write_log: tool({
+          description: "Write audit entries for create payment operations",
+          inputSchema: z.object({ message: z.string() }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const [top] = localManager.searchTools("create payment", 2);
+      expect(top?.name).toBe("mcp__payments__create_payment");
+    });
+
+    it("searches by schema property names", () => {
+      const localManager = new MCPManager();
+      localManager.registerPluginTools("repos", {
+        mirror: tool({
+          description: "Mirror data",
+          inputSchema: z.object({
+            owner: z.string(),
+            repository: z.string(),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const results = localManager.searchTools("repository");
+      expect(results[0]?.name).toBe("mcp__repos__mirror");
+    });
+
+    it("matches typo queries with fuzzy fallback", () => {
+      const localManager = new MCPManager();
+      localManager.registerPluginTools("payments", {
+        create_payment: tool({
+          description: "Create a payment intent",
+          inputSchema: z.object({ amount: z.number() }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const results = localManager.searchTools("paymnt");
+      expect(results[0]?.name).toBe("mcp__payments__create_payment");
+    });
   });
 
   describe("getToolSet", () => {
