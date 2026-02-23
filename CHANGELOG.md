@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Filesystem plugin loading APIs: `loadPluginFromDirectory()`, `loadPluginsFromDirectories()`, and `createSubagentDefinitionsFromFilesystemAgents()` for Claude Code-style plugin packages (`plugin.json`, optional `mcp.json`, optional `plugin.js`, bundled `skills/`, and `agents/*.md`)
+
 ### Changed
 
 - `MCPManager.searchTools()` now uses weighted lexical ranking across tool name, source, description, and input-schema fields, with fuzzy fallback for typo-tolerant matching; this improves result quality for `search_tools` + `call_tool` workflows while keeping lookup latency low via a precomputed in-memory index
