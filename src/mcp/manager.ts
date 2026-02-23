@@ -269,7 +269,10 @@ function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
       fieldTotalLength[field] += tokens.length;
       const uniqueTokens = new Set(tokens);
       for (const token of uniqueTokens) {
-        fieldDocumentFrequency[field].set(token, (fieldDocumentFrequency[field].get(token) ?? 0) + 1);
+        fieldDocumentFrequency[field].set(
+          token,
+          (fieldDocumentFrequency[field].get(token) ?? 0) + 1,
+        );
       }
     }
 
@@ -290,7 +293,9 @@ function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
       termFrequencyByField,
       tokenList,
       trigrams: toTrigrams(
-        [tool.name, tool.source, tool.description, schemaTokens.join(" ")].filter(Boolean).join(" "),
+        [tool.name, tool.source, tool.description, schemaTokens.join(" ")]
+          .filter(Boolean)
+          .join(" "),
       ),
     };
   });
@@ -724,9 +729,12 @@ export class MCPManager {
             if (tf === 0) continue;
 
             const documentFrequency = fieldStats.documentFrequency.get(token) ?? 0;
-            const idf = Math.log(1 + (docCount - documentFrequency + 0.5) / (documentFrequency + 0.5));
+            const idf = Math.log(
+              1 + (docCount - documentFrequency + 0.5) / (documentFrequency + 0.5),
+            );
             lexicalScore +=
-              fieldWeight * scoreBm25Term(tf, fieldLength, fieldStats.averageLength, Math.max(idf, 0));
+              fieldWeight *
+              scoreBm25Term(tf, fieldLength, fieldStats.averageLength, Math.max(idf, 0));
           }
         }
 
