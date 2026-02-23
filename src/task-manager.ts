@@ -282,9 +282,9 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
     // Check for already-terminal tasks first to avoid missing events
     // that fired while no listener was attached.
     const terminal = this.listTasks({ status: ["completed", "failed", "killed"] });
-    if (terminal.length > 0) {
-      // biome-ignore lint/style/noNonNullAssertion: length > 0 guarantees element exists
-      return Promise.resolve(terminal[0]!);
+    const firstTerminal = terminal[0];
+    if (firstTerminal) {
+      return Promise.resolve(firstTerminal);
     }
 
     return new Promise((resolve) => {

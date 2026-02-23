@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `MCPManager.searchTools()` now uses weighted lexical ranking across tool name, source, description, and input-schema fields, with fuzzy fallback for typo-tolerant matching; this improves result quality for `search_tools` + `call_tool` workflows while keeping lookup latency low via a precomputed in-memory index
+
 ## [0.0.12] - 2026-02-22
 
 ### Fixed

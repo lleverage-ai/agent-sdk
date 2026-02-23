@@ -35,6 +35,336 @@ interface ConnectedClient {
 }
 
 /**
+ * Searchable metadata fields.
+ * @internal
+ */
+type SearchFieldName = "name" | "source" | "description" | "schema";
+
+/**
+ * Per-field corpus statistics for weighted ranking.
+ * @internal
+ */
+interface SearchFieldStats {
+  averageLength: number;
+  documentFrequency: Map<string, number>;
+}
+
+/**
+ * Preprocessed search document.
+ * @internal
+ */
+interface SearchDocument {
+  metadata: MCPToolMetadata;
+  normalizedName: string;
+  normalizedSource: string;
+  normalizedDescription: string;
+  tokensByField: Record<SearchFieldName, string[]>;
+  termFrequencyByField: Record<SearchFieldName, Map<string, number>>;
+  tokenList: string[];
+  trigrams: Set<string>;
+}
+
+/**
+ * Precomputed search index.
+ * @internal
+ */
+interface SearchIndex {
+  documents: SearchDocument[];
+  fieldStats: Record<SearchFieldName, SearchFieldStats>;
+}
+
+const SEARCH_FIELDS: SearchFieldName[] = ["name", "source", "description", "schema"];
+const SEARCH_FIELD_WEIGHTS: Record<SearchFieldName, number> = {
+  name: 5,
+  source: 3,
+  description: 1,
+  schema: 2,
+};
+const BM25_K1 = 1.2;
+const BM25_B = 0.75;
+const NAME_PHRASE_BONUS = 8;
+const SOURCE_PHRASE_BONUS = 4;
+const DESCRIPTION_PHRASE_BONUS = 2;
+const PREFIX_BONUS = 4;
+const MIN_FUZZY_SCORE = 0.12;
+
+/**
+ * Normalize text into lowercase alphanumeric terms.
+ * @internal
+ */
+function normalizeText(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Split text into normalized terms.
+ * @internal
+ */
+function tokenizeText(text: string): string[] {
+  const normalized = normalizeText(text);
+  if (!normalized) return [];
+  return normalized.split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Build term-frequency map for a token array.
+ * @internal
+ */
+function buildTermFrequency(tokens: string[]): Map<string, number> {
+  const frequency = new Map<string, number>();
+  for (const token of tokens) {
+    frequency.set(token, (frequency.get(token) ?? 0) + 1);
+  }
+  return frequency;
+}
+
+/**
+ * Extract useful search terms from JSON schema keys and enums.
+ * @internal
+ */
+function extractSchemaTokens(schema: unknown, maxTokens = 64): string[] {
+  const tokens: string[] = [];
+  const visited = new Set<object>();
+
+  const pushTokens = (value: string): void => {
+    for (const token of tokenizeText(value)) {
+      if (tokens.length >= maxTokens) return;
+      tokens.push(token);
+    }
+  };
+
+  const visit = (value: unknown): void => {
+    if (tokens.length >= maxTokens) return;
+    if (!value || typeof value !== "object") return;
+
+    const obj = value as Record<string, unknown>;
+    if (visited.has(obj)) return;
+    visited.add(obj);
+
+    if (obj.properties && typeof obj.properties === "object") {
+      for (const [key, prop] of Object.entries(obj.properties as Record<string, unknown>)) {
+        pushTokens(key);
+        visit(prop);
+        if (tokens.length >= maxTokens) break;
+      }
+    }
+
+    if (Array.isArray(obj.required)) {
+      for (const required of obj.required) {
+        if (typeof required === "string") {
+          pushTokens(required);
+        }
+      }
+    }
+
+    if (Array.isArray(obj.enum)) {
+      for (const enumValue of obj.enum.slice(0, 10)) {
+        if (typeof enumValue === "string") {
+          pushTokens(enumValue);
+        }
+      }
+    }
+
+    const nestedValue = [
+      obj.items,
+      obj.anyOf,
+      obj.oneOf,
+      obj.allOf,
+      obj.not,
+      obj.if,
+      obj.then,
+      obj.else,
+    ];
+
+    for (const nested of nestedValue) {
+      if (Array.isArray(nested)) {
+        for (const item of nested) {
+          visit(item);
+        }
+      } else {
+        visit(nested);
+      }
+    }
+  };
+
+  visit(schema);
+  return tokens;
+}
+
+/**
+ * Generate trigrams for fuzzy matching.
+ * @internal
+ */
+function toTrigrams(text: string): Set<string> {
+  const normalized = normalizeText(text).replace(/\s+/g, " ");
+  if (!normalized) return new Set<string>();
+  if (normalized.length <= 3) return new Set([normalized]);
+
+  const padded = `  ${normalized}  `;
+  const trigrams = new Set<string>();
+  for (let i = 0; i <= padded.length - 3; i++) {
+    trigrams.add(padded.slice(i, i + 3));
+  }
+  return trigrams;
+}
+
+/**
+ * Compute Jaccard similarity between two sets.
+ * @internal
+ */
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+
+  const smaller = a.size <= b.size ? a : b;
+  const larger = a.size <= b.size ? b : a;
+  let intersection = 0;
+
+  for (const token of smaller) {
+    if (larger.has(token)) intersection++;
+  }
+
+  const union = a.size + b.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+/**
+ * Build a precomputed search index from tool metadata.
+ * @internal
+ */
+function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
+  const fieldTotalLength: Record<SearchFieldName, number> = {
+    name: 0,
+    source: 0,
+    description: 0,
+    schema: 0,
+  };
+  const fieldDocumentFrequency: Record<SearchFieldName, Map<string, number>> = {
+    name: new Map<string, number>(),
+    source: new Map<string, number>(),
+    description: new Map<string, number>(),
+    schema: new Map<string, number>(),
+  };
+
+  const documents: SearchDocument[] = metadata.map((tool) => {
+    const schemaTokens = extractSchemaTokens(tool.inputSchema);
+    const tokensByField: Record<SearchFieldName, string[]> = {
+      name: tokenizeText(tool.name),
+      source: tokenizeText(tool.source),
+      description: tokenizeText(tool.description),
+      schema: schemaTokens,
+    };
+
+    const termFrequencyByField: Record<SearchFieldName, Map<string, number>> = {
+      name: buildTermFrequency(tokensByField.name),
+      source: buildTermFrequency(tokensByField.source),
+      description: buildTermFrequency(tokensByField.description),
+      schema: buildTermFrequency(tokensByField.schema),
+    };
+
+    for (const field of SEARCH_FIELDS) {
+      const tokens = tokensByField[field];
+      fieldTotalLength[field] += tokens.length;
+      const uniqueTokens = new Set(tokens);
+      for (const token of uniqueTokens) {
+        fieldDocumentFrequency[field].set(token, (fieldDocumentFrequency[field].get(token) ?? 0) + 1);
+      }
+    }
+
+    const tokenSet = new Set<string>([
+      ...tokensByField.name,
+      ...tokensByField.source,
+      ...tokensByField.description,
+      ...tokensByField.schema,
+    ]);
+    const tokenList = Array.from(tokenSet);
+
+    return {
+      metadata: tool,
+      normalizedName: normalizeText(tool.name),
+      normalizedSource: normalizeText(tool.source),
+      normalizedDescription: normalizeText(tool.description),
+      tokensByField,
+      termFrequencyByField,
+      tokenList,
+      trigrams: toTrigrams(
+        [tool.name, tool.source, tool.description, schemaTokens.join(" ")].filter(Boolean).join(" "),
+      ),
+    };
+  });
+
+  const docCount = Math.max(documents.length, 1);
+  const fieldStats: Record<SearchFieldName, SearchFieldStats> = {
+    name: {
+      averageLength: fieldTotalLength.name / docCount,
+      documentFrequency: fieldDocumentFrequency.name,
+    },
+    source: {
+      averageLength: fieldTotalLength.source / docCount,
+      documentFrequency: fieldDocumentFrequency.source,
+    },
+    description: {
+      averageLength: fieldTotalLength.description / docCount,
+      documentFrequency: fieldDocumentFrequency.description,
+    },
+    schema: {
+      averageLength: fieldTotalLength.schema / docCount,
+      documentFrequency: fieldDocumentFrequency.schema,
+    },
+  };
+
+  return { documents, fieldStats };
+}
+
+/**
+ * Compute BM25 contribution for a single term.
+ * @internal
+ */
+function scoreBm25Term(
+  termFrequency: number,
+  fieldLength: number,
+  averageFieldLength: number,
+  idf: number,
+): number {
+  const normalizedAverageLength = Math.max(averageFieldLength, 1);
+  const denominator =
+    termFrequency +
+    BM25_K1 * (1 - BM25_B + (BM25_B * Math.max(fieldLength, 1)) / normalizedAverageLength);
+
+  if (denominator === 0) return 0;
+  return ((termFrequency * (BM25_K1 + 1)) / denominator) * idf;
+}
+
+/**
+ * Compute partial token match score for fuzzy retrieval.
+ * @internal
+ */
+function scorePartialTokenMatches(queryTokens: string[], docTokens: string[]): number {
+  if (queryTokens.length === 0 || docTokens.length === 0) return 0;
+
+  let totalScore = 0;
+  for (const queryToken of queryTokens) {
+    let best = 0;
+    for (const docToken of docTokens) {
+      if (docToken === queryToken) {
+        best = 1;
+        break;
+      }
+      if (docToken.startsWith(queryToken) || queryToken.startsWith(docToken)) {
+        best = Math.max(best, 0.85);
+      } else if (docToken.includes(queryToken) || queryToken.includes(docToken)) {
+        best = Math.max(best, 0.6);
+      }
+    }
+    totalScore += best;
+  }
+
+  return totalScore / queryTokens.length;
+}
+
+/**
  * Options for MCPManager initialization.
  * @category MCP
  */
@@ -90,6 +420,9 @@ export class MCPManager {
 
   /** Cached tool metadata for search */
   private toolMetadataCache: MCPToolMetadata[] = [];
+
+  /** Precomputed search index for fast ranked lookup */
+  private searchIndex: SearchIndex = buildSearchIndex([]);
 
   /** Whether cache needs refresh */
   private cacheInvalid = true;
@@ -352,7 +685,8 @@ export class MCPManager {
   /**
    * Search tools by query string.
    *
-   * Matches against tool name and description (case-insensitive).
+   * Uses weighted lexical ranking (name/source/description/schema) with
+   * fuzzy fallback for typo tolerance.
    *
    * @param query - Search query
    * @param limit - Maximum results to return
@@ -361,18 +695,84 @@ export class MCPManager {
   searchTools(query: string, limit = 10): MCPToolMetadata[] {
     this.refreshCacheIfNeeded();
 
-    if (!query) {
+    if (!query || limit <= 0) {
       return this.toolMetadataCache.slice(0, limit);
     }
 
-    const lowerQuery = query.toLowerCase();
-    const matches = this.toolMetadataCache.filter(
-      (tool) =>
-        tool.name.toLowerCase().includes(lowerQuery) ||
-        tool.description.toLowerCase().includes(lowerQuery),
-    );
+    const normalizedQuery = normalizeText(query);
+    const queryTokens = tokenizeText(query);
+    if (!normalizedQuery || queryTokens.length === 0) {
+      return [];
+    }
 
-    return matches.slice(0, limit);
+    const queryTrigrams = toTrigrams(query);
+    const docCount = Math.max(this.searchIndex.documents.length, 1);
+    const scored = this.searchIndex.documents
+      .map((document) => {
+        let lexicalScore = 0;
+
+        for (const field of SEARCH_FIELDS) {
+          const fieldWeight = SEARCH_FIELD_WEIGHTS[field];
+          if (fieldWeight === 0) continue;
+
+          const fieldStats = this.searchIndex.fieldStats[field];
+          const termFrequency = document.termFrequencyByField[field];
+          const fieldLength = document.tokensByField[field].length;
+
+          for (const token of queryTokens) {
+            const tf = termFrequency.get(token) ?? 0;
+            if (tf === 0) continue;
+
+            const documentFrequency = fieldStats.documentFrequency.get(token) ?? 0;
+            const idf = Math.log(1 + (docCount - documentFrequency + 0.5) / (documentFrequency + 0.5));
+            lexicalScore +=
+              fieldWeight * scoreBm25Term(tf, fieldLength, fieldStats.averageLength, Math.max(idf, 0));
+          }
+        }
+
+        if (document.normalizedName.includes(normalizedQuery)) {
+          lexicalScore += NAME_PHRASE_BONUS;
+        }
+        if (document.normalizedName.startsWith(normalizedQuery)) {
+          lexicalScore += PREFIX_BONUS;
+        }
+        if (document.normalizedSource.includes(normalizedQuery)) {
+          lexicalScore += SOURCE_PHRASE_BONUS;
+        }
+        if (document.normalizedDescription.includes(normalizedQuery)) {
+          lexicalScore += DESCRIPTION_PHRASE_BONUS;
+        }
+
+        const trigramScore = jaccardSimilarity(queryTrigrams, document.trigrams);
+        const partialTokenScore = scorePartialTokenMatches(queryTokens, document.tokenList);
+        const fuzzyScore = trigramScore * 0.7 + partialTokenScore * 0.3;
+
+        const combinedScore =
+          lexicalScore > 0
+            ? lexicalScore + fuzzyScore * 0.25
+            : fuzzyScore >= MIN_FUZZY_SCORE
+              ? fuzzyScore
+              : 0;
+
+        return {
+          metadata: document.metadata,
+          combinedScore,
+          lexicalScore,
+        };
+      })
+      .filter((entry) => entry.combinedScore > 0);
+
+    scored.sort((a, b) => {
+      if (b.combinedScore !== a.combinedScore) {
+        return b.combinedScore - a.combinedScore;
+      }
+      if (b.lexicalScore !== a.lexicalScore) {
+        return b.lexicalScore - a.lexicalScore;
+      }
+      return a.metadata.name.localeCompare(b.metadata.name);
+    });
+
+    return scored.slice(0, limit).map((entry) => entry.metadata);
   }
 
   /**
@@ -562,6 +962,7 @@ export class MCPManager {
     // Clear virtual servers
     this.virtualServers.clear();
     this.cacheInvalid = true;
+    this.searchIndex = buildSearchIndex([]);
 
     // Clear all validators
     this.validator.clear();
@@ -585,6 +986,7 @@ export class MCPManager {
       this.toolMetadataCache.push(...tools);
     }
 
+    this.searchIndex = buildSearchIndex(this.toolMetadataCache);
     this.cacheInvalid = false;
   }
 }
