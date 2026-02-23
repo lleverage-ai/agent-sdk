@@ -101,6 +101,14 @@ describe("MCPManager", () => {
       expect(results).toHaveLength(1);
     });
 
+    it("returns empty array for negative limit", () => {
+      const noQueryResults = manager.searchTools("", -1);
+      const queryResults = manager.searchTools("github", -1);
+
+      expect(noQueryResults).toEqual([]);
+      expect(queryResults).toEqual([]);
+    });
+
     it("ranks tool-name intent higher than description-only matches", () => {
       const localManager = new MCPManager();
       localManager.registerPluginTools("payments", {

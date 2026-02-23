@@ -699,9 +699,10 @@ export class MCPManager {
    */
   searchTools(query: string, limit = 10): MCPToolMetadata[] {
     this.refreshCacheIfNeeded();
+    const clampedLimit = Math.max(limit, 0);
 
-    if (!query || limit <= 0) {
-      return this.toolMetadataCache.slice(0, limit);
+    if (!query || clampedLimit === 0) {
+      return this.toolMetadataCache.slice(0, clampedLimit);
     }
 
     const normalizedQuery = normalizeText(query);
@@ -780,7 +781,7 @@ export class MCPManager {
       return a.metadata.name.localeCompare(b.metadata.name);
     });
 
-    return scored.slice(0, limit).map((entry) => entry.metadata);
+    return scored.slice(0, clampedLimit).map((entry) => entry.metadata);
   }
 
   /**
