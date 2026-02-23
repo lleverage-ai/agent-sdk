@@ -491,6 +491,19 @@ export {
 } from "./observability/index.js";
 // Plugins
 export { definePlugin } from "./plugins.js";
+export {
+  loadPluginFromDirectory,
+  loadPluginsFromDirectories,
+  createSubagentDefinitionsFromFilesystemAgents,
+  type FilesystemAgentDefinition,
+  type FilesystemAgentFrontmatter,
+  type FilesystemPluginEntrypoint,
+  type FilesystemPluginManifest,
+  type FilesystemPluginMCPConfig,
+  type LoadPluginsOptions,
+  type PluginLoadError,
+  type PluginLoadResult,
+} from "./plugins/loader.js";
 // Preset types
 export type {
   ProductionAgentOptions,
