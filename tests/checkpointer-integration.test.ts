@@ -172,6 +172,65 @@ describe("Checkpointer Agent Integration", () => {
       });
     });
 
+    it("should persist tool call and tool result transcript from response messages", async () => {
+      const checkpointer = new MemorySaver();
+      const mockGenerateText = vi.mocked(generateText);
+      const toolCallMessage = {
+        role: "assistant" as const,
+        content: [
+          {
+            type: "tool-call" as const,
+            toolCallId: "call_123",
+            toolName: "skill",
+            input: { skill_name: "git" },
+          },
+        ],
+      };
+      const toolResultMessage = {
+        role: "tool" as const,
+        content: [
+          {
+            type: "tool-result" as const,
+            toolCallId: "call_123",
+            toolName: "skill",
+            output: {
+              success: true,
+              content:
+                '<skill_content name="git"><instructions>Use git.</instructions></skill_content>',
+            },
+          },
+        ],
+      };
+
+      mockGenerateText.mockResolvedValue({
+        text: "",
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: "stop",
+        steps: [{ text: "", toolCalls: [], toolResults: [], finishReason: "stop" }],
+        response: {
+          id: "resp-1",
+          timestamp: new Date(),
+          modelId: "test-model",
+          messages: [toolCallMessage, toolResultMessage],
+        },
+      } as never);
+
+      const agent = createAgent({
+        model: createMockModel(),
+        checkpointer,
+      });
+
+      await agent.generate({
+        prompt: "Load the git skill",
+        threadId: "thread-tools",
+      });
+
+      const checkpoint = await checkpointer.load("thread-tools");
+      expect(checkpoint?.messages).toHaveLength(3);
+      expect(checkpoint?.messages[1]).toEqual(toolCallMessage);
+      expect(checkpoint?.messages[2]).toEqual(toolResultMessage);
+    });
+
     it("should save agent state in checkpoint", async () => {
       const checkpointer = new MemorySaver();
       const mockGenerateText = vi.mocked(generateText);
@@ -421,6 +480,78 @@ describe("Checkpointer Agent Integration", () => {
       for await (const _part of agent.stream({ prompt: "Continue", threadId: "stream-thread" })) {
         // Consume
       }
+    });
+
+    it("should persist step response messages when stream text is empty", async () => {
+      const checkpointer = new MemorySaver();
+      const mockStreamText = vi.mocked(streamText);
+      const toolCallMessage = {
+        role: "assistant" as const,
+        content: [
+          {
+            type: "tool-call" as const,
+            toolCallId: "call_stream_1",
+            toolName: "skill",
+            input: { skill_name: "git" },
+          },
+        ],
+      };
+      const toolResultMessage = {
+        role: "tool" as const,
+        content: [
+          {
+            type: "tool-result" as const,
+            toolCallId: "call_stream_1",
+            toolName: "skill",
+            output: { success: true },
+          },
+        ],
+      };
+
+      const createMockStream = () =>
+        (async function* () {
+          yield {
+            type: "finish" as const,
+            finishReason: "stop" as const,
+            totalUsage: { inputTokens: 5, outputTokens: 3 },
+          };
+        })();
+
+      mockStreamText.mockReturnValue({
+        fullStream: createMockStream(),
+        text: Promise.resolve(""),
+        usage: Promise.resolve({ inputTokens: 5, outputTokens: 3 }),
+        finishReason: Promise.resolve("stop" as const),
+        steps: Promise.resolve([
+          {
+            text: "",
+            toolCalls: [],
+            toolResults: [],
+            finishReason: "stop",
+            response: {
+              id: "resp-stream-1",
+              timestamp: new Date(),
+              modelId: "test-model",
+              messages: [toolCallMessage, toolResultMessage],
+            },
+          },
+        ]),
+        output: Promise.resolve(undefined),
+      } as never);
+
+      const agent = createAgent({
+        model: createMockModel(),
+        checkpointer,
+      });
+
+      for await (const _part of agent.stream({ prompt: "Load git", threadId: "stream-tools" })) {
+        // Consume
+      }
+
+      const checkpoint = await checkpointer.load("stream-tools");
+      expect(checkpoint?.messages).toHaveLength(3);
+      expect(checkpoint?.messages[1]).toEqual(toolCallMessage);
+      expect(checkpoint?.messages[2]).toEqual(toolResultMessage);
     });
   });
 

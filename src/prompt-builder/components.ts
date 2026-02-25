@@ -103,10 +103,6 @@ export const capabilitiesComponent: PromptComponent = {
       capabilities.push("- In-memory file operations (sandboxed)");
     }
 
-    if (ctx.state?.todos && ctx.state.todos.length > 0) {
-      capabilities.push(`- ${ctx.state.todos.length} active task(s) in the task list`);
-    }
-
     if (capabilities.length === 0) {
       return "";
     }
@@ -221,7 +217,6 @@ export const permissionModeComponent: PromptComponent = {
  * - `plugins-listing`: Loaded plugins
  * - `capabilities`: Backend capabilities
  * - `permission-mode`: Permission mode info
- * - `context`: Conversation context
  *
  * You can customize by cloning and modifying:
  *
@@ -264,6 +259,5 @@ export function createDefaultPromptBuilder(): PromptBuilder {
     pluginsComponent,
     capabilitiesComponent,
     permissionModeComponent,
-    contextComponent,
   ]);
 }

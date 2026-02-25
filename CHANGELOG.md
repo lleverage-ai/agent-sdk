@@ -10,10 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - `MCPManager.searchTools()` now uses weighted lexical ranking across tool name, source, description, and input-schema fields, with fuzzy fallback for typo-tolerant matching; this improves result quality for `search_tools` + `call_tool` workflows while keeping lookup latency low via a precomputed in-memory index
+- `skill` tool responses now include a structured `content` payload wrapped in `<skill_content>` XML-style tags (with instructions, tool names, optional `skill_path`, and discovered skill resource paths from metadata), enabling consistent context injection for progressive skill activation
+- Default prompt composition is now more cache-friendly by excluding the dynamic context section and todo count from default components; this keeps the base system prompt stable across turns unless users explicitly customize it
 
 ### Fixed
 
 - `MCPManager.searchTools()` now clamps negative `limit` values to `0`, preventing unintended `Array.slice(0, -n)` behavior and ensuring negative limits return no results
+- Checkpoint persistence for `generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` now prefers provider `response.messages` (assistant tool-call and tool-result transcript) over plain text-only fallbacks, preserving full tool interaction context for resume and continuation flows
+- Proxy-mode tool exposure now avoids creating `call_tool` / `search_tools` when no proxied plugin tools or external MCP servers are available, reducing unnecessary tool surface area
 
 ## [0.0.12] - 2026-02-22
 

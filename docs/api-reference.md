@@ -31,7 +31,7 @@ const agent = createAgent({
   taskStore?: TaskStore,
   disabledCoreTools?: string[],
   allowedTools?: string[],
-  pluginLoading?: "eager" | "lazy",
+  pluginLoading?: "eager" | "proxy",
   mcpManager?: MCPManager,
   mcpEagerLoad?: boolean,
   toolSearch?: ToolSearchOptions,
@@ -63,8 +63,6 @@ const stream = await agent.streamRaw(options);
 // Data stream response
 const response = agent.streamDataResponse(options);
 
-// Load tools dynamically
-agent.loadTools(toolNames: string[]);
 ```
 
 ## Tools
@@ -76,7 +74,7 @@ agent.loadTools(toolNames: string[]);
 | `createBashTool(options)` | Create shell execution tool |
 | `createTaskTool(options)` | Create subagent delegation tool |
 | `createSearchToolsTool(options)` | Create MCP tool search |
-| `createUseToolsTool(options)` | Create lazy tool loader |
+| `createCallToolTool(options)` | Create proxy tool invoker |
 
 ### Core Tools
 
@@ -104,6 +102,7 @@ const { tools } = createCoreTools({
 - `todo_write` — Manage task list
 - `bash` — Execute shell commands (requires backend with `enableBash: true`)
 - `search_tools` — Search available tools (when enabled)
+- `call_tool` — Invoke proxied/deferred MCP tools (proxy mode)
 
 ## Plugins
 
@@ -132,7 +131,7 @@ const plugin = definePlugin({
 const skill = defineSkill({
   name: string,
   description: string,
-  prompt: string,
+  instructions: string,
   tools?: Record<string, Tool>,
 });
 ```
@@ -412,8 +411,8 @@ type ContentPart =
   | { type: "text"; text: string }
   | { type: "image"; image: URL | string }
   | { type: "file"; data: string; mimeType: string }
-  | { type: "tool-call"; toolCallId: string; toolName: string; args: any }
-  | { type: "tool-result"; toolCallId: string; result: any };
+  | { type: "tool-call"; toolCallId: string; toolName: string; input: any }
+  | { type: "tool-result"; toolCallId: string; toolName: string; output: any };
 ```
 
 ### GenerateResult
@@ -424,8 +423,8 @@ interface GenerateResult {
   messages: Message[];
   finishReason: "stop" | "length" | "tool-calls" | "error";
   usage: {
-    promptTokens: number;
-    completionTokens: number;
+    inputTokens: number;
+    outputTokens: number;
     totalTokens: number;
   };
   toolCalls?: ToolCall[];
@@ -438,8 +437,8 @@ interface GenerateResult {
 ```typescript
 type StreamPart =
   | { type: "text-delta"; text: string }
-  | { type: "tool-call"; toolCallId: string; toolName: string; args: any }
-  | { type: "tool-result"; toolCallId: string; result: any }
+  | { type: "tool-call"; toolCallId: string; toolName: string; input: any }
+  | { type: "tool-result"; toolCallId: string; toolName: string; output: any }
   | { type: "finish"; finishReason: string }
   | { type: "error"; error: Error };
 ```

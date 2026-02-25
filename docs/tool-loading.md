@@ -1,206 +1,112 @@
 # Tool Loading Strategies
 
-The SDK provides multiple mechanisms for loading tools, each optimized for different scenarios:
+The SDK supports three practical loading patterns for plugin and MCP tools:
 
-- **Eager Loading** (default): Load all tools upfront — best for small tool sets (< 20 tools)
-- **Lazy Loading** (`use_tools`): Load tools on-demand via a registry — best for 20-100+ tools
-- **Dynamic Discovery** (`search_tools`): Search and load MCP tools dynamically — best for 100+ tools
-- **MCP Loading**: Connect to external MCP servers for standardized tool ecosystems
+- **Eager loading** (default): plugin tools are added to the active tool set up front
+- **Deferred discovery** (`search_tools`): agent discovers tools first, then loads them
+- **Proxy loading** (`call_tool`): tools stay out of the active schema and are invoked through a stable proxy
 
-## When to Use Each Approach
+## Eager Loading (Default)
 
-**Use Eager Loading when:**
-
-- Small tool set (< 20 tools) that's always needed
-- Simplest setup with best performance
-- All tools are core to the agent's purpose
-
-**Use Lazy Loading when:**
-
-- Large tool set (20-100+ tools)
-- Agent only needs a subset per conversation
-- Plugin architecture with domain-specific tools
-- Want to minimize context window usage
-
-**Use Dynamic Discovery when:**
-
-- Very large tool set (100+ tools)
-- Tool needs are unpredictable
-- Using MCP ecosystem with many servers
-- Want agent to explore capabilities dynamically
-
-**Use MCP Loading when:**
-
-- Integrating external tool ecosystems (filesystem, databases, APIs)
-- Need standardized tool protocols
-- Building on existing MCP infrastructure
-
-## Quick Examples
+Use this when you have a small, always-needed tool set.
 
 ```typescript
-// Eager loading (default)
 const agent = createAgent({
   model,
-  tools: { calculator, weather, database }, // All loaded immediately
-});
-
-// Lazy loading with use_tools
-const registry = new ToolRegistry();
-registry.registerPlugin("stripe", stripePlugin.tools);
-registry.registerPlugin("github", githubPlugin.tools);
-
-const agent = createAgent({
-  model,
-  tools: {
-    use_tools: createUseToolsTool({ registry }),
-  },
-  pluginLoading: "lazy",
-});
-// Agent loads tools on demand: use_tools({ plugin: "stripe" })
-// (Tools also become active after agent.loadTools([...]) in lazy mode)
-
-// Dynamic discovery with search_tools
-const mcpManager = new MCPManager();
-await mcpManager.connectServer({ name: "filesystem", command: "npx", args: [...] });
-
-const agent = createAgent({
-  model,
-  mcpManager,
-  mcpEagerLoad: false,
-  tools: {
-    search_tools: createSearchToolsTool({ manager: mcpManager, autoLoad: true }),
-  },
-});
-// Agent discovers and loads tools: search_tools({ query: "list files" })
-```
-
-## Tool Registry
-
-The tool registry allows you to organize tools by plugin and load them on demand:
-
-```typescript
-import { ToolRegistry, createUseToolsTool } from "@lleverage-ai/agent-sdk";
-
-const registry = new ToolRegistry();
-
-// Register plugins
-registry.registerPlugin("stripe", {
-  createCustomer: stripeCreateCustomerTool,
-  listCharges: stripeListChargesTool,
-  refund: stripeRefundTool,
-});
-
-registry.registerPlugin("github", {
-  createIssue: githubCreateIssueTool,
-  listPRs: githubListPRsTool,
-});
-
-// Create the use_tools tool
-const useTools = createUseToolsTool({
-  registry,
-  onLoad: (plugin, tools) => {
-    console.log(`Loaded ${tools.length} tools from ${plugin}`);
-  },
-});
-
-const agent = createAgent({
-  model,
-  tools: { use_tools: useTools },
-  pluginLoading: "lazy",
+  plugins: [githubPlugin, jiraPlugin],
+  // pluginLoading defaults to "eager"
 });
 ```
 
-## Search Tools
+Characteristics:
 
-For very large tool sets, enable search-based discovery:
+- Lowest invocation overhead (tool is already active)
+- Larger active tool schema in prompt context
+- Best for focused agents with limited tool count
+
+## Deferred Discovery with `search_tools`
+
+Use this when tool count is moderate/large and agents should discover relevant tools first.
 
 ```typescript
-import { createSearchToolsTool, MCPManager } from "@lleverage-ai/agent-sdk";
+const agent = createAgent({
+  model,
+  plugins: [pluginA, pluginB, pluginC],
+  toolSearch: {
+    enabled: "auto", // "auto" | "always" | "never"
+    threshold: 20,
+    maxResults: 10,
+  },
+});
+```
 
+Behavior:
+
+- `search_tools` is created when discovery is useful (auto-threshold, explicit enablement, or external MCP servers)
+- In non-proxy mode, discovered tools can be loaded for direct use
+
+## Proxy Loading (`pluginLoading: "proxy"`)
+
+Use this when schema stability and prompt-cache friendliness are priorities.
+
+```typescript
+const agent = createAgent({
+  model,
+  plugins: [githubPlugin, jiraPlugin, stripePlugin],
+  pluginLoading: "proxy",
+});
+```
+
+Behavior:
+
+- Plugin tools are not injected into the active tool set
+- Agent gets:
+  - `search_tools` for discovery
+  - `call_tool` for invocation by MCP-style name
+- Tool schema remains stable across turns, which helps provider prompt caching
+
+Per-plugin control:
+
+```typescript
+const plugin = definePlugin({
+  name: "github",
+  deferred: true, // proxied even when agent uses eager mode
+  tools: { list_issues: listIssuesTool },
+});
+```
+
+## External MCP Servers
+
+External servers are searchable through the same mechanism:
+
+```typescript
 const mcpManager = new MCPManager();
-
-// Connect multiple MCP servers
-await mcpManager.connectServer({
-  name: "filesystem",
+await mcpManager.addServer("filesystem", {
+  type: "stdio",
   command: "npx",
   args: ["-y", "@modelcontextprotocol/server-filesystem", "/project"],
 });
 
-await mcpManager.connectServer({
-  name: "database",
-  command: "npx",
-  args: ["-y", "@modelcontextprotocol/server-postgres"],
-  env: { DATABASE_URL: process.env.DATABASE_URL },
-});
-
-// Create search tool with auto-loading
-const searchTools = createSearchToolsTool({
-  manager: mcpManager,
-  autoLoad: true, // Automatically load discovered tools (default behavior)
-  maxResults: 10,
-});
-
 const agent = createAgent({
   model,
   mcpManager,
-  mcpEagerLoad: false, // Don't load all tools upfront
-  tools: { search_tools: searchTools },
-});
-
-// Agent searches and loads in one step:
-// search_tools({ query: "read file" })
-// Returns: "Found and loaded 3 tools... These tools are now available for immediate use."
-```
-
-## Combining Strategies
-
-You can combine multiple loading strategies:
-
-```typescript
-const agent = createAgent({
-  model,
-  // Eager: always-needed tools
-  tools: {
-    calculator,
-    use_tools: createUseToolsTool({ registry }),
-    search_tools: createSearchToolsTool({ manager: mcpManager }),
-  },
-  // Lazy plugins via use_tools
-  pluginLoading: "lazy",
-  // MCP tools via search_tools
-  mcpManager,
-  mcpEagerLoad: false,
+  toolSearch: { enabled: "always" },
 });
 ```
 
-## Performance Considerations
+## Caching Guidance
 
-| Strategy | Context Usage | Latency | Best For |
-|----------|--------------|---------|----------|
-| Eager | High (all tools in context) | Low (no loading) | < 20 tools |
-| Lazy | Medium (loaded on demand) | Medium (one load call) | 20-100 tools |
-| Search | Low (only loaded tools) | Higher (search + load) | 100+ tools |
+For better prompt cache reuse:
 
-## Migration Guide
+- Keep the system prompt static between turns
+- Prefer proxy mode for dynamically expanding tool catalogs
+- Avoid injecting per-turn dynamic sections into the default system prompt unless needed
 
-**From eager to lazy loading:**
+## Migration Notes
 
-```typescript
-// Before (eager)
-const agent = createAgent({
-  model,
-  plugins: [stripePlugin, githubPlugin, slackPlugin],
-});
+Legacy lazy-loading patterns (`pluginLoading: "lazy"`, `use_tools`, `ToolRegistry`) are removed.
 
-// After (lazy)
-const registry = new ToolRegistry();
-registry.registerPlugin("stripe", stripePlugin.tools);
-registry.registerPlugin("github", githubPlugin.tools);
-registry.registerPlugin("slack", slackPlugin.tools);
+Use one of:
 
-const agent = createAgent({
-  model,
-  tools: { use_tools: createUseToolsTool({ registry }) },
-  pluginLoading: "lazy",
-});
-```
+- `toolSearch` for discovery-driven loading
+- `pluginLoading: "proxy"` + `call_tool` for stable-schema invocation

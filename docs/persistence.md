@@ -174,20 +174,23 @@ const redisCheckpointer = createKeyValueStoreSaver({
 ```typescript
 interface Checkpoint {
   threadId: string;
+  step: number;
   messages: Message[];
-  metadata: {
-    createdAt: Date;
-    updatedAt: Date;
-    userId?: string;
-    [key: string]: any;
-  };
-  state?: {
-    // Agent-specific state
-    tools?: Record<string, any>;
-    context?: any;
-  };
+  state: AgentState; // todos + virtual files
+  pendingInterrupt?: Interrupt;
+  createdAt: string; // ISO timestamp
+  updatedAt: string; // ISO timestamp
+  metadata?: Record<string, unknown>;
 }
 ```
+
+### Tool Transcript Persistence
+
+Checkpoint message history preserves tool-call and tool-result transcript entries, not just plain assistant text.
+
+- When providers return structured `response.messages`, those messages are saved directly
+- This includes assistant `tool-call` blocks and tool `tool-result` blocks
+- If structured messages are unavailable, the SDK falls back to text-based assistant messages
 
 ### Resuming Conversations
 
@@ -211,20 +214,18 @@ const result2 = await agent.generate({
 // Agent remembers: "Your name is Alice"
 ```
 
-### Automatic Checkpointing
+### Incremental Checkpointing for Streaming
 
-Configure automatic checkpoint saving:
+For long-running streams, enable checkpoint updates after each step:
 
 ```typescript
-const agent = createAgent({
-  model,
-  checkpointer,
-  checkpointStrategy: {
-    saveAfterGeneration: true, // Save after each generation
-    saveAfterToolCall: false, // Don't save after tool calls
-    saveOnError: true, // Save on errors for recovery
-  },
-});
+for await (const _part of agent.stream({
+  threadId: "conversation-1",
+  prompt: "Continue",
+  checkpointAfterToolCall: true,
+})) {
+  // consume stream
+}
 ```
 
 ### Checkpoint Hooks

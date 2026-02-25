@@ -1060,7 +1060,8 @@ export function createAgent(options: AgentOptions): Agent {
 
   // In proxy mode, create call_tool and configure search_tools with schema disclosure
   const isProxyMode = pluginLoadingMode === "proxy" || hasProxiedTools;
-  if (isProxyMode && !options.disabledCoreTools?.includes("call_tool")) {
+  const hasProxyTargets = hasProxiedTools || mcpManager.hasExternalServers();
+  if (isProxyMode && hasProxyTargets && !options.disabledCoreTools?.includes("call_tool")) {
     coreTools.call_tool = createCallToolTool({
       mcpManager,
     });
@@ -1078,8 +1079,8 @@ export function createAgent(options: AgentOptions): Agent {
 
   const shouldCreateSearchTools =
     !options.disabledCoreTools?.includes("search_tools") &&
-    (deferredLoadingActive ||
-      isProxyMode ||
+    ((deferredLoadingActive && (totalPluginToolCount > 0 || mcpManager.hasExternalServers())) ||
+      (isProxyMode && hasProxyTargets) ||
       shouldCreateSearchToolsForAutoThreshold ||
       (mcpManager.hasExternalServers() && toolSearchEnabled !== "never"));
 
@@ -1206,6 +1207,44 @@ export function createAgent(options: AgentOptions): Agent {
     }
     // Build prompt using prompt builder
     return promptBuilder!.build(context);
+  };
+
+  const responseMessagesToModelMessages = (messages: unknown[] | undefined): ModelMessage[] =>
+    Array.isArray(messages) ? (messages as ModelMessage[]) : [];
+
+  const appendResponseMessages = (
+    baseMessages: ModelMessage[],
+    responseMessages: unknown[] | undefined,
+    fallbackAssistantText?: string,
+  ): ModelMessage[] => {
+    const normalized = responseMessagesToModelMessages(responseMessages);
+    if (normalized.length > 0) {
+      return [...baseMessages, ...normalized];
+    }
+
+    return fallbackAssistantText
+      ? [...baseMessages, { role: "assistant" as const, content: fallbackAssistantText }]
+      : baseMessages;
+  };
+
+  const buildMessagesFromStepResponses = (
+    baseMessages: ModelMessage[],
+    steps: Array<{ text?: string; response?: { messages?: unknown[] } }>,
+    fallbackAssistantText?: string,
+  ): ModelMessage[] => {
+    const stepResponseMessages = steps.flatMap((step) =>
+      responseMessagesToModelMessages(step.response?.messages),
+    );
+    if (stepResponseMessages.length > 0) {
+      return [...baseMessages, ...stepResponseMessages];
+    }
+
+    // Fallback for providers that do not populate response.messages.
+    const lastText = steps.at(-1)?.text ?? fallbackAssistantText;
+    return [
+      ...baseMessages,
+      ...(lastText ? [{ role: "assistant" as const, content: lastText }] : []),
+    ];
   };
 
   // Runtime tools added/removed dynamically by plugins at runtime
@@ -2068,10 +2107,11 @@ export function createAgent(options: AgentOptions): Agent {
             // cannot find the checkpoint (or finds one without messages/interrupt).
             if (effectiveGenOptions.threadId && options.checkpointer) {
               const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
-              const finalMessages: ModelMessage[] = [
-                ...messages,
-                ...(response.text ? [{ role: "assistant" as const, content: response.text }] : []),
-              ];
+              const finalMessages = appendResponseMessages(
+                messages,
+                response.response?.messages,
+                response.text,
+              );
               const savedCheckpoint = await saveCheckpoint(
                 checkpointThreadId,
                 finalMessages,
@@ -2148,13 +2188,11 @@ export function createAgent(options: AgentOptions): Agent {
           // Save checkpoint - use forked session ID if forking, otherwise use original threadId
           const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
           if (checkpointThreadId && options.checkpointer) {
-            // Build final messages including the assistant response.
-            // Skip empty text to avoid invalid content blocks (e.g. when
-            // the model finishes with only tool calls).
-            const finalMessages: ModelMessage[] = [
-              ...messages,
-              ...(response.text ? [{ role: "assistant" as const, content: response.text }] : []),
-            ];
+            const finalMessages = appendResponseMessages(
+              messages,
+              response.response?.messages,
+              response.text,
+            );
             await saveCheckpoint(
               checkpointThreadId,
               finalMessages,
@@ -2201,12 +2239,7 @@ export function createAgent(options: AgentOptions): Agent {
           let lastResult: GenerateResult = finalResult;
           let runningMessages: ModelMessage[] = hasCheckpointing
             ? []
-            : [
-                ...messages,
-                ...(finalResult.text
-                  ? [{ role: "assistant" as const, content: finalResult.text }]
-                  : []),
-              ];
+            : appendResponseMessages(messages, response.response?.messages, finalResult.text);
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
@@ -2565,11 +2598,12 @@ export function createAgent(options: AgentOptions): Agent {
           }
 
           // Get final result for hooks - need to await all properties
-          const [text, usage, finishReason, steps] = await Promise.all([
+          const [text, usage, finishReason, steps, responseMeta] = await Promise.all([
             response.text,
             response.usage,
             response.finishReason,
             response.steps,
+            response.response ?? Promise.resolve(undefined),
           ]);
 
           // Only access output if an output schema was provided
@@ -2593,10 +2627,11 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Save checkpoint if threadId is provided
           if (checkpointThreadId && options.checkpointer) {
-            const finalMessages: ModelMessage[] = [
-              ...messages,
-              ...(text ? [{ role: "assistant" as const, content: text }] : []),
-            ];
+            const responseMessages = responseMessagesToModelMessages(responseMeta?.messages);
+            const finalMessages =
+              responseMessages.length > 0
+                ? [...messages, ...responseMessages]
+                : buildMessagesFromStepResponses(messages, steps, text);
             await saveCheckpoint(checkpointThreadId, finalMessages, startStep + steps.length);
           }
 
@@ -2649,9 +2684,12 @@ export function createAgent(options: AgentOptions): Agent {
           }
 
           const hasCheckpointing = !!(effectiveGenOptions.threadId && options.checkpointer);
+          const initialResponseMessages = responseMessagesToModelMessages(responseMeta?.messages);
           let currentMessages: ModelMessage[] = hasCheckpointing
             ? []
-            : [...messages, ...(text ? [{ role: "assistant" as const, content: text }] : [])];
+            : initialResponseMessages.length > 0
+              ? [...messages, ...initialResponseMessages]
+              : buildMessagesFromStepResponses(messages, steps, text);
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
@@ -2789,6 +2827,7 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Track step count for incremental checkpointing
           let currentStepCount = 0;
+          let streamedMessages: ModelMessage[] = [...initialParams.messages];
 
           // Execute streamText OUTSIDE createUIMessageStream so errors propagate
           // to the retry loop (if streamText throws synchronously on creation,
@@ -2813,16 +2852,21 @@ export function createAgent(options: AgentOptions): Agent {
               ? async (stepResult) => {
                   if (effectiveGenOptions.threadId && options.checkpointer) {
                     currentStepCount++;
-                    // Build messages including this step's results
-                    const stepMessages: ModelMessage[] = [
-                      ...initialParams.messages,
-                      ...(stepResult.text
-                        ? [{ role: "assistant" as const, content: stepResult.text }]
-                        : []),
-                    ];
+                    const stepResponseMessages = responseMessagesToModelMessages(
+                      stepResult.response?.messages,
+                    );
+                    streamedMessages =
+                      stepResponseMessages.length > 0
+                        ? [...streamedMessages, ...stepResponseMessages]
+                        : stepResult.text
+                          ? [
+                              ...streamedMessages,
+                              { role: "assistant" as const, content: stepResult.text },
+                            ]
+                          : streamedMessages;
                     await saveCheckpoint(
                       effectiveGenOptions.threadId!,
-                      stepMessages,
+                      streamedMessages,
                       startStep + currentStepCount,
                     );
                   }
@@ -2840,12 +2884,11 @@ export function createAgent(options: AgentOptions): Agent {
               }
 
               if (effectiveGenOptions.threadId && options.checkpointer) {
-                const finalMessages: ModelMessage[] = [
-                  ...initialParams.messages,
-                  ...(finishResult.text
-                    ? [{ role: "assistant" as const, content: finishResult.text }]
-                    : []),
-                ];
+                const finalMessages = buildMessagesFromStepResponses(
+                  initialParams.messages,
+                  finishResult.steps,
+                  finishResult.text,
+                );
                 await saveCheckpoint(
                   effectiveGenOptions.threadId!,
                   finalMessages,
@@ -2883,8 +2926,9 @@ export function createAgent(options: AgentOptions): Agent {
               // Merge initial generation into the stream
               writer.merge(result.toUIMessageStream());
 
-              // Wait for initial generation to complete to get final text
-              const text = await result.text;
+              // Wait for initial generation to complete
+              await result.text;
+              const resultResponse = await (result.response ?? Promise.resolve(undefined));
 
               // --- Background task completion loop ---
               if (waitForBackgroundTasks) {
@@ -2894,7 +2938,7 @@ export function createAgent(options: AgentOptions): Agent {
 
                 let currentMessages: ModelMessage[] = [
                   ...messages,
-                  ...(text ? [{ role: "assistant" as const, content: text }] : []),
+                  ...responseMessagesToModelMessages(resultResponse?.messages),
                 ];
 
                 let followUpPrompt = await getNextTaskPrompt();
@@ -2920,13 +2964,17 @@ export function createAgent(options: AgentOptions): Agent {
 
                   writer.merge(followUpResult.toUIMessageStream());
                   const followUpText = await followUpResult.text;
+                  const followUpResponse = await (followUpResult.response ??
+                    Promise.resolve(undefined));
 
                   currentMessages = [
                     ...currentMessages,
                     { role: "user" as const, content: followUpPrompt },
-                    ...(followUpText
-                      ? [{ role: "assistant" as const, content: followUpText }]
-                      : []),
+                    ...(responseMessagesToModelMessages(followUpResponse?.messages).length > 0
+                      ? responseMessagesToModelMessages(followUpResponse?.messages)
+                      : followUpText
+                        ? [{ role: "assistant" as const, content: followUpText }]
+                        : []),
                   ];
 
                   // --- Post-completion bookkeeping for follow-ups ---
@@ -3079,6 +3127,7 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Track step count for incremental checkpointing
           let currentStepCount = 0;
+          let streamedMessages: ModelMessage[] = [...initialParams.messages];
 
           // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
@@ -3105,16 +3154,21 @@ export function createAgent(options: AgentOptions): Agent {
               ? async (stepResult) => {
                   if (effectiveGenOptions.threadId && options.checkpointer) {
                     currentStepCount++;
-                    // Build messages including this step's results
-                    const stepMessages: ModelMessage[] = [
-                      ...initialParams.messages,
-                      ...(stepResult.text
-                        ? [{ role: "assistant" as const, content: stepResult.text }]
-                        : []),
-                    ];
+                    const stepResponseMessages = responseMessagesToModelMessages(
+                      stepResult.response?.messages,
+                    );
+                    streamedMessages =
+                      stepResponseMessages.length > 0
+                        ? [...streamedMessages, ...stepResponseMessages]
+                        : stepResult.text
+                          ? [
+                              ...streamedMessages,
+                              { role: "assistant" as const, content: stepResult.text },
+                            ]
+                          : streamedMessages;
                     await saveCheckpoint(
                       effectiveGenOptions.threadId!,
-                      stepMessages,
+                      streamedMessages,
                       startStep + currentStepCount,
                     );
                   }
@@ -3132,12 +3186,11 @@ export function createAgent(options: AgentOptions): Agent {
               }
 
               if (effectiveGenOptions.threadId && options.checkpointer) {
-                const finalMessages: ModelMessage[] = [
-                  ...initialParams.messages,
-                  ...(finishResult.text
-                    ? [{ role: "assistant" as const, content: finishResult.text }]
-                    : []),
-                ];
+                const finalMessages = buildMessagesFromStepResponses(
+                  initialParams.messages,
+                  finishResult.steps,
+                  finishResult.text,
+                );
                 await saveCheckpoint(
                   effectiveGenOptions.threadId!,
                   finalMessages,
@@ -3291,6 +3344,7 @@ export function createAgent(options: AgentOptions): Agent {
 
               // Track step count for incremental checkpointing
               let currentStepCount = 0;
+              let streamedMessages: ModelMessage[] = [...initialParams.messages];
 
               // Stop condition: stop when a flow-control signal was caught, OR when
               // the step count reaches maxSteps.
@@ -3317,17 +3371,21 @@ export function createAgent(options: AgentOptions): Agent {
                   ? async (stepResult) => {
                       if (effectiveGenOptions.threadId && options.checkpointer) {
                         currentStepCount++;
-                        // Build messages including this step's results
-                        const stepMessages: ModelMessage[] = [
-                          ...initialParams.messages,
-                          {
-                            role: "assistant" as const,
-                            content: stepResult.text,
-                          },
-                        ];
+                        const stepResponseMessages = responseMessagesToModelMessages(
+                          stepResult.response?.messages,
+                        );
+                        streamedMessages =
+                          stepResponseMessages.length > 0
+                            ? [...streamedMessages, ...stepResponseMessages]
+                            : stepResult.text
+                              ? [
+                                  ...streamedMessages,
+                                  { role: "assistant" as const, content: stepResult.text },
+                                ]
+                              : streamedMessages;
                         await saveCheckpoint(
                           effectiveGenOptions.threadId!,
-                          stepMessages,
+                          streamedMessages,
                           startStep + currentStepCount,
                         );
                       }
@@ -3345,13 +3403,11 @@ export function createAgent(options: AgentOptions): Agent {
                   }
 
                   if (effectiveGenOptions.threadId && options.checkpointer) {
-                    const finalMessages: ModelMessage[] = [
-                      ...initialParams.messages,
-                      {
-                        role: "assistant" as const,
-                        content: finishResult.text,
-                      },
-                    ];
+                    const finalMessages = buildMessagesFromStepResponses(
+                      initialParams.messages,
+                      finishResult.steps,
+                      finishResult.text,
+                    );
                     await saveCheckpoint(
                       effectiveGenOptions.threadId!,
                       finalMessages,
@@ -3387,8 +3443,9 @@ export function createAgent(options: AgentOptions): Agent {
               // Merge the streamText output into the UI message stream
               writer.merge(result.toUIMessageStream());
 
-              // Wait for initial generation to complete to get final text
-              const text = await result.text;
+              // Wait for initial generation to complete
+              await result.text;
+              const resultResponse = await (result.response ?? Promise.resolve(undefined));
 
               // Save pending interrupt to checkpoint (mirrors stream() pattern)
               if (signalState.interrupt && effectiveGenOptions.threadId && options.checkpointer) {
@@ -3427,7 +3484,7 @@ export function createAgent(options: AgentOptions): Agent {
 
                 let currentMessages: ModelMessage[] = [
                   ...messages,
-                  ...(text ? [{ role: "assistant" as const, content: text }] : []),
+                  ...responseMessagesToModelMessages(resultResponse?.messages),
                 ];
 
                 let followUpPrompt = await getNextTaskPrompt();
@@ -3453,13 +3510,17 @@ export function createAgent(options: AgentOptions): Agent {
 
                   writer.merge(followUpResult.toUIMessageStream());
                   const followUpText = await followUpResult.text;
+                  const followUpResponse = await (followUpResult.response ??
+                    Promise.resolve(undefined));
 
                   currentMessages = [
                     ...currentMessages,
                     { role: "user" as const, content: followUpPrompt },
-                    ...(followUpText
-                      ? [{ role: "assistant" as const, content: followUpText }]
-                      : []),
+                    ...(responseMessagesToModelMessages(followUpResponse?.messages).length > 0
+                      ? responseMessagesToModelMessages(followUpResponse?.messages)
+                      : followUpText
+                        ? [{ role: "assistant" as const, content: followUpText }]
+                        : []),
                   ];
 
                   // --- Post-completion bookkeeping for follow-ups ---

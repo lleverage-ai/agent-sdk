@@ -333,6 +333,8 @@ describe("createSkillTool", () => {
     expect(result).toHaveProperty("skill", "git");
     expect(result).toHaveProperty("newTools");
     expect(result).toHaveProperty("instructions");
+    expect(result).toHaveProperty("content");
+    expect((result as { content: string }).content).toContain('<skill_content name="git">');
   });
 
   it("should return tool names in response", async () => {
@@ -487,10 +489,13 @@ describe("Skill Tool Integration", () => {
       success: boolean;
       instructions: string;
       message: string;
+      content: string;
     };
 
     expect(result.success).toBe(true);
     expect(result.instructions).toBe("These are the file-based skill instructions.");
     expect(result.message).toContain("instructions only, no new tools");
+    expect(result.content).toContain('<skill_content name="file-skill">');
+    expect(result.content).toContain("<skill_path>/path/to/skills/file-skill</skill_path>");
   });
 });
