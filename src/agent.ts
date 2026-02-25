@@ -61,7 +61,7 @@ import {
   createTaskOutputTool,
   createTaskTool,
 } from "./tools/factory.js";
-import { SkillRegistry, type SkillDefinition } from "./tools/skills.js";
+import { type SkillDefinition, SkillRegistry } from "./tools/skills.js";
 import type {
   Agent,
   AgentOptions,
@@ -991,26 +991,27 @@ export function createAgent(options: AgentOptions): Agent {
   // Pre-create skill registry with onSkillLoaded callback so that:
   // 1. Skill tools are injected into runtimeTools (available on next generation)
   // 2. Skill instructions are persisted in the system prompt
-  const preCreatedSkillRegistry = skills.length > 0
-    ? new SkillRegistry({
-        skills: skills.map((s) => ({
-          name: s.name,
-          description: s.description,
-          instructions: s.instructions,
-          tools: s.tools,
-          skillPath: s.skillPath,
-          metadata: s.metadata,
-        })),
-        onSkillLoaded: (_skillName, result) => {
-          if (Object.keys(result.tools).length > 0) {
-            Object.assign(runtimeTools, result.tools);
-          }
-          if (result.instructions) {
-            loadedSkillInstructions.set(_skillName, result.instructions);
-          }
-        },
-      })
-    : undefined;
+  const preCreatedSkillRegistry =
+    skills.length > 0
+      ? new SkillRegistry({
+          skills: skills.map((s) => ({
+            name: s.name,
+            description: s.description,
+            instructions: s.instructions,
+            tools: s.tools,
+            skillPath: s.skillPath,
+            metadata: s.metadata,
+          })),
+          onSkillLoaded: (_skillName, result) => {
+            if (Object.keys(result.tools).length > 0) {
+              Object.assign(runtimeTools, result.tools);
+            }
+            if (result.instructions) {
+              loadedSkillInstructions.set(_skillName, result.instructions);
+            }
+          },
+        })
+      : undefined;
 
   // Auto-create core tools (unless user provides explicit tools)
   // Note: search_tools is created separately below based on loading mode
@@ -1232,9 +1233,7 @@ export function createAgent(options: AgentOptions): Agent {
   // Helper to get system prompt (either static or built from context)
   // Appends any loaded skill instructions so they persist across generations
   const getSystemPrompt = (context: PromptContext): string | undefined => {
-    const base = promptMode === "static"
-      ? options.systemPrompt
-      : promptBuilder!.build(context);
+    const base = promptMode === "static" ? options.systemPrompt : promptBuilder!.build(context);
 
     if (loadedSkillInstructions.size > 0) {
       const sections: string[] = [];
