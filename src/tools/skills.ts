@@ -566,6 +566,7 @@ export function createSkillTool(options: SkillToolOptions) {
 
       // Format the response
       const toolNames = Object.keys(result.tools);
+      const skillDef = registry.get(skill_name);
       const response: Record<string, unknown> = {
         success: true,
         skill: skill_name,
@@ -573,10 +574,14 @@ export function createSkillTool(options: SkillToolOptions) {
         instructions: result.instructions,
       };
 
+      if (skillDef?.skillPath) {
+        response.skillPath = skillDef.skillPath;
+      }
+
       if (toolNames.length === 0) {
-        response.message = `Loaded skill '${skill_name}' (provides instructions only, no new tools)`;
+        response.message = `Loaded skill '${skill_name}'. Instructions are now active in the system prompt.`;
       } else {
-        response.message = `Loaded skill '${skill_name}'. New tools available: ${toolNames.join(", ")}`;
+        response.message = `Loaded skill '${skill_name}'. Instructions are now active in the system prompt. New tools: ${toolNames.join(", ")} (available from next step).`;
       }
 
       return response;

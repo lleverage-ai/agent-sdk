@@ -397,7 +397,42 @@ describe("createSkillTool", () => {
       message: string;
     };
 
-    expect(result.message).toContain("instructions only, no new tools");
+    expect(result.message).toContain("Instructions are now active in the system prompt");
+  });
+
+  it("should include skillPath in response when present", async () => {
+    const skillWithPath: SkillDefinition = {
+      name: "pptx",
+      description: "Create presentations",
+      tools: {},
+      instructions: "Create PPTX files.",
+      skillPath: "/skills/pptx",
+    };
+    registry.register(skillWithPath);
+
+    const skillTool = createSkillTool({ registry });
+    const result = (await skillTool.execute({ skill_name: "pptx" })) as {
+      skillPath: string;
+    };
+
+    expect(result.skillPath).toBe("/skills/pptx");
+  });
+
+  it("should not include skillPath when absent", async () => {
+    const skillTool = createSkillTool({ registry });
+    const result = (await skillTool.execute({ skill_name: "git" })) as Record<string, unknown>;
+
+    expect(result.skillPath).toBeUndefined();
+  });
+
+  it("should mention new tools in message when tools exist", async () => {
+    const skillTool = createSkillTool({ registry });
+    const result = (await skillTool.execute({ skill_name: "git" })) as {
+      message: string;
+    };
+
+    expect(result.message).toContain("New tools:");
+    expect(result.message).toContain("available from next step");
   });
 });
 
@@ -491,6 +526,85 @@ describe("Skill Tool Integration", () => {
 
     expect(result.success).toBe(true);
     expect(result.instructions).toBe("These are the file-based skill instructions.");
-    expect(result.message).toContain("instructions only, no new tools");
+    expect(result.message).toContain("Instructions are now active in the system prompt");
+  });
+
+  it("should return skillPath for file-based skill", async () => {
+    const fileSkill: SkillDefinition = {
+      name: "file-skill-with-path",
+      description: "A file-based skill with path",
+      instructions: "File skill instructions.",
+      skillPath: "/path/to/skills/file-skill-with-path",
+    };
+
+    const registry = new SkillRegistry({ skills: [fileSkill] });
+    const skillTool = createSkillTool({ registry });
+
+    const result = (await skillTool.execute({ skill_name: "file-skill-with-path" })) as {
+      skillPath: string;
+    };
+
+    expect(result.skillPath).toBe("/path/to/skills/file-skill-with-path");
+  });
+});
+
+// =============================================================================
+// onSkillLoaded Callback Tests
+// =============================================================================
+
+describe("onSkillLoaded callback integration", () => {
+  it("should fire callback with tools and instructions", () => {
+    const callback = vi.fn();
+    const skill = createTestSkill("git", "Git operations");
+    const registry = new SkillRegistry({
+      skills: [skill],
+      onSkillLoaded: callback,
+    });
+
+    registry.load("git");
+
+    expect(callback).toHaveBeenCalledOnce();
+    expect(callback).toHaveBeenCalledWith(
+      "git",
+      expect.objectContaining({
+        success: true,
+        tools: expect.objectContaining({ git_tool: expect.anything() }),
+        instructions: "You have loaded the git skill.",
+      }),
+    );
+  });
+
+  it("should allow injecting tools into external runtimeTools", () => {
+    const runtimeTools: Record<string, unknown> = {};
+    const skill = createTestSkill("docker", "Docker operations");
+    const registry = new SkillRegistry({
+      skills: [skill],
+      onSkillLoaded: (_name, result) => {
+        Object.assign(runtimeTools, result.tools);
+      },
+    });
+
+    expect(Object.keys(runtimeTools)).toHaveLength(0);
+
+    registry.load("docker");
+
+    expect(runtimeTools).toHaveProperty("docker_tool");
+  });
+
+  it("should allow persisting instructions into external map", () => {
+    const loadedInstructions = new Map<string, string>();
+    const skill = createTestSkill("k8s", "Kubernetes operations");
+    const registry = new SkillRegistry({
+      skills: [skill],
+      onSkillLoaded: (name, result) => {
+        if (result.instructions) {
+          loadedInstructions.set(name, result.instructions);
+        }
+      },
+    });
+
+    registry.load("k8s");
+
+    expect(loadedInstructions.get("k8s")).toBe("You have loaded the k8s skill.");
   });
 });

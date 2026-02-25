@@ -61,7 +61,7 @@ import {
   createTaskOutputTool,
   createTaskTool,
 } from "./tools/factory.js";
-import type { SkillDefinition } from "./tools/skills.js";
+import { SkillRegistry, type SkillDefinition } from "./tools/skills.js";
 import type {
   Agent,
   AgentOptions,
@@ -957,6 +957,12 @@ export function createAgent(options: AgentOptions): Agent {
   // Auto-created subagent definitions from delegated plugins
   const autoSubagents: SubagentDefinition[] = [];
 
+  // Runtime tools added/removed dynamically by skills and plugins at runtime
+  const runtimeTools: ToolSet = {};
+
+  // Loaded skill instructions — appended to system prompt for persistence
+  const loadedSkillInstructions = new Map<string, string>();
+
   // Count total plugin tools for threshold calculation and collect plugin skills.
   // Note: Function-based (streaming) tools are not counted since we don't know
   // their count until they're invoked with a streaming context.
@@ -982,6 +988,30 @@ export function createAgent(options: AgentOptions): Agent {
   // Removed: auto threshold no longer forces deferred loading
   // The default eager loading should be respected
 
+  // Pre-create skill registry with onSkillLoaded callback so that:
+  // 1. Skill tools are injected into runtimeTools (available on next generation)
+  // 2. Skill instructions are persisted in the system prompt
+  const preCreatedSkillRegistry = skills.length > 0
+    ? new SkillRegistry({
+        skills: skills.map((s) => ({
+          name: s.name,
+          description: s.description,
+          instructions: s.instructions,
+          tools: s.tools,
+          skillPath: s.skillPath,
+          metadata: s.metadata,
+        })),
+        onSkillLoaded: (_skillName, result) => {
+          if (Object.keys(result.tools).length > 0) {
+            Object.assign(runtimeTools, result.tools);
+          }
+          if (result.instructions) {
+            loadedSkillInstructions.set(_skillName, result.instructions);
+          }
+        },
+      })
+    : undefined;
+
   // Auto-create core tools (unless user provides explicit tools)
   // Note: search_tools is created separately below based on loading mode
   const { tools: autoCreatedCoreTools, skillRegistry: createdSkillRegistry } = createCoreTools({
@@ -991,7 +1021,7 @@ export function createAgent(options: AgentOptions): Agent {
     // Don't pass mcpManager here - we create search_tools manually below
     mcpManager: undefined,
     disabled: options.disabledCoreTools,
-    skills,
+    skillRegistry: preCreatedSkillRegistry,
   });
 
   // Start with auto-created core tools, then overlay user-provided tools
@@ -1200,16 +1230,23 @@ export function createAgent(options: AgentOptions): Agent {
   };
 
   // Helper to get system prompt (either static or built from context)
+  // Appends any loaded skill instructions so they persist across generations
   const getSystemPrompt = (context: PromptContext): string | undefined => {
-    if (promptMode === "static") {
-      return options.systemPrompt;
-    }
-    // Build prompt using prompt builder
-    return promptBuilder!.build(context);
-  };
+    const base = promptMode === "static"
+      ? options.systemPrompt
+      : promptBuilder!.build(context);
 
-  // Runtime tools added/removed dynamically by plugins at runtime
-  const runtimeTools: ToolSet = {};
+    if (loadedSkillInstructions.size > 0) {
+      const sections: string[] = [];
+      for (const [name, instructions] of loadedSkillInstructions) {
+        sections.push(`## ${name}\n\n${instructions}`);
+      }
+      const skillSection = `\n\n# Loaded Skill Instructions\n\n${sections.join("\n\n")}`;
+      return base ? `${base}${skillSection}` : skillSection;
+    }
+
+    return base;
+  };
 
   // Helper to get current active tools (core + runtime + MCP + dynamically loaded from registry)
   const getActiveToolSet = (threadId?: string): ToolSet => {
