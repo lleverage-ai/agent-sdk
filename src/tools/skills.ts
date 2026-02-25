@@ -8,6 +8,7 @@
  * @packageDocumentation
  */
 
+import * as path from "node:path";
 import type { ToolSet } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
@@ -531,6 +532,82 @@ export interface SkillToolOptions {
 export function createSkillTool(options: SkillToolOptions) {
   const { registry, descriptionPrefix } = options;
 
+  const escapeXml = (value: string): string =>
+    value
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&apos;");
+
+  const getMetadataFiles = (
+    skill: SkillDefinition,
+    subdir: "scripts" | "references" | "assets",
+    limit: number,
+  ): string[] => {
+    const raw = skill.metadata?.[subdir];
+    if (!raw || typeof raw !== "string") {
+      return [];
+    }
+
+    return raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0)
+      .slice(0, limit)
+      .map((item) => (skill.skillPath ? path.join(skill.skillPath, subdir, item) : item));
+  };
+
+  const buildSkillContentBlock = (
+    skillName: string,
+    instructions: string,
+    toolNames: string[],
+    skill?: SkillDefinition,
+  ): string => {
+    const lines: string[] = [`<skill_content name="${escapeXml(skillName)}">`];
+
+    if (instructions.trim().length > 0) {
+      lines.push("<instructions>");
+      lines.push(escapeXml(instructions.trim()));
+      lines.push("</instructions>");
+    } else {
+      lines.push("<instructions />");
+    }
+
+    lines.push("<tools>");
+    if (toolNames.length > 0) {
+      for (const toolName of toolNames) {
+        lines.push(`  <tool>${escapeXml(toolName)}</tool>`);
+      }
+    }
+    lines.push("</tools>");
+
+    if (skill?.skillPath) {
+      const skillPath = skill.skillPath;
+      lines.push(`<skill_path>${escapeXml(skillPath)}</skill_path>`);
+
+      const resourceKinds: Array<"scripts" | "references" | "assets"> = [
+        "scripts",
+        "references",
+        "assets",
+      ];
+
+      lines.push("<skill_resources>");
+      for (const kind of resourceKinds) {
+        const files = getMetadataFiles(skill, kind, 12);
+        lines.push(`  <${kind}>`);
+        for (const file of files) {
+          lines.push(`    <file>${escapeXml(file)}</file>`);
+        }
+        lines.push(`  </${kind}>`);
+      }
+      lines.push("</skill_resources>");
+    }
+
+    lines.push("</skill_content>");
+    return lines.join("\n");
+  };
+
   // Build dynamic description based on available skills
   const buildDescription = () => {
     const available = registry.listAvailable();
@@ -566,11 +643,15 @@ export function createSkillTool(options: SkillToolOptions) {
 
       // Format the response
       const toolNames = Object.keys(result.tools);
+      const skill = registry.get(skill_name);
+      const content = buildSkillContentBlock(skill_name, result.instructions, toolNames, skill);
       const response: Record<string, unknown> = {
         success: true,
         skill: skill_name,
         newTools: toolNames,
         instructions: result.instructions,
+        content,
+        skillPath: skill?.skillPath,
       };
 
       if (toolNames.length === 0) {

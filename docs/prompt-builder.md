@@ -27,7 +27,7 @@ The Prompt Builder system enables creating dynamic, context-aware system prompts
 - ✅ Automatically lists available tools and their descriptions
 - ✅ Includes skills and plugins when present
 - ✅ Communicates backend capabilities (bash, filesystem access)
-- ✅ Shows permission mode and context information
+- ✅ Shows permission mode information
 - ✅ Composable components with priorities
 - ✅ Conditional sections based on agent configuration
 - ✅ Easy to customize or extend
@@ -263,7 +263,11 @@ Lists available skills. Only shown when skills are present.
 
 Lists loaded plugins. Only shown when plugins are present.
 
-### 5. Capabilities Component (Priority: 60)
+### 5. Delegation Component (Priority: 75)
+
+Shows subagent delegation guidance when subagents are configured.
+
+### 6. Capabilities Component (Priority: 60)
 
 Shows what the agent can do based on backend configuration:
 
@@ -285,13 +289,9 @@ Shows what the agent can do based on backend configuration:
 }
 ```
 
-### 6. Permission Mode Component (Priority: 55)
+### 7. Permission Mode Component (Priority: 55)
 
 Explains the current permission mode. Only shown when set.
-
-### 7. Context Component (Priority: 50)
-
-Shows thread ID and message count. Only shown when available.
 
 ## Customization
 
@@ -317,7 +317,7 @@ const builder = createDefaultPromptBuilder()
 ```typescript
 const builder = createDefaultPromptBuilder()
   .unregister("identity")  // Remove default identity
-  .unregister("context");  // Don't show thread/message info
+  .unregister("permission-mode");  // Remove permission mode section
 ```
 
 ### Replacing Components
@@ -821,7 +821,7 @@ Remove unnecessary components or make them more concise:
 
 ```typescript
 const builder = createDefaultPromptBuilder()
-  .unregister("context")       // Remove if not needed
+  .unregister("delegation-instructions") // Remove if no subagents
   .unregister("permission-mode")   // Remove if static
   // Keep only essential components
 ```

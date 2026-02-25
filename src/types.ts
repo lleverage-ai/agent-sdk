@@ -1953,7 +1953,7 @@ export interface AgentPlugin {
    * When true, this plugin's tools are accessible only via `call_tool` proxy.
    *
    * In `pluginLoading: "proxy"` mode, all plugins are deferred by default.
-   * In `pluginLoading: "eager"` (default), only plugins with `deferred: true`
+   * In `pluginLoading: "eager"`, only plugins with `deferred: true`
    * are proxied; the rest load eagerly as before.
    *
    * Deferred tools are discoverable via `search_tools` and callable via `call_tool`,

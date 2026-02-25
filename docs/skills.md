@@ -308,11 +308,39 @@ const agent = createAgent({
   model,
   tools: {
     ...coreTools,
-    load_skill: skillTool,
+    skill: skillTool,
   },
 });
 
-// Agent can now call load_skill to gain new capabilities
+// Agent can now call skill to gain new capabilities
+```
+
+The `skill` tool result includes:
+
+- `instructions`: plain instructions text
+- `newTools`: names of tools provided by the loaded skill
+- `content`: XML-style payload wrapped in `<skill_content ...>` tags for deterministic context injection
+- `skillPath`: optional absolute path for file-based skills
+
+Example `content` payload:
+
+```xml
+<skill_content name="git">
+  <instructions>Use git tools for repository operations.</instructions>
+  <tools>
+    <tool>git_status</tool>
+  </tools>
+  <skill_path>/path/to/skills/git</skill_path>
+  <skill_resources>
+    <scripts>
+      <file>/path/to/skills/git/scripts/status.sh</file>
+    </scripts>
+    <references>
+    </references>
+    <assets>
+    </assets>
+  </skill_resources>
+</skill_content>
 ```
 
 ## Agent Skills Specification Compliance
@@ -500,7 +528,7 @@ const agent = createAgent({
   skills, // That's it!
   systemPrompt: `
 You are a helpful assistant with access to specialized skills.
-Use the load_skill tool to gain new capabilities on-demand.
+Use the skill tool to gain new capabilities on-demand.
   `,
 });
 ```

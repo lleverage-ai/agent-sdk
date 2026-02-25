@@ -65,7 +65,7 @@ const safeAgent = createAgent({
 });
 ```
 
-**Core tools included:** `read`, `write`, `edit`, `glob`, `grep`, `todo_write`, `bash` (requires backend with `enableBash: true`), `search_tools` (when enabled)
+**Core tools included:** `read`, `write`, `edit`, `glob`, `grep`, `todo_write`, `bash` (requires backend with `enableBash: true`), `skill` (when skills are configured), `search_tools` (when enabled), `call_tool` (proxy mode only)
 
 ### Tools
 
@@ -163,6 +163,8 @@ See [Skills Documentation](./docs/skills.md) for complete details on the skills 
 ### Prompt Builder
 
 Create dynamic, context-aware system prompts from composable components. Instead of static strings, prompts automatically include tools, skills, backend capabilities, and more.
+
+The default prompt builder is cache-friendly: it avoids per-turn dynamic context sections by default so repeated generations in the same thread can reuse provider prompt caches more effectively.
 
 **Using the default builder:**
 ```typescript
@@ -354,7 +356,7 @@ export async function POST(req: Request) {
 
 - [Prompt Builder](./docs/prompt-builder.md) — Dynamic, context-aware system prompts
 - [Skills System](./docs/skills.md) — Progressive disclosure with Agent Skills spec compliance
-- [Tool Loading Strategies](./docs/tool-loading.md) — Eager, lazy, and dynamic tool loading
+- [Tool Loading Strategies](./docs/tool-loading.md) — Eager, deferred discovery, and proxy tool loading
 - [Security & Production](./docs/security.md) — Security policies, guardrails, and secrets filtering
 - [Subagents](./docs/subagents.md) — Task delegation and background tasks
 - [MCP Integration](./docs/mcp.md) — Model Context Protocol tools and servers

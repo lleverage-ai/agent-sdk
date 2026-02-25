@@ -396,7 +396,7 @@ describe("createDefaultPromptBuilder", () => {
     expect(names).toContain("plugins-listing");
     expect(names).toContain("capabilities");
     expect(names).toContain("permission-mode");
-    expect(names).toContain("context");
+    expect(names).not.toContain("context");
     expect(names).toContain("delegation-instructions");
   });
 
@@ -425,7 +425,7 @@ describe("createDefaultPromptBuilder", () => {
     expect(prompt).toContain("# Loaded Plugins");
     expect(prompt).toContain("# Capabilities");
     expect(prompt).toContain("# Permission Mode");
-    expect(prompt).toContain("# Context");
+    expect(prompt).not.toContain("# Context");
   });
 
   it("should be customizable via clone", () => {
@@ -494,7 +494,7 @@ describe("Integration scenarios", () => {
     expect(prompt).toContain("git");
     expect(prompt).toContain("mcp-filesystem");
     expect(prompt).toContain("Execute shell commands");
-    expect(prompt).toContain("session-abc123");
+    expect(prompt).not.toContain("session-abc123");
   });
 
   it("should respect component priorities", () => {

@@ -652,7 +652,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
       expect(prompt).toContain("File editing tools are auto-approved");
     });
 
-    it("should render context component with thread and messages", () => {
+    it("should not include context component by default", () => {
       const builder = createDefaultPromptBuilder();
       const prompt = builder.build({
         threadId: "thread-123",
@@ -662,9 +662,9 @@ describe("Prompt Builder Integration with Real Agents", () => {
         ],
       });
 
-      expect(prompt).toContain("# Context");
-      expect(prompt).toContain("Thread ID: thread-123");
-      expect(prompt).toContain("Conversation history: 2 message(s)");
+      expect(prompt).not.toContain("# Context");
+      expect(prompt).not.toContain("Thread ID: thread-123");
+      expect(prompt).not.toContain("Conversation history: 2 message(s)");
     });
 
     it("should order components by priority", () => {
