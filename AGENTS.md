@@ -44,6 +44,7 @@ bun run clean
 # Run commands for a single package
 bun run --filter '@lleverage-ai/agent-sdk' test
 bun run --filter '@lleverage-ai/agent-stream' test
+bun run --filter '@lleverage-ai/agent-ledger' test
 ```
 
 ## Changelog
@@ -95,17 +96,32 @@ agent-sdk/                          # Workspace root
 │   │   │   └── tools/              # Core tool implementations
 │   │   └── tests/
 │   │
-│   └── agent-stream/               # @lleverage-ai/agent-stream
+│   ├── agent-stream/               # @lleverage-ai/agent-stream
+│   │   ├── src/
+│   │   │   ├── index.ts            # Public re-exports
+│   │   │   ├── types.ts            # IEventStore, StoredEvent, ProjectorConfig
+│   │   │   ├── projector.ts        # Projector class
+│   │   │   ├── stream-event.ts     # Event kinds, EventKindRegistry
+│   │   │   ├── stores/
+│   │   │   │   ├── memory.ts       # InMemoryEventStore
+│   │   │   │   └── sqlite.ts       # SQLiteEventStore
+│   │   │   ├── server/             # WsServer (placeholder)
+│   │   │   └── client/             # WsClient (placeholder)
+│   │   └── tests/
+│   │
+│   └── agent-ledger/               # @lleverage-ai/agent-ledger
 │       ├── src/
 │       │   ├── index.ts            # Public re-exports
-│       │   ├── types.ts            # IEventStore, StoredEvent, ProjectorConfig
-│       │   ├── projector.ts        # Projector class
-│       │   ├── stream-event.ts     # Event kinds, EventKindRegistry
-│       │   ├── stores/
-│       │   │   ├── memory.ts       # InMemoryEventStore
-│       │   │   └── sqlite.ts       # SQLiteEventStore
-│       │   ├── server/             # WsServer (placeholder)
-│       │   └── client/             # WsClient (placeholder)
+│       │   ├── types.ts            # CanonicalMessage, RunRecord, RunStatus
+│       │   ├── ulid.ts             # Self-contained ULID generator
+│       │   ├── accumulator.ts      # StreamEvent[] → CanonicalMessage[] reducer
+│       │   ├── run-manager.ts      # Run lifecycle orchestration
+│       │   ├── reconciliation.ts   # Stale-run detection/recovery
+│       │   ├── context-builder.ts  # IContextBuilder + FullContextBuilder
+│       │   └── stores/
+│       │       ├── ledger-store.ts # ILedgerStore interface
+│       │       ├── memory.ts       # InMemoryLedgerStore
+│       │       └── sqlite.ts       # SQLiteLedgerStore
 │       └── tests/
 │
 ├── docs/

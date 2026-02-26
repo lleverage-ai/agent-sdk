@@ -1,0 +1,15 @@
+{
+  "description": "Single text response",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "Hello, " } },
+    { "kind": "text-delta", "payload": { "delta": "world!" } },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "Hello, world!" }]
+    }
+  ]
+}

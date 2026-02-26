@@ -13,6 +13,16 @@
         "typescript": "^5.9.2",
       },
     },
+    "packages/agent-ledger": {
+      "name": "@lleverage-ai/agent-ledger",
+      "version": "0.0.1",
+      "dependencies": {
+        "@lleverage-ai/agent-stream": "workspace:*",
+      },
+      "devDependencies": {
+        "vitest": "^4.0.18",
+      },
+    },
     "packages/agent-sdk": {
       "name": "@lleverage-ai/agent-sdk",
       "version": "0.0.13",
@@ -126,6 +136,8 @@
     "@hono/node-server": ["@hono/node-server@1.19.9", "", { "peerDependencies": { "hono": "^4" } }, "sha512-vHL6w3ecZsky+8P5MD+eFfaGTyCeOHUIFYMGpQGbrBTSmNNoxv0if69rEZ5giu36weC5saFuznL411gRX7bJDw=="],
 
     "@jridgewell/sourcemap-codec": ["@jridgewell/sourcemap-codec@1.5.5", "", {}, "sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og=="],
+
+    "@lleverage-ai/agent-ledger": ["@lleverage-ai/agent-ledger@workspace:packages/agent-ledger"],
 
     "@lleverage-ai/agent-sdk": ["@lleverage-ai/agent-sdk@workspace:packages/agent-sdk"],
 

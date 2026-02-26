@@ -1,0 +1,54 @@
+{
+  "description": "Text + tool-call + tool-result + more text",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "Let me look that up." } },
+    {
+      "kind": "tool-call",
+      "payload": { "toolCallId": "tc-1", "toolName": "search", "input": { "query": "weather" } }
+    },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "tool-calls" } },
+    {
+      "kind": "tool-result",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "search",
+        "output": "Sunny, 72°F",
+        "isError": false
+      }
+    },
+    { "kind": "step-started", "payload": { "stepIndex": 1 } },
+    { "kind": "text-delta", "payload": { "delta": "The weather is sunny and 72°F." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 1, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "text", "text": "Let me look that up." },
+        {
+          "type": "tool-call",
+          "toolCallId": "tc-1",
+          "toolName": "search",
+          "input": { "query": "weather" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool-result",
+          "toolCallId": "tc-1",
+          "toolName": "search",
+          "output": "Sunny, 72°F",
+          "isError": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "The weather is sunny and 72°F." }]
+    }
+  ]
+}

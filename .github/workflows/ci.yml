@@ -38,3 +38,4 @@ jobs:
         run: |
           cd packages/agent-sdk && npm pack --dry-run
           cd ../agent-stream && npm pack --dry-run
+          cd ../agent-ledger && npm pack --dry-run

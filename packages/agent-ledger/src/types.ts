@@ -1,0 +1,295 @@
+/**
+ * Core type definitions for agent-ledger.
+ *
+ * @module
+ */
+
+// ---------------------------------------------------------------------------
+// Canonical Parts
+// ---------------------------------------------------------------------------
+
+/**
+ * A text segment within a canonical message.
+ *
+ * @category Types
+ */
+export interface TextPart {
+  readonly type: "text";
+  readonly text: string;
+}
+
+/**
+ * A reasoning/thinking segment within a canonical message.
+ *
+ * @category Types
+ */
+export interface ReasoningPart {
+  readonly type: "reasoning";
+  readonly text: string;
+}
+
+/**
+ * A tool invocation recorded within a canonical message.
+ *
+ * @category Types
+ */
+export interface ToolCallPart {
+  readonly type: "tool-call";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly input: unknown;
+}
+
+/**
+ * A tool result recorded as part of a tool-role message.
+ *
+ * @category Types
+ */
+export interface ToolResultPart {
+  readonly type: "tool-result";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly output: unknown;
+  readonly isError: boolean;
+}
+
+/**
+ * A file attachment within a canonical message.
+ *
+ * @category Types
+ */
+export interface FilePart {
+  readonly type: "file";
+  readonly mimeType: string;
+  readonly url: string;
+  readonly name?: string;
+}
+
+/**
+ * Discriminated union of all canonical message parts.
+ *
+ * @category Types
+ */
+export type CanonicalPart = TextPart | ReasoningPart | ToolCallPart | ToolResultPart | FilePart;
+
+// ---------------------------------------------------------------------------
+// CanonicalMessage
+// ---------------------------------------------------------------------------
+
+/**
+ * A normalized message in a conversation transcript.
+ *
+ * Messages are immutable once committed. The `id` is a ULID that
+ * provides both uniqueness and temporal ordering.
+ *
+ * @category Types
+ */
+export interface CanonicalMessage {
+  /** ULID — unique within the thread */
+  readonly id: string;
+  /** Parent message ID, or null for root messages */
+  readonly parentMessageId: string | null;
+  /** The role of the message author */
+  readonly role: "user" | "assistant" | "system" | "tool";
+  /** Ordered content parts */
+  readonly parts: readonly CanonicalPart[];
+  /** ISO 8601 timestamp of when the message was created */
+  readonly createdAt: string;
+  /** Extensible metadata (always includes `schemaVersion: 1`) */
+  readonly metadata: Record<string, unknown>;
+}
+
+// ---------------------------------------------------------------------------
+// RunRecord
+// ---------------------------------------------------------------------------
+
+/**
+ * Lifecycle status of a run.
+ *
+ * - `created` — Run registered but not yet streaming
+ * - `streaming` — Actively receiving events
+ * - `committed` — Successfully finalized with messages
+ * - `failed` — Finalized due to an error
+ * - `cancelled` — Finalized due to user cancellation
+ * - `superseded` — Replaced by a newer run at the same fork point
+ *
+ * @category Types
+ */
+export type RunStatus =
+  | "created"
+  | "streaming"
+  | "committed"
+  | "failed"
+  | "cancelled"
+  | "superseded";
+
+/**
+ * A record of a single generation run within a thread.
+ *
+ * @category Types
+ */
+export interface RunRecord {
+  /** ULID — unique run identifier */
+  readonly runId: string;
+  /** Thread this run belongs to */
+  readonly threadId: string;
+  /** Stream ID in the underlying IEventStore (format: "run:{runId}") */
+  readonly streamId: string;
+  /** If this run is a regeneration, the message it forks from */
+  readonly forkFromMessageId: string | null;
+  /** Current lifecycle status */
+  readonly status: RunStatus;
+  /** ISO 8601 creation timestamp */
+  readonly createdAt: string;
+  /** ISO 8601 finalization timestamp, or null if still active */
+  readonly finishedAt: string | null;
+  /** Number of events stored in the event stream */
+  readonly eventCount: number;
+}
+
+// ---------------------------------------------------------------------------
+// Operation Types
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for beginning a new run.
+ *
+ * @category Types
+ */
+export interface BeginRunOptions {
+  /** Thread to create the run in */
+  threadId: string;
+  /** Optional fork point for regeneration */
+  forkFromMessageId?: string;
+}
+
+/**
+ * Options for finalizing a run.
+ *
+ * @category Types
+ */
+export interface FinalizeRunOptions {
+  /** The run to finalize */
+  runId: string;
+  /** Terminal status */
+  status: "committed" | "failed" | "cancelled";
+  /** Messages produced by the accumulator (required for "committed" status) */
+  messages?: CanonicalMessage[];
+}
+
+/**
+ * Result of finalizing a run.
+ *
+ * @category Types
+ */
+export interface FinalizeResult {
+  /** Whether the finalization succeeded */
+  committed: boolean;
+  /** Run IDs that were superseded as a result of this finalization */
+  supersededRunIds: string[];
+}
+
+/**
+ * Options for retrieving a transcript.
+ *
+ * @category Types
+ */
+export interface GetTranscriptOptions {
+  /** Thread to retrieve from */
+  threadId: string;
+  /** Branch resolution strategy */
+  branch?: "active" | "all" | { path: string[] };
+}
+
+// ---------------------------------------------------------------------------
+// Reconciliation Types
+// ---------------------------------------------------------------------------
+
+/**
+ * Information about a stale (potentially abandoned) run.
+ *
+ * @category Types
+ */
+export interface StaleRunInfo {
+  /** The stale run record */
+  run: RunRecord;
+  /** How long the run has been stale (ms) */
+  staleDurationMs: number;
+}
+
+/**
+ * Options for recovering a stale run.
+ *
+ * @category Types
+ */
+export interface RecoverRunOptions {
+  /** The run to recover */
+  runId: string;
+  /** Recovery action to take */
+  action: "fail" | "cancel";
+}
+
+/**
+ * Result of recovering a stale run.
+ *
+ * @category Types
+ */
+export interface RecoverResult {
+  /** The run ID that was recovered */
+  runId: string;
+  /** The previous status before recovery */
+  previousStatus: RunStatus;
+  /** The new status after recovery */
+  newStatus: RunStatus;
+}
+
+// ---------------------------------------------------------------------------
+// Context Builder Types (experimental)
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for building context from a transcript.
+ *
+ * @experimental
+ * @category Types
+ */
+export interface ContextBuilderOptions {
+  /** Thread to build context from */
+  threadId: string;
+  /** Maximum number of messages to include */
+  maxMessages?: number;
+  /** Whether to include tool results */
+  includeToolResults?: boolean;
+  /** Whether to include reasoning parts */
+  includeReasoning?: boolean;
+}
+
+/**
+ * Provenance metadata tracking where context was sourced from.
+ *
+ * @experimental
+ * @category Types
+ */
+export interface ProvenanceMetadata {
+  /** Thread the context was built from */
+  threadId: string;
+  /** Number of messages included */
+  messageCount: number;
+  /** ID of the earliest message included */
+  firstMessageId: string | null;
+  /** ID of the latest message included */
+  lastMessageId: string | null;
+}
+
+/**
+ * The result of building context from a transcript.
+ *
+ * @experimental
+ * @category Types
+ */
+export interface BuiltContext {
+  /** Messages formatted for consumption */
+  messages: CanonicalMessage[];
+  /** Provenance tracking */
+  provenance: ProvenanceMetadata;
+}

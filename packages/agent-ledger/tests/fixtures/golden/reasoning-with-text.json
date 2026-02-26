@@ -1,0 +1,18 @@
+{
+  "description": "Reasoning interleaved with text",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "reasoning", "payload": { "text": "The user wants to know about TypeScript." } },
+    { "kind": "text-delta", "payload": { "delta": "TypeScript is a superset of JavaScript." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "reasoning", "text": "The user wants to know about TypeScript." },
+        { "type": "text", "text": "TypeScript is a superset of JavaScript." }
+      ]
+    }
+  ]
+}

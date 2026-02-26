@@ -1,0 +1,22 @@
+{
+  "description": "Alternating reasoning and text",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "reasoning", "payload": { "text": "Let me think about this first." } },
+    { "kind": "text-delta", "payload": { "delta": "Here's my answer: " } },
+    { "kind": "reasoning", "payload": { "text": "Actually, let me reconsider." } },
+    { "kind": "text-delta", "payload": { "delta": "The correct answer is 42." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "reasoning", "text": "Let me think about this first." },
+        { "type": "text", "text": "Here's my answer: " },
+        { "type": "reasoning", "text": "Actually, let me reconsider." },
+        { "type": "text", "text": "The correct answer is 42." }
+      ]
+    }
+  ]
+}

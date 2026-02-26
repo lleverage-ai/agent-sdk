@@ -1,0 +1,84 @@
+{
+  "description": "Multiple step cycles",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "First response." } },
+    {
+      "kind": "tool-call",
+      "payload": { "toolCallId": "tc-1", "toolName": "calc", "input": { "expr": "2+2" } }
+    },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "tool-calls" } },
+    {
+      "kind": "tool-result",
+      "payload": { "toolCallId": "tc-1", "toolName": "calc", "output": 4, "isError": false }
+    },
+    { "kind": "step-started", "payload": { "stepIndex": 1 } },
+    { "kind": "text-delta", "payload": { "delta": "The answer is 4." } },
+    {
+      "kind": "tool-call",
+      "payload": { "toolCallId": "tc-2", "toolName": "calc", "input": { "expr": "4*3" } }
+    },
+    { "kind": "step-finished", "payload": { "stepIndex": 1, "finishReason": "tool-calls" } },
+    {
+      "kind": "tool-result",
+      "payload": { "toolCallId": "tc-2", "toolName": "calc", "output": 12, "isError": false }
+    },
+    { "kind": "step-started", "payload": { "stepIndex": 2 } },
+    { "kind": "text-delta", "payload": { "delta": "And 4*3 = 12." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 2, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "text", "text": "First response." },
+        {
+          "type": "tool-call",
+          "toolCallId": "tc-1",
+          "toolName": "calc",
+          "input": { "expr": "2+2" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool-result",
+          "toolCallId": "tc-1",
+          "toolName": "calc",
+          "output": 4,
+          "isError": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "text", "text": "The answer is 4." },
+        {
+          "type": "tool-call",
+          "toolCallId": "tc-2",
+          "toolName": "calc",
+          "input": { "expr": "4*3" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool-result",
+          "toolCallId": "tc-2",
+          "toolName": "calc",
+          "output": 12,
+          "isError": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "And 4*3 = 12." }]
+    }
+  ]
+}

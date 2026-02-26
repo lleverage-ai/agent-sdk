@@ -1,0 +1,25 @@
+{
+  "description": "Two runs sharing a fork point (branched regeneration)",
+  "run1Events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "First attempt." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "stop" } }
+  ],
+  "run2Events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "Second attempt (regenerated)." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "stop" } }
+  ],
+  "run1ExpectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "First attempt." }]
+    }
+  ],
+  "run2ExpectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "Second attempt (regenerated)." }]
+    }
+  ]
+}
