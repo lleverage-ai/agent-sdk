@@ -1,0 +1,76 @@
+{
+  "name": "@lleverage-ai/agent-stream",
+  "version": "0.0.1",
+  "description": "Realtime event transport and replay for AI agent conversations",
+  "type": "module",
+  "license": "MIT",
+  "author": "Lleverage AI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lleverage-ai/agent-sdk.git",
+    "directory": "packages/agent-stream"
+  },
+  "homepage": "https://github.com/lleverage-ai/agent-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/lleverage-ai/agent-sdk/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "event-sourcing",
+    "streaming",
+    "realtime",
+    "replay",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./stores/memory": {
+      "types": "./dist/stores/memory.d.ts",
+      "import": "./dist/stores/memory.js",
+      "default": "./dist/stores/memory.js"
+    },
+    "./stores/sqlite": {
+      "types": "./dist/stores/sqlite.d.ts",
+      "import": "./dist/stores/sqlite.js",
+      "default": "./dist/stores/sqlite.js"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "default": "./dist/server/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist coverage"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18",
+    "zod": "^4.3.6"
+  }
+}

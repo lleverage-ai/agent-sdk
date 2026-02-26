@@ -1,87 +1,26 @@
 {
-  "name": "@lleverage-ai/agent-sdk",
-  "version": "0.0.13",
-  "description": "A TypeScript framework for building AI agents using the Vercel AI SDK v6",
-  "type": "module",
-  "license": "MIT",
-  "author": "Lleverage AI",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/lleverage-ai/agent-sdk.git"
-  },
-  "homepage": "https://github.com/lleverage-ai/agent-sdk#readme",
-  "bugs": {
-    "url": "https://github.com/lleverage-ai/agent-sdk/issues"
-  },
-  "keywords": [
-    "ai",
-    "agent",
-    "llm",
-    "ai-sdk",
-    "vercel-ai",
-    "typescript",
-    "mcp",
-    "model-context-protocol",
-    "tools",
-    "plugins"
-  ],
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "sideEffects": false,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
-    "./testing": {
-      "types": "./dist/testing/index.d.ts",
-      "import": "./dist/testing/index.js",
-      "default": "./dist/testing/index.js"
-    }
-  },
-  "files": [
-    "dist"
+  "name": "@lleverage-ai/agent-sdk-monorepo",
+  "private": true,
+  "workspaces": [
+    "packages/*"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
-    "type-check": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage",
-    "lint": "biome lint .",
-    "lint:fix": "biome lint --write .",
-    "format": "biome format --write .",
-    "format:check": "biome format .",
+    "build": "bun run --filter '*' build",
+    "test": "bun run --filter '*' test",
+    "type-check": "bun run --filter '*' type-check",
     "check": "biome check .",
     "check:fix": "biome check --write .",
-    "clean": "rm -rf dist coverage docs",
-    "prepublishOnly": "npm run clean && npm run check && npm run test && npm run build",
+    "format": "biome format --write .",
+    "clean": "bun run --filter '*' clean",
     "prepare": "simple-git-hooks"
   },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.26.0",
-    "ajv": "^8.17.1",
-    "yaml": "^2.8.2"
-  },
-  "peerDependencies": {
-    "ai": "^6.0.0",
-    "zod": "^4.0.0"
-  },
   "devDependencies": {
-    "@ai-sdk/anthropic": "^3.0.36",
     "@biomejs/biome": "^2.3.14",
     "@tsconfig/node18": "^18.2.4",
     "@types/json-schema": "^7.0.15",
     "@types/node": "^25.1.0",
-    "ai": "^6.0.78",
     "simple-git-hooks": "^2.11.1",
-    "typescript": "^5.9.2",
-    "vitest": "^4.0.18",
-    "zod": "^4.3.6"
+    "typescript": "^5.9.2"
   },
   "simple-git-hooks": {
     "pre-push": "bun run check && bun run test"

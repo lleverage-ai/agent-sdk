@@ -43,7 +43,14 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Publish to npm
+      - name: Publish agent-sdk
+        working-directory: packages/agent-sdk
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish agent-stream
+        working-directory: packages/agent-stream
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
