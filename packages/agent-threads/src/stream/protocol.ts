@@ -31,23 +31,23 @@ export type ProtocolError = (typeof PROTOCOL_ERRORS)[keyof typeof PROTOCOL_ERROR
 // ── Client → Server ──
 
 export interface HelloMessage {
-  type: "hello";
-  version: number;
+  readonly type: "hello";
+  readonly version: number;
 }
 
 export interface SubscribeMessage {
-  type: "subscribe";
-  streamId: string;
-  afterSeq?: number;
+  readonly type: "subscribe";
+  readonly streamId: string;
+  readonly afterSeq?: number;
 }
 
 export interface UnsubscribeMessage {
-  type: "unsubscribe";
-  streamId: string;
+  readonly type: "unsubscribe";
+  readonly streamId: string;
 }
 
 export interface PongMessage {
-  type: "pong";
+  readonly type: "pong";
 }
 
 export type ClientMessage = HelloMessage | SubscribeMessage | UnsubscribeMessage | PongMessage;
@@ -55,32 +55,32 @@ export type ClientMessage = HelloMessage | SubscribeMessage | UnsubscribeMessage
 // ── Server → Client ──
 
 export interface ServerHelloMessage {
-  type: "server-hello";
-  version: number;
+  readonly type: "server-hello";
+  readonly version: number;
 }
 
 export interface EventMessage<TEvent = unknown> {
-  type: "event";
-  streamId: string;
-  event: StoredEvent<TEvent>;
+  readonly type: "event";
+  readonly streamId: string;
+  readonly event: StoredEvent<TEvent>;
 }
 
 export interface ReplayEndMessage {
-  type: "replay-end";
-  streamId: string;
-  lastReplaySeq: number;
+  readonly type: "replay-end";
+  readonly streamId: string;
+  readonly lastReplaySeq: number;
 }
 
 export interface PingMessage {
-  type: "ping";
+  readonly type: "ping";
 }
 
 export interface ErrorMessage {
-  type: "error";
-  code: ProtocolError;
-  message: string;
+  readonly type: "error";
+  readonly code: ProtocolError;
+  readonly message: string;
   /** Stream ID for stream-scoped errors (e.g. REPLAY_FAILED). */
-  streamId?: string;
+  readonly streamId?: string;
 }
 
 export type ServerMessage<TEvent = unknown> =
@@ -176,6 +176,15 @@ function parseRawMessage(data: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * Create a truncated preview of raw message data for diagnostic error messages.
+ *
+ * @internal
+ */
+export function messagePreview(data: string, maxLength = 100): string {
+  return data.length > maxLength ? `${data.slice(0, maxLength)}…` : data;
+}
+
 function decodeClientMessageFromParsed(parsed: Record<string, unknown>): ClientMessage | null {
   switch (parsed.type) {
     case "hello":
@@ -256,15 +265,12 @@ function decodeServerMessageFromParsed(parsed: Record<string, unknown>): ServerM
       ) {
         return null;
       }
-      const errorMsg: ErrorMessage = {
-        type: "error",
+      return {
+        type: "error" as const,
         code: parsed.code as ProtocolError,
         message: parsed.message,
+        ...(typeof parsed.streamId === "string" && { streamId: parsed.streamId }),
       };
-      if (typeof parsed.streamId === "string") {
-        errorMsg.streamId = parsed.streamId;
-      }
-      return errorMsg;
     }
 
     default:

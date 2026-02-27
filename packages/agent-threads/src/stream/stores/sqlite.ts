@@ -45,14 +45,14 @@ export interface SQLiteStatement {
  * @category Stores
  */
 export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
-  private db: SQLiteDatabase;
+  private readonly db: SQLiteDatabase;
 
   // Cached prepared statements
-  private stmtHead: SQLiteStatement;
-  private stmtInsert: SQLiteStatement;
-  private stmtReplay: SQLiteStatement;
-  private stmtReplayWithLimit: SQLiteStatement;
-  private stmtDelete: SQLiteStatement;
+  private readonly stmtHead: SQLiteStatement;
+  private readonly stmtInsert: SQLiteStatement;
+  private readonly stmtReplay: SQLiteStatement;
+  private readonly stmtReplayWithLimit: SQLiteStatement;
+  private readonly stmtDelete: SQLiteStatement;
 
   constructor(db: SQLiteDatabase) {
     this.db = db;

@@ -31,33 +31,30 @@ import type { ILedgerStore } from "./ledger-store.js";
  *
  * Prepared statements are cached for hot-path operations.
  *
- * NOTE: The `exec` method used here is the SQLite database exec (run raw SQL),
- * NOT child_process.exec. No shell commands are involved.
- *
  * @category Stores
  */
 export class SQLiteLedgerStore implements ILedgerStore {
-  private db: SQLiteDatabase;
+  private readonly db: SQLiteDatabase;
 
   // Cached prepared statements
-  private stmtInsertRun: SQLiteStatement;
-  private stmtGetRun: SQLiteStatement;
-  private stmtListRuns: SQLiteStatement;
-  private stmtActivateRun: SQLiteStatement;
-  private stmtUpdateRunStatus: SQLiteStatement;
-  private stmtInsertMsg: SQLiteStatement;
-  private stmtInsertPart: SQLiteStatement;
+  private readonly stmtInsertRun: SQLiteStatement;
+  private readonly stmtGetRun: SQLiteStatement;
+  private readonly stmtListRuns: SQLiteStatement;
+  private readonly stmtActivateRun: SQLiteStatement;
+  private readonly stmtUpdateRunStatus: SQLiteStatement;
+  private readonly stmtInsertMsg: SQLiteStatement;
+  private readonly stmtInsertPart: SQLiteStatement;
   // Cached statements for finalizeRun transaction
-  private stmtGetForkOrdinal: SQLiteStatement;
-  private stmtDeletePartsAfterFork: SQLiteStatement;
-  private stmtDeleteMessagesAfterFork: SQLiteStatement;
-  private stmtFindSupersedableRuns: SQLiteStatement;
-  private stmtSupersedeRun: SQLiteStatement;
-  private stmtMaxOrdinal: SQLiteStatement;
+  private readonly stmtGetForkOrdinal: SQLiteStatement;
+  private readonly stmtDeletePartsAfterFork: SQLiteStatement;
+  private readonly stmtDeleteMessagesAfterFork: SQLiteStatement;
+  private readonly stmtFindSupersedableRuns: SQLiteStatement;
+  private readonly stmtSupersedeRun: SQLiteStatement;
+  private readonly stmtMaxOrdinal: SQLiteStatement;
   // Cached statements for deleteThread transaction
-  private stmtDeleteThreadParts: SQLiteStatement;
-  private stmtDeleteThreadMessages: SQLiteStatement;
-  private stmtDeleteThreadRuns: SQLiteStatement;
+  private readonly stmtDeleteThreadParts: SQLiteStatement;
+  private readonly stmtDeleteThreadMessages: SQLiteStatement;
+  private readonly stmtDeleteThreadRuns: SQLiteStatement;
 
   constructor(db: SQLiteDatabase) {
     this.db = db;

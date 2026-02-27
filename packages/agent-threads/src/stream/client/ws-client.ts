@@ -1,6 +1,11 @@
 import { TypedEmitter } from "../emitter.js";
 import type { ClientMessage, ReplayEndMessage } from "../protocol.js";
-import { decodeServerMessage, encodeMessage, PROTOCOL_VERSION } from "../protocol.js";
+import {
+  decodeServerMessage,
+  encodeMessage,
+  messagePreview,
+  PROTOCOL_VERSION,
+} from "../protocol.js";
 import type { Logger, StoredEvent } from "../types.js";
 import type { IWebSocket, WebSocketConstructor } from "../ws-types.js";
 import { WS_READY_STATE } from "../ws-types.js";
@@ -358,7 +363,10 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   private handleMessage(data: string): void {
     const msg = decodeServerMessage(data);
     if (!msg) {
-      this.emit("error", new Error("Received invalid server message"));
+      this.emit(
+        "error",
+        new Error(`Received invalid server message (data: ${messagePreview(data)})`),
+      );
       return;
     }
 

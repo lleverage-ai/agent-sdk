@@ -251,6 +251,10 @@ export function createAccumulatorProjector(
 /**
  * Convenience function to accumulate stored events into canonical messages.
  *
+ * After reducing all events, any in-progress assistant message is flushed
+ * (text buffer coalesced, non-empty message committed) so the returned
+ * array includes partial messages from incomplete steps.
+ *
  * @param events - Stored stream events to reduce
  * @param idGenerator - Optional custom ID generator
  * @returns The resulting canonical messages

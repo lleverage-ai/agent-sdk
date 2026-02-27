@@ -10,9 +10,9 @@ import type { z } from "zod";
  */
 export interface StreamEvent<TKind extends string = string, TPayload = unknown> {
   /** Discriminator tag identifying the event type */
-  kind: TKind;
+  readonly kind: TKind;
   /** Event-specific data */
-  payload: TPayload;
+  readonly payload: TPayload;
 }
 
 /**

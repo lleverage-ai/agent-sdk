@@ -184,6 +184,11 @@ export function isTerminalRunStatus(status: RunStatus): status is TerminalRunSta
 /**
  * A record of a single generation run within a thread.
  *
+ * Invariants:
+ * - `finishedAt` is `null` when `status` is an {@link ActiveRunStatus}
+ * - `finishedAt` is a non-null ISO 8601 string when `status` is a {@link TerminalRunStatus}
+ * - `messageCount` is 0 while active; set on finalization
+ *
  * @category Types
  */
 export interface RunRecord {

@@ -2,6 +2,7 @@ import type { EventMessage, ProtocolError, ServerMessage } from "../protocol.js"
 import {
   decodeClientMessage,
   encodeMessage,
+  messagePreview,
   PROTOCOL_ERRORS,
   PROTOCOL_VERSION,
 } from "../protocol.js";
@@ -164,7 +165,11 @@ export class WsServer {
   private handleMessage(client: ClientState, data: string): void {
     const clientMsg = decodeClientMessage(data);
     if (!clientMsg) {
-      this.sendError(client, PROTOCOL_ERRORS.INVALID_MESSAGE, "Invalid message format");
+      this.sendError(
+        client,
+        PROTOCOL_ERRORS.INVALID_MESSAGE,
+        `Invalid message format (data: ${messagePreview(data)})`,
+      );
       return;
     }
 

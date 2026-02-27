@@ -42,7 +42,10 @@ export interface ILedgerStore {
    * For "committed" status, messages are stored and any prior committed
    * runs at the same fork point are superseded atomically.
    *
-   * Idempotent: calling with the same runId and status is a no-op.
+   * Idempotent: calling with the same runId and matching status returns
+   * `{ committed: true, supersededRunIds: [] }` without side effects.
+   * Calling on an already-terminal run with a *different* status returns
+   * `{ committed: false, supersededRunIds: [] }`.
    *
    * @param options - Finalization options including messages
    * @returns Result indicating success and any superseded runs

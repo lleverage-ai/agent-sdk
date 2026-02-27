@@ -182,4 +182,43 @@ describe("SQLiteEventStore", () => {
     expect(db.execHistory).toContain("BEGIN IMMEDIATE");
     expect(db.execHistory).toContain("COMMIT");
   });
+
+  it("rolls back on append failure and preserves original error", async () => {
+    const db = new MockSQLiteDatabase();
+    const store = new SQLiteEventStore<{ value: number }>(db);
+
+    // Monkey-patch exec to fail on COMMIT to simulate a write failure
+    const origExec = db.exec.bind(db);
+    db.exec = (sql: string) => {
+      if (sql.trim() === "COMMIT") {
+        throw new Error("disk full");
+      }
+      origExec(sql);
+    };
+
+    // The original "disk full" error should propagate, not a rollback error
+    await expect(store.append("s1", [{ value: 1 }])).rejects.toThrow("disk full");
+
+    // ROLLBACK should have been attempted
+    db.exec = origExec;
+    expect(db.execHistory).toContain("ROLLBACK");
+  });
+
+  it("throws on replay when stored JSON is corrupt", async () => {
+    const db = new MockSQLiteDatabase();
+    const store = new SQLiteEventStore<{ value: number }>(db);
+
+    // Insert a valid event first
+    await store.append("s1", [{ value: 1 }]);
+
+    // Corrupt the stored event JSON by directly modifying the table
+    const table = (db as unknown as { tables: Map<string, Record<string, unknown>[]> }).tables.get(
+      "events",
+    );
+    if (table && table[0]) {
+      table[0]["event"] = "{broken json";
+    }
+
+    await expect(store.replay("s1")).rejects.toThrow("Failed to parse event JSON");
+  });
 });
