@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { SQLiteDatabase, SQLiteStatement } from "../../src/stream/stores/sqlite.js";
+import type { SQLiteDatabase, SQLiteStatement } from "../../src/_shared/sqlite-types.js";
 import { SQLiteEventStore } from "../../src/stream/stores/sqlite.js";
 import { eventStoreConformanceTests } from "./conformance/event-store.conformance.js";
 

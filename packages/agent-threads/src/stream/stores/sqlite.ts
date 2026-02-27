@@ -1,37 +1,10 @@
 import type { IEventStore, Logger, ReplayOptions, StoredEvent } from "../types.js";
 import { defaultLogger } from "../types.js";
 
-/**
- * Minimal interface for a synchronous SQLite database.
- *
- * Compatible with both `bun:sqlite` and `better-sqlite3`.
- * The event store accepts an injected database instance rather than
- * bundling a specific SQLite driver.
- *
- * For best performance, enable WAL mode on the database before passing
- * it to a store:
- *
- * ```ts
- * db.exec("PRAGMA journal_mode=WAL");
- * ```
- *
- * @category Stores
- */
-export interface SQLiteDatabase {
-  exec(sql: string): void;
-  prepare(sql: string): SQLiteStatement;
-}
+// SQLite infrastructure — canonical definitions live in _shared/
+export type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
 
-/**
- * Minimal interface for a prepared SQLite statement.
- *
- * @category Stores
- */
-export interface SQLiteStatement {
-  run(...params: unknown[]): void;
-  all(...params: unknown[]): Record<string, unknown>[];
-  get(...params: unknown[]): Record<string, unknown> | undefined;
-}
+import type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
 
 /**
  * SQLite-backed event store.

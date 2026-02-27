@@ -1,5 +1,5 @@
-import type { Logger } from "../stream/types.js";
-import { defaultLogger } from "../stream/types.js";
+import type { Logger } from "../_shared/types.js";
+import { defaultLogger } from "../_shared/types.js";
 import type { ILedgerStore } from "./stores/ledger-store.js";
 import type { RecoverResult, StaleRunInfo } from "./types.js";
 

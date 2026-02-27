@@ -1,4 +1,4 @@
-import type { SQLiteDatabase, SQLiteStatement } from "../../../src/stream/stores/sqlite.js";
+import type { SQLiteDatabase, SQLiteStatement } from "../../../src/_shared/sqlite-types.js";
 
 import { CrashSimulationError } from "./crashing-ledger-store.js";
 

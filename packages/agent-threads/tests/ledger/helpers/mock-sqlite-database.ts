@@ -1,4 +1,4 @@
-import type { SQLiteDatabase, SQLiteStatement } from "../../../src/stream/stores/sqlite.js";
+import type { SQLiteDatabase, SQLiteStatement } from "../../../src/_shared/sqlite-types.js";
 
 /**
  * In-memory SQLite mock that simulates the synchronous SQLite API

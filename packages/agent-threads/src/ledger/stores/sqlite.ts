@@ -1,6 +1,6 @@
-import type { SQLiteDatabase, SQLiteStatement } from "../../stream/stores/sqlite.js";
-import type { Logger } from "../../stream/types.js";
-import { defaultLogger } from "../../stream/types.js";
+import type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
+import type { Logger } from "../../_shared/types.js";
+import { defaultLogger } from "../../_shared/types.js";
 
 import type {
   BeginRunOptions,

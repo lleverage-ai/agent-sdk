@@ -1,6 +1,7 @@
+import type { Logger } from "../_shared/types.js";
+import { defaultLogger } from "../_shared/types.js";
 import type { StreamEvent } from "../stream/stream-event.js";
-import type { IEventStore, Logger, StoredEvent } from "../stream/types.js";
-import { defaultLogger } from "../stream/types.js";
+import type { IEventStore, StoredEvent } from "../stream/types.js";
 
 import { accumulateEvents } from "./accumulator.js";
 import type { ILedgerStore } from "./stores/ledger-store.js";
