@@ -91,6 +91,9 @@ function commitCurrentMessage(state: AccumulatorState): void {
 function createReducer(
   idGen: IdGenerator,
 ): (state: AccumulatorState, event: StoredEvent<StreamEvent>) => AccumulatorState {
+  // This reducer intentionally mutates `state` in place for throughput.
+  // Projector#getState() returns cloned snapshots, so callers cannot mutate
+  // the projector's internal accumulator state by reference.
   return (state: AccumulatorState, event: StoredEvent<StreamEvent>): AccumulatorState => {
     const { kind, payload } = event.event;
 
