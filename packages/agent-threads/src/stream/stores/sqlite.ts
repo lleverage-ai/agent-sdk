@@ -4,6 +4,7 @@ import { defaultLogger } from "../types.js";
 // SQLite infrastructure — canonical definitions live in _shared/
 export type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
 
+// Separate import needed — export type does not make symbols available for local use
 import type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
 
 /**
