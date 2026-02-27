@@ -1,7 +1,7 @@
 import { TypedEmitter } from "../emitter.js";
 import type { ClientMessage, ReplayEndMessage } from "../protocol.js";
 import { decodeServerMessage, encodeMessage, PROTOCOL_VERSION } from "../protocol.js";
-import type { StoredEvent } from "../types.js";
+import type { Logger, StoredEvent } from "../types.js";
 import type { IWebSocket, WebSocketConstructor } from "../ws-types.js";
 import { WS_READY_STATE } from "../ws-types.js";
 
@@ -21,6 +21,8 @@ export interface WsClientOptions {
   url: string;
   /** WebSocket constructor — defaults to `globalThis.WebSocket`. */
   WebSocket?: WebSocketConstructor;
+  /** Optional logger for routing diagnostics through the host application. */
+  logger?: Logger;
   /** Enable automatic reconnection. Default: true */
   reconnect?: boolean;
   /** Maximum reconnection attempts. Default: Infinity */
@@ -65,6 +67,9 @@ export type SubscriptionEvent<TEvent> = StoredEvent<TEvent> | PromotionEvent;
 /**
  * Events emitted by WsClient.
  *
+ * Must be a `type` alias (not `interface`) so TypeScript provides the
+ * implicit index signature required by `TypedEmitter<Record<string, ...>>`.
+ *
  * @category Client
  */
 export type WsClientEvents = {
@@ -81,6 +86,8 @@ interface ActiveSubscription {
   lastReplaySeq: number;
   push: (item: SubscriptionEvent<unknown>) => void;
   end: () => void;
+  /** Tracked AbortSignal handler for cleanup on unsubscribe */
+  abortHandler: { signal: AbortSignal; handler: () => void } | null;
 }
 
 /**
@@ -109,7 +116,7 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   private handshakeComplete = false;
 
   constructor(options: WsClientOptions) {
-    super();
+    super(options.logger);
     this.url = options.url;
     const wsCtor =
       options.WebSocket ?? (globalThis as { WebSocket?: WebSocketConstructor }).WebSocket;
@@ -185,6 +192,10 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
       }
     };
 
+    if (this.subscriptions.has(streamId)) {
+      throw new Error(`Already subscribed to stream "${streamId}". Call unsubscribe() first.`);
+    }
+
     const sub: ActiveSubscription = {
       streamId,
       lastConfirmedSeq: afterSeq,
@@ -192,6 +203,7 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
       lastReplaySeq: 0,
       push,
       end,
+      abortHandler: null,
     };
 
     this.subscriptions.set(streamId, sub);
@@ -207,6 +219,7 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
         this.unsubscribe(streamId);
       };
       signal.addEventListener("abort", onAbort, { once: true });
+      sub.abortHandler = { signal, handler: onAbort };
     }
 
     const self = this;
@@ -251,6 +264,10 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   unsubscribe(streamId: string): void {
     const sub = this.subscriptions.get(streamId);
     if (!sub) return;
+    if (sub.abortHandler) {
+      sub.abortHandler.signal.removeEventListener("abort", sub.abortHandler.handler);
+      sub.abortHandler = null;
+    }
     sub.end();
     this.subscriptions.delete(streamId);
     if (this.handshakeComplete) {

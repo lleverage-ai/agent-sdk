@@ -24,10 +24,12 @@ function encodeTime(now: number, len: number): string {
 }
 
 function encodeRandom(len: number): string {
+  const bytes = new Uint8Array(len);
+  globalThis.crypto.getRandomValues(bytes);
   let str = "";
   for (let i = 0; i < len; i++) {
-    const rand = Math.floor(Math.random() * ENCODING_LEN);
-    str += ENCODING[rand]!;
+    // No modulo bias: 256 is evenly divisible by 32 (ENCODING_LEN)
+    str += ENCODING[bytes[i]! % ENCODING_LEN]!;
   }
   return str;
 }

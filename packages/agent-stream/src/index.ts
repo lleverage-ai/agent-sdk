@@ -1,5 +1,20 @@
+/**
+ * @lleverage-ai/agent-stream — Realtime event transport and replay.
+ *
+ * This barrel exports core types, the Projector, protocol helpers, and event stores.
+ * WebSocket server and client are available via subpath imports:
+ *
+ * - `@lleverage-ai/agent-stream/server` — {@link WsServer}
+ * - `@lleverage-ai/agent-stream/client` — {@link WsClient}
+ * - `@lleverage-ai/agent-stream/stores/memory` — {@link InMemoryEventStore}
+ * - `@lleverage-ai/agent-stream/stores/sqlite` — {@link SQLiteEventStore}
+ *
+ * @module
+ */
+
 // Types
-export type { IEventStore, StoredEvent, ReplayOptions, ProjectorConfig } from "./types.js";
+export type { IEventStore, StoredEvent, ReplayOptions, ProjectorConfig, Logger } from "./types.js";
+export { defaultLogger } from "./types.js";
 
 // Stream events
 export type { StreamEvent, CoreEventKind } from "./stream-event.js";

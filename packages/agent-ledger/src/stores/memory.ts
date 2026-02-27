@@ -139,12 +139,12 @@ export class InMemoryLedgerStore implements ILedgerStore {
     const messages = this.messages.get(options.threadId) ?? [];
     const branch = options.branch ?? "active";
 
-    if (branch === "all") {
-      return [...messages];
+    if (typeof branch === "object") {
+      throw new Error("Branch path resolution is not yet implemented");
     }
 
-    // "active" branch: return messages from the active transcript path
-    // For simplicity, this returns all non-superseded messages in order
+    // "active" and "all" currently return the same result — the active
+    // transcript already reflects supersession from finalizeRun().
     return [...messages];
   }
 

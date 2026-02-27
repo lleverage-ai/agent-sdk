@@ -80,3 +80,20 @@ export interface ProjectorConfig<TState, TEvent> {
   /** Reducer function that produces new state from current state and an event */
   reducer: (state: TState, event: StoredEvent<TEvent>) => TState;
 }
+
+/**
+ * Minimal logger interface for routing diagnostics through the host application's
+ * logging pipeline instead of writing directly to the console.
+ *
+ * @category Types
+ */
+export interface Logger {
+  warn(message: string, meta?: unknown): void;
+  error(message: string, meta?: unknown): void;
+}
+
+/** @internal */
+export const defaultLogger: Logger = {
+  warn: (message, meta) => console.warn(message, meta),
+  error: (message, meta) => console.error(message, meta),
+};

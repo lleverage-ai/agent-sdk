@@ -1,3 +1,5 @@
+import type { Logger } from "@lleverage-ai/agent-stream";
+import { defaultLogger } from "@lleverage-ai/agent-stream";
 import type { ILedgerStore } from "./stores/ledger-store.js";
 import type { RecoverResult, StaleRunInfo } from "./types.js";
 
@@ -55,8 +57,9 @@ export async function listStaleRuns(
 export async function recoverAllStaleRuns(
   store: ILedgerStore,
   action: "fail" | "cancel",
-  options?: ListStaleRunsOptions,
+  options?: ListStaleRunsOptions & { logger?: Logger },
 ): Promise<RecoverResult[]> {
+  const logger = options?.logger ?? defaultLogger;
   const staleRuns = await listStaleRuns(store, options);
   const results: RecoverResult[] = [];
 
@@ -68,7 +71,7 @@ export async function recoverAllStaleRuns(
       });
       results.push(result);
     } catch (error) {
-      console.error("[agent-ledger] Failed to recover stale run", {
+      logger.error("[agent-ledger] Failed to recover stale run", {
         runId: staleRun.run.runId,
         error,
       });

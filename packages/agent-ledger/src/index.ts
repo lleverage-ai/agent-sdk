@@ -53,6 +53,9 @@ export { RunManager } from "./run-manager.js";
 export { DEFAULT_STALE_THRESHOLD_MS, listStaleRuns, recoverAllStaleRuns } from "./reconciliation.js";
 export type { ListStaleRunsOptions } from "./reconciliation.js";
 
+// Re-export Logger from agent-stream for convenience
+export type { Logger } from "@lleverage-ai/agent-stream";
+
 // Context building
 export { FullContextBuilder } from "./context-builder.js";
 export type { IContextBuilder } from "./context-builder.js";

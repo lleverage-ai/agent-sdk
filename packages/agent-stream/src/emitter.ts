@@ -1,3 +1,6 @@
+import type { Logger } from "./types.js";
+import { defaultLogger } from "./types.js";
+
 /**
  * Cross-platform typed event emitter backed by `Map<string, Set<Function>>`.
  *
@@ -10,6 +13,11 @@
 export class TypedEmitter<TEvents extends Record<string, (...args: any[]) => void>> {
   // biome-ignore lint/complexity/noBannedTypes: generic callback store requires Function
   private listeners = new Map<string, Set<Function>>();
+  protected logger: Logger;
+
+  constructor(logger?: Logger) {
+    this.logger = logger ?? defaultLogger;
+  }
 
   on<K extends keyof TEvents & string>(event: K, fn: TEvents[K]): () => void {
     let set = this.listeners.get(event);
@@ -32,7 +40,7 @@ export class TypedEmitter<TEvents extends Record<string, (...args: any[]) => voi
       try {
         (fn as TEvents[K])(...args);
       } catch (error) {
-        console.error("[TypedEmitter] listener threw", { event, error });
+        this.logger.error("[TypedEmitter] listener threw", { event, error });
       }
     }
   }

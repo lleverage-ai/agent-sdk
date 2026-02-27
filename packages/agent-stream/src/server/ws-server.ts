@@ -5,7 +5,8 @@ import {
   PROTOCOL_ERRORS,
   PROTOCOL_VERSION,
 } from "../protocol.js";
-import type { IEventStore, StoredEvent } from "../types.js";
+import type { IEventStore, Logger, StoredEvent } from "../types.js";
+import { defaultLogger } from "../types.js";
 import type { IWebSocket } from "../ws-types.js";
 import { WS_READY_STATE } from "../ws-types.js";
 
@@ -16,6 +17,8 @@ import { WS_READY_STATE } from "../ws-types.js";
  */
 export interface WsServerOptions {
   store: IEventStore<unknown>;
+  /** Optional logger for routing diagnostics through the host application. */
+  logger?: Logger;
   /** Interval between heartbeat pings in ms. Default: 30000 */
   heartbeatIntervalMs?: number;
   /** Max time to wait for pong before disconnecting. Default: 10000 */
@@ -55,6 +58,7 @@ interface ClientState {
  */
 export class WsServer {
   private store: IEventStore<unknown>;
+  private logger: Logger;
   private heartbeatIntervalMs: number;
   private heartbeatTimeoutMs: number;
   private maxBufferSize: number;
@@ -63,6 +67,7 @@ export class WsServer {
 
   constructor(options: WsServerOptions) {
     this.store = options.store;
+    this.logger = options.logger ?? defaultLogger;
     this.heartbeatIntervalMs = options.heartbeatIntervalMs ?? 30_000;
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 10_000;
     this.maxBufferSize = options.maxBufferSize ?? 1000;
@@ -102,7 +107,7 @@ export class WsServer {
     };
 
     client.errorListener = (event: unknown) => {
-      console.error("[WsServer] WebSocket error", { event });
+      this.logger.error("[WsServer] WebSocket error", { event });
       this.removeClient(client);
     };
 
@@ -253,7 +258,7 @@ export class WsServer {
     } catch (error) {
       // Store error — notify client
       if (this.clients.has(client)) {
-        console.error("[WsServer] replayAndPromote failed", {
+        this.logger.error("[WsServer] replayAndPromote failed", {
           streamId: sub.streamId,
           error,
         });
@@ -305,7 +310,7 @@ export class WsServer {
 
   private sendMessage(client: ClientState, msg: ServerMessage): void {
     if (client.ws.readyState !== WS_READY_STATE.OPEN) {
-      console.warn("[WsServer] dropping message for non-open socket", {
+      this.logger.warn("[WsServer] dropping message for non-open socket", {
         type: msg.type,
         readyState: client.ws.readyState,
       });
@@ -315,7 +320,7 @@ export class WsServer {
     try {
       client.ws.send(encodeMessage(msg));
     } catch (error) {
-      console.error("[WsServer] failed to send message", {
+      this.logger.error("[WsServer] failed to send message", {
         type: msg.type,
         error,
       });

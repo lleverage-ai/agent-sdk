@@ -80,6 +80,12 @@ export class SQLiteLedgerStore implements ILedgerStore {
         ")",
       ].join("\n"),
     );
+
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_runs_thread_id ON runs (thread_id)");
+    this.db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages (thread_id, ordinal)",
+    );
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_parts_message_id ON parts (message_id, ordinal)");
   }
 
   async beginRun(options: BeginRunOptions): Promise<RunRecord> {

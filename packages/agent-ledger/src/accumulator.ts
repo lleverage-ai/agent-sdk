@@ -172,10 +172,9 @@ function createReducer(
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
         const p = payload as { mimeType: string; url: string; name?: string };
-        const part: CanonicalPart = { type: "file", mimeType: p.mimeType, url: p.url };
-        if (p.name) {
-          (part as { name?: string }).name = p.name;
-        }
+        const part: CanonicalPart = p.name
+          ? { type: "file", mimeType: p.mimeType, url: p.url, name: p.name }
+          : { type: "file", mimeType: p.mimeType, url: p.url };
         state.currentMessage!.parts.push(part);
         break;
       }
