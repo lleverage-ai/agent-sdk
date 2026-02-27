@@ -30,18 +30,18 @@ export type { SQLiteDatabase, SQLiteStatement } from "./stores/sqlite.js";
 
 // Protocol
 export type {
-	ClientMessage,
-	ServerMessage,
-	HelloMessage,
-	SubscribeMessage,
-	UnsubscribeMessage,
-	PongMessage,
-	ServerHelloMessage,
-	EventMessage,
-	ReplayEndMessage,
-	PingMessage,
-	ErrorMessage,
-	ProtocolError,
+  ClientMessage,
+  ServerMessage,
+  HelloMessage,
+  SubscribeMessage,
+  UnsubscribeMessage,
+  PongMessage,
+  ServerHelloMessage,
+  EventMessage,
+  ReplayEndMessage,
+  PingMessage,
+  ErrorMessage,
+  ProtocolError,
 } from "./protocol.js";
 export { PROTOCOL_VERSION, PROTOCOL_ERRORS, encodeMessage, decodeMessage } from "./protocol.js";
 

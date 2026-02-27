@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Workspace scripts (`build`, `type-check`, `test`, `clean`) now run package commands in dependency-safe order (`agent-stream` → `agent-ledger` → `agent-sdk`) for deterministic monorepo builds
 - `RecoverResult` typing in `@lleverage-ai/agent-ledger` is now status-narrowed to active-to-terminal transitions (`created|streaming` → `failed|cancelled`)
+- `TypedEmitter` in `@lleverage-ai/agent-stream` now accepts interface-based event maps, allowing `WsClientEvents` to follow the repository `interface` convention without requiring index-signature workarounds
 
 ### Fixed
 

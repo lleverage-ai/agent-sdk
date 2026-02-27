@@ -9,8 +9,8 @@ import { defaultLogger } from "./types.js";
  *
  * @category Events
  */
-// biome-ignore lint/suspicious/noExplicitAny: event map must allow any value types
-export class TypedEmitter<TEvents extends Record<string, (...args: any[]) => void>> {
+// biome-ignore lint/suspicious/noExplicitAny: event map must allow any parameter types
+export class TypedEmitter<TEvents extends { [K in keyof TEvents]: (...args: any[]) => void }> {
   // biome-ignore lint/complexity/noBannedTypes: generic callback store requires Function
   private listeners = new Map<string, Set<Function>>();
   protected logger: Logger;

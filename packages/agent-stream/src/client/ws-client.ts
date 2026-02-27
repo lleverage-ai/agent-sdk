@@ -67,15 +67,12 @@ export type SubscriptionEvent<TEvent> = StoredEvent<TEvent> | PromotionEvent;
 /**
  * Events emitted by WsClient.
  *
- * Must be a `type` alias (not `interface`) so TypeScript provides the
- * implicit index signature required by `TypedEmitter<Record<string, ...>>`.
- *
  * @category Client
  */
-export type WsClientEvents = {
+export interface WsClientEvents {
   stateChange: (state: WsClientState) => void;
   error: (error: unknown) => void;
-};
+}
 
 interface ActiveSubscription {
   streamId: string;
