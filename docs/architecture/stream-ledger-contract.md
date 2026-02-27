@@ -55,34 +55,36 @@ When the ledger starts a new run with `forkFromMessageId`:
 ## Sequence Diagram: Normal Generation
 
 ```
-User        Ledger          Stream          AI SDK
- │           │               │               │
- │──prompt──►│               │               │
- │           │──beginRun()──►│               │
- │           │               │──generate()──►│
- │           │               │◄──text-delta──│
- │           │               │──append()────►│(store)
- │           │               │◄──tool-call───│
- │           │               │──append()────►│(store)
- │           │               │◄──step-end────│
- │           │──finalizeRun(status=\"committed\")─►│
- │           │──project()───►│               │
- │◄──result──│               │               │
+User        Ledger             EventStore       AI SDK
+ │           │                  │                │
+ │──prompt──►│                  │                │
+ │           │──beginRun()      │                │
+ │           │  (internal)      │                │
+ │           │                  │◄──generate()───│
+ │           │                  │◄──text-delta───│
+ │           │                  │──append()─────►│(store)
+ │           │                  │◄──tool-call────│
+ │           │                  │──append()─────►│(store)
+ │           │                  │◄──step-end─────│
+ │           │──finalizeRun(status="committed")──│
+ │           │  (replays from EventStore,        │
+ │           │   accumulates, persists messages)  │
+ │◄──result──│                  │                │
 ```
 
 ## Sequence Diagram: Regeneration (Fork)
 
 ```
-User        Ledger          Stream
- │           │               │
- │──regen(M3)►│              │
- │           │──beginRun(fork=M2)──►│
- │           │  (new stream)  │
- │           │               │──append(events)──►│(store)
- │           │──finalizeRun(status="committed")─►│
- │           │  (supersedes old committed run at same fork)
- │           │──project()───►│
- │◄──result──│               │
+User        Ledger             EventStore
+ │           │                  │
+ │──regen(M3)►│                 │
+ │           │──beginRun(fork=M2)               │
+ │           │  (internal, new stream)           │
+ │           │                  │──append(events)──►│(store)
+ │           │──finalizeRun(status="committed")──│
+ │           │  (replays, accumulates, supersedes │
+ │           │   old committed run at same fork)  │
+ │◄──result──│                  │
 ```
 
 ## Design Decisions

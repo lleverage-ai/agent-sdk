@@ -176,10 +176,12 @@ function createReducer(
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
         const p = payload as { mimeType: string; url: string; name?: string };
-        const part: CanonicalPart = p.name
-          ? { type: "file", mimeType: p.mimeType, url: p.url, name: p.name }
-          : { type: "file", mimeType: p.mimeType, url: p.url };
-        state.currentMessage!.parts.push(part);
+        state.currentMessage!.parts.push({
+          type: "file",
+          mimeType: p.mimeType,
+          url: p.url,
+          ...(p.name !== undefined && { name: p.name }),
+        });
         break;
       }
 
@@ -267,21 +269,8 @@ export function accumulateEvents(
 ): CanonicalMessage[] {
   const projector = createAccumulatorProjector(idGenerator);
   projector.apply(events);
-  // Flush any in-progress message
+  // Flush any in-progress message (getState() returns a clone, so mutation is safe)
   const state = projector.getState();
-  if (state.currentMessage) {
-    flushTextBuffer(state);
-    if (state.currentMessage.parts.length > 0) {
-      const msg: CanonicalMessage = {
-        id: state.currentMessage.id,
-        parentMessageId: state.currentMessage.parentMessageId,
-        role: "assistant",
-        parts: [...state.currentMessage.parts],
-        createdAt: state.currentMessage.createdAt,
-        metadata: { ...state.currentMessage.metadata },
-      };
-      state.messages.push(msg);
-    }
-  }
+  commitCurrentMessage(state);
   return state.messages;
 }

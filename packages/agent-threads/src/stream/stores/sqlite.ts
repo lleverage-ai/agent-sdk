@@ -1,4 +1,5 @@
-import type { IEventStore, ReplayOptions, StoredEvent } from "../types.js";
+import type { IEventStore, Logger, ReplayOptions, StoredEvent } from "../types.js";
+import { defaultLogger } from "../types.js";
 
 /**
  * Minimal interface for a synchronous SQLite database.
@@ -46,6 +47,7 @@ export interface SQLiteStatement {
  */
 export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
   private readonly db: SQLiteDatabase;
+  private readonly logger: Logger;
 
   // Cached prepared statements
   private readonly stmtHead: SQLiteStatement;
@@ -54,8 +56,9 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
   private readonly stmtReplayWithLimit: SQLiteStatement;
   private readonly stmtDelete: SQLiteStatement;
 
-  constructor(db: SQLiteDatabase) {
+  constructor(db: SQLiteDatabase, options?: { logger?: Logger }) {
     this.db = db;
+    this.logger = options?.logger ?? defaultLogger;
     this.db.exec(
       [
         "CREATE TABLE IF NOT EXISTS events (",
@@ -86,8 +89,7 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
 
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const headRow = this.stmtHead.get(streamId);
-      const lastSeq = headRow && typeof headRow["max_seq"] === "number" ? headRow["max_seq"] : 0;
+      const lastSeq = this.readHead(streamId);
       const timestamp = new Date().toISOString();
 
       const stored: StoredEvent<TEvent>[] = [];
@@ -104,7 +106,9 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
       try {
         this.db.exec("ROLLBACK");
       } catch (rollbackError) {
-        console.warn("[SQLiteEventStore] Rollback failed after append error", rollbackError);
+        this.logger.error("[SQLiteEventStore] Rollback failed after append error", {
+          rollbackError,
+        });
       }
       throw error;
     }
@@ -139,6 +143,10 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
   }
 
   async head(streamId: string): Promise<number> {
+    return this.readHead(streamId);
+  }
+
+  private readHead(streamId: string): number {
     const row = this.stmtHead.get(streamId);
     return row && typeof row["max_seq"] === "number" ? row["max_seq"] : 0;
   }

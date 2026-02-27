@@ -77,7 +77,13 @@ export interface IEventStore<TEvent> {
 export interface ProjectorConfig<TState, TEvent> {
   /** The initial state before any events are applied */
   initialState: TState;
-  /** Reducer function that produces new state from current state and an event */
+  /**
+   * Reducer that advances state given an event.
+   *
+   * May return a new state object or mutate and return the existing one.
+   * {@link Projector.getState | Projector.getState()} returns a `structuredClone`,
+   * so mutable reducers are safe as long as they return the same reference.
+   */
   reducer: (state: TState, event: StoredEvent<TEvent>) => TState;
 }
 

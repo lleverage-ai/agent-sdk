@@ -20,7 +20,7 @@ export class InMemoryEventStore<TEvent> implements IEventStore<TEvent> {
       this.streams.set(streamId, stream);
     }
 
-    const lastSeq = stream.length > 0 ? stream[stream.length - 1]!.seq : 0;
+    const lastSeq = stream.at(-1)?.seq ?? 0;
     const timestamp = new Date().toISOString();
 
     const stored: StoredEvent<TEvent>[] = events.map((event, i) => ({
@@ -50,9 +50,7 @@ export class InMemoryEventStore<TEvent> implements IEventStore<TEvent> {
   }
 
   async head(streamId: string): Promise<number> {
-    const stream = this.streams.get(streamId);
-    if (!stream || stream.length === 0) return 0;
-    return stream[stream.length - 1]!.seq;
+    return this.streams.get(streamId)?.at(-1)?.seq ?? 0;
   }
 
   async delete(streamId: string): Promise<void> {

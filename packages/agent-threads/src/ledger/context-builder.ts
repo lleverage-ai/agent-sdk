@@ -61,8 +61,8 @@ export class FullContextBuilder implements IContextBuilder {
     const provenance: ProvenanceMetadata = {
       threadId: options.threadId,
       messageCount: messages.length,
-      firstMessageId: messages.length > 0 ? messages[0]!.id : null,
-      lastMessageId: messages.length > 0 ? messages[messages.length - 1]!.id : null,
+      firstMessageId: messages.at(0)?.id ?? null,
+      lastMessageId: messages.at(-1)?.id ?? null,
     };
 
     return { messages, provenance };

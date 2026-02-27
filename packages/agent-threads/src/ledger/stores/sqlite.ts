@@ -1,7 +1,8 @@
 import type { SQLiteDatabase, SQLiteStatement } from "../../stream/stores/sqlite.js";
+import type { Logger } from "../../stream/types.js";
+import { defaultLogger } from "../../stream/types.js";
 
 import type {
-  ActiveRunStatus,
   BeginRunOptions,
   CanonicalMessage,
   CanonicalMessageMetadata,
@@ -35,6 +36,7 @@ import type { ILedgerStore } from "./ledger-store.js";
  */
 export class SQLiteLedgerStore implements ILedgerStore {
   private readonly db: SQLiteDatabase;
+  private readonly logger: Logger;
 
   // Cached prepared statements
   private readonly stmtInsertRun: SQLiteStatement;
@@ -55,9 +57,15 @@ export class SQLiteLedgerStore implements ILedgerStore {
   private readonly stmtDeleteThreadParts: SQLiteStatement;
   private readonly stmtDeleteThreadMessages: SQLiteStatement;
   private readonly stmtDeleteThreadRuns: SQLiteStatement;
+  // Cached statements for getTranscript, listStaleRuns, recoverRun
+  private readonly stmtGetTranscript: SQLiteStatement;
+  private readonly stmtListStaleRunsByThread: SQLiteStatement;
+  private readonly stmtListStaleRunsAll: SQLiteStatement;
+  private readonly stmtRecoverRun: SQLiteStatement;
 
-  constructor(db: SQLiteDatabase) {
+  constructor(db: SQLiteDatabase, options?: { logger?: Logger }) {
     this.db = db;
+    this.logger = options?.logger ?? defaultLogger;
     this.db.exec(
       [
         "CREATE TABLE IF NOT EXISTS runs (",
@@ -147,6 +155,25 @@ export class SQLiteLedgerStore implements ILedgerStore {
     );
     this.stmtDeleteThreadMessages = this.db.prepare("DELETE FROM messages WHERE thread_id = ?");
     this.stmtDeleteThreadRuns = this.db.prepare("DELETE FROM runs WHERE thread_id = ?");
+    this.stmtGetTranscript = this.db.prepare(
+      [
+        "SELECT m.id, m.parent_message_id, m.role, m.created_at, m.metadata,",
+        "       p.data AS part_data, p.ordinal AS part_ordinal",
+        "FROM messages m",
+        "LEFT JOIN parts p ON p.message_id = m.id",
+        "WHERE m.thread_id = ?",
+        "ORDER BY m.ordinal ASC, p.ordinal ASC",
+      ].join("\n"),
+    );
+    this.stmtListStaleRunsByThread = this.db.prepare(
+      "SELECT * FROM runs WHERE thread_id = ? AND (status = ? OR status = ?) ORDER BY created_at ASC",
+    );
+    this.stmtListStaleRunsAll = this.db.prepare(
+      "SELECT * FROM runs WHERE status = ? OR status = ? ORDER BY created_at ASC",
+    );
+    this.stmtRecoverRun = this.db.prepare(
+      "UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?",
+    );
   }
 
   async beginRun(options: BeginRunOptions): Promise<RunRecord> {
@@ -266,7 +293,9 @@ export class SQLiteLedgerStore implements ILedgerStore {
       try {
         this.db.exec("ROLLBACK");
       } catch (rollbackError) {
-        console.warn("[SQLiteLedgerStore] Rollback failed after finalizeRun error", rollbackError);
+        this.logger.error("[SQLiteLedgerStore] Rollback failed after finalizeRun error", {
+          rollbackError,
+        });
       }
       throw e;
     }
@@ -291,18 +320,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
       throw new Error("Branch path resolution is not yet implemented");
     }
 
-    const rows = this.db
-      .prepare(
-        [
-          "SELECT m.id, m.parent_message_id, m.role, m.created_at, m.metadata,",
-          "       p.data AS part_data, p.ordinal AS part_ordinal",
-          "FROM messages m",
-          "LEFT JOIN parts p ON p.message_id = m.id",
-          "WHERE m.thread_id = ?",
-          "ORDER BY m.ordinal ASC, p.ordinal ASC",
-        ].join("\n"),
-      )
-      .all(options.threadId);
+    const rows = this.stmtGetTranscript.all(options.threadId);
 
     const messages: CanonicalMessage[] = [];
     let currentMsgId: string | null = null;
@@ -362,15 +380,9 @@ export class SQLiteLedgerStore implements ILedgerStore {
     let rows: Record<string, unknown>[];
 
     if (options.threadId) {
-      rows = this.db
-        .prepare(
-          "SELECT * FROM runs WHERE thread_id = ? AND (status = ? OR status = ?) ORDER BY created_at ASC",
-        )
-        .all(options.threadId, "created", "streaming");
+      rows = this.stmtListStaleRunsByThread.all(options.threadId, "created", "streaming");
     } else {
-      rows = this.db
-        .prepare("SELECT * FROM runs WHERE status = ? OR status = ? ORDER BY created_at ASC")
-        .all("created", "streaming");
+      rows = this.stmtListStaleRunsAll.all("created", "streaming");
     }
 
     const results: StaleRunInfo[] = [];
@@ -394,14 +406,11 @@ export class SQLiteLedgerStore implements ILedgerStore {
       throw new Error(`Cannot recover run in status "${run.status}"`);
     }
 
-    const newStatus: Extract<TerminalRunStatus, "failed" | "cancelled"> =
-      options.action === "fail" ? "failed" : "cancelled";
-    const previousStatus: ActiveRunStatus = run.status;
+    const newStatus: TerminalRunStatus = options.action === "fail" ? "failed" : "cancelled";
+    const previousStatus = run.status;
     const finishedAt = new Date().toISOString();
 
-    this.db
-      .prepare("UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?")
-      .run(newStatus, finishedAt, options.runId);
+    this.stmtRecoverRun.run(newStatus, finishedAt, options.runId);
 
     return { runId: options.runId, previousStatus, newStatus };
   }
@@ -417,7 +426,9 @@ export class SQLiteLedgerStore implements ILedgerStore {
       try {
         this.db.exec("ROLLBACK");
       } catch (rollbackError) {
-        console.warn("[SQLiteLedgerStore] Rollback failed after deleteThread error", rollbackError);
+        this.logger.error("[SQLiteLedgerStore] Rollback failed after deleteThread error", {
+          rollbackError,
+        });
       }
       throw error;
     }

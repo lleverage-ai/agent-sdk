@@ -31,3 +31,17 @@ export const WS_READY_STATE = {
  * @category WebSocket
  */
 export type WebSocketConstructor = new (url: string, protocols?: string | string[]) => IWebSocket;
+
+/**
+ * Extract the data string from a WebSocket message event.
+ *
+ * Handles both the browser `MessageEvent` shape (`{ data: string }`)
+ * and the bare-string shape used by some mocks.
+ *
+ * @internal
+ */
+export function extractMessageData(event: unknown): string {
+  return typeof event === "object" && event !== null && "data" in event
+    ? (event as { data: string }).data
+    : String(event);
+}

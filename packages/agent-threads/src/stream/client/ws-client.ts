@@ -8,7 +8,7 @@ import {
 } from "../protocol.js";
 import type { Logger, StoredEvent } from "../types.js";
 import type { IWebSocket, WebSocketConstructor } from "../ws-types.js";
-import { WS_READY_STATE } from "../ws-types.js";
+import { extractMessageData, WS_READY_STATE } from "../ws-types.js";
 
 /**
  * Client state machine states.
@@ -329,11 +329,7 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
     };
 
     const onMessage = (event: unknown) => {
-      const data =
-        typeof event === "object" && event !== null && "data" in event
-          ? (event as { data: string }).data
-          : String(event);
-      this.handleMessage(data);
+      this.handleMessage(extractMessageData(event));
     };
 
     const onClose = () => {

@@ -37,9 +37,8 @@ export class TypedEmitter<TEvents extends { [K in keyof TEvents]: (...args: any[
     const set = this.listeners.get(event);
     if (!set || set.size === 0) {
       if (event === "error") {
-        this.logger.error("[TypedEmitter] Unhandled error event (no listeners registered)", {
-          args,
-        });
+        const err = args[0];
+        throw err instanceof Error ? err : new Error(String(err));
       }
       return;
     }

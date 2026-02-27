@@ -151,8 +151,8 @@ export function decodeMessage(data: string): ClientMessage | ServerMessage | nul
   const parsed = parseRawMessage(data);
   if (!parsed) return null;
 
-  const type = parsed.type;
-  if (typeof type !== "string") return null;
+  // parseRawMessage guarantees parsed.type is a string
+  const type = parsed.type as string;
 
   if (CLIENT_MESSAGE_TYPES.has(type as ClientMessage["type"])) {
     return decodeClientMessageFromParsed(parsed);
@@ -266,7 +266,7 @@ function decodeServerMessageFromParsed(parsed: Record<string, unknown>): ServerM
         return null;
       }
       return {
-        type: "error" as const,
+        type: "error",
         code: parsed.code as ProtocolError,
         message: parsed.message,
         ...(typeof parsed.streamId === "string" && { streamId: parsed.streamId }),

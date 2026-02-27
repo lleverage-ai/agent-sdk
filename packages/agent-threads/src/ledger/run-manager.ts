@@ -1,5 +1,6 @@
 import type { StreamEvent } from "../stream/stream-event.js";
-import type { IEventStore, StoredEvent } from "../stream/types.js";
+import type { IEventStore, Logger, StoredEvent } from "../stream/types.js";
+import { defaultLogger } from "../stream/types.js";
 
 import { accumulateEvents } from "./accumulator.js";
 import type { ILedgerStore } from "./stores/ledger-store.js";
@@ -19,10 +20,16 @@ import { isActiveRunStatus } from "./types.js";
 export class RunManager {
   private ledgerStore: ILedgerStore;
   private eventStore: IEventStore<StreamEvent>;
+  private logger: Logger;
 
-  constructor(ledgerStore: ILedgerStore, eventStore: IEventStore<StreamEvent>) {
+  constructor(
+    ledgerStore: ILedgerStore,
+    eventStore: IEventStore<StreamEvent>,
+    options?: { logger?: Logger },
+  ) {
     this.ledgerStore = ledgerStore;
     this.eventStore = eventStore;
+    this.logger = options?.logger ?? defaultLogger;
   }
 
   /**
@@ -42,8 +49,11 @@ export class RunManager {
       // If recovery also fails, stale-run reconciliation will catch it.
       try {
         await this.ledgerStore.recoverRun({ runId: run.runId, action: "fail" });
-      } catch {
-        // Recovery failed — stale-run reconciliation will handle it
+      } catch (recoveryError) {
+        this.logger.error("[RunManager] Failed to recover orphaned run after activation error", {
+          runId: run.runId,
+          recoveryError,
+        });
       }
       throw error;
     }
@@ -67,12 +77,16 @@ export class RunManager {
   }
 
   /**
-   * Finalize a run: replay events, accumulate into messages, commit to ledger.
+   * Finalize a run with a terminal status.
    *
+   * For `"committed"` runs:
    * 1. Replays all events from the run's stream
    * 2. Feeds through the accumulator to produce CanonicalMessages
    * 3. Calls `ILedgerStore.finalizeRun()` with the messages
    * 4. Atomic supersession of old runs is handled by the store
+   *
+   * For `"failed"` or `"cancelled"` runs, the event stream is not replayed;
+   * the run is simply transitioned to the terminal status.
    *
    * @param runId - The run to finalize
    * @param status - Terminal status

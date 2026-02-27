@@ -1,5 +1,4 @@
 import type {
-  ActiveRunStatus,
   BeginRunOptions,
   CanonicalMessage,
   FinalizeResult,
@@ -179,9 +178,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
       throw new Error(`Cannot recover run in status "${previousStatus}"`);
     }
 
-    const newStatus: Extract<TerminalRunStatus, "failed" | "cancelled"> =
-      options.action === "fail" ? "failed" : "cancelled";
-    const activePreviousStatus: ActiveRunStatus = previousStatus;
+    const newStatus: TerminalRunStatus = options.action === "fail" ? "failed" : "cancelled";
     const updated: RunRecord = {
       ...run,
       status: newStatus,
@@ -189,7 +186,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
     };
     this.runs.set(options.runId, updated);
 
-    return { runId: options.runId, previousStatus: activePreviousStatus, newStatus };
+    return { runId: options.runId, previousStatus, newStatus };
   }
 
   async deleteThread(threadId: string): Promise<void> {

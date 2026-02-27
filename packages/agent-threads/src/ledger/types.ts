@@ -178,7 +178,7 @@ export function isActiveRunStatus(status: RunStatus): status is ActiveRunStatus 
  * @category Types
  */
 export function isTerminalRunStatus(status: RunStatus): status is TerminalRunStatus {
-  return TERMINAL_RUN_STATUSES.includes(status as TerminalRunStatus);
+  return !isActiveRunStatus(status);
 }
 
 /**

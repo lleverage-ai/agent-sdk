@@ -6,6 +6,7 @@ type TestEvents = {
   message: (text: string) => void;
   count: (n: number) => void;
   empty: () => void;
+  error: (err: unknown) => void;
 };
 
 describe("TypedEmitter", () => {
@@ -72,9 +73,27 @@ describe("TypedEmitter", () => {
     expect(countFn).not.toHaveBeenCalled();
   });
 
-  it("emitting with no listeners does not throw", () => {
+  it("emitting non-error event with no listeners does not throw", () => {
     const emitter = new TypedEmitter<TestEvents>();
     expect(() => emitter.emit("message", "no-one-listening")).not.toThrow();
+  });
+
+  it("throws on unhandled error event (Node.js convention)", () => {
+    const emitter = new TypedEmitter<TestEvents>();
+    expect(() => emitter.emit("error", new Error("boom"))).toThrow("boom");
+  });
+
+  it("throws non-Error values wrapped in Error on unhandled error event", () => {
+    const emitter = new TypedEmitter<TestEvents>();
+    expect(() => emitter.emit("error", "string error")).toThrow("string error");
+  });
+
+  it("does not throw on error event when listener is registered", () => {
+    const emitter = new TypedEmitter<TestEvents>();
+    const fn = vi.fn();
+    emitter.on("error", fn);
+    expect(() => emitter.emit("error", new Error("handled"))).not.toThrow();
+    expect(fn).toHaveBeenCalled();
   });
 
   it("off() on non-existent listener does not throw", () => {

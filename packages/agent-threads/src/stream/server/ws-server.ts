@@ -9,7 +9,7 @@ import {
 import type { IEventStore, Logger, StoredEvent } from "../types.js";
 import { defaultLogger } from "../types.js";
 import type { IWebSocket } from "../ws-types.js";
-import { WS_READY_STATE } from "../ws-types.js";
+import { extractMessageData, WS_READY_STATE } from "../ws-types.js";
 
 /**
  * Options for creating a WsServer.
@@ -96,11 +96,7 @@ export class WsServer {
     };
 
     client.messageListener = (event: unknown) => {
-      const data =
-        typeof event === "object" && event !== null && "data" in event
-          ? (event as { data: string }).data
-          : String(event);
-      this.handleMessage(client, data);
+      this.handleMessage(client, extractMessageData(event));
     };
 
     client.closeListener = () => {
