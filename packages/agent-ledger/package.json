@@ -1,6 +1,6 @@
 {
   "name": "@lleverage-ai/agent-ledger",
-  "version": "0.0.1",
+  "version": "0.1.0-alpha.1",
   "description": "Durable transcript layer for AI agent conversations",
   "type": "module",
   "license": "MIT",

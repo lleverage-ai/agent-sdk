@@ -15,7 +15,7 @@
     },
     "packages/agent-ledger": {
       "name": "@lleverage-ai/agent-ledger",
-      "version": "0.0.1",
+      "version": "0.1.0-alpha.1",
       "dependencies": {
         "@lleverage-ai/agent-stream": "workspace:*",
       },
@@ -33,6 +33,7 @@
       },
       "devDependencies": {
         "@ai-sdk/anthropic": "^3.0.36",
+        "@ai-sdk/gateway": "^3.0.57",
         "ai": "^6.0.78",
         "vitest": "^4.0.18",
         "zod": "^4.3.6",
@@ -44,7 +45,7 @@
     },
     "packages/agent-stream": {
       "name": "@lleverage-ai/agent-stream",
-      "version": "0.0.1",
+      "version": "0.1.0-alpha.1",
       "devDependencies": {
         "vitest": "^4.0.18",
         "zod": "^4.3.6",
