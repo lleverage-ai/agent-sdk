@@ -124,6 +124,46 @@ describe("WsServer", () => {
     });
   });
 
+  it("does not deliver replay frames after unsubscribe during in-flight replay", async () => {
+    let resolveReplay: ((events: StoredEvent<unknown>[]) => void) | null = null;
+    const blockingStore: IEventStore<unknown> = {
+      append: async () => [],
+      replay: async () =>
+        new Promise<StoredEvent<unknown>[]>((resolve) => {
+          resolveReplay = resolve;
+        }),
+      head: async () => 0,
+      delete: async () => undefined,
+    };
+    server = new WsServer({
+      store: blockingStore,
+      heartbeatIntervalMs: 30_000,
+      heartbeatTimeoutMs: 10_000,
+      maxBufferSize: 5,
+    });
+
+    const ws = new MockWebSocket();
+    ws.readyState = 1;
+    server.handleConnection(ws);
+    doHandshake(ws);
+    ws.sentMessages.length = 0;
+
+    sendClient(ws, { type: "subscribe", streamId: "s1" });
+    sendClient(ws, { type: "unsubscribe", streamId: "s1" });
+
+    resolveReplay?.([
+      {
+        seq: 1,
+        timestamp: new Date().toISOString(),
+        streamId: "s1",
+        event: { kind: "replayed", value: 1 },
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(parseSent(ws)).toHaveLength(0);
+  });
+
   it("broadcast delivers to subscribed clients only", async () => {
     const ws1 = new MockWebSocket();
     ws1.readyState = 1;
@@ -232,6 +272,29 @@ describe("WsServer", () => {
 
     // Advance past timeout — should NOT disconnect because we sent pong
     vi.advanceTimersByTime(10_000);
+    expect(ws.readyState).toBe(1); // still OPEN
+  });
+
+  it("clears stale heartbeat timeouts from earlier ping cycles", () => {
+    server = new WsServer({
+      store: store as InMemoryEventStore<unknown>,
+      heartbeatIntervalMs: 10,
+      heartbeatTimeoutMs: 25,
+      maxBufferSize: 5,
+    });
+
+    const ws = new MockWebSocket();
+    ws.readyState = 1;
+    server.handleConnection(ws);
+    doHandshake(ws);
+
+    // Trigger two heartbeat cycles; second cycle should clear first timeout.
+    vi.advanceTimersByTime(10);
+    vi.advanceTimersByTime(10);
+    sendClient(ws, { type: "pong" });
+
+    // Advance past where the first timeout would have fired if left armed.
+    vi.advanceTimersByTime(15);
     expect(ws.readyState).toBe(1); // still OPEN
   });
 

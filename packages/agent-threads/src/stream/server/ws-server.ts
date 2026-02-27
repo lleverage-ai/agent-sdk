@@ -227,15 +227,17 @@ export class WsServer {
     try {
       const events = await this.store.replay(sub.streamId, { afterSeq });
 
-      // Client may have disconnected during async replay
-      if (!this.clients.has(client)) return;
+      // Client may have disconnected or unsubscribed/re-subscribed during async replay
+      if (!this.isSubscriptionActive(client, sub)) return;
 
       let lastReplaySeq = afterSeq;
       for (const event of events) {
+        if (!this.isSubscriptionActive(client, sub)) return;
         this.sendEvent(client, sub.streamId, event);
         lastReplaySeq = event.seq;
       }
 
+      if (!this.isSubscriptionActive(client, sub)) return;
       sub.lastReplaySeq = lastReplaySeq;
 
       // Send replay-end marker
@@ -251,13 +253,14 @@ export class WsServer {
       sub.buffer = [];
 
       for (const event of buffered) {
+        if (!this.isSubscriptionActive(client, sub)) return;
         if (event.seq > sub.lastReplaySeq) {
           this.sendEvent(client, sub.streamId, event);
         }
       }
     } catch (error) {
       // Store error — notify client and clean up the dead subscription
-      if (this.clients.has(client)) {
+      if (this.isSubscriptionActive(client, sub)) {
         this.logger.error("[WsServer] replayAndPromote failed", {
           streamId: sub.streamId,
           error,
@@ -288,6 +291,9 @@ export class WsServer {
 
       this.sendMessage(client, { type: "ping" });
 
+      if (client.heartbeatTimeout) {
+        clearTimeout(client.heartbeatTimeout);
+      }
       client.heartbeatTimeout = setTimeout(() => {
         // No pong received — disconnect
         client.ws.close(1001, "Heartbeat timeout");
@@ -333,6 +339,10 @@ export class WsServer {
     if (!this.clients.has(client)) return;
     this.cleanupClient(client);
     this.clients.delete(client);
+  }
+
+  private isSubscriptionActive(client: ClientState, sub: Subscription): boolean {
+    return this.clients.has(client) && client.subscriptions.get(sub.streamId) === sub;
   }
 
   private cleanupClient(client: ClientState): void {
