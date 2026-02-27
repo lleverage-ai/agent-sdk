@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - reconnect exhaustion/disabled paths now terminate outstanding subscriptions and emit errors
   - invalid inbound server frames now emit client errors instead of being silently ignored
 - `FinalizeRunOptions` is now a discriminated union that requires `messages` for `status: "committed"`, preventing transcript-less commits
+- `CanonicalMessage.metadata` now enforces `schemaVersion: number` at the type level via `CanonicalMessageMetadata`, and SQLite transcript reads now validate this invariant when decoding stored metadata
 - `RunManager.appendEvents()` now rejects appends to terminal-status runs
 - `SQLiteLedgerStore.deleteThread()` now runs in a transaction to avoid partial thread deletion on crash
 - Stale-run reconciliation now continues recovering remaining runs when one recovery fails

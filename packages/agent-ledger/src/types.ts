@@ -72,6 +72,18 @@ export interface FilePart {
  */
 export type CanonicalPart = TextPart | ReasoningPart | ToolCallPart | ToolResultPart | FilePart;
 
+/**
+ * Metadata attached to a canonical message.
+ *
+ * @category Types
+ */
+export interface CanonicalMessageMetadata {
+  /** Schema version for canonical message serialization format */
+  readonly schemaVersion: number;
+  /** Additional extensible metadata fields */
+  readonly [key: string]: unknown;
+}
+
 // ---------------------------------------------------------------------------
 // CanonicalMessage
 // ---------------------------------------------------------------------------
@@ -95,8 +107,8 @@ export interface CanonicalMessage {
   readonly parts: readonly CanonicalPart[];
   /** ISO 8601 timestamp of when the message was created */
   readonly createdAt: string;
-  /** Extensible metadata (always includes `schemaVersion: 1`) */
-  readonly metadata: Record<string, unknown>;
+  /** Extensible metadata (always includes `schemaVersion`) */
+  readonly metadata: CanonicalMessageMetadata;
 }
 
 // ---------------------------------------------------------------------------

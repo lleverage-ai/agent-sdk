@@ -1,7 +1,7 @@
 import type { ProjectorConfig, StoredEvent, StreamEvent } from "@lleverage-ai/agent-stream";
 import { Projector } from "@lleverage-ai/agent-stream";
 
-import type { CanonicalMessage, CanonicalPart } from "./types.js";
+import type { CanonicalMessage, CanonicalMessageMetadata, CanonicalPart } from "./types.js";
 import type { IdGenerator } from "./ulid.js";
 import { ulid } from "./ulid.js";
 
@@ -23,7 +23,7 @@ export interface AccumulatorState {
     parentMessageId: string | null;
     parts: CanonicalPart[];
     createdAt: string;
-    metadata: Record<string, unknown>;
+    metadata: CanonicalMessageMetadata;
   } | null;
   /** Text buffer for coalescing consecutive text-deltas */
   textBuffer: string;

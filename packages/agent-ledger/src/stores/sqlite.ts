@@ -4,6 +4,7 @@ import type {
   ActiveRunStatus,
   BeginRunOptions,
   CanonicalMessage,
+  CanonicalMessageMetadata,
   CanonicalPart,
   FinalizeResult,
   FinalizeRunOptions,
@@ -264,16 +265,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
         }
       });
 
-      let metadata: Record<string, unknown>;
-      try {
-        metadata = JSON.parse(row["metadata"] as string) as Record<string, unknown>;
-      } catch (error) {
-        throw new Error(
-          `Failed to parse metadata JSON for message ${msgId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+      const metadata = parseCanonicalMessageMetadata(row["metadata"] as string, msgId);
 
       messages.push({
         id: msgId,
@@ -357,6 +349,30 @@ export class SQLiteLedgerStore implements ILedgerStore {
       throw error;
     }
   }
+}
+
+function parseCanonicalMessageMetadata(raw: string, msgId: string): CanonicalMessageMetadata {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(
+      `Failed to parse metadata JSON for message ${msgId}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`Invalid metadata for message ${msgId}: expected object`);
+  }
+
+  const schemaVersion = (parsed as { schemaVersion?: unknown }).schemaVersion;
+  if (typeof schemaVersion !== "number" || Number.isNaN(schemaVersion)) {
+    throw new Error(`Invalid metadata for message ${msgId}: schemaVersion must be a number`);
+  }
+
+  return parsed as CanonicalMessageMetadata;
 }
 
 function rowToRunRecord(row: Record<string, unknown>): RunRecord {

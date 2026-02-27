@@ -49,4 +49,17 @@ describe("SQLiteLedgerStore", () => {
       input: { nested: true },
     });
   });
+
+  it("rejects transcript rows with metadata missing schemaVersion", async () => {
+    const db = new MockSQLiteDatabase();
+    const store = new SQLiteLedgerStore(db);
+
+    db.prepare(
+      "INSERT INTO messages (id, run_id, thread_id, parent_message_id, role, created_at, metadata, ordinal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run("m1", "r1", "t1", null, "assistant", new Date().toISOString(), JSON.stringify({}), 0);
+
+    await expect(store.getTranscript({ threadId: "t1" })).rejects.toThrow(
+      "schemaVersion must be a number",
+    );
+  });
 });
