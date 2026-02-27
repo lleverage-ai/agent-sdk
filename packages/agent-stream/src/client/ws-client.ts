@@ -1,6 +1,6 @@
 import { TypedEmitter } from "../emitter.js";
-import type { ClientMessage, ReplayEndMessage, ServerMessage } from "../protocol.js";
-import { decodeMessage, encodeMessage, PROTOCOL_VERSION } from "../protocol.js";
+import type { ClientMessage, ReplayEndMessage } from "../protocol.js";
+import { decodeServerMessage, encodeMessage, PROTOCOL_VERSION } from "../protocol.js";
 import type { StoredEvent } from "../types.js";
 import type { IWebSocket, WebSocketConstructor } from "../ws-types.js";
 import { WS_READY_STATE } from "../ws-types.js";
@@ -111,8 +111,14 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   constructor(options: WsClientOptions) {
     super();
     this.url = options.url;
-    this.WsCtor =
-      options.WebSocket ?? (globalThis as { WebSocket: WebSocketConstructor }).WebSocket;
+    const wsCtor =
+      options.WebSocket ?? (globalThis as { WebSocket?: WebSocketConstructor }).WebSocket;
+    if (typeof wsCtor !== "function") {
+      throw new Error(
+        "WebSocket constructor is not available. Provide options.WebSocket in this runtime.",
+      );
+    }
+    this.WsCtor = wsCtor;
     this.reconnectEnabled = options.reconnect ?? true;
     this.maxReconnectAttempts = options.maxReconnectAttempts ?? Number.POSITIVE_INFINITY;
     this.baseReconnectDelayMs = options.baseReconnectDelayMs ?? 1_000;
@@ -128,7 +134,16 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
    * Initiate a WebSocket connection.
    */
   connect(): void {
-    if (this._state === "closed") return;
+    if (this._state === "closed") {
+      throw new Error("Cannot connect after close(). Create a new WsClient instance instead.");
+    }
+    if (
+      this._state === "connecting" ||
+      this._state === "reconnecting" ||
+      this._state === "connected"
+    ) {
+      return;
+    }
     this.doConnect();
   }
 
@@ -266,7 +281,15 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
     this.setState(this.reconnectAttempt > 0 ? "reconnecting" : "connecting");
     this.handshakeComplete = false;
 
-    const ws = new this.WsCtor(this.url);
+    let ws: IWebSocket;
+    try {
+      ws = new this.WsCtor(this.url);
+    } catch (error) {
+      this.setState("disconnected");
+      this.emit("error", error);
+      this.failAllSubscriptions("WebSocket constructor failed");
+      return;
+    }
     this.ws = ws;
 
     const onOpen = () => {
@@ -306,8 +329,11 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   }
 
   private handleMessage(data: string): void {
-    const msg = decodeMessage(data) as ServerMessage | null;
-    if (!msg) return;
+    const msg = decodeServerMessage(data);
+    if (!msg) {
+      this.emit("error", new Error("Received invalid server message"));
+      return;
+    }
 
     switch (msg.type) {
       case "server-hello":
@@ -388,11 +414,13 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   private attemptReconnect(): void {
     if (!this.reconnectEnabled || this._state === "closed") {
       this.setState("disconnected");
+      this.failAllSubscriptions("Disconnected and reconnection is disabled");
       return;
     }
 
     if (this.reconnectAttempt >= this.maxReconnectAttempts) {
       this.setState("disconnected");
+      this.failAllSubscriptions("Max reconnection attempts reached");
       return;
     }
 
@@ -440,6 +468,15 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
     }
   }
 
+  private failAllSubscriptions(reason: string): void {
+    if (this.subscriptions.size === 0) return;
+    this.emit("error", new Error(reason));
+    for (const sub of this.subscriptions.values()) {
+      sub.end();
+    }
+    this.subscriptions.clear();
+  }
+
   private setState(state: WsClientState): void {
     if (this._state === state) return;
     this._state = state;
@@ -447,8 +484,23 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   }
 
   private sendMessage(msg: ClientMessage): void {
-    if (this.ws && this.ws.readyState === WS_READY_STATE.OPEN) {
+    if (!this.ws) {
+      this.emit("error", new Error(`Cannot send "${msg.type}" while socket is not initialized`));
+      return;
+    }
+    if (this.ws.readyState !== WS_READY_STATE.OPEN) {
+      this.emit(
+        "error",
+        new Error(
+          `Cannot send "${msg.type}" while socket is not open (readyState=${this.ws.readyState})`,
+        ),
+      );
+      return;
+    }
+    try {
       this.ws.send(encodeMessage(msg));
+    } catch (error) {
+      this.emit("error", error);
     }
   }
 }

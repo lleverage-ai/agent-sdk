@@ -82,4 +82,23 @@ describe("TypedEmitter", () => {
     const fn = vi.fn();
     expect(() => emitter.off("message", fn)).not.toThrow();
   });
+
+  it("continues notifying other listeners when one throws", () => {
+    const emitter = new TypedEmitter<TestEvents>();
+    const bad = vi.fn(() => {
+      throw new Error("listener failure");
+    });
+    const good = vi.fn();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    emitter.on("message", bad);
+    emitter.on("message", good);
+
+    expect(() => emitter.emit("message", "resilient")).not.toThrow();
+    expect(bad).toHaveBeenCalledWith("resilient");
+    expect(good).toHaveBeenCalledWith("resilient");
+    expect(consoleSpy).toHaveBeenCalled();
+
+    consoleSpy.mockRestore();
+  });
 });

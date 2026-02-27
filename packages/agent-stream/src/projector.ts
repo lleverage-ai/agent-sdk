@@ -1,5 +1,18 @@
 import type { IEventStore, ProjectorConfig, StoredEvent } from "./types.js";
 
+function cloneState<T>(state: T): T {
+  if (typeof globalThis.structuredClone === "function") {
+    return globalThis.structuredClone(state);
+  }
+  if (Array.isArray(state)) {
+    return [...state] as T;
+  }
+  if (state && typeof state === "object") {
+    return { ...(state as Record<string, unknown>) } as T;
+  }
+  return state;
+}
+
 /**
  * Reduces a stream of stored events into materialized state.
  *
@@ -16,7 +29,7 @@ export class Projector<TState, TEvent> {
 
   constructor(config: ProjectorConfig<TState, TEvent>) {
     this.config = config;
-    this.state = config.initialState;
+    this.state = cloneState(config.initialState);
     this.lastSeq = 0;
   }
 
@@ -67,7 +80,7 @@ export class Projector<TState, TEvent> {
    * Reset the projector to its initial state.
    */
   reset(): void {
-    this.state = this.config.initialState;
+    this.state = cloneState(this.config.initialState);
     this.lastSeq = 0;
   }
 }

@@ -46,6 +46,16 @@ describe("RunManager", () => {
     ).rejects.toThrow("Run not found");
   });
 
+  it("appendEvents throws for terminal run statuses", async () => {
+    const { manager } = createTestSetup();
+    const run = await manager.beginRun({ threadId: "t1" });
+    await manager.finalizeRun(run.runId, "failed");
+
+    await expect(
+      manager.appendEvents(run.runId, [{ kind: "text-delta", payload: { delta: "late event" } }]),
+    ).rejects.toThrow('Cannot append events to run in status "failed"');
+  });
+
   it("finalizeRun with committed status accumulates messages", async () => {
     const { manager, ledgerStore } = createTestSetup();
     const run = await manager.beginRun({ threadId: "t1" });

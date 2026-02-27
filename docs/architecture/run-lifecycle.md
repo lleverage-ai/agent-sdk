@@ -9,21 +9,20 @@ A Run represents a single agent generation cycle — from receiving input to pro
                   ┌──────────┐
                   │ created  │
                   └────┬─────┘
-                       │ begin()
+                       │ activateRun()
                   ┌────▼─────┐
-          ┌──────►│streaming │◄──────┐
-          │       └──┬──┬──┬─┘       │
-          │          │  │  │         │
-     resume()   commit │ cancel  fail
-          │          │  │  │
-          │    ┌─────▼┐ │ ┌▼───────┐
-          │    │commit-││ │cancelled│
-          │    │ted    ││ └────────┘
-          │    └──────┘│
-          │            │
-          │      ┌─────▼──┐
-          └──────┤failed   │
-                 └────────┘
+                  │streaming │
+                  └─┬──┬──┬──┘
+                    │  │  │
+               commit fail cancel
+                    │   │    │
+              ┌─────▼┐ ┌▼──┐ ┌▼───────┐
+              │committed│failed│cancelled│
+              └─────┬──┘ └────┘ └────────┘
+                    │ superseded by newer commit at same fork point
+              ┌─────▼─────┐
+              │ superseded│
+              └───────────┘
 ```
 
 ## States
@@ -41,34 +40,33 @@ A Run represents a single agent generation cycle — from receiving input to pro
 
 | From | To | Trigger | Side Effects |
 |---|---|---|---|
-| created | streaming | `beginRun()` | Allocates stream, starts event capture |
-| streaming | committed | All events received, no errors | Persists transcript, emits run.committed |
-| streaming | failed | Unrecoverable error | Persists partial transcript, emits run.failed |
-| streaming | cancelled | User/system cancellation | Persists partial transcript, emits run.cancelled |
-| streaming | superseded | New run begins from same fork point | Marks old run superseded, emits run.superseded |
-| failed | streaming | `resume()` (retry) | Re-allocates stream from last checkpoint |
+| created | streaming | `activateRun()` (invoked by `RunManager.beginRun()`) | Run becomes writable for stream events |
+| streaming | committed | `finalizeRun({ status: "committed", messages })` | Persists transcript and marks same-fork committed runs as superseded |
+| streaming | failed | `finalizeRun({ status: "failed" })` or recovery | Marks run terminal without committing transcript messages |
+| streaming | cancelled | `finalizeRun({ status: "cancelled" })` or recovery | Marks run terminal without committing transcript messages |
+| committed | superseded | A newer committed run finalizes at the same `forkFromMessageId` | Prior committed run is marked superseded |
 
 ## beginRun() Fork Semantics
 
 `beginRun(options)` creates a new run. If `forkFromMessageId` is specified:
 1. The new run's transcript branches from that message
-2. Any existing active run from the same fork point is superseded
-3. Events after the fork point in the old run are not deleted (immutable log)
+2. Existing committed transcript tail after the fork point is replaced when the new run is committed
+3. Other committed runs at the same fork point are marked `superseded` during finalization
 
 ## Supersession
 
-Supersession occurs when a user regenerates a response. Only one run can be "active" for a given branch point at a time.
+Supersession occurs when a user regenerates a response and a newer run is committed from the same fork point.
 
 ### Resolution Rules
-1. The most recently created run at a fork point is the active run
+1. The most recently committed run at a fork point is the active run
 2. Superseded runs retain their event log for audit/replay
-3. UI clients receive a `run.superseded` event and should switch to the new run's stream
+3. No dedicated `run.superseded` transport event is emitted by `agent-ledger`; consumers infer this from run records/transcript reads
 
 ## Concurrency
 
-- Only one run per thread can be in `streaming` state at a time
-- Creating a new run while one is streaming triggers supersession of the old run
-- Concurrent `beginRun()` calls are serialized by the ledger
+- Multiple runs can exist per thread; the store does not enforce a global single-streaming-run lock
+- Supersession is resolved at commit time for runs that share the same `forkFromMessageId`
+- SQLite store uses transactions for finalize operations; callers should still serialize higher-level workflow decisions
 
 ## Run Metadata
 
@@ -76,7 +74,7 @@ Each run tracks:
 - `runId`: Unique identifier (ULID)
 - `threadId`: Parent thread
 - `forkFromMessageId`: Branch point (null for initial run)
-- `state`: Current lifecycle state
+- `status`: Current lifecycle state
 - `createdAt`: Creation timestamp
-- `committedAt` / `failedAt` / `cancelledAt`: Terminal timestamp
+- `finishedAt`: Terminal timestamp (or null if still active)
 - `eventCount`: Total events in this run's stream

@@ -61,11 +61,18 @@ export async function recoverAllStaleRuns(
   const results: RecoverResult[] = [];
 
   for (const staleRun of staleRuns) {
-    const result = await store.recoverRun({
-      runId: staleRun.run.runId,
-      action,
-    });
-    results.push(result);
+    try {
+      const result = await store.recoverRun({
+        runId: staleRun.run.runId,
+        action,
+      });
+      results.push(result);
+    } catch (error) {
+      console.error("[agent-ledger] Failed to recover stale run", {
+        runId: staleRun.run.runId,
+        error,
+      });
+    }
   }
 
   return results;

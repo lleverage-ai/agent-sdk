@@ -124,6 +124,52 @@ export type RunStatus =
   | "superseded";
 
 /**
+ * Non-terminal run statuses.
+ *
+ * @category Types
+ */
+export type ActiveRunStatus = "created" | "streaming";
+
+/**
+ * Terminal run statuses.
+ *
+ * @category Types
+ */
+export type TerminalRunStatus = "committed" | "failed" | "cancelled" | "superseded";
+
+/**
+ * Run statuses that indicate a run is still active.
+ *
+ * @category Types
+ */
+export const ACTIVE_RUN_STATUSES = ["created", "streaming"] as const;
+
+/**
+ * Run statuses that indicate a run has reached a terminal state.
+ *
+ * @category Types
+ */
+export const TERMINAL_RUN_STATUSES = ["committed", "failed", "cancelled", "superseded"] as const;
+
+/**
+ * Type guard for active run statuses.
+ *
+ * @category Types
+ */
+export function isActiveRunStatus(status: RunStatus): status is ActiveRunStatus {
+  return status === "created" || status === "streaming";
+}
+
+/**
+ * Type guard for terminal run statuses.
+ *
+ * @category Types
+ */
+export function isTerminalRunStatus(status: RunStatus): status is TerminalRunStatus {
+  return TERMINAL_RUN_STATUSES.includes(status as TerminalRunStatus);
+}
+
+/**
  * A record of a single generation run within a thread.
  *
  * @category Types
@@ -164,18 +210,37 @@ export interface BeginRunOptions {
 }
 
 /**
+ * Options for finalizing a committed run.
+ *
+ * @category Types
+ */
+export interface FinalizeCommittedRunOptions {
+  /** The run to finalize */
+  runId: string;
+  /** Terminal status */
+  status: "committed";
+  /** Messages produced by the accumulator */
+  messages: CanonicalMessage[];
+}
+
+/**
+ * Options for finalizing a non-committed run.
+ *
+ * @category Types
+ */
+export interface FinalizeNonCommittedRunOptions {
+  /** The run to finalize */
+  runId: string;
+  /** Terminal status */
+  status: Extract<TerminalRunStatus, "failed" | "cancelled">;
+}
+
+/**
  * Options for finalizing a run.
  *
  * @category Types
  */
-export interface FinalizeRunOptions {
-  /** The run to finalize */
-  runId: string;
-  /** Terminal status */
-  status: "committed" | "failed" | "cancelled";
-  /** Messages produced by the accumulator (required for "committed" status) */
-  messages?: CanonicalMessage[];
-}
+export type FinalizeRunOptions = FinalizeCommittedRunOptions | FinalizeNonCommittedRunOptions;
 
 /**
  * Result of finalizing a run.
@@ -238,9 +303,9 @@ export interface RecoverResult {
   /** The run ID that was recovered */
   runId: string;
   /** The previous status before recovery */
-  previousStatus: RunStatus;
+  previousStatus: ActiveRunStatus;
   /** The new status after recovery */
-  newStatus: RunStatus;
+  newStatus: Extract<TerminalRunStatus, "failed" | "cancelled">;
 }
 
 // ---------------------------------------------------------------------------

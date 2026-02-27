@@ -138,7 +138,11 @@ export function ledgerStoreConformanceTests(name: string, createStore: () => ILe
       await store.activateRun(run.runId);
 
       await store.finalizeRun({ runId: run.runId, status: "failed" });
-      const result = await store.finalizeRun({ runId: run.runId, status: "committed" });
+      const result = await store.finalizeRun({
+        runId: run.runId,
+        status: "committed",
+        messages: [],
+      });
 
       expect(result.committed).toBe(false);
     });

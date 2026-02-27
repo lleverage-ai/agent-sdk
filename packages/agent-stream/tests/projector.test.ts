@@ -125,4 +125,32 @@ describe("Projector", () => {
     expect(projector.getState().count).toBe(30);
     expect(projector.getLastSeq()).toBe(2);
   });
+
+  it("reset restores a clean state for mutating reducers", () => {
+    interface MutableState {
+      values: number[];
+    }
+    type MutableEvent = { value: number };
+    const projector = new Projector<MutableState, MutableEvent>({
+      initialState: { values: [] },
+      reducer: (state, event) => {
+        state.values.push(event.event.value);
+        return state;
+      },
+    });
+
+    projector.apply([
+      {
+        seq: 1,
+        timestamp: "2026-01-01T00:00:00.000Z",
+        streamId: "s1",
+        event: { value: 1 },
+      },
+    ]);
+
+    expect(projector.getState().values).toEqual([1]);
+    projector.reset();
+    expect(projector.getState().values).toEqual([]);
+    expect(projector.getLastSeq()).toBe(0);
+  });
 });

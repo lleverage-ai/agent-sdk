@@ -56,25 +56,36 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
   async append(streamId: string, events: TEvent[]): Promise<StoredEvent<TEvent>[]> {
     if (events.length === 0) return [];
 
-    const headRow = this.db
-      .prepare("SELECT MAX(seq) as max_seq FROM events WHERE stream_id = ?")
-      .get(streamId);
-    const lastSeq = headRow && typeof headRow["max_seq"] === "number" ? headRow["max_seq"] : 0;
-    const timestamp = new Date().toISOString();
+    this.db.exec("BEGIN");
+    try {
+      const headRow = this.db
+        .prepare("SELECT MAX(seq) as max_seq FROM events WHERE stream_id = ?")
+        .get(streamId);
+      const lastSeq = headRow && typeof headRow["max_seq"] === "number" ? headRow["max_seq"] : 0;
+      const timestamp = new Date().toISOString();
 
-    const insert = this.db.prepare(
-      "INSERT INTO events (stream_id, seq, timestamp, event) VALUES (?, ?, ?, ?)",
-    );
+      const insert = this.db.prepare(
+        "INSERT INTO events (stream_id, seq, timestamp, event) VALUES (?, ?, ?, ?)",
+      );
 
-    const stored: StoredEvent<TEvent>[] = [];
-    for (let i = 0; i < events.length; i++) {
-      const seq = lastSeq + i + 1;
-      const eventJson = JSON.stringify(events[i]);
-      insert.run(streamId, seq, timestamp, eventJson);
-      stored.push({ seq, timestamp, streamId, event: events[i]! });
+      const stored: StoredEvent<TEvent>[] = [];
+      for (let i = 0; i < events.length; i++) {
+        const seq = lastSeq + i + 1;
+        const eventJson = JSON.stringify(events[i]);
+        insert.run(streamId, seq, timestamp, eventJson);
+        stored.push({ seq, timestamp, streamId, event: events[i]! });
+      }
+
+      this.db.exec("COMMIT");
+      return stored;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {
+        // Ignore rollback failures; original append error is more actionable.
+      }
+      throw error;
     }
-
-    return stored;
   }
 
   async replay(streamId: string, options?: ReplayOptions): Promise<StoredEvent<TEvent>[]> {
@@ -92,12 +103,23 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
     }
 
     const rows = this.db.prepare(sql).all(...params);
-    return rows.map((row) => ({
-      seq: row["seq"] as number,
-      timestamp: row["timestamp"] as string,
-      streamId,
-      event: JSON.parse(row["event"] as string) as TEvent,
-    }));
+    return rows.map((row) => {
+      const raw = row["event"] as string;
+      try {
+        return {
+          seq: row["seq"] as number,
+          timestamp: row["timestamp"] as string,
+          streamId,
+          event: JSON.parse(raw) as TEvent,
+        };
+      } catch (error) {
+        throw new Error(
+          `Failed to parse event JSON for stream ${streamId} at seq ${String(row["seq"])}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    });
   }
 
   async head(streamId: string): Promise<number> {

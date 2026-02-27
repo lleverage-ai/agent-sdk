@@ -3,6 +3,7 @@ import type { IEventStore, StoredEvent, StreamEvent } from "@lleverage-ai/agent-
 import { accumulateEvents } from "./accumulator.js";
 import type { ILedgerStore } from "./stores/ledger-store.js";
 import type { BeginRunOptions, FinalizeResult, RunRecord } from "./types.js";
+import { isActiveRunStatus } from "./types.js";
 
 /**
  * Orchestrates the full run lifecycle: event store + ledger store + accumulator.
@@ -45,6 +46,9 @@ export class RunManager {
   async appendEvents(runId: string, events: StreamEvent[]): Promise<StoredEvent<StreamEvent>[]> {
     const run = await this.ledgerStore.getRun(runId);
     if (!run) throw new Error(`Run not found: ${runId}`);
+    if (!isActiveRunStatus(run.status)) {
+      throw new Error(`Cannot append events to run in status "${run.status}"`);
+    }
     return this.eventStore.append(run.streamId, events);
   }
 
@@ -67,13 +71,19 @@ export class RunManager {
     const run = await this.ledgerStore.getRun(runId);
     if (!run) throw new Error(`Run not found: ${runId}`);
 
-    const storedEvents = await this.eventStore.replay(run.streamId);
-    const messages = status === "committed" ? accumulateEvents(storedEvents) : undefined;
+    if (status === "committed") {
+      const storedEvents = await this.eventStore.replay(run.streamId);
+      const messages = accumulateEvents(storedEvents);
+      return this.ledgerStore.finalizeRun({
+        runId,
+        status,
+        messages,
+      });
+    }
 
     return this.ledgerStore.finalizeRun({
       runId,
       status,
-      messages,
     });
   }
 }

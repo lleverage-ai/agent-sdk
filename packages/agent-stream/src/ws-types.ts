@@ -6,7 +6,7 @@
  * @category WebSocket
  */
 export interface IWebSocket {
-  readonly readyState: number;
+  readonly readyState: 0 | 1 | 2 | 3;
   send(data: string): void;
   close(code?: number, reason?: string): void;
   addEventListener(type: string, listener: (event: unknown) => void): void;

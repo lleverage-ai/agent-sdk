@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `@lleverage-ai/agent-ledger` now exports active/terminal run status helpers (`ACTIVE_RUN_STATUSES`, `TERMINAL_RUN_STATUSES`, `isActiveRunStatus()`, `isTerminalRunStatus()`) and the narrowed `ActiveRunStatus` / `TerminalRunStatus` types for safer lifecycle logic reuse
+- Protocol decoding now includes explicit `decodeClientMessage()` and `decodeServerMessage()` validators in `@lleverage-ai/agent-stream`, enabling directional wire-message validation at transport boundaries
+
+### Changed
+
+- Workspace scripts (`build`, `type-check`, `test`, `clean`) now run package commands in dependency-safe order (`agent-stream` → `agent-ledger` → `agent-sdk`) for deterministic monorepo builds
+- `RecoverResult` typing in `@lleverage-ai/agent-ledger` is now status-narrowed to active-to-terminal transitions (`created|streaming` → `failed|cancelled`)
+
+### Fixed
+
+- Restored missing package entrypoints/barrels after monorepo split (`packages/agent-sdk/src/index.ts`, `packages/agent-ledger/src/index.ts`, and missing submodule `index.ts` files), plus restored missing `errors/` and `security/` source trees under `packages/agent-sdk/src`
+- Fixed CI/release Bun installs failing on hook setup by setting `SKIP_INSTALL_SIMPLE_GIT_HOOKS=1` in install steps
+- `SQLiteEventStore.append()` now runs in an explicit transaction and rolls back on failure, preventing read-head/insert races and partial writes under concurrency
+- `Projector.reset()` no longer reuses mutable initial-state references, preventing dirty-state reuse with mutating reducers (including accumulator flows)
+- WebSocket server/client transport resilience hardening in `@lleverage-ai/agent-stream`:
+  - replay failures now emit `REPLAY_FAILED` with server-side context logging
+  - server and client `sendMessage()` paths now surface/send failures instead of silent drops
+  - server now listens for websocket `error` events and cleans up clients safely
+  - server broadcast no longer stops delivery to healthy clients when one client overflows
+  - client now throws a descriptive constructor-missing error and rejects `connect()` after `close()`
+  - reconnect exhaustion/disabled paths now terminate outstanding subscriptions and emit errors
+  - invalid inbound server frames now emit client errors instead of being silently ignored
+- `FinalizeRunOptions` is now a discriminated union that requires `messages` for `status: "committed"`, preventing transcript-less commits
+- `RunManager.appendEvents()` now rejects appends to terminal-status runs
+- `SQLiteLedgerStore.deleteThread()` now runs in a transaction to avoid partial thread deletion on crash
+- Stale-run reconciliation now continues recovering remaining runs when one recovery fails
+- Added and fixed regression coverage for replay failures, websocket error cleanup, broadcast overflow behavior, projector reset mutability, terminal run append rejection, branched regeneration fixtures, and accumulator text-delta edge cases
+- Corrected architecture docs with current API/runtime behavior (`run-lifecycle`, `stream-ledger-contract`, `canonical-schema`, `compaction-retention`, and `AGENTS.md` websocket descriptions)
+
 ## [0.0.13] - 2026-02-25
 
 ### Changed

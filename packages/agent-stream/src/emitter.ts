@@ -28,8 +28,12 @@ export class TypedEmitter<TEvents extends Record<string, (...args: any[]) => voi
   emit<K extends keyof TEvents & string>(event: K, ...args: Parameters<TEvents[K]>): void {
     const set = this.listeners.get(event);
     if (!set) return;
-    for (const fn of set) {
-      (fn as TEvents[K])(...args);
+    for (const fn of [...set]) {
+      try {
+        (fn as TEvents[K])(...args);
+      } catch (error) {
+        console.error("[TypedEmitter] listener threw", { event, error });
+      }
     }
   }
 

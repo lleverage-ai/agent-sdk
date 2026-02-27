@@ -4,7 +4,7 @@ import type { ClientMessage, ServerMessage } from "../../src/protocol.js";
 import { encodeMessage, PROTOCOL_ERRORS, PROTOCOL_VERSION } from "../../src/protocol.js";
 import { WsServer } from "../../src/server/ws-server.js";
 import { InMemoryEventStore } from "../../src/stores/memory.js";
-import type { StoredEvent } from "../../src/types.js";
+import type { IEventStore, StoredEvent } from "../../src/types.js";
 import { MockWebSocket } from "../helpers/mock-ws.js";
 
 type TestEvent = { kind: string; value: number };
@@ -274,6 +274,67 @@ describe("WsServer", () => {
     expect((errorMsg as { code: string }).code).toBe(PROTOCOL_ERRORS.BUFFER_OVERFLOW);
   });
 
+  it("continues processing other clients when one overflows", async () => {
+    const ws1 = new MockWebSocket();
+    ws1.readyState = 1;
+    const ws2 = new MockWebSocket();
+    ws2.readyState = 1;
+    server.handleConnection(ws1);
+    server.handleConnection(ws2);
+    doHandshake(ws1);
+    doHandshake(ws2);
+
+    sendClient(ws1, { type: "subscribe", streamId: "s1" });
+    sendClient(ws2, { type: "subscribe", streamId: "s1" });
+
+    const events: StoredEvent<unknown>[] = [];
+    for (let i = 1; i <= 6; i++) {
+      events.push({
+        seq: i,
+        timestamp: new Date().toISOString(),
+        streamId: "s1",
+        event: { kind: "overflow", value: i },
+      });
+    }
+    server.broadcast("s1", events);
+
+    const ws1Error = parseSent(ws1).find((m) => m.type === "error");
+    const ws2Error = parseSent(ws2).find((m) => m.type === "error");
+    expect((ws1Error as { code: string }).code).toBe(PROTOCOL_ERRORS.BUFFER_OVERFLOW);
+    expect((ws2Error as { code: string }).code).toBe(PROTOCOL_ERRORS.BUFFER_OVERFLOW);
+  });
+
+  it("sends replay error when store replay fails", async () => {
+    const failingStore: IEventStore<unknown> = {
+      append: async () => [],
+      replay: async () => {
+        throw new Error("boom");
+      },
+      head: async () => 0,
+      delete: async () => undefined,
+    };
+    server = new WsServer({
+      store: failingStore,
+      heartbeatIntervalMs: 30_000,
+      heartbeatTimeoutMs: 10_000,
+      maxBufferSize: 5,
+    });
+
+    const ws = new MockWebSocket();
+    ws.readyState = 1;
+    server.handleConnection(ws);
+    doHandshake(ws);
+    ws.sentMessages.length = 0;
+
+    sendClient(ws, { type: "subscribe", streamId: "s1" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const errorMsg = parseSent(ws).find((m) => m.type === "error") as
+      | { type: "error"; code: string }
+      | undefined;
+    expect(errorMsg?.code).toBe(PROTOCOL_ERRORS.REPLAY_FAILED);
+  });
+
   it("unsubscribe stops event delivery", async () => {
     const ws = new MockWebSocket();
     ws.readyState = 1;
@@ -304,6 +365,22 @@ describe("WsServer", () => {
     // Broadcasting after disconnect should not throw
     const events = await store.append("s1", [{ kind: "x", value: 1 }]);
     expect(() => server.broadcast("s1", events as StoredEvent<unknown>[])).not.toThrow();
+  });
+
+  it("removes client on websocket error event", async () => {
+    const ws = new MockWebSocket();
+    ws.readyState = 1;
+    server.handleConnection(ws);
+    doHandshake(ws);
+    sendClient(ws, { type: "subscribe", streamId: "s1" });
+    await vi.advanceTimersByTimeAsync(0);
+    ws.sentMessages.length = 0;
+
+    ws.simulateError("boom");
+
+    const events = await store.append("s1", [{ kind: "x", value: 1 }]);
+    server.broadcast("s1", events as StoredEvent<unknown>[]);
+    expect(parseSent(ws)).toHaveLength(0);
   });
 
   it("sends error for invalid message format", () => {

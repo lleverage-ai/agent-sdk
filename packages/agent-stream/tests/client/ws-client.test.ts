@@ -45,6 +45,18 @@ describe("WsClient", () => {
     vi.useRealTimers();
   });
 
+  it("throws a descriptive error when WebSocket constructor is unavailable", () => {
+    const originalWebSocket = (globalThis as { WebSocket?: unknown }).WebSocket;
+    (globalThis as { WebSocket?: unknown }).WebSocket = undefined;
+    try {
+      expect(() => new WsClient({ url: "ws://localhost" })).toThrow(
+        "WebSocket constructor is not available",
+      );
+    } finally {
+      (globalThis as { WebSocket?: unknown }).WebSocket = originalWebSocket;
+    }
+  });
+
   it("transitions from disconnected → connecting → connected", () => {
     const states: WsClientState[] = [];
     const client = new WsClient({
@@ -407,14 +419,17 @@ describe("WsClient", () => {
     client.close();
   });
 
-  it("stops after maxReconnectAttempts", () => {
+  it("stops after maxReconnectAttempts", async () => {
+    const errors: unknown[] = [];
     const client = new WsClient({
       url: "ws://localhost",
       WebSocket: Constructor,
       maxReconnectAttempts: 2,
       baseReconnectDelayMs: 100,
     });
+    client.on("error", (error) => errors.push(error));
     client.connect();
+    const iter = client.subscribe("s1");
 
     // First connection fails
     instances[0]!.simulateOpen();
@@ -434,18 +449,40 @@ describe("WsClient", () => {
     vi.advanceTimersByTime(60_000);
     expect(instances).toHaveLength(3);
     expect(client.state).toBe("disconnected");
+    expect(
+      errors.some((error) => String(error).includes("Max reconnection attempts reached")),
+    ).toBe(true);
+    const result = await (iter[Symbol.asyncIterator]() as AsyncIterator<unknown>).next();
+    expect(result.done).toBe(true);
     client.close();
   });
 
-  it("connect after close is a no-op", () => {
+  it("connect after close throws", () => {
     const client = new WsClient({
       url: "ws://localhost",
       WebSocket: Constructor,
     });
     client.close();
-    client.connect();
+    expect(() => client.connect()).toThrow("Cannot connect after close()");
     expect(instances).toHaveLength(0);
     expect(client.state).toBe("closed");
+  });
+
+  it("emits an error when receiving invalid server message payload", () => {
+    const errors: unknown[] = [];
+    const client = new WsClient({
+      url: "ws://localhost",
+      WebSocket: Constructor,
+    });
+    client.on("error", (error) => errors.push(error));
+    client.connect();
+    const ws = instances[0]!;
+    completeHandshake(ws);
+
+    ws.simulateMessage("{not-json");
+
+    expect(errors.some((error) => String(error).includes("invalid server message"))).toBe(true);
+    client.close();
   });
 
   it("emits error events from server error messages", () => {

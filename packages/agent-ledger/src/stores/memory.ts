@@ -1,4 +1,5 @@
 import type {
+  ActiveRunStatus,
   BeginRunOptions,
   CanonicalMessage,
   FinalizeResult,
@@ -7,9 +8,10 @@ import type {
   RecoverResult,
   RecoverRunOptions,
   RunRecord,
-  RunStatus,
   StaleRunInfo,
+  TerminalRunStatus,
 } from "../types.js";
+import { isActiveRunStatus, isTerminalRunStatus } from "../types.js";
 import { ulid } from "../ulid.js";
 import type { ILedgerStore } from "./ledger-store.js";
 
@@ -68,15 +70,15 @@ export class InMemoryLedgerStore implements ILedgerStore {
     }
 
     // Cannot finalize an already-terminal run with a different status
-    const terminalStatuses: RunStatus[] = ["committed", "failed", "cancelled", "superseded"];
-    if (terminalStatuses.includes(run.status)) {
+    if (isTerminalRunStatus(run.status)) {
       return { committed: false, supersededRunIds: [] };
     }
 
     const supersededRunIds: string[] = [];
+    const finishedAt = new Date().toISOString();
 
     // Handle supersession for committed runs
-    if (options.status === "committed" && options.messages) {
+    if (options.status === "committed") {
       // Store messages in the thread
       const existing = this.messages.get(run.threadId) ?? [];
 
@@ -97,7 +99,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
             other.status === "committed" &&
             other.forkFromMessageId === run.forkFromMessageId
           ) {
-            this.runs.set(rid, { ...other, status: "superseded" });
+            this.runs.set(rid, { ...other, status: "superseded", finishedAt });
             supersededRunIds.push(rid);
           }
         }
@@ -111,8 +113,8 @@ export class InMemoryLedgerStore implements ILedgerStore {
     const updated: RunRecord = {
       ...run,
       status: options.status,
-      finishedAt: new Date().toISOString(),
-      eventCount: options.messages?.length ?? run.eventCount,
+      finishedAt,
+      eventCount: options.status === "committed" ? options.messages.length : run.eventCount,
     };
     this.runs.set(options.runId, updated);
 
@@ -155,7 +157,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
 
     for (const run of this.runs.values()) {
       if (options.threadId && run.threadId !== options.threadId) continue;
-      if (run.status !== "created" && run.status !== "streaming") continue;
+      if (!isActiveRunStatus(run.status)) continue;
 
       const createdAt = new Date(run.createdAt).getTime();
       const staleDurationMs = now - createdAt;
@@ -173,11 +175,13 @@ export class InMemoryLedgerStore implements ILedgerStore {
     if (!run) throw new Error(`Run not found: ${options.runId}`);
 
     const previousStatus = run.status;
-    if (previousStatus !== "created" && previousStatus !== "streaming") {
+    if (!isActiveRunStatus(previousStatus)) {
       throw new Error(`Cannot recover run in status "${previousStatus}"`);
     }
 
-    const newStatus: RunStatus = options.action === "fail" ? "failed" : "cancelled";
+    const newStatus: Extract<TerminalRunStatus, "failed" | "cancelled"> =
+      options.action === "fail" ? "failed" : "cancelled";
+    const activePreviousStatus: ActiveRunStatus = previousStatus;
     const updated: RunRecord = {
       ...run,
       status: newStatus,
@@ -185,7 +189,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
     };
     this.runs.set(options.runId, updated);
 
-    return { runId: options.runId, previousStatus, newStatus };
+    return { runId: options.runId, previousStatus: activePreviousStatus, newStatus };
   }
 
   async deleteThread(threadId: string): Promise<void> {

@@ -1,5 +1,10 @@
-import type { ClientMessage, EventMessage, ServerMessage } from "../protocol.js";
-import { decodeMessage, encodeMessage, PROTOCOL_ERRORS, PROTOCOL_VERSION } from "../protocol.js";
+import type { EventMessage, ProtocolError, ServerMessage } from "../protocol.js";
+import {
+  decodeClientMessage,
+  encodeMessage,
+  PROTOCOL_ERRORS,
+  PROTOCOL_VERSION,
+} from "../protocol.js";
 import type { IEventStore, StoredEvent } from "../types.js";
 import type { IWebSocket } from "../ws-types.js";
 import { WS_READY_STATE } from "../ws-types.js";
@@ -37,6 +42,7 @@ interface ClientState {
   heartbeatTimeout: ReturnType<typeof setTimeout> | null;
   messageListener: (event: unknown) => void;
   closeListener: (event: unknown) => void;
+  errorListener: (event: unknown) => void;
 }
 
 /**
@@ -80,6 +86,7 @@ export class WsServer {
       heartbeatTimeout: null,
       messageListener: () => {},
       closeListener: () => {},
+      errorListener: () => {},
     };
 
     client.messageListener = (event: unknown) => {
@@ -94,8 +101,14 @@ export class WsServer {
       this.removeClient(client);
     };
 
+    client.errorListener = (event: unknown) => {
+      console.error("[WsServer] WebSocket error", { event });
+      this.removeClient(client);
+    };
+
     ws.addEventListener("message", client.messageListener);
     ws.addEventListener("close", client.closeListener);
+    ws.addEventListener("error", client.errorListener);
     this.clients.add(client);
   }
 
@@ -115,15 +128,18 @@ export class WsServer {
         }
       } else {
         // Still replaying — buffer for later
+        let overflow = false;
         for (const event of events) {
           sub.buffer.push(event);
           if (sub.buffer.length > this.maxBufferSize) {
             this.sendError(client, PROTOCOL_ERRORS.BUFFER_OVERFLOW, "Buffer overflow");
             client.ws.close(1008, "Buffer overflow");
             this.removeClient(client);
-            return;
+            overflow = true;
+            break;
           }
         }
+        if (overflow) continue;
       }
     }
   }
@@ -141,13 +157,11 @@ export class WsServer {
   }
 
   private handleMessage(client: ClientState, data: string): void {
-    const msg = decodeMessage(data);
-    if (!msg) {
+    const clientMsg = decodeClientMessage(data);
+    if (!clientMsg) {
       this.sendError(client, PROTOCOL_ERRORS.INVALID_MESSAGE, "Invalid message format");
       return;
     }
-
-    const clientMsg = msg as ClientMessage;
 
     switch (clientMsg.type) {
       case "hello":
@@ -236,12 +250,16 @@ export class WsServer {
           this.sendEvent(client, sub.streamId, event);
         }
       }
-    } catch {
+    } catch (error) {
       // Store error — notify client
       if (this.clients.has(client)) {
+        console.error("[WsServer] replayAndPromote failed", {
+          streamId: sub.streamId,
+          error,
+        });
         this.sendError(
           client,
-          PROTOCOL_ERRORS.UNKNOWN_STREAM,
+          PROTOCOL_ERRORS.REPLAY_FAILED,
           `Failed to replay stream ${sub.streamId}`,
         );
       }
@@ -277,21 +295,31 @@ export class WsServer {
     this.sendMessage(client, msg);
   }
 
-  private sendError(client: ClientState, code: string, message: string): void {
+  private sendError(client: ClientState, code: ProtocolError, message: string): void {
     this.sendMessage(client, {
       type: "error",
-      code: code as ServerMessage["type"] extends "error"
-        ? ServerMessage extends { code: infer C }
-          ? C
-          : never
-        : never,
+      code,
       message,
-    } as ServerMessage);
+    });
   }
 
   private sendMessage(client: ClientState, msg: ServerMessage): void {
-    if (client.ws.readyState === WS_READY_STATE.OPEN) {
+    if (client.ws.readyState !== WS_READY_STATE.OPEN) {
+      console.warn("[WsServer] dropping message for non-open socket", {
+        type: msg.type,
+        readyState: client.ws.readyState,
+      });
+      return;
+    }
+
+    try {
       client.ws.send(encodeMessage(msg));
+    } catch (error) {
+      console.error("[WsServer] failed to send message", {
+        type: msg.type,
+        error,
+      });
+      this.removeClient(client);
     }
   }
 
@@ -312,6 +340,7 @@ export class WsServer {
     }
     client.ws.removeEventListener("message", client.messageListener);
     client.ws.removeEventListener("close", client.closeListener);
+    client.ws.removeEventListener("error", client.errorListener);
     client.subscriptions.clear();
   }
 }

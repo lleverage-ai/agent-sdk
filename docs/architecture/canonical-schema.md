@@ -28,17 +28,17 @@ Defines the canonical message and part types used by agent-ledger for durable tr
 
 ### ToolResultPart
 ```typescript
-{ type: "tool-result"; toolCallId: string; toolName: string; output: unknown; isError?: boolean }
+{ type: "tool-result"; toolCallId: string; toolName: string; output: unknown; isError: boolean }
 ```
 
 ### ReasoningPart
 ```typescript
-{ type: "reasoning"; text: string; signature?: string }
+{ type: "reasoning"; text: string }
 ```
 
 ### FilePart
 ```typescript
-{ type: "file"; mimeType: string; url: string }
+{ type: "file"; mimeType: string; url: string; name?: string }
 ```
 
 ## Branching Model

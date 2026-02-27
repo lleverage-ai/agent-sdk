@@ -26,6 +26,14 @@ interface GoldenFixture {
   expectedMessages: Array<{ role: string; parts: CanonicalPart[] }>;
 }
 
+interface BranchedRegenFixture {
+  description: string;
+  run1Events: StreamEvent[];
+  run2Events: StreamEvent[];
+  run1ExpectedMessages: Array<{ role: string; parts: CanonicalPart[] }>;
+  run2ExpectedMessages: Array<{ role: string; parts: CanonicalPart[] }>;
+}
+
 function loadGoldenFixture(name: string): GoldenFixture {
   const fixturePath = path.join(import.meta.dirname, "fixtures", "golden", `${name}.json`);
   return JSON.parse(fs.readFileSync(fixturePath, "utf-8")) as GoldenFixture;
@@ -71,6 +79,26 @@ describe("Accumulator", () => {
         expect(normalized).toEqual(fixture.expectedMessages);
       });
     }
+
+    it("handles branched regeneration fixture with divergent runs", () => {
+      const fixturePath = path.join(
+        import.meta.dirname,
+        "fixtures",
+        "golden",
+        "branched-regen.json",
+      );
+      const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf-8")) as BranchedRegenFixture;
+
+      const run1Messages = normalizeMessages(
+        accumulateEvents(wrapEvents(fixture.run1Events), createCounterIdGenerator("msg-r1")),
+      );
+      expect(run1Messages).toEqual(fixture.run1ExpectedMessages);
+
+      const run2Messages = normalizeMessages(
+        accumulateEvents(wrapEvents(fixture.run2Events), createCounterIdGenerator("msg-r2")),
+      );
+      expect(run2Messages).toEqual(fixture.run2ExpectedMessages);
+    });
   });
 
   describe("projector integration", () => {
@@ -112,6 +140,16 @@ describe("Accumulator", () => {
     it("handles empty event list", () => {
       const messages = accumulateEvents([]);
       expect(messages).toEqual([]);
+    });
+
+    it("creates an assistant message from text-delta without step-started", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([{ kind: "text-delta", payload: { delta: "Orphan text" } }]);
+      const messages = accumulateEvents(storedEvents, idGen);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]!.role).toBe("assistant");
+      expect(messages[0]!.parts).toEqual([{ type: "text", text: "Orphan text" }]);
     });
 
     it("ignores unknown event kinds", () => {

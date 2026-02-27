@@ -29,7 +29,7 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: SKIP_INSTALL_SIMPLE_GIT_HOOKS=1 bun install --frozen-lockfile
 
       - name: Check formatting and linting
         run: bun run check

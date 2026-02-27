@@ -88,4 +88,27 @@ describe("Reconciliation", () => {
     const results = await recoverAllStaleRuns(store, "fail", { olderThanMs: 60_000 });
     expect(results).toEqual([]);
   });
+
+  it("recoverAllStaleRuns continues when one run recovery fails", async () => {
+    const store = new InMemoryLedgerStore();
+    const r1 = await store.beginRun({ threadId: "t1" });
+    const r2 = await store.beginRun({ threadId: "t1" });
+
+    const originalRecoverRun = store.recoverRun.bind(store);
+    store.recoverRun = async (options) => {
+      if (options.runId === r1.runId) {
+        throw new Error("simulated recover failure");
+      }
+      return originalRecoverRun(options);
+    };
+
+    const results = await recoverAllStaleRuns(store, "fail", { olderThanMs: 0 });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.runId).toBe(r2.runId);
+
+    const run1 = await store.getRun(r1.runId);
+    const run2 = await store.getRun(r2.runId);
+    expect(run1!.status).toBe("created");
+    expect(run2!.status).toBe("failed");
+  });
 });

@@ -13,7 +13,7 @@ Defines the boundary between `agent-stream` (realtime event transport) and `agen
 | Message materialization | | ✓ |
 | Branching / fork tracking | | ✓ |
 | Run lifecycle | | ✓ |
-| Compaction | ✓ (log truncation) | ✓ (snapshot) |
+| Compaction | Planned | Planned |
 
 ## Event Flow
 
@@ -29,9 +29,7 @@ The SDK's streaming response emits `StreamPart` objects. These are mapped to `St
 A `Projector` reduces stored events into state. The ledger uses a projector to materialize `CanonicalMessage[]` from the event stream.
 
 ### Stage 3: Persistence (agent-ledger)
-The ledger persists the materialized messages as the durable transcript. On restart, it can either:
-- Replay events from the store and re-project, or
-- Load the last snapshot and replay only events after the snapshot's sequence number
+The ledger persists the materialized messages as the durable transcript. Current implementation replays from the event store and finalizes runs atomically; snapshot/compaction hooks are documented separately as planned work.
 
 ## Event Mapping
 
@@ -49,10 +47,10 @@ The ledger persists the materialized messages as the durable transcript. On rest
 ## Fork-Point Propagation
 
 When the ledger starts a new run with `forkFromMessageId`:
-1. Ledger determines the `seq` of the last event associated with that message
-2. Ledger creates a new stream (or stream segment) for the new run
-3. The projector for the new run initializes with the canonical state up to the fork point
-4. New events are appended to the new stream and projected independently
+1. The run record stores that fork point
+2. Events for the new run are appended to its own stream (`run:{runId}`)
+3. On committed finalize, transcript content after the fork point is replaced
+4. Other committed runs at the same fork point are marked `superseded`
 
 ## Sequence Diagram: Normal Generation
 
@@ -67,7 +65,7 @@ User        Ledger          Stream          AI SDK
  │           │               │◄──tool-call───│
  │           │               │──append()────►│(store)
  │           │               │◄──step-end────│
- │           │──commitRun()─►│               │
+ │           │──finalizeRun(status=\"committed\")─►│
  │           │──project()───►│               │
  │◄──result──│               │               │
 ```
@@ -82,7 +80,7 @@ User        Ledger          Stream
  │           │──beginRun(fork=M2)──►│
  │           │  (new stream)  │
  │           │               │──append(events)──►│(store)
- │           │──commitRun()─►│
+ │           │──finalizeRun(status=\"committed\")─►│
  │           │──project()───►│
  │◄──result──│               │
 ```

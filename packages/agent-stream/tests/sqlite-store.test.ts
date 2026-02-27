@@ -13,9 +13,11 @@ import { eventStoreConformanceTests } from "./conformance/event-store.conformanc
  */
 class MockSQLiteDatabase implements SQLiteDatabase {
   private tables = new Map<string, Record<string, unknown>[]>();
+  public execHistory: string[] = [];
 
   // SQLite database exec — runs raw SQL, not a shell command
   exec(sql: string): void {
+    this.execHistory.push(sql.trim());
     const createMatch = sql.match(/CREATE TABLE IF NOT EXISTS (\w+)/);
     if (createMatch) {
       const tableName = createMatch[1]!;
@@ -168,5 +170,14 @@ describe("SQLiteEventStore", () => {
     await store.append("s1", [{ nested: { value: 42 } }]);
     const events = await store.replay("s1");
     expect(events[0]!.event).toEqual({ nested: { value: 42 } });
+  });
+
+  it("wraps append in a transaction", async () => {
+    const db = new MockSQLiteDatabase();
+    const store = new SQLiteEventStore<{ value: number }>(db);
+    await store.append("s1", [{ value: 1 }]);
+
+    expect(db.execHistory).toContain("BEGIN");
+    expect(db.execHistory).toContain("COMMIT");
   });
 });

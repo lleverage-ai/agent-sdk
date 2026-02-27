@@ -44,9 +44,6 @@ export class CrashingSQLiteDatabase implements SQLiteDatabase {
     if (trimmed === "BEGIN") {
       this.inner.sqlExec(sql);
       this.inTransaction = true;
-      this.deleteCount = 0;
-      this.updateCount = 0;
-      this.insertCount = 0;
       this.maybeCrash("after-begin");
       return;
     }
@@ -79,12 +76,10 @@ export class CrashingSQLiteDatabase implements SQLiteDatabase {
 
         // Track DML operations for crash point detection
         if (/DELETE FROM/i.test(sql)) {
-          wrapper.deleteCount++;
           if (/DELETE FROM messages/i.test(sql)) {
             wrapper.maybeCrash("after-delete-messages");
           }
         } else if (/UPDATE/i.test(sql)) {
-          wrapper.updateCount++;
           if (/UPDATE runs/i.test(sql) && String(params[0]) === "superseded") {
             wrapper.maybeCrash("after-supersede");
           }
@@ -92,7 +87,6 @@ export class CrashingSQLiteDatabase implements SQLiteDatabase {
             wrapper.maybeCrash("after-update-run");
           }
         } else if (/INSERT INTO/i.test(sql)) {
-          wrapper.insertCount++;
           if (/INSERT INTO messages/i.test(sql)) {
             wrapper.maybeCrash("after-insert-messages");
           }

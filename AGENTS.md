@@ -105,8 +105,8 @@ agent-sdk/                          # Workspace root
 │   │   │   ├── stores/
 │   │   │   │   ├── memory.ts       # InMemoryEventStore
 │   │   │   │   └── sqlite.ts       # SQLiteEventStore
-│   │   │   ├── server/             # WsServer (placeholder)
-│   │   │   └── client/             # WsClient (placeholder)
+│   │   │   ├── server/             # WsServer
+│   │   │   └── client/             # WsClient
 │   │   └── tests/
 │   │
 │   └── agent-ledger/               # @lleverage-ai/agent-ledger

@@ -16,14 +16,14 @@ The system manages three distinct data planes with different retention character
 - **What**: Ordered event log per stream — `StoredEvent[]` with monotonic sequences
 - **Lifetime**: Active run + replay window
 - **Storage**: `IEventStore` (memory or SQLite)
-- **Compaction**: Log truncation after snapshot
+- **Compaction**: Planned (not yet implemented)
 - **Retention**: Configurable (default: retain until explicitly deleted or compacted)
 
 ### 3. Durable Transcript (agent-ledger)
 - **What**: Materialized `CanonicalMessage[]` — the source of truth for conversation history
 - **Lifetime**: Indefinite (user-facing data)
 - **Storage**: Persistent store (SQLite, external DB)
-- **Compaction**: Snapshot-based — store materialized state, allow log truncation
+- **Compaction**: Planned (not yet implemented)
 - **Retention**: Indefinite by default; user-controlled deletion
 
 ## Retention Matrix
@@ -31,8 +31,8 @@ The system manages three distinct data planes with different retention character
 | Plane | Default Retention | Compaction Trigger | Data After Compaction |
 |---|---|---|---|
 | Execution Memory | Generation lifetime | Generation end | Discarded |
-| Transport Log | Until compacted | Snapshot created | Events before snapshot seq deleted |
-| Durable Transcript | Indefinite | Manual or policy | Snapshots replace old snapshots |
+| Transport Log | Until deleted | N/A (planned) | N/A |
+| Durable Transcript | Indefinite | N/A (planned) | N/A |
 
 ## Compaction Flow
 

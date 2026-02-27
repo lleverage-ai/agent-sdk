@@ -1,6 +1,7 @@
 import type { SQLiteDatabase } from "@lleverage-ai/agent-stream";
 
 import type {
+  ActiveRunStatus,
   BeginRunOptions,
   CanonicalMessage,
   CanonicalPart,
@@ -10,9 +11,10 @@ import type {
   RecoverResult,
   RecoverRunOptions,
   RunRecord,
-  RunStatus,
   StaleRunInfo,
+  TerminalRunStatus,
 } from "../types.js";
+import { isActiveRunStatus, isTerminalRunStatus } from "../types.js";
 import { ulid } from "../ulid.js";
 import type { ILedgerStore } from "./ledger-store.js";
 
@@ -132,8 +134,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
       return { committed: true, supersededRunIds: [] };
     }
 
-    const terminalStatuses: RunStatus[] = ["committed", "failed", "cancelled", "superseded"];
-    if (terminalStatuses.includes(run.status)) {
+    if (isTerminalRunStatus(run.status)) {
       return { committed: false, supersededRunIds: [] };
     }
 
@@ -142,7 +143,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
 
     this.db.exec("BEGIN");
     try {
-      if (options.status === "committed" && options.messages) {
+      if (options.status === "committed") {
         // Handle fork-based supersession
         if (run.forkFromMessageId) {
           // Remove messages after fork point
@@ -172,7 +173,9 @@ export class SQLiteLedgerStore implements ILedgerStore {
             .all(run.threadId, run.runId, "committed", run.forkFromMessageId);
           for (const other of otherRuns) {
             const rid = other["run_id"] as string;
-            this.db.prepare("UPDATE runs SET status = ? WHERE run_id = ?").run("superseded", rid);
+            this.db
+              .prepare("UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?")
+              .run("superseded", finishedAt, rid);
             supersededRunIds.push(rid);
           }
         }
@@ -209,7 +212,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
         }
       }
 
-      const eventCount = options.messages?.length ?? run.eventCount;
+      const eventCount = options.status === "committed" ? options.messages.length : run.eventCount;
       this.db
         .prepare("UPDATE runs SET status = ?, finished_at = ?, event_count = ? WHERE run_id = ?")
         .run(options.status, finishedAt, eventCount, options.runId);
@@ -248,9 +251,29 @@ export class SQLiteLedgerStore implements ILedgerStore {
         .prepare("SELECT * FROM parts WHERE message_id = ? ORDER BY ordinal ASC")
         .all(msgId);
 
-      const parts: CanonicalPart[] = partRows.map(
-        (p) => JSON.parse(p["data"] as string) as CanonicalPart,
-      );
+      const parts: CanonicalPart[] = partRows.map((p: Record<string, unknown>) => {
+        const raw = p["data"] as string;
+        try {
+          return JSON.parse(raw) as CanonicalPart;
+        } catch (error) {
+          throw new Error(
+            `Failed to parse part JSON for message ${msgId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      });
+
+      let metadata: Record<string, unknown>;
+      try {
+        metadata = JSON.parse(row["metadata"] as string) as Record<string, unknown>;
+      } catch (error) {
+        throw new Error(
+          `Failed to parse metadata JSON for message ${msgId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
 
       messages.push({
         id: msgId,
@@ -258,7 +281,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
         role: row["role"] as CanonicalMessage["role"],
         parts,
         createdAt: row["created_at"] as string,
-        metadata: JSON.parse(row["metadata"] as string) as Record<string, unknown>,
+        metadata,
       });
     }
 
@@ -301,29 +324,38 @@ export class SQLiteLedgerStore implements ILedgerStore {
     const run = await this.getRun(options.runId);
     if (!run) throw new Error(`Run not found: ${options.runId}`);
 
-    if (run.status !== "created" && run.status !== "streaming") {
+    if (!isActiveRunStatus(run.status)) {
       throw new Error(`Cannot recover run in status "${run.status}"`);
     }
 
-    const newStatus: RunStatus = options.action === "fail" ? "failed" : "cancelled";
+    const newStatus: Extract<TerminalRunStatus, "failed" | "cancelled"> =
+      options.action === "fail" ? "failed" : "cancelled";
+    const previousStatus: ActiveRunStatus = run.status;
     const finishedAt = new Date().toISOString();
 
     this.db
       .prepare("UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?")
       .run(newStatus, finishedAt, options.runId);
 
-    return { runId: options.runId, previousStatus: run.status, newStatus };
+    return { runId: options.runId, previousStatus, newStatus };
   }
 
   async deleteThread(threadId: string): Promise<void> {
-    // Delete parts for all messages in thread
-    const msgRows = this.db.prepare("SELECT id FROM messages WHERE thread_id = ?").all(threadId);
-    for (const row of msgRows) {
-      this.db.prepare("DELETE FROM parts WHERE message_id = ?").run(row["id"]);
-    }
+    this.db.exec("BEGIN");
+    try {
+      // Delete parts for all messages in thread
+      const msgRows = this.db.prepare("SELECT id FROM messages WHERE thread_id = ?").all(threadId);
+      for (const row of msgRows) {
+        this.db.prepare("DELETE FROM parts WHERE message_id = ?").run(row["id"]);
+      }
 
-    this.db.prepare("DELETE FROM messages WHERE thread_id = ?").run(threadId);
-    this.db.prepare("DELETE FROM runs WHERE thread_id = ?").run(threadId);
+      this.db.prepare("DELETE FROM messages WHERE thread_id = ?").run(threadId);
+      this.db.prepare("DELETE FROM runs WHERE thread_id = ?").run(threadId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 }
 
@@ -333,7 +365,7 @@ function rowToRunRecord(row: Record<string, unknown>): RunRecord {
     threadId: row["thread_id"] as string,
     streamId: row["stream_id"] as string,
     forkFromMessageId: (row["fork_from_message_id"] as string) ?? null,
-    status: row["status"] as RunStatus,
+    status: row["status"] as RunRecord["status"],
     createdAt: row["created_at"] as string,
     finishedAt: (row["finished_at"] as string) ?? null,
     eventCount: row["event_count"] as number,
