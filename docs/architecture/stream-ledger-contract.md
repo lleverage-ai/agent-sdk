@@ -1,11 +1,11 @@
 # Stream ↔ Ledger Contract
 
 ## Overview
-Defines the boundary between `agent-stream` (realtime event transport) and `agent-ledger` (durable transcript storage). The stream layer handles ephemeral, ordered events. The ledger layer materializes those events into canonical messages.
+Defines the boundary between `agent-threads (stream layer)` (realtime event transport) and `agent-threads (ledger layer)` (durable transcript storage). The stream layer handles ephemeral, ordered events. The ledger layer materializes those events into canonical messages.
 
 ## Layer Responsibilities
 
-| Concern | agent-stream | agent-ledger |
+| Concern | agent-threads (stream layer) | agent-threads (ledger layer) |
 |---|---|---|
 | Event ordering | ✓ (monotonic seq) | |
 | Event storage | ✓ (append-only log) | |
@@ -22,13 +22,13 @@ AI SDK StreamPart → StreamEvent → [store] → Projector → CanonicalPart
      (ephemeral)     (stored)               (materialized)
 ```
 
-### Stage 1: Capture (agent-stream)
+### Stage 1: Capture (agent-threads (stream layer))
 The SDK's streaming response emits `StreamPart` objects. These are mapped to `StreamEvent` values and appended to the event store with monotonic sequence numbers.
 
-### Stage 2: Projection (agent-stream → agent-ledger)
+### Stage 2: Projection (agent-threads (stream layer) → agent-threads (ledger layer))
 A `Projector` reduces stored events into state. The ledger uses a projector to materialize `CanonicalMessage[]` from the event stream.
 
-### Stage 3: Persistence (agent-ledger)
+### Stage 3: Persistence (agent-threads (ledger layer))
 The ledger persists the materialized messages as the durable transcript. Current implementation replays from the event store and finalizes runs atomically; snapshot/compaction hooks are documented separately as planned work.
 
 ## Event Mapping
@@ -76,11 +76,11 @@ User        Ledger          Stream          AI SDK
 User        Ledger          Stream
  │           │               │
  │──regen(M3)►│              │
- │           │──supersede(oldRun)
  │           │──beginRun(fork=M2)──►│
  │           │  (new stream)  │
  │           │               │──append(events)──►│(store)
- │           │──finalizeRun(status=\"committed\")─►│
+ │           │──finalizeRun(status="committed")─►│
+ │           │  (supersedes old committed run at same fork)
  │           │──project()───►│
  │◄──result──│               │
 ```

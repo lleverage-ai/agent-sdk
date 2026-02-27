@@ -5,13 +5,13 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "bun run --filter '@lleverage-ai/agent-stream' build && bun run --filter '@lleverage-ai/agent-ledger' build && bun run --filter '@lleverage-ai/agent-sdk' build",
-    "test": "bun run --filter '@lleverage-ai/agent-stream' build && bun run --filter '@lleverage-ai/agent-stream' test && bun run --filter '@lleverage-ai/agent-ledger' test && bun run --filter '@lleverage-ai/agent-sdk' test",
-    "type-check": "bun run --filter '@lleverage-ai/agent-stream' build && bun run --filter '@lleverage-ai/agent-stream' type-check && bun run --filter '@lleverage-ai/agent-ledger' type-check && bun run --filter '@lleverage-ai/agent-sdk' type-check",
+    "build": "bun run --filter '@lleverage-ai/agent-threads' build && bun run --filter '@lleverage-ai/agent-sdk' build",
+    "test": "bun run --filter '@lleverage-ai/agent-threads' build && bun run --filter '@lleverage-ai/agent-threads' test && bun run --filter '@lleverage-ai/agent-sdk' test",
+    "type-check": "bun run --filter '@lleverage-ai/agent-threads' build && bun run --filter '@lleverage-ai/agent-threads' type-check && bun run --filter '@lleverage-ai/agent-sdk' type-check",
     "check": "biome check .",
     "check:fix": "biome check --write .",
     "format": "biome format --write .",
-    "clean": "bun run --filter '@lleverage-ai/agent-sdk' clean && bun run --filter '@lleverage-ai/agent-ledger' clean && bun run --filter '@lleverage-ai/agent-stream' clean",
+    "clean": "bun run --filter '@lleverage-ai/agent-sdk' clean && bun run --filter '@lleverage-ai/agent-threads' clean",
     "prepare": "simple-git-hooks"
   },
   "devDependencies": {

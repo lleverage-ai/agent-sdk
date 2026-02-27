@@ -43,8 +43,7 @@ bun run clean
 
 # Run commands for a single package
 bun run --filter '@lleverage-ai/agent-sdk' test
-bun run --filter '@lleverage-ai/agent-stream' test
-bun run --filter '@lleverage-ai/agent-ledger' test
+bun run --filter '@lleverage-ai/agent-threads' test
 ```
 
 ## Changelog
@@ -96,33 +95,29 @@ agent-sdk/                          # Workspace root
 │   │   │   └── tools/              # Core tool implementations
 │   │   └── tests/
 │   │
-│   ├── agent-stream/               # @lleverage-ai/agent-stream
-│   │   ├── src/
-│   │   │   ├── index.ts            # Public re-exports
-│   │   │   ├── types.ts            # IEventStore, StoredEvent, ProjectorConfig
-│   │   │   ├── projector.ts        # Projector class
-│   │   │   ├── stream-event.ts     # Event kinds, EventKindRegistry
-│   │   │   ├── stores/
-│   │   │   │   ├── memory.ts       # InMemoryEventStore
-│   │   │   │   └── sqlite.ts       # SQLiteEventStore
-│   │   │   ├── server/             # WsServer
-│   │   │   └── client/             # WsClient
-│   │   └── tests/
-│   │
-│   └── agent-ledger/               # @lleverage-ai/agent-ledger
+│   └── agent-threads/              # @lleverage-ai/agent-threads
 │       ├── src/
-│       │   ├── index.ts            # Public re-exports
-│       │   ├── types.ts            # CanonicalMessage, RunRecord, RunStatus
-│       │   ├── ulid.ts             # Self-contained ULID generator
-│       │   ├── accumulator.ts      # StreamEvent[] → CanonicalMessage[] reducer
-│       │   ├── run-manager.ts      # Run lifecycle orchestration
-│       │   ├── reconciliation.ts   # Stale-run detection/recovery
-│       │   ├── context-builder.ts  # IContextBuilder + FullContextBuilder
-│       │   └── stores/
-│       │       ├── ledger-store.ts # ILedgerStore interface
-│       │       ├── memory.ts       # InMemoryLedgerStore
-│       │       └── sqlite.ts       # SQLiteLedgerStore
+│       │   ├── index.ts            # Unified barrel (stream + ledger)
+│       │   ├── stream/
+│       │   │   ├── index.ts        # Stream-only barrel
+│       │   │   ├── types.ts        # IEventStore, StoredEvent, ProjectorConfig
+│       │   │   ├── projector.ts    # Projector class
+│       │   │   ├── stream-event.ts # Event kinds, EventKindRegistry
+│       │   │   ├── stores/         # InMemoryEventStore, SQLiteEventStore
+│       │   │   ├── server/         # WsServer
+│       │   │   └── client/         # WsClient
+│       │   └── ledger/
+│       │       ├── index.ts        # Ledger-only barrel
+│       │       ├── types.ts        # CanonicalMessage, RunRecord, RunStatus
+│       │       ├── ulid.ts         # Self-contained ULID generator
+│       │       ├── accumulator.ts  # StreamEvent[] → CanonicalMessage[] reducer
+│       │       ├── run-manager.ts  # Run lifecycle orchestration
+│       │       ├── reconciliation.ts # Stale-run detection/recovery
+│       │       ├── context-builder.ts # IContextBuilder + FullContextBuilder
+│       │       └── stores/         # ILedgerStore, InMemoryLedgerStore, SQLiteLedgerStore
 │       └── tests/
+│           ├── stream/             # Stream layer tests
+│           └── ledger/             # Ledger layer tests
 │
 ├── docs/
 │   └── architecture/               # Architecture specs (#50-53)

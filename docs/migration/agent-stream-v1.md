@@ -1,8 +1,8 @@
-# Migrating to @lleverage-ai/agent-stream v1
+# Migrating to @lleverage-ai/agent-threads v1
 
 ## Overview
 
-`@lleverage-ai/agent-stream` provides realtime event transport and replay for AI agent conversations. It builds on an event-sourcing foundation with three layers:
+`@lleverage-ai/agent-threads` provides realtime event transport and replay for AI agent conversations. It builds on an event-sourcing foundation with three layers:
 
 | Layer | Purpose |
 |---|---|
@@ -13,7 +13,7 @@
 ## Installation
 
 ```bash
-npm install @lleverage-ai/agent-stream
+npm install @lleverage-ai/agent-threads
 ```
 
 ## API Mapping
@@ -31,10 +31,10 @@ npm install @lleverage-ai/agent-stream
 ### 1. Set up an event store
 
 ```typescript
-import { InMemoryEventStore } from "@lleverage-ai/agent-stream/stores/memory";
+import { InMemoryEventStore } from "@lleverage-ai/agent-threads/stores/event-memory";
 
 // Or for persistence:
-// import { SQLiteEventStore } from "@lleverage-ai/agent-stream/stores/sqlite";
+// import { SQLiteEventStore } from "@lleverage-ai/agent-threads/stores/event-sqlite";
 
 const store = new InMemoryEventStore<MyEvent>();
 ```
@@ -42,8 +42,8 @@ const store = new InMemoryEventStore<MyEvent>();
 ### 2. Define a projector for state materialization
 
 ```typescript
-import { Projector } from "@lleverage-ai/agent-stream";
-import type { StoredEvent } from "@lleverage-ai/agent-stream";
+import { Projector } from "@lleverage-ai/agent-threads";
+import type { StoredEvent } from "@lleverage-ai/agent-threads";
 
 interface ChatState {
   messages: string[];
@@ -71,7 +71,7 @@ const projector = new Projector<ChatState, ChatEvent>({
 ### 3. Wire up the server
 
 ```typescript
-import { WsServer } from "@lleverage-ai/agent-stream/server";
+import { WsServer } from "@lleverage-ai/agent-threads/server";
 
 const server = new WsServer({
   store,
@@ -97,7 +97,7 @@ server.broadcast("session-123", stored);
 ### 4. Connect from the client
 
 ```typescript
-import { WsClient } from "@lleverage-ai/agent-stream/client";
+import { WsClient } from "@lleverage-ai/agent-threads/client";
 
 const client = new WsClient({
   url: "ws://localhost:8080",
@@ -132,7 +132,7 @@ The client uses `globalThis.WebSocket` by default (available in browsers). For N
 
 ```typescript
 import WebSocket from "ws";
-import { WsClient } from "@lleverage-ai/agent-stream/client";
+import { WsClient } from "@lleverage-ai/agent-threads/client";
 
 const client = new WsClient({
   url: "ws://localhost:8080",
@@ -145,11 +145,11 @@ const client = new WsClient({
 Full working example wiring all components together:
 
 ```typescript
-import { InMemoryEventStore } from "@lleverage-ai/agent-stream/stores/memory";
-import { Projector } from "@lleverage-ai/agent-stream";
-import { WsServer } from "@lleverage-ai/agent-stream/server";
-import { WsClient } from "@lleverage-ai/agent-stream/client";
-import type { StoredEvent } from "@lleverage-ai/agent-stream";
+import { InMemoryEventStore } from "@lleverage-ai/agent-threads/stores/event-memory";
+import { Projector } from "@lleverage-ai/agent-threads";
+import { WsServer } from "@lleverage-ai/agent-threads/server";
+import { WsClient } from "@lleverage-ai/agent-threads/client";
+import type { StoredEvent } from "@lleverage-ai/agent-threads";
 
 // -- Types --
 type AgentEvent =
@@ -222,11 +222,11 @@ async function watchSession(sessionId: string) {
 
 | Import path | Contents |
 |---|---|
-| `@lleverage-ai/agent-stream` | Types, Projector, EventKindRegistry, protocol codec, WS types |
-| `@lleverage-ai/agent-stream/stores/memory` | `InMemoryEventStore` |
-| `@lleverage-ai/agent-stream/stores/sqlite` | `SQLiteEventStore` |
-| `@lleverage-ai/agent-stream/server` | `WsServer` |
-| `@lleverage-ai/agent-stream/client` | `WsClient` |
+| `@lleverage-ai/agent-threads` | Types, Projector, EventKindRegistry, protocol codec, WS types |
+| `@lleverage-ai/agent-threads/stores/event-memory` | `InMemoryEventStore` |
+| `@lleverage-ai/agent-threads/stores/event-sqlite` | `SQLiteEventStore` |
+| `@lleverage-ai/agent-threads/server` | `WsServer` |
+| `@lleverage-ai/agent-threads/client` | `WsClient` |
 
 ## Deprecation Notice
 

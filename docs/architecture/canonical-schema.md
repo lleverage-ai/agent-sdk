@@ -1,7 +1,7 @@
 # Canonical Message Schema
 
 ## Overview
-Defines the canonical message and part types used by agent-ledger for durable transcript storage. These types normalize AI SDK streaming parts into a stable, version-controlled schema suitable for persistence and replay.
+Defines the canonical message and part types used by agent-threads (ledger layer) for durable transcript storage. These types normalize AI SDK streaming parts into a stable, version-controlled schema suitable for persistence and replay.
 
 ## CanonicalMessage
 

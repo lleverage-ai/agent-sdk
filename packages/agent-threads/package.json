@@ -1,0 +1,102 @@
+{
+  "name": "@lleverage-ai/agent-threads",
+  "version": "0.1.0-alpha.1",
+  "description": "Event transport, replay, and durable transcripts for AI agent conversations",
+  "type": "module",
+  "license": "MIT",
+  "author": "Lleverage AI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lleverage-ai/agent-sdk.git",
+    "directory": "packages/agent-threads"
+  },
+  "homepage": "https://github.com/lleverage-ai/agent-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/lleverage-ai/agent-sdk/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "event-sourcing",
+    "streaming",
+    "realtime",
+    "replay",
+    "transcript",
+    "ledger",
+    "durable",
+    "typescript"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./stream": {
+      "types": "./dist/stream/index.d.ts",
+      "import": "./dist/stream/index.js",
+      "default": "./dist/stream/index.js"
+    },
+    "./ledger": {
+      "types": "./dist/ledger/index.d.ts",
+      "import": "./dist/ledger/index.js",
+      "default": "./dist/ledger/index.js"
+    },
+    "./server": {
+      "types": "./dist/stream/server/index.d.ts",
+      "import": "./dist/stream/server/index.js",
+      "default": "./dist/stream/server/index.js"
+    },
+    "./client": {
+      "types": "./dist/stream/client/index.d.ts",
+      "import": "./dist/stream/client/index.js",
+      "default": "./dist/stream/client/index.js"
+    },
+    "./stores/event-memory": {
+      "types": "./dist/stream/stores/memory.d.ts",
+      "import": "./dist/stream/stores/memory.js",
+      "default": "./dist/stream/stores/memory.js"
+    },
+    "./stores/event-sqlite": {
+      "types": "./dist/stream/stores/sqlite.d.ts",
+      "import": "./dist/stream/stores/sqlite.js",
+      "default": "./dist/stream/stores/sqlite.js"
+    },
+    "./stores/ledger-memory": {
+      "types": "./dist/ledger/stores/memory.d.ts",
+      "import": "./dist/ledger/stores/memory.js",
+      "default": "./dist/ledger/stores/memory.js"
+    },
+    "./stores/ledger-sqlite": {
+      "types": "./dist/ledger/stores/sqlite.d.ts",
+      "import": "./dist/ledger/stores/sqlite.js",
+      "default": "./dist/ledger/stores/sqlite.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist coverage"
+  },
+  "peerDependencies": {
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "vitest": "^4.0.18",
+    "zod": "^4.3.6"
+  }
+}

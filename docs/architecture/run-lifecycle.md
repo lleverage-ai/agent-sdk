@@ -60,7 +60,7 @@ Supersession occurs when a user regenerates a response and a newer run is commit
 ### Resolution Rules
 1. The most recently committed run at a fork point is the active run
 2. Superseded runs retain their event log for audit/replay
-3. No dedicated `run.superseded` transport event is emitted by `agent-ledger`; consumers infer this from run records/transcript reads
+3. No dedicated `run.superseded` transport event is emitted by `agent-threads` (ledger layer); consumers infer this from run records/transcript reads
 
 ## Concurrency
 

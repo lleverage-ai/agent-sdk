@@ -36,6 +36,5 @@ jobs:
 
       - name: Verify package contents
         run: |
-          cd packages/agent-sdk && npm pack --dry-run
-          cd ../agent-stream && npm pack --dry-run
-          cd ../agent-ledger && npm pack --dry-run
+          cd packages/agent-threads && npm pack --dry-run
+          cd ../agent-sdk && npm pack --dry-run

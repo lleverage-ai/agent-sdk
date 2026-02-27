@@ -12,14 +12,14 @@ The system manages three distinct data planes with different retention character
 - **Compaction**: Handled by `ContextManager` (summarization, token budgeting)
 - **Retention**: None — discarded after generation completes
 
-### 2. Transport Log (agent-stream)
+### 2. Transport Log (agent-threads, stream layer)
 - **What**: Ordered event log per stream — `StoredEvent[]` with monotonic sequences
 - **Lifetime**: Active run + replay window
 - **Storage**: `IEventStore` (memory or SQLite)
 - **Compaction**: Planned (not yet implemented)
 - **Retention**: Configurable (default: retain until explicitly deleted or compacted)
 
-### 3. Durable Transcript (agent-ledger)
+### 3. Durable Transcript (agent-threads, ledger layer)
 - **What**: Materialized `CanonicalMessage[]` — the source of truth for conversation history
 - **Lifetime**: Indefinite (user-facing data)
 - **Storage**: Persistent store (SQLite, external DB)

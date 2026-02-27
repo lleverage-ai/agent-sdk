@@ -9,22 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `@lleverage-ai/agent-ledger` now exports active/terminal run status helpers (`ACTIVE_RUN_STATUSES`, `TERMINAL_RUN_STATUSES`, `isActiveRunStatus()`, `isTerminalRunStatus()`) and the narrowed `ActiveRunStatus` / `TerminalRunStatus` types for safer lifecycle logic reuse
-- Protocol decoding now includes explicit `decodeClientMessage()` and `decodeServerMessage()` validators in `@lleverage-ai/agent-stream`, enabling directional wire-message validation at transport boundaries
+- `@lleverage-ai/agent-threads` — new unified package merging `@lleverage-ai/agent-stream` (event transport/replay) and `@lleverage-ai/agent-ledger` (durable transcripts/run lifecycle) into a single package with subpath exports (`./stream`, `./ledger`, `./server`, `./client`, `./stores/*`)
+- Active/terminal run status helpers (`ACTIVE_RUN_STATUSES`, `TERMINAL_RUN_STATUSES`, `isActiveRunStatus()`, `isTerminalRunStatus()`) and the narrowed `ActiveRunStatus` / `TerminalRunStatus` types for safer lifecycle logic reuse
+- Protocol decoding now includes explicit `decodeClientMessage()` and `decodeServerMessage()` validators, enabling directional wire-message validation at transport boundaries
 
 ### Changed
 
-- Workspace scripts (`build`, `type-check`, `test`, `clean`) now run package commands in dependency-safe order (`agent-stream` → `agent-ledger` → `agent-sdk`) for deterministic monorepo builds
-- `RecoverResult` typing in `@lleverage-ai/agent-ledger` is now status-narrowed to active-to-terminal transitions (`created|streaming` → `failed|cancelled`)
-- `TypedEmitter` in `@lleverage-ai/agent-stream` now accepts interface-based event maps, allowing `WsClientEvents` to follow the repository `interface` convention without requiring index-signature workarounds
+- `@lleverage-ai/agent-stream` and `@lleverage-ai/agent-ledger` have been merged into `@lleverage-ai/agent-threads` with subpath exports (`./stream`, `./ledger`, `./server`, `./client`, `./stores/*`)
+- Workspace scripts (`build`, `type-check`, `test`, `clean`) now use the simplified two-package build order (`agent-threads` → `agent-sdk`)
+- `RecoverResult` typing is now status-narrowed to active-to-terminal transitions (`created|streaming` → `failed|cancelled`)
+- `TypedEmitter` now accepts interface-based event maps, allowing `WsClientEvents` to follow the repository `interface` convention without requiring index-signature workarounds
 
 ### Fixed
 
-- Restored missing package entrypoints/barrels after monorepo split (`packages/agent-sdk/src/index.ts`, `packages/agent-ledger/src/index.ts`, and missing submodule `index.ts` files), plus restored missing `errors/` and `security/` source trees under `packages/agent-sdk/src`
+- Restored missing package entrypoints/barrels after monorepo split, plus restored missing `errors/` and `security/` source trees under `packages/agent-sdk/src`
 - Fixed CI/release Bun installs failing on hook setup by setting `SKIP_INSTALL_SIMPLE_GIT_HOOKS=1` in install steps
 - `SQLiteEventStore.append()` now runs in an explicit transaction and rolls back on failure, preventing read-head/insert races and partial writes under concurrency
 - `Projector.reset()` no longer reuses mutable initial-state references, preventing dirty-state reuse with mutating reducers (including accumulator flows)
-- WebSocket server/client transport resilience hardening in `@lleverage-ai/agent-stream`:
+- WebSocket server/client transport resilience hardening in agent-threads (stream layer):
   - replay failures now emit `REPLAY_FAILED` with server-side context logging
   - server and client `sendMessage()` paths now surface/send failures instead of silent drops
   - server now listens for websocket `error` events and cleans up clients safely
@@ -37,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunManager.appendEvents()` now rejects appends to terminal-status runs
 - `SQLiteLedgerStore.deleteThread()` now runs in a transaction to avoid partial thread deletion on crash
 - Stale-run reconciliation now continues recovering remaining runs when one recovery fails
-- Release workflow now validates that internal runtime dependencies are already published on npm before publishing a package, preventing dependency-order publish hazards (for example, `agent-ledger` before `agent-stream`)
+- Release workflow now validates that internal runtime dependencies are already published on npm before publishing a package
 - `SQLiteLedgerStore.getTranscript()` now throws for unsupported `branch: { path: string[] }` requests instead of silently ignoring the branch selector
 - `WsClient.subscribe()` now handles already-aborted `AbortSignal`s immediately and cleans up abort listeners across unsubscribe/close/failure paths to avoid orphaned iterators and dangling listeners
 - `Projector.getState()` now returns a cloned snapshot so external callers cannot mutate internal projector state by reference

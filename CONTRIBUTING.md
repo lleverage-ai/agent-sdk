@@ -25,11 +25,10 @@ bun run format
 
 ## Project Structure
 
-This is a monorepo with three packages:
+This is a monorepo with two packages:
 
 - `packages/agent-sdk` — Core agent framework
-- `packages/agent-stream` — Event transport and replay
-- `packages/agent-ledger` — Durable transcript layer
+- `packages/agent-threads` — Event transport, replay, and durable transcripts
 
 ## Making Changes
 
