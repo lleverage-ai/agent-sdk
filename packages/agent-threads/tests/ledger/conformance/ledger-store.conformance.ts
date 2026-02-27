@@ -35,7 +35,7 @@ export function ledgerStoreConformanceTests(name: string, createStore: () => ILe
       expect(run.threadId).toBe("t1");
       expect(run.forkFromMessageId).toBeNull();
       expect(run.finishedAt).toBeNull();
-      expect(run.eventCount).toBe(0);
+      expect(run.messageCount).toBe(0);
       expect(run.streamId).toBe(`run:${run.runId}`);
     });
 

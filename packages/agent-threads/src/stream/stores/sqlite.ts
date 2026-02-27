@@ -7,6 +7,13 @@ import type { IEventStore, ReplayOptions, StoredEvent } from "../types.js";
  * The event store accepts an injected database instance rather than
  * bundling a specific SQLite driver.
  *
+ * For best performance, enable WAL mode on the database before passing
+ * it to a store:
+ *
+ * ```ts
+ * db.exec("PRAGMA journal_mode=WAL");
+ * ```
+ *
  * @category Stores
  */
 export interface SQLiteDatabase {
@@ -33,10 +40,19 @@ export interface SQLiteStatement {
  * (matching both `bun:sqlite` and `better-sqlite3` APIs) but the
  * IEventStore interface is async for compatibility.
  *
+ * Prepared statements are cached for hot-path operations.
+ *
  * @category Stores
  */
 export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
   private db: SQLiteDatabase;
+
+  // Cached prepared statements
+  private stmtHead: SQLiteStatement;
+  private stmtInsert: SQLiteStatement;
+  private stmtReplay: SQLiteStatement;
+  private stmtReplayWithLimit: SQLiteStatement;
+  private stmtDelete: SQLiteStatement;
 
   constructor(db: SQLiteDatabase) {
     this.db = db;
@@ -51,6 +67,18 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
         ")",
       ].join("\n"),
     );
+
+    this.stmtHead = this.db.prepare("SELECT MAX(seq) as max_seq FROM events WHERE stream_id = ?");
+    this.stmtInsert = this.db.prepare(
+      "INSERT INTO events (stream_id, seq, timestamp, event) VALUES (?, ?, ?, ?)",
+    );
+    this.stmtReplay = this.db.prepare(
+      "SELECT seq, timestamp, event FROM events WHERE stream_id = ? AND seq > ? ORDER BY seq ASC",
+    );
+    this.stmtReplayWithLimit = this.db.prepare(
+      "SELECT seq, timestamp, event FROM events WHERE stream_id = ? AND seq > ? ORDER BY seq ASC LIMIT ?",
+    );
+    this.stmtDelete = this.db.prepare("DELETE FROM events WHERE stream_id = ?");
   }
 
   async append(streamId: string, events: TEvent[]): Promise<StoredEvent<TEvent>[]> {
@@ -58,21 +86,15 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
 
     this.db.exec("BEGIN");
     try {
-      const headRow = this.db
-        .prepare("SELECT MAX(seq) as max_seq FROM events WHERE stream_id = ?")
-        .get(streamId);
+      const headRow = this.stmtHead.get(streamId);
       const lastSeq = headRow && typeof headRow["max_seq"] === "number" ? headRow["max_seq"] : 0;
       const timestamp = new Date().toISOString();
-
-      const insert = this.db.prepare(
-        "INSERT INTO events (stream_id, seq, timestamp, event) VALUES (?, ?, ?, ?)",
-      );
 
       const stored: StoredEvent<TEvent>[] = [];
       for (let i = 0; i < events.length; i++) {
         const seq = lastSeq + i + 1;
         const eventJson = JSON.stringify(events[i]);
-        insert.run(streamId, seq, timestamp, eventJson);
+        this.stmtInsert.run(streamId, seq, timestamp, eventJson);
         stored.push({ seq, timestamp, streamId, event: events[i]! });
       }
 
@@ -92,17 +114,11 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
     const afterSeq = options?.afterSeq ?? 0;
     const limit = options?.limit;
 
-    let sql = "SELECT seq, timestamp, event FROM events WHERE stream_id = ? AND seq > ?";
-    const params: unknown[] = [streamId, afterSeq];
+    const rows =
+      limit !== undefined && limit >= 0
+        ? this.stmtReplayWithLimit.all(streamId, afterSeq, limit)
+        : this.stmtReplay.all(streamId, afterSeq);
 
-    sql += " ORDER BY seq ASC";
-
-    if (limit !== undefined && limit >= 0) {
-      sql += " LIMIT ?";
-      params.push(limit);
-    }
-
-    const rows = this.db.prepare(sql).all(...params);
     return rows.map((row) => {
       const raw = row["event"] as string;
       try {
@@ -123,13 +139,11 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
   }
 
   async head(streamId: string): Promise<number> {
-    const row = this.db
-      .prepare("SELECT MAX(seq) as max_seq FROM events WHERE stream_id = ?")
-      .get(streamId);
+    const row = this.stmtHead.get(streamId);
     return row && typeof row["max_seq"] === "number" ? row["max_seq"] : 0;
   }
 
   async delete(streamId: string): Promise<void> {
-    this.db.prepare("DELETE FROM events WHERE stream_id = ?").run(streamId);
+    this.stmtDelete.run(streamId);
   }
 }

@@ -6,8 +6,8 @@ on:
 
 jobs:
   unpublish:
-    # Only run for tag deletions, not branch deletions
-    if: github.event.ref_type == 'tag' && startsWith(github.event.ref, 'v')
+    # Only run for tag deletions matching monorepo format: agent-sdk@X.Y.Z or agent-threads@X.Y.Z
+    if: github.event.ref_type == 'tag' && contains(github.event.ref, '@')
     runs-on: ubuntu-latest
 
     permissions:
@@ -20,28 +20,37 @@ jobs:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Extract version from tag
-        id: version
+      - name: Parse tag and extract package info
+        id: parse
         env:
           TAG_REF: ${{ github.event.ref }}
         run: |
-          # Validate tag format (vX.Y.Z with optional prerelease)
-          if [[ ! "$TAG_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-            echo "Invalid tag format: $TAG_REF"
+          # Parse monorepo tag format: package-name@version
+          PACKAGE_NAME="${TAG_REF%%@*}"
+          VERSION="${TAG_REF##*@}"
+
+          # Validate version format (X.Y.Z with optional prerelease)
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Invalid version format: $VERSION"
             exit 1
           fi
-          VERSION="${TAG_REF#v}"
+
+          # Map package directory name to npm scope
+          NPM_PACKAGE="@lleverage-ai/${PACKAGE_NAME}"
+
+          echo "npm_package=$NPM_PACKAGE" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Deleted tag: $TAG_REF"
-          echo "Package version: $VERSION"
+          echo "Package: $NPM_PACKAGE@$VERSION"
 
       - name: Check if version exists on npm
         id: check
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          NPM_PACKAGE: ${{ steps.parse.outputs.npm_package }}
+          VERSION: ${{ steps.parse.outputs.version }}
         run: |
-          if npm view "@lleverage-ai/agent-sdk@$VERSION" version 2>/dev/null; then
+          if npm view "${NPM_PACKAGE}@${VERSION}" version 2>/dev/null; then
             echo "exists=true" >> $GITHUB_OUTPUT
           else
             echo "exists=false" >> $GITHUB_OUTPUT
@@ -54,32 +63,35 @@ jobs:
         continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          NPM_PACKAGE: ${{ steps.parse.outputs.npm_package }}
+          VERSION: ${{ steps.parse.outputs.version }}
         run: |
-          npm unpublish "@lleverage-ai/agent-sdk@$VERSION"
+          npm unpublish "${NPM_PACKAGE}@${VERSION}"
           echo "success=true" >> $GITHUB_OUTPUT
-          echo "Successfully unpublished @lleverage-ai/agent-sdk@$VERSION"
+          echo "Successfully unpublished ${NPM_PACKAGE}@${VERSION}"
 
       - name: Deprecate if unpublish failed
         if: steps.check.outputs.exists == 'true' && steps.unpublish.outcome == 'failure'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION: ${{ steps.version.outputs.version }}
+          NPM_PACKAGE: ${{ steps.parse.outputs.npm_package }}
+          VERSION: ${{ steps.parse.outputs.version }}
         run: |
-          npm deprecate "@lleverage-ai/agent-sdk@$VERSION" "This version has been removed. Please use a newer version."
-          echo "Deprecated @lleverage-ai/agent-sdk@$VERSION"
+          npm deprecate "${NPM_PACKAGE}@${VERSION}" "This version has been removed. Please use a newer version."
+          echo "Deprecated ${NPM_PACKAGE}@${VERSION}"
 
       - name: Summary
         env:
           TAG_REF: ${{ github.event.ref }}
-          VERSION: ${{ steps.version.outputs.version }}
+          NPM_PACKAGE: ${{ steps.parse.outputs.npm_package }}
+          VERSION: ${{ steps.parse.outputs.version }}
           EXISTS: ${{ steps.check.outputs.exists }}
           UNPUBLISH_OUTCOME: ${{ steps.unpublish.outcome }}
         run: |
           echo "## Unpublish Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Tag deleted:** $TAG_REF" >> $GITHUB_STEP_SUMMARY
-          echo "- **Version:** $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package:** $NPM_PACKAGE@$VERSION" >> $GITHUB_STEP_SUMMARY
           if [ "$EXISTS" != "true" ]; then
             echo "- **Status:** Version not found on npm (already unpublished or never published)" >> $GITHUB_STEP_SUMMARY
           elif [ "$UNPUBLISH_OUTCOME" == "success" ]; then

@@ -34,8 +34,8 @@ jobs:
           PACKAGE_VERSION="${TAG##*@}"
           PACKAGE_DIR="packages/${PACKAGE_NAME}"
 
-          if [[ "$PACKAGE_VERSION" == *-* ]]; then
-            NPM_TAG="alpha"
+          if [[ "$PACKAGE_VERSION" =~ -([a-zA-Z]+) ]]; then
+            NPM_TAG="${BASH_REMATCH[1]}"
           else
             NPM_TAG="latest"
           fi

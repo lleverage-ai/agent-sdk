@@ -3,6 +3,12 @@ import type { StoredEvent } from "./types.js";
 /**
  * Protocol version for the agent-threads WebSocket wire format.
  *
+ * The server performs an exact-match check during handshake: a client
+ * sending a `hello` with a different version is rejected with
+ * `VERSION_MISMATCH`.  When a breaking change is needed, bump this
+ * constant and coordinate client upgrades.  Range-based negotiation
+ * may be introduced in a future major version.
+ *
  * @category Protocol
  */
 export const PROTOCOL_VERSION = 1;

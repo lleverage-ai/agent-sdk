@@ -201,8 +201,8 @@ export interface RunRecord {
   readonly createdAt: string;
   /** ISO 8601 finalization timestamp, or null if still active */
   readonly finishedAt: string | null;
-  /** Number of events stored in the event stream */
-  readonly eventCount: number;
+  /** Number of canonical messages committed for this run (0 while active) */
+  readonly messageCount: number;
 }
 
 // ---------------------------------------------------------------------------

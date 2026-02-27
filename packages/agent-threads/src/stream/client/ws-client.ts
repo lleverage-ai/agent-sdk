@@ -383,13 +383,8 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
     const sub = this.subscriptions.get(streamId);
     if (!sub) return;
 
-    // Dedup during promotion window
-    if (sub.live && event.seq <= sub.lastReplaySeq) {
-      return;
-    }
-
-    // Dedup against already-confirmed events
-    if (event.seq <= sub.lastConfirmedSeq && sub.live) {
+    // Dedup: skip events already seen (works in both replay and live modes)
+    if (event.seq <= sub.lastConfirmedSeq) {
       return;
     }
 

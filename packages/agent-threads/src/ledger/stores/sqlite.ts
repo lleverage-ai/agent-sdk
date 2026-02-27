@@ -1,4 +1,4 @@
-import type { SQLiteDatabase } from "../../stream/stores/sqlite.js";
+import type { SQLiteDatabase, SQLiteStatement } from "../../stream/stores/sqlite.js";
 
 import type {
   ActiveRunStatus,
@@ -29,6 +29,8 @@ import type { ILedgerStore } from "./ledger-store.js";
  * `finalizeRun()` wraps supersession + commit in a single "transaction"
  * via `db.exec("BEGIN")` / `db.exec("COMMIT")`.
  *
+ * Prepared statements are cached for hot-path operations.
+ *
  * NOTE: The `exec` method used here is the SQLite database exec (run raw SQL),
  * NOT child_process.exec. No shell commands are involved.
  *
@@ -36,6 +38,15 @@ import type { ILedgerStore } from "./ledger-store.js";
  */
 export class SQLiteLedgerStore implements ILedgerStore {
   private db: SQLiteDatabase;
+
+  // Cached prepared statements
+  private stmtInsertRun: SQLiteStatement;
+  private stmtGetRun: SQLiteStatement;
+  private stmtListRuns: SQLiteStatement;
+  private stmtActivateRun: SQLiteStatement;
+  private stmtUpdateRunStatus: SQLiteStatement;
+  private stmtInsertMsg: SQLiteStatement;
+  private stmtInsertPart: SQLiteStatement;
 
   constructor(db: SQLiteDatabase) {
     this.db = db;
@@ -49,7 +60,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
         "  status TEXT NOT NULL,",
         "  created_at TEXT NOT NULL,",
         "  finished_at TEXT,",
-        "  event_count INTEGER NOT NULL DEFAULT 0",
+        "  message_count INTEGER NOT NULL DEFAULT 0",
         ")",
       ].join("\n"),
     );
@@ -86,6 +97,25 @@ export class SQLiteLedgerStore implements ILedgerStore {
       "CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages (thread_id, ordinal)",
     );
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_parts_message_id ON parts (message_id, ordinal)");
+
+    // Cache prepared statements for hot-path operations
+    this.stmtInsertRun = this.db.prepare(
+      "INSERT INTO runs (run_id, thread_id, stream_id, fork_from_message_id, status, created_at, finished_at, message_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    this.stmtGetRun = this.db.prepare("SELECT * FROM runs WHERE run_id = ?");
+    this.stmtListRuns = this.db.prepare(
+      "SELECT * FROM runs WHERE thread_id = ? ORDER BY created_at ASC",
+    );
+    this.stmtActivateRun = this.db.prepare("UPDATE runs SET status = ? WHERE run_id = ?");
+    this.stmtUpdateRunStatus = this.db.prepare(
+      "UPDATE runs SET status = ?, finished_at = ?, message_count = ? WHERE run_id = ?",
+    );
+    this.stmtInsertMsg = this.db.prepare(
+      "INSERT INTO messages (id, run_id, thread_id, parent_message_id, role, created_at, metadata, ordinal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    this.stmtInsertPart = this.db.prepare(
+      "INSERT INTO parts (message_id, type, data, ordinal) VALUES (?, ?, ?, ?)",
+    );
   }
 
   async beginRun(options: BeginRunOptions): Promise<RunRecord> {
@@ -93,20 +123,16 @@ export class SQLiteLedgerStore implements ILedgerStore {
     const streamId = `run:${runId}`;
     const createdAt = new Date().toISOString();
 
-    this.db
-      .prepare(
-        "INSERT INTO runs (run_id, thread_id, stream_id, fork_from_message_id, status, created_at, finished_at, event_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(
-        runId,
-        options.threadId,
-        streamId,
-        options.forkFromMessageId ?? null,
-        "created",
-        createdAt,
-        null,
-        0,
-      );
+    this.stmtInsertRun.run(
+      runId,
+      options.threadId,
+      streamId,
+      options.forkFromMessageId ?? null,
+      "created",
+      createdAt,
+      null,
+      0,
+    );
 
     return {
       runId,
@@ -116,7 +142,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
       status: "created",
       createdAt,
       finishedAt: null,
-      eventCount: 0,
+      messageCount: 0,
     };
   }
 
@@ -127,7 +153,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
       throw new Error(`Cannot activate run in status "${run.status}", expected "created"`);
     }
 
-    this.db.prepare("UPDATE runs SET status = ? WHERE run_id = ?").run("streaming", runId);
+    this.stmtActivateRun.run("streaming", runId);
 
     return { ...run, status: "streaming" };
   }
@@ -160,13 +186,12 @@ export class SQLiteLedgerStore implements ILedgerStore {
 
           if (forkedMessages) {
             const forkOrdinal = forkedMessages["ordinal"] as number;
-            // Delete parts of messages after fork point
-            const afterForkMessages = this.db
-              .prepare("SELECT id FROM messages WHERE thread_id = ? AND ordinal > ?")
-              .all(run.threadId, forkOrdinal);
-            for (const msg of afterForkMessages) {
-              this.db.prepare("DELETE FROM parts WHERE message_id = ?").run(msg["id"]);
-            }
+            // Delete parts of messages after fork point (single subquery)
+            this.db
+              .prepare(
+                "DELETE FROM parts WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ? AND ordinal > ?)",
+              )
+              .run(run.threadId, forkOrdinal);
             this.db
               .prepare("DELETE FROM messages WHERE thread_id = ? AND ordinal > ?")
               .run(run.threadId, forkOrdinal);
@@ -195,15 +220,8 @@ export class SQLiteLedgerStore implements ILedgerStore {
           maxRow && typeof maxRow["max_ord"] === "number" ? maxRow["max_ord"] + 1 : 0;
 
         // Insert messages and parts
-        const insertMsg = this.db.prepare(
-          "INSERT INTO messages (id, run_id, thread_id, parent_message_id, role, created_at, metadata, ordinal) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        );
-        const insertPart = this.db.prepare(
-          "INSERT INTO parts (message_id, type, data, ordinal) VALUES (?, ?, ?, ?)",
-        );
-
         for (const msg of options.messages) {
-          insertMsg.run(
+          this.stmtInsertMsg.run(
             msg.id,
             run.runId,
             run.threadId,
@@ -214,15 +232,14 @@ export class SQLiteLedgerStore implements ILedgerStore {
             nextOrdinal++,
           );
           for (let i = 0; i < msg.parts.length; i++) {
-            insertPart.run(msg.id, msg.parts[i]!.type, JSON.stringify(msg.parts[i]), i);
+            this.stmtInsertPart.run(msg.id, msg.parts[i]!.type, JSON.stringify(msg.parts[i]), i);
           }
         }
       }
 
-      const eventCount = options.status === "committed" ? options.messages.length : run.eventCount;
-      this.db
-        .prepare("UPDATE runs SET status = ?, finished_at = ?, event_count = ? WHERE run_id = ?")
-        .run(options.status, finishedAt, eventCount, options.runId);
+      const messageCount =
+        options.status === "committed" ? options.messages.length : run.messageCount;
+      this.stmtUpdateRunStatus.run(options.status, finishedAt, messageCount, options.runId);
 
       this.db.exec("COMMIT");
     } catch (e) {
@@ -238,15 +255,13 @@ export class SQLiteLedgerStore implements ILedgerStore {
   }
 
   async getRun(runId: string): Promise<RunRecord | null> {
-    const row = this.db.prepare("SELECT * FROM runs WHERE run_id = ?").get(runId);
+    const row = this.stmtGetRun.get(runId);
     if (!row) return null;
     return rowToRunRecord(row);
   }
 
   async listRuns(threadId: string): Promise<RunRecord[]> {
-    const rows = this.db
-      .prepare("SELECT * FROM runs WHERE thread_id = ? ORDER BY created_at ASC")
-      .all(threadId);
+    const rows = this.stmtListRuns.all(threadId);
     return rows.map(rowToRunRecord);
   }
 
@@ -257,20 +272,54 @@ export class SQLiteLedgerStore implements ILedgerStore {
     }
 
     const rows = this.db
-      .prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY ordinal ASC")
+      .prepare(
+        [
+          "SELECT m.id, m.parent_message_id, m.role, m.created_at, m.metadata,",
+          "       p.data AS part_data, p.ordinal AS part_ordinal",
+          "FROM messages m",
+          "LEFT JOIN parts p ON p.message_id = m.id",
+          "WHERE m.thread_id = ?",
+          "ORDER BY m.ordinal ASC, p.ordinal ASC",
+        ].join("\n"),
+      )
       .all(options.threadId);
 
     const messages: CanonicalMessage[] = [];
+    let currentMsgId: string | null = null;
+    let parts: CanonicalPart[] = [];
+    let currentRow: Record<string, unknown> | null = null;
+
+    const flushMessage = () => {
+      if (!currentRow || !currentMsgId) return;
+      const metadata = parseCanonicalMessageMetadata(
+        currentRow["metadata"] as string,
+        currentMsgId,
+      );
+      messages.push({
+        id: currentMsgId,
+        parentMessageId: (currentRow["parent_message_id"] as string) ?? null,
+        role: currentRow["role"] as CanonicalMessage["role"],
+        parts,
+        createdAt: currentRow["created_at"] as string,
+        metadata,
+      });
+    };
+
     for (const row of rows) {
       const msgId = row["id"] as string;
-      const partRows = this.db
-        .prepare("SELECT * FROM parts WHERE message_id = ? ORDER BY ordinal ASC")
-        .all(msgId);
 
-      const parts: CanonicalPart[] = partRows.map((p: Record<string, unknown>) => {
-        const raw = p["data"] as string;
+      if (msgId !== currentMsgId) {
+        flushMessage();
+        currentMsgId = msgId;
+        currentRow = row;
+        parts = [];
+      }
+
+      // LEFT JOIN may produce null part_data for messages with no parts
+      if (row["part_data"] != null) {
+        const raw = row["part_data"] as string;
         try {
-          return JSON.parse(raw) as CanonicalPart;
+          parts.push(JSON.parse(raw) as CanonicalPart);
         } catch (error) {
           throw new Error(
             `Failed to parse part JSON for message ${msgId}: ${
@@ -278,20 +327,10 @@ export class SQLiteLedgerStore implements ILedgerStore {
             }`,
           );
         }
-      });
-
-      const metadata = parseCanonicalMessageMetadata(row["metadata"] as string, msgId);
-
-      messages.push({
-        id: msgId,
-        parentMessageId: (row["parent_message_id"] as string) ?? null,
-        role: row["role"] as CanonicalMessage["role"],
-        parts,
-        createdAt: row["created_at"] as string,
-        metadata,
-      });
+      }
     }
 
+    flushMessage();
     return messages;
   }
 
@@ -350,12 +389,11 @@ export class SQLiteLedgerStore implements ILedgerStore {
   async deleteThread(threadId: string): Promise<void> {
     this.db.exec("BEGIN");
     try {
-      // Delete parts for all messages in thread
-      const msgRows = this.db.prepare("SELECT id FROM messages WHERE thread_id = ?").all(threadId);
-      for (const row of msgRows) {
-        this.db.prepare("DELETE FROM parts WHERE message_id = ?").run(row["id"]);
-      }
-
+      this.db
+        .prepare(
+          "DELETE FROM parts WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)",
+        )
+        .run(threadId);
       this.db.prepare("DELETE FROM messages WHERE thread_id = ?").run(threadId);
       this.db.prepare("DELETE FROM runs WHERE thread_id = ?").run(threadId);
       this.db.exec("COMMIT");
@@ -403,6 +441,6 @@ function rowToRunRecord(row: Record<string, unknown>): RunRecord {
     status: row["status"] as RunRecord["status"],
     createdAt: row["created_at"] as string,
     finishedAt: (row["finished_at"] as string) ?? null,
-    eventCount: row["event_count"] as number,
+    messageCount: row["message_count"] as number,
   };
 }

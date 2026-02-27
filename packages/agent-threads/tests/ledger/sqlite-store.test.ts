@@ -13,7 +13,10 @@ describe("SQLiteLedgerStore", () => {
   it("creates tables on construction", () => {
     const db = new MockSQLiteDatabase();
     new SQLiteLedgerStore(db);
-    expect(true).toBe(true);
+    const execCalls = db.getExecHistory();
+    expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS runs"))).toBe(true);
+    expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS messages"))).toBe(true);
+    expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS parts"))).toBe(true);
   });
 
   it("persists message parts as JSON and round-trips correctly", async () => {

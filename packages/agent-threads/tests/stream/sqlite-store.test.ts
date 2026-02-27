@@ -162,7 +162,9 @@ describe("SQLiteEventStore", () => {
   it("creates events table on construction", () => {
     const db = new MockSQLiteDatabase();
     new SQLiteEventStore(db);
-    expect(true).toBe(true);
+    expect(db.execHistory.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS events"))).toBe(
+      true,
+    );
   });
 
   it("stores events as JSON and deserializes on replay", async () => {

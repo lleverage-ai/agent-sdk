@@ -77,4 +77,4 @@ Each run tracks:
 - `status`: Current lifecycle state
 - `createdAt`: Creation timestamp
 - `finishedAt`: Terminal timestamp (or null if still active)
-- `eventCount`: Total events in this run's stream
+- `messageCount`: Number of canonical messages committed for this run

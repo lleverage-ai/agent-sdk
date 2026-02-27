@@ -35,6 +35,34 @@
   "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "stream": [
+        "dist/stream/index.d.ts"
+      ],
+      "ledger": [
+        "dist/ledger/index.d.ts"
+      ],
+      "server": [
+        "dist/stream/server/index.d.ts"
+      ],
+      "client": [
+        "dist/stream/client/index.d.ts"
+      ],
+      "stores/event-memory": [
+        "dist/stream/stores/memory.d.ts"
+      ],
+      "stores/event-sqlite": [
+        "dist/stream/stores/sqlite.d.ts"
+      ],
+      "stores/ledger-memory": [
+        "dist/ledger/stores/memory.d.ts"
+      ],
+      "stores/ledger-sqlite": [
+        "dist/ledger/stores/sqlite.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

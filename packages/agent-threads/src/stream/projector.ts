@@ -1,16 +1,7 @@
 import type { IEventStore, ProjectorConfig, StoredEvent } from "./types.js";
 
 function cloneState<T>(state: T): T {
-  if (typeof globalThis.structuredClone === "function") {
-    return globalThis.structuredClone(state);
-  }
-  if (Array.isArray(state)) {
-    return [...state] as T;
-  }
-  if (state && typeof state === "object") {
-    return { ...(state as Record<string, unknown>) } as T;
-  }
-  return state;
+  return structuredClone(state);
 }
 
 /**

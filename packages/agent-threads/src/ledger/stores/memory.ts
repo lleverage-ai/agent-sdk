@@ -38,7 +38,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
       status: "created",
       createdAt: new Date().toISOString(),
       finishedAt: null,
-      eventCount: 0,
+      messageCount: 0,
     };
     this.runs.set(runId, run);
 
@@ -114,7 +114,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
       ...run,
       status: options.status,
       finishedAt,
-      eventCount: options.status === "committed" ? options.messages.length : run.eventCount,
+      messageCount: options.status === "committed" ? options.messages.length : run.messageCount,
     };
     this.runs.set(options.runId, updated);
 
