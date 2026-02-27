@@ -1,11 +1,10 @@
-import type { IEventStore, Logger, ReplayOptions, StoredEvent } from "../types.js";
-import { defaultLogger } from "../types.js";
-
-// SQLite infrastructure — canonical definitions live in _shared/
-export type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
-
-// Separate import needed — export type does not make symbols available for local use
 import type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
+import type { Logger } from "../../_shared/types.js";
+import { defaultLogger } from "../../_shared/types.js";
+import type { IEventStore, ReplayOptions, StoredEvent } from "../types.js";
+
+// Re-export SQLite types for backwards compatibility
+export type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
 
 /**
  * SQLite-backed event store.

@@ -11,10 +11,18 @@ export interface Logger {
 
 /** @internal Fallback that writes to the console when no logger is injected. */
 export const defaultLogger: Logger = {
-  warn: (message, meta) => {
-    meta !== undefined ? console.warn(message, meta) : console.warn(message);
+  warn(message, meta) {
+    if (meta !== undefined) {
+      console.warn(message, meta);
+    } else {
+      console.warn(message);
+    }
   },
-  error: (message, meta) => {
-    meta !== undefined ? console.error(message, meta) : console.error(message);
+  error(message, meta) {
+    if (meta !== undefined) {
+      console.error(message, meta);
+    } else {
+      console.error(message);
+    }
   },
 };
