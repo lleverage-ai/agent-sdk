@@ -3,7 +3,9 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "agent-sdk@*"
+      - "agent-stream@*"
+      - "agent-ledger@*"
 
 jobs:
   release:
@@ -14,49 +16,57 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install dependencies
-        run: SKIP_INSTALL_SIMPLE_GIT_HOOKS=1 bun install --frozen-lockfile
+      - name: Parse release tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PACKAGE_NAME="${TAG%%@*}"
+          PACKAGE_VERSION="${TAG##*@}"
+          PACKAGE_DIR="packages/${PACKAGE_NAME}"
 
-      - name: Check formatting and linting
-        run: bun run check
+          if [[ "$PACKAGE_VERSION" == *-* ]]; then
+            NPM_TAG="alpha"
+          else
+            NPM_TAG="latest"
+          fi
 
-      - name: Type check
-        run: bun run type-check
+          echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "package_dir=$PACKAGE_DIR" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+          echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION from $PACKAGE_DIR (npm tag: $NPM_TAG)"
 
-      - name: Run tests
-        run: bun run test
+      - name: Validate tag version matches package.json
+        working-directory: ${{ steps.parse.outputs.package_dir }}
+        env:
+          EXPECTED_VERSION: ${{ steps.parse.outputs.package_version }}
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Tag version ($EXPECTED_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
 
-      - name: Build
-        run: bun run build
+      - run: SKIP_INSTALL_SIMPLE_GIT_HOOKS=1 bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run type-check
+      - run: bun run test
+      - run: bun run build
 
-      - name: Publish agent-sdk
-        working-directory: packages/agent-sdk
-        run: npm publish --provenance --access public
+      - name: Publish ${{ steps.parse.outputs.package_name }}
+        working-directory: ${{ steps.parse.outputs.package_dir }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish agent-stream
-        working-directory: packages/agent-stream
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish agent-ledger
-        working-directory: packages/agent-ledger
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ steps.parse.outputs.npm_tag }}
+        run: npm publish --provenance --access public --tag "$NPM_TAG"
