@@ -87,6 +87,48 @@ jobs:
             }
           "
 
+      - name: Validate internal runtime dependencies are published
+        working-directory: ${{ steps.parse.outputs.package_dir }}
+        run: |
+          # Dependency graph guard: publishing agent-ledger requires agent-stream to already
+          # exist on npm at the resolved version range.
+          node <<'NODE'
+          const fs = require("fs");
+          const { execFileSync } = require("node:child_process");
+
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const internalDeps = Object.entries({
+            ...(pkg.dependencies ?? {}),
+            ...(pkg.optionalDependencies ?? {}),
+          }).filter(([name]) => name.startsWith("@lleverage-ai/"));
+
+          if (internalDeps.length === 0) {
+            console.log("No internal runtime dependencies to validate.");
+            process.exit(0);
+          }
+
+          let hasError = false;
+          for (const [name, range] of internalDeps) {
+            try {
+              const published = execFileSync("npm", ["view", `${name}@${range}`, "version"], {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+              }).trim();
+              console.log(`Verified dependency: ${name}@${range} (resolved: ${published})`);
+            } catch (error) {
+              hasError = true;
+              const message = error instanceof Error ? error.message : String(error);
+              console.error(
+                `Missing internal dependency on npm: ${name}@${range}. Publish dependencies first.\n${message}`,
+              );
+            }
+          }
+
+          if (hasError) {
+            process.exit(1);
+          }
+          NODE
+
       - name: Publish ${{ steps.parse.outputs.package_name }}
         working-directory: ${{ steps.parse.outputs.package_dir }}
         env:

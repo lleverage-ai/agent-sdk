@@ -62,4 +62,12 @@ describe("SQLiteLedgerStore", () => {
       "schemaVersion must be a number",
     );
   });
+
+  it("throws when branch path resolution is requested", async () => {
+    const store = new SQLiteLedgerStore(new MockSQLiteDatabase());
+
+    await expect(
+      store.getTranscript({ threadId: "t1", branch: { path: ["run-1"] } }),
+    ).rejects.toThrow("Branch path resolution is not yet implemented");
+  });
 });

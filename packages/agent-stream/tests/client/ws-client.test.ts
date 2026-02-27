@@ -110,6 +110,17 @@ describe("WsClient", () => {
     client.close();
   });
 
+  it("throws on duplicate subscribe for the same stream", () => {
+    const client = new WsClient({
+      url: "ws://localhost",
+      WebSocket: Constructor,
+    });
+    client.subscribe("s1");
+
+    expect(() => client.subscribe("s1")).toThrow('Already subscribed to stream "s1"');
+    client.close();
+  });
+
   it("subscribe yields events as AsyncIterable", async () => {
     const client = new WsClient({
       url: "ws://localhost",
@@ -376,6 +387,26 @@ describe("WsClient", () => {
     }
     // Got the event that was already pushed, then done
     expect(items).toHaveLength(1);
+    client.close();
+  });
+
+  it("already-aborted AbortSignal ends subscription immediately without wire messages", async () => {
+    const client = new WsClient({
+      url: "ws://localhost",
+      WebSocket: Constructor,
+    });
+    client.connect();
+    const ws = instances[0]!;
+    completeHandshake(ws);
+    ws.sentMessages.length = 0;
+
+    const ac = new AbortController();
+    ac.abort();
+    const iter = client.subscribe("s1", { signal: ac.signal });
+    const result = await (iter[Symbol.asyncIterator]() as AsyncIterator<unknown>).next();
+
+    expect(result.done).toBe(true);
+    expect(parseSent(ws)).toEqual([]);
     client.close();
   });
 

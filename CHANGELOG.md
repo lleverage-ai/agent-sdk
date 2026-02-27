@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunManager.appendEvents()` now rejects appends to terminal-status runs
 - `SQLiteLedgerStore.deleteThread()` now runs in a transaction to avoid partial thread deletion on crash
 - Stale-run reconciliation now continues recovering remaining runs when one recovery fails
+- Release workflow now validates that internal runtime dependencies are already published on npm before publishing a package, preventing dependency-order publish hazards (for example, `agent-ledger` before `agent-stream`)
+- `SQLiteLedgerStore.getTranscript()` now throws for unsupported `branch: { path: string[] }` requests instead of silently ignoring the branch selector
+- `WsClient.subscribe()` now handles already-aborted `AbortSignal`s immediately and cleans up abort listeners across unsubscribe/close/failure paths to avoid orphaned iterators and dangling listeners
+- `Projector.getState()` now returns a cloned snapshot so external callers cannot mutate internal projector state by reference
 - Added and fixed regression coverage for replay failures, websocket error cleanup, broadcast overflow behavior, projector reset mutability, terminal run append rejection, branched regeneration fixtures, and accumulator text-delta edge cases
 - Corrected architecture docs with current API/runtime behavior (`run-lifecycle`, `stream-ledger-contract`, `canonical-schema`, `compaction-retention`, and `AGENTS.md` websocket descriptions)
 

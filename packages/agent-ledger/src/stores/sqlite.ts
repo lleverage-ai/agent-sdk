@@ -247,6 +247,11 @@ export class SQLiteLedgerStore implements ILedgerStore {
   }
 
   async getTranscript(options: GetTranscriptOptions): Promise<CanonicalMessage[]> {
+    const branch = options.branch ?? "active";
+    if (typeof branch === "object") {
+      throw new Error("Branch path resolution is not yet implemented");
+    }
+
     const rows = this.db
       .prepare("SELECT * FROM messages WHERE thread_id = ? ORDER BY ordinal ASC")
       .all(options.threadId);

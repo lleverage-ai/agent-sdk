@@ -62,10 +62,13 @@ export class Projector<TState, TEvent> {
   }
 
   /**
-   * Get the current materialized state.
+   * Get a snapshot of the current materialized state.
+   *
+   * The returned value is a clone, so external mutation cannot corrupt
+   * the projector's internal state.
    */
   getState(): TState {
-    return this.state;
+    return cloneState(this.state);
   }
 
   /**

@@ -208,11 +208,6 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
 
     this.subscriptions.set(streamId, sub);
 
-    // If already connected, send subscribe immediately
-    if (this.handshakeComplete) {
-      this.sendSubscribe(streamId, afterSeq);
-    }
-
     // Handle AbortSignal
     if (signal) {
       const onAbort = () => {
@@ -220,6 +215,15 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
       };
       signal.addEventListener("abort", onAbort, { once: true });
       sub.abortHandler = { signal, handler: onAbort };
+    }
+
+    // If already aborted, close immediately without sending subscribe/unsubscribe wire messages.
+    if (signal?.aborted) {
+      this.cleanupSubscription(sub);
+      this.subscriptions.delete(streamId);
+    } else if (this.handshakeComplete) {
+      // If already connected, send subscribe immediately.
+      this.sendSubscribe(streamId, afterSeq);
     }
 
     const self = this;
@@ -264,11 +268,7 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   unsubscribe(streamId: string): void {
     const sub = this.subscriptions.get(streamId);
     if (!sub) return;
-    if (sub.abortHandler) {
-      sub.abortHandler.signal.removeEventListener("abort", sub.abortHandler.handler);
-      sub.abortHandler = null;
-    }
-    sub.end();
+    this.cleanupSubscription(sub);
     this.subscriptions.delete(streamId);
     if (this.handshakeComplete) {
       this.sendMessage({ type: "unsubscribe", streamId });
@@ -284,7 +284,7 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
     this.clearHeartbeatTimer();
 
     for (const sub of this.subscriptions.values()) {
-      sub.end();
+      this.cleanupSubscription(sub);
     }
     this.subscriptions.clear();
 
@@ -489,9 +489,17 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
     if (this.subscriptions.size === 0) return;
     this.emit("error", new Error(reason));
     for (const sub of this.subscriptions.values()) {
-      sub.end();
+      this.cleanupSubscription(sub);
     }
     this.subscriptions.clear();
+  }
+
+  private cleanupSubscription(sub: ActiveSubscription): void {
+    if (sub.abortHandler) {
+      sub.abortHandler.signal.removeEventListener("abort", sub.abortHandler.handler);
+      sub.abortHandler = null;
+    }
+    sub.end();
   }
 
   private setState(state: WsClientState): void {
