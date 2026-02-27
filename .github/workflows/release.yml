@@ -64,6 +64,29 @@ jobs:
       - run: bun run test
       - run: bun run build
 
+      - name: Resolve workspace dependencies
+        working-directory: ${{ steps.parse.outputs.package_dir }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            let changed = false;
+            for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+              for (const [dep, ver] of Object.entries(pkg[field] || {})) {
+                if (typeof ver === 'string' && ver.startsWith('workspace:')) {
+                  const depDir = dep.replace('@lleverage-ai/', '');
+                  const depPkg = JSON.parse(fs.readFileSync('../' + depDir + '/package.json', 'utf8'));
+                  pkg[field][dep] = '^' + depPkg.version;
+                  changed = true;
+                }
+              }
+            }
+            if (changed) {
+              fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+              console.log('Resolved workspace dependencies');
+            }
+          "
+
       - name: Publish ${{ steps.parse.outputs.package_name }}
         working-directory: ${{ steps.parse.outputs.package_dir }}
         env:

@@ -2,6 +2,16 @@
 
 A TypeScript framework for building AI agents using the Vercel AI SDK v6.
 
+## Packages
+
+This monorepo contains three packages:
+
+| Package | Description | Version |
+|---------|-------------|---------|
+| [`@lleverage-ai/agent-sdk`](./packages/agent-sdk) | Core agent framework — tools, plugins, hooks, teams | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-sdk)](https://www.npmjs.com/package/@lleverage-ai/agent-sdk) |
+| [`@lleverage-ai/agent-stream`](./packages/agent-stream) | Realtime event transport and replay | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-stream)](https://www.npmjs.com/package/@lleverage-ai/agent-stream) |
+| [`@lleverage-ai/agent-ledger`](./packages/agent-ledger) | Durable transcript layer for conversations | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-ledger)](https://www.npmjs.com/package/@lleverage-ai/agent-ledger) |
+
 ## Installation
 
 ```bash
