@@ -43,6 +43,8 @@ export interface WsClientOptions {
 export interface SubscribeOptions {
   afterSeq?: number;
   signal?: AbortSignal;
+  /** Maximum number of events to buffer before the consumer reads them. Default: 10000 */
+  maxQueueSize?: number;
 }
 
 /**
@@ -79,7 +81,7 @@ interface ActiveSubscription {
   lastConfirmedSeq: number;
   /** Whether replay has completed for this subscription */
   live: boolean;
-  /** Highest seq from replay, used for dedup during promotion */
+  /** Highest seq from replay; used to update lastConfirmedSeq on replay-end */
   lastReplaySeq: number;
   push: (item: SubscriptionEvent<unknown>) => void;
   end: () => void;
@@ -163,6 +165,7 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
   ): AsyncIterable<SubscriptionEvent<TEvent>> {
     const afterSeq = options?.afterSeq ?? 0;
     const signal = options?.signal;
+    const maxQueueSize = options?.maxQueueSize ?? 10_000;
 
     // Push/pull queue for the async iterable
     const queue: Array<SubscriptionEvent<unknown>> = [];
@@ -176,6 +179,16 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
         resolve = null;
         r({ value: item, done: false });
       } else {
+        if (queue.length >= maxQueueSize) {
+          this.emit(
+            "error",
+            new Error(
+              `Subscription queue overflow for stream "${streamId}" (maxQueueSize=${maxQueueSize})`,
+            ),
+          );
+          this.unsubscribe(streamId);
+          return;
+        }
         queue.push(item);
       }
     };
@@ -375,6 +388,15 @@ export class WsClient extends TypedEmitter<WsClientEvents> {
 
       case "error":
         this.emit("error", msg);
+        // Stream-scoped errors (e.g. REPLAY_FAILED): end the affected subscription
+        // so its async iterator terminates instead of hanging forever.
+        if (msg.streamId) {
+          const sub = this.subscriptions.get(msg.streamId);
+          if (sub) {
+            this.cleanupSubscription(sub);
+            this.subscriptions.delete(msg.streamId);
+          }
+        }
         break;
     }
   }

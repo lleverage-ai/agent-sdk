@@ -8,21 +8,23 @@ A Run represents a single agent generation cycle — from receiving input to pro
 ```
                   ┌──────────┐
                   │ created  │
-                  └────┬─────┘
-                       │ activateRun()
-                  ┌────▼─────┐
-                  │streaming │
                   └─┬──┬──┬──┘
                     │  │  │
-               commit fail cancel
-                    │   │    │
-              ┌─────▼┐ ┌▼──┐ ┌▼───────┐
-              │committed│failed│cancelled│
-              └─────┬──┘ └────┘ └────────┘
-                    │ superseded by newer commit at same fork point
-              ┌─────▼─────┐
-              │ superseded│
-              └───────────┘
+             activate fail cancel (recovery)
+                    │  │  │
+              ┌─────▼┐ │  │
+              │streaming│ │
+              └─┬──┬──┬─┘ │
+                │  │  │    │
+           commit fail cancel
+                │   │    │
+          ┌─────▼┐ ┌▼───▼┐ ┌▼───────┐
+          │committed│failed│ │cancelled│
+          └─────┬──┘ └────┘ └────────┘
+                │ superseded by newer commit at same fork point
+          ┌─────▼─────┐
+          │ superseded│
+          └───────────┘
 ```
 
 ## States
@@ -41,6 +43,8 @@ A Run represents a single agent generation cycle — from receiving input to pro
 | From | To | Trigger | Side Effects |
 |---|---|---|---|
 | created | streaming | `activateRun()` (invoked by `RunManager.beginRun()`) | Run becomes writable for stream events |
+| created | failed | `recoverRun({ action: "fail" })` or `RunManager.beginRun()` cleanup | Orphaned run cleaned up before it could stream |
+| created | cancelled | `recoverRun({ action: "cancel" })` | Run cancelled before activation |
 | streaming | committed | `finalizeRun({ status: "committed", messages })` | Persists transcript and marks same-fork committed runs as superseded |
 | streaming | failed | `finalizeRun({ status: "failed" })` or recovery | Marks run terminal without committing transcript messages |
 | streaming | cancelled | `finalizeRun({ status: "cancelled" })` or recovery | Marks run terminal without committing transcript messages |

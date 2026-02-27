@@ -84,7 +84,7 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
   async append(streamId: string, events: TEvent[]): Promise<StoredEvent<TEvent>[]> {
     if (events.length === 0) return [];
 
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
       const headRow = this.stmtHead.get(streamId);
       const lastSeq = headRow && typeof headRow["max_seq"] === "number" ? headRow["max_seq"] : 0;
@@ -103,8 +103,8 @@ export class SQLiteEventStore<TEvent> implements IEventStore<TEvent> {
     } catch (error) {
       try {
         this.db.exec("ROLLBACK");
-      } catch {
-        // Ignore rollback failures; original append error is more actionable.
+      } catch (rollbackError) {
+        console.warn("[SQLiteEventStore] Rollback failed after append error", rollbackError);
       }
       throw error;
     }

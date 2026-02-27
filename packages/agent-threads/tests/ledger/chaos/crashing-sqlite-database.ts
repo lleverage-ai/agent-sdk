@@ -41,7 +41,7 @@ export class CrashingSQLiteDatabase implements SQLiteDatabase {
   exec(sql: string): void {
     const trimmed = sql.trim();
 
-    if (trimmed === "BEGIN") {
+    if (trimmed.startsWith("BEGIN")) {
       this.inner.sqlExec(sql);
       this.inTransaction = true;
       this.maybeCrash("after-begin");

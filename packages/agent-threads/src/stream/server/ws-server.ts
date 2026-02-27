@@ -269,6 +269,7 @@ export class WsServer {
           client,
           PROTOCOL_ERRORS.REPLAY_FAILED,
           `Failed to replay stream ${sub.streamId}`,
+          sub.streamId,
         );
         client.subscriptions.delete(sub.streamId);
       }
@@ -307,11 +308,17 @@ export class WsServer {
     this.sendMessage(client, msg);
   }
 
-  private sendError(client: ClientState, code: ProtocolError, message: string): void {
+  private sendError(
+    client: ClientState,
+    code: ProtocolError,
+    message: string,
+    streamId?: string,
+  ): void {
     this.sendMessage(client, {
       type: "error",
       code,
       message,
+      ...(streamId !== undefined && { streamId }),
     });
   }
 

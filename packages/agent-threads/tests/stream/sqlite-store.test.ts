@@ -179,7 +179,7 @@ describe("SQLiteEventStore", () => {
     const store = new SQLiteEventStore<{ value: number }>(db);
     await store.append("s1", [{ value: 1 }]);
 
-    expect(db.execHistory).toContain("BEGIN");
+    expect(db.execHistory).toContain("BEGIN IMMEDIATE");
     expect(db.execHistory).toContain("COMMIT");
   });
 });

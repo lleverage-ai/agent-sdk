@@ -5,13 +5,13 @@
  */
 export interface StoredEvent<TEvent> {
   /** Monotonic sequence number within the stream */
-  seq: number;
+  readonly seq: number;
   /** ISO 8601 timestamp of when the event was stored */
-  timestamp: string;
+  readonly timestamp: string;
   /** The stream this event belongs to */
-  streamId: string;
+  readonly streamId: string;
   /** The event payload */
-  event: TEvent;
+  readonly event: TEvent;
 }
 
 /**

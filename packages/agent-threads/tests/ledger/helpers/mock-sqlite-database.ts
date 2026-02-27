@@ -30,7 +30,7 @@ export class MockSQLiteDatabase implements SQLiteDatabase {
       return;
     }
 
-    if (sql.trim() === "BEGIN") {
+    if (sql.trim().startsWith("BEGIN")) {
       this.snapshot = new Map();
       for (const [k, v] of this.tables) {
         this.snapshot.set(k, [...v.map((r) => ({ ...r }))]);

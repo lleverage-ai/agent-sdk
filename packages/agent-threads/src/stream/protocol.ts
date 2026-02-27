@@ -79,6 +79,8 @@ export interface ErrorMessage {
   type: "error";
   code: ProtocolError;
   message: string;
+  /** Stream ID for stream-scoped errors (e.g. REPLAY_FAILED). */
+  streamId?: string;
 }
 
 export type ServerMessage<TEvent = unknown> =
@@ -246,7 +248,7 @@ function decodeServerMessageFromParsed(parsed: Record<string, unknown>): ServerM
     case "ping":
       return { type: "ping" };
 
-    case "error":
+    case "error": {
       if (
         typeof parsed.code !== "string" ||
         !PROTOCOL_ERROR_CODES.has(parsed.code) ||
@@ -254,11 +256,16 @@ function decodeServerMessageFromParsed(parsed: Record<string, unknown>): ServerM
       ) {
         return null;
       }
-      return {
+      const errorMsg: ErrorMessage = {
         type: "error",
         code: parsed.code as ProtocolError,
         message: parsed.message,
       };
+      if (typeof parsed.streamId === "string") {
+        errorMsg.streamId = parsed.streamId;
+      }
+      return errorMsg;
+    }
 
     default:
       return null;

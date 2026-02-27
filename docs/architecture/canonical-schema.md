@@ -12,7 +12,7 @@ Defines the canonical message and part types used by agent-threads (ledger layer
 | role | "user" \| "assistant" \| "system" \| "tool" | Message role |
 | parts | CanonicalPart[] | Ordered content parts |
 | createdAt | string (ISO 8601) | Creation timestamp |
-| metadata | Record<string, unknown> | Extensible metadata |
+| metadata | CanonicalMessageMetadata | Metadata with required `schemaVersion: number` and optional extra fields |
 
 ## CanonicalPart Types
 
@@ -46,10 +46,10 @@ Defines the canonical message and part types used by agent-threads (ledger layer
 Messages form a tree via `parentMessageId`. A linear conversation is a degenerate tree where each message has exactly one child.
 
 ### Fork Semantics
-When a user regenerates from message M3:
-1. M3's children are not deleted
-2. A new message M3' is created with `parentMessageId = M2` (same parent as M3)
-3. Both M3 and M3' are siblings — the active branch is determined by the run
+When a user regenerates from message M3 (forking from M2):
+1. A new run is created with `forkFromMessageId = M2`
+2. When the new run commits, all messages after M2 (M3 and its descendants) are deleted and replaced by the new run's transcript
+3. Other committed runs at the same fork point are marked `superseded`
 
 ### Example: Linear Conversation
 ```

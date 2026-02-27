@@ -26,8 +26,8 @@ import type { ILedgerStore } from "./ledger-store.js";
  * accessed synchronously (matching both `bun:sqlite` and `better-sqlite3`
  * APIs) but the ILedgerStore interface is async for compatibility.
  *
- * `finalizeRun()` wraps supersession + commit in a single "transaction"
- * via `db.exec("BEGIN")` / `db.exec("COMMIT")`.
+ * `finalizeRun()` and `deleteThread()` wrap their operations in a single
+ * transaction via `db.exec("BEGIN IMMEDIATE")` / `db.exec("COMMIT")`.
  *
  * Prepared statements are cached for hot-path operations.
  *
@@ -47,6 +47,17 @@ export class SQLiteLedgerStore implements ILedgerStore {
   private stmtUpdateRunStatus: SQLiteStatement;
   private stmtInsertMsg: SQLiteStatement;
   private stmtInsertPart: SQLiteStatement;
+  // Cached statements for finalizeRun transaction
+  private stmtGetForkOrdinal: SQLiteStatement;
+  private stmtDeletePartsAfterFork: SQLiteStatement;
+  private stmtDeleteMessagesAfterFork: SQLiteStatement;
+  private stmtFindSupersedableRuns: SQLiteStatement;
+  private stmtSupersedeRun: SQLiteStatement;
+  private stmtMaxOrdinal: SQLiteStatement;
+  // Cached statements for deleteThread transaction
+  private stmtDeleteThreadParts: SQLiteStatement;
+  private stmtDeleteThreadMessages: SQLiteStatement;
+  private stmtDeleteThreadRuns: SQLiteStatement;
 
   constructor(db: SQLiteDatabase) {
     this.db = db;
@@ -116,6 +127,29 @@ export class SQLiteLedgerStore implements ILedgerStore {
     this.stmtInsertPart = this.db.prepare(
       "INSERT INTO parts (message_id, type, data, ordinal) VALUES (?, ?, ?, ?)",
     );
+    this.stmtGetForkOrdinal = this.db.prepare(
+      "SELECT ordinal FROM messages WHERE thread_id = ? AND id = ?",
+    );
+    this.stmtDeletePartsAfterFork = this.db.prepare(
+      "DELETE FROM parts WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ? AND ordinal > ?)",
+    );
+    this.stmtDeleteMessagesAfterFork = this.db.prepare(
+      "DELETE FROM messages WHERE thread_id = ? AND ordinal > ?",
+    );
+    this.stmtFindSupersedableRuns = this.db.prepare(
+      "SELECT run_id FROM runs WHERE thread_id = ? AND run_id != ? AND status = ? AND fork_from_message_id = ?",
+    );
+    this.stmtSupersedeRun = this.db.prepare(
+      "UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?",
+    );
+    this.stmtMaxOrdinal = this.db.prepare(
+      "SELECT MAX(ordinal) as max_ord FROM messages WHERE thread_id = ?",
+    );
+    this.stmtDeleteThreadParts = this.db.prepare(
+      "DELETE FROM parts WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)",
+    );
+    this.stmtDeleteThreadMessages = this.db.prepare("DELETE FROM messages WHERE thread_id = ?");
+    this.stmtDeleteThreadRuns = this.db.prepare("DELETE FROM runs WHERE thread_id = ?");
   }
 
   async beginRun(options: BeginRunOptions): Promise<RunRecord> {
@@ -174,48 +208,37 @@ export class SQLiteLedgerStore implements ILedgerStore {
     const finishedAt = new Date().toISOString();
     const supersededRunIds: string[] = [];
 
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
       if (options.status === "committed") {
         // Handle fork-based supersession
         if (run.forkFromMessageId) {
           // Remove messages after fork point
-          const forkedMessages = this.db
-            .prepare("SELECT ordinal FROM messages WHERE thread_id = ? AND id = ?")
-            .get(run.threadId, run.forkFromMessageId);
+          const forkedMessages = this.stmtGetForkOrdinal.get(run.threadId, run.forkFromMessageId);
 
           if (forkedMessages) {
             const forkOrdinal = forkedMessages["ordinal"] as number;
             // Delete parts of messages after fork point (single subquery)
-            this.db
-              .prepare(
-                "DELETE FROM parts WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ? AND ordinal > ?)",
-              )
-              .run(run.threadId, forkOrdinal);
-            this.db
-              .prepare("DELETE FROM messages WHERE thread_id = ? AND ordinal > ?")
-              .run(run.threadId, forkOrdinal);
+            this.stmtDeletePartsAfterFork.run(run.threadId, forkOrdinal);
+            this.stmtDeleteMessagesAfterFork.run(run.threadId, forkOrdinal);
           }
 
           // Supersede other committed runs at same fork point
-          const otherRuns = this.db
-            .prepare(
-              "SELECT run_id FROM runs WHERE thread_id = ? AND run_id != ? AND status = ? AND fork_from_message_id = ?",
-            )
-            .all(run.threadId, run.runId, "committed", run.forkFromMessageId);
+          const otherRuns = this.stmtFindSupersedableRuns.all(
+            run.threadId,
+            run.runId,
+            "committed",
+            run.forkFromMessageId,
+          );
           for (const other of otherRuns) {
             const rid = other["run_id"] as string;
-            this.db
-              .prepare("UPDATE runs SET status = ?, finished_at = ? WHERE run_id = ?")
-              .run("superseded", finishedAt, rid);
+            this.stmtSupersedeRun.run("superseded", finishedAt, rid);
             supersededRunIds.push(rid);
           }
         }
 
         // Get current max ordinal for thread
-        const maxRow = this.db
-          .prepare("SELECT MAX(ordinal) as max_ord FROM messages WHERE thread_id = ?")
-          .get(run.threadId);
+        const maxRow = this.stmtMaxOrdinal.get(run.threadId);
         let nextOrdinal =
           maxRow && typeof maxRow["max_ord"] === "number" ? maxRow["max_ord"] + 1 : 0;
 
@@ -245,8 +268,8 @@ export class SQLiteLedgerStore implements ILedgerStore {
     } catch (e) {
       try {
         this.db.exec("ROLLBACK");
-      } catch {
-        // Preserve original error; rollback failure is secondary.
+      } catch (rollbackError) {
+        console.warn("[SQLiteLedgerStore] Rollback failed after finalizeRun error", rollbackError);
       }
       throw e;
     }
@@ -387,21 +410,17 @@ export class SQLiteLedgerStore implements ILedgerStore {
   }
 
   async deleteThread(threadId: string): Promise<void> {
-    this.db.exec("BEGIN");
+    this.db.exec("BEGIN IMMEDIATE");
     try {
-      this.db
-        .prepare(
-          "DELETE FROM parts WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)",
-        )
-        .run(threadId);
-      this.db.prepare("DELETE FROM messages WHERE thread_id = ?").run(threadId);
-      this.db.prepare("DELETE FROM runs WHERE thread_id = ?").run(threadId);
+      this.stmtDeleteThreadParts.run(threadId);
+      this.stmtDeleteThreadMessages.run(threadId);
+      this.stmtDeleteThreadRuns.run(threadId);
       this.db.exec("COMMIT");
     } catch (error) {
       try {
         this.db.exec("ROLLBACK");
-      } catch {
-        // Preserve original error; rollback failure is secondary.
+      } catch (rollbackError) {
+        console.warn("[SQLiteLedgerStore] Rollback failed after deleteThread error", rollbackError);
       }
       throw error;
     }

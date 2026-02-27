@@ -35,7 +35,18 @@ export class RunManager {
    */
   async beginRun(options: BeginRunOptions): Promise<RunRecord> {
     const run = await this.ledgerStore.beginRun(options);
-    await this.ledgerStore.activateRun(run.runId);
+    try {
+      await this.ledgerStore.activateRun(run.runId);
+    } catch (error) {
+      // Clean up the orphaned "created" run so it doesn't linger.
+      // If recovery also fails, stale-run reconciliation will catch it.
+      try {
+        await this.ledgerStore.recoverRun({ runId: run.runId, action: "fail" });
+      } catch {
+        // Recovery failed — stale-run reconciliation will handle it
+      }
+      throw error;
+    }
     return { ...run, status: "streaming" };
   }
 
