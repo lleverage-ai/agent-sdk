@@ -32,6 +32,11 @@ function buildChildrenByParent(
   return byParent;
 }
 
+/**
+ * Looks up the run status for a message's producing run.
+ *
+ * @throws {Error} If the run status map is missing the given run ID
+ */
 function getRunStatus(runStatusById: ReadonlyMap<string, RunStatus>, runId: string): RunStatus {
   const status = runStatusById.get(runId);
   if (!status) {
@@ -96,8 +101,8 @@ function chooseChildForParent(
     if (selectedChildId) {
       const explicit = children.find((child) => child.message.id === selectedChildId);
       if (explicit) return explicit;
-      // Deliberate fallback contract: invalid/missing child selections at a fork
-      // fall back to active-branch resolution instead of hard-failing.
+      // Deliberate demotion: explicit selection could not be honored, so this
+      // fork falls back to standard active-branch selection (no hard failure).
     }
   }
   return chooseActiveChild(children, runStatusById);

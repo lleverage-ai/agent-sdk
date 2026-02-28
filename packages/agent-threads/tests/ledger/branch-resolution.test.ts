@@ -39,6 +39,10 @@ describe("branch-resolution", () => {
     expect(() => resolveTranscript(records, new Map(), "active")).toThrow("Missing run status");
   });
 
+  it('returns empty transcript when records are empty and branch is "all"', () => {
+    expect(resolveTranscript([], new Map(), "all")).toEqual([]);
+  });
+
   it("handles orphan parent chains when no root message exists", () => {
     const records = [
       makeRecord("orphan", "missing-parent", "run-1", 0),
@@ -92,6 +96,22 @@ describe("branch-resolution", () => {
     expect(transcript.map((message) => message.id)).toEqual(["root", "fork-b"]);
   });
 
+  it("chooses the most recent child when all fork children are committed", () => {
+    const records = [
+      makeRecord("root", null, "run-root", 0),
+      makeRecord("fork-a", "root", "run-a", 1),
+      makeRecord("fork-b", "root", "run-b", 2),
+    ];
+    const statuses = statusMap([
+      ["run-root", "committed"],
+      ["run-a", "committed"],
+      ["run-b", "committed"],
+    ]);
+
+    const transcript = resolveTranscript(records, statuses, "active");
+    expect(transcript.map((message) => message.id)).toEqual(["root", "fork-b"]);
+  });
+
   it("prevents infinite traversal when corrupted data introduces self-reference", () => {
     const records = [
       makeRecord("dup", null, "run-root", 0),
@@ -112,6 +132,19 @@ describe("branch-resolution", () => {
       resolveTranscript(records, statuses, {
         selections: {
           root: 123 as unknown as string,
+        },
+      }),
+    ).toThrow('selection value for "root" must be a string');
+  });
+
+  it("throws when branch selections contain array values", () => {
+    const records = [makeRecord("root", null, "run-root", 0)];
+    const statuses = statusMap([["run-root", "committed"]]);
+
+    expect(() =>
+      resolveTranscript(records, statuses, {
+        selections: {
+          root: ["fork-a"] as unknown as string,
         },
       }),
     ).toThrow('selection value for "root" must be a string');
@@ -184,5 +217,26 @@ describe("branch-resolution", () => {
     const tree = buildThreadTree(records, statuses);
     expect(tree.nodes).toHaveLength(2);
     expect(tree.forkPoints).toEqual([]);
+  });
+
+  it("buildThreadTree treats orphan siblings as fork points", () => {
+    const records = [
+      makeRecord("orphan-left", "missing-parent", "run-left", 0),
+      makeRecord("orphan-right", "missing-parent", "run-right", 1),
+    ];
+    const statuses = statusMap([
+      ["run-left", "committed"],
+      ["run-right", "committed"],
+    ]);
+
+    const tree = buildThreadTree(records, statuses);
+    expect(tree.nodes).toHaveLength(2);
+    expect(tree.forkPoints).toEqual([
+      {
+        forkMessageId: "missing-parent",
+        children: ["orphan-left", "orphan-right"],
+        activeChildId: "orphan-right",
+      },
+    ]);
   });
 });
