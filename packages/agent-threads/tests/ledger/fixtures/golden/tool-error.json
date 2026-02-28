@@ -1,0 +1,52 @@
+{
+  "description": "Tool result with isError: true",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    {
+      "kind": "tool-call",
+      "payload": { "toolCallId": "tc-1", "toolName": "read", "input": { "path": "/missing" } }
+    },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "tool-calls" } },
+    {
+      "kind": "tool-result",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "read",
+        "output": "File not found",
+        "isError": true
+      }
+    },
+    { "kind": "step-started", "payload": { "stepIndex": 1 } },
+    { "kind": "text-delta", "payload": { "delta": "The file was not found." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 1, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        {
+          "type": "tool-call",
+          "toolCallId": "tc-1",
+          "toolName": "read",
+          "input": { "path": "/missing" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool-result",
+          "toolCallId": "tc-1",
+          "toolName": "read",
+          "output": "File not found",
+          "isError": true
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "The file was not found." }]
+    }
+  ]
+}

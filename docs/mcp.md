@@ -107,7 +107,7 @@ const docsPlugin = definePlugin({
   name: "docs",
   mcpServer: {
     type: "http",
-    url: "https://docs-server.internal/mcp",
+    url: "https://docs.example.com/mcp",
     headers: { Authorization: "Bearer ${DOCS_API_TOKEN}" },
 
     // Only allow read-only operations

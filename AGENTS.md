@@ -16,37 +16,34 @@ This is the Agent SDK (`@lleverage-ai/agent-sdk`) - a framework for building AI 
 
 ## Commands
 
+All commands run from the workspace root and delegate to all packages via `bun run --filter '*'`.
+
 ```bash
 # Install dependencies
 bun install
 
-# Build
+# Build all packages
 bun run build
 
-# Run tests
+# Run all tests
 bun run test
-bun run test:watch        # Watch mode
 
-# Lint (Biome)
-bun run lint              # Check for lint issues
-bun run lint:fix          # Fix lint issues
-
-# Type check
+# Type check all packages
 bun run type-check
 
 # Format code (Biome)
 bun run format            # Format with fixes
-bun run format:check      # Check formatting only
 
 # Combined check (Biome lint + format)
 bun run check             # Check all
 bun run check:fix         # Fix all
 
-# Documentation
-bun run docs              # Generate TypeDoc
-
 # Clean build artifacts
 bun run clean
+
+# Run commands for a single package
+bun run --filter '@lleverage-ai/agent-sdk' test
+bun run --filter '@lleverage-ai/agent-threads' test
 ```
 
 ## Changelog
@@ -62,48 +59,71 @@ Keep `CHANGELOG.md` up to date when making changes. Follow [Keep a Changelog](ht
 
 ## Project Structure
 
+This is a monorepo with `bun` workspaces. Shared tooling (biome, typescript, git hooks) lives at the root. Each package has its own `package.json`, `tsconfig.json`, and test config.
+
 ```
-agent-sdk/
-├── src/
-│   ├── index.ts             # Public exports
-│   ├── types.ts             # Type definitions
-│   ├── agent.ts             # createAgent()
-│   ├── session.ts           # AgentSession for event-driven interactions
-│   ├── hooks.ts             # Hook system
-│   ├── plugins.ts           # definePlugin()
-│   ├── tools.ts             # defineSkill()
-│   ├── context.ts           # Context management
-│   ├── context-manager.ts   # Token budgeting & summarization
-│   ├── backend.ts           # Backend abstraction
-│   ├── subagents.ts         # createSubagent()
-│   ├── generation-helpers.ts # Generation utilities
-│   ├── backends/            # Backend implementations
-│   ├── checkpointer/        # State checkpointing & interrupts
-│   ├── errors/              # Error types & graceful degradation
-│   ├── hooks/               # Hook utilities (guardrails, audit, etc.)
-│   ├── mcp/                 # MCP (Model Context Protocol) support
-│   ├── memory/              # Memory systems & permissions
-│   ├── middleware/          # Middleware pipeline
-│   ├── observability/       # Logging, tracing, metrics, events
-│   ├── plugins/
-│   │   └── agent-teams/     # Multi-agent team coordination plugin
-│   ├── presets/             # Production agent presets
-│   ├── security/            # Security policy presets
-│   ├── subagents/           # Advanced subagent utilities
-│   ├── task-store/          # Background task persistence
-│   ├── testing/             # Comprehensive test utilities
-│   └── tools/               # Core tool implementations
-│       ├── filesystem.ts    # read, write, edit, glob, grep
-│       ├── execute.ts       # bash
-│       ├── todos.ts         # todo_write
-│       ├── task.ts          # task (subagent delegation)
-│       ├── skills.ts        # skill (progressive disclosure)
-│       ├── tool-registry.ts # Tool registry (deferred loading)
-│       ├── search.ts        # search_tools (MCP integration)
-│       ├── utils.ts         # Tool utilities
-│       └── factory.ts       # createCoreTools()
-├── tests/
-└── docs/
+agent-sdk/                          # Workspace root
+├── packages/
+│   ├── agent-sdk/                  # @lleverage-ai/agent-sdk
+│   │   ├── src/
+│   │   │   ├── index.ts            # Public exports
+│   │   │   ├── types.ts            # Type definitions
+│   │   │   ├── agent.ts            # createAgent()
+│   │   │   ├── session.ts          # AgentSession for event-driven interactions
+│   │   │   ├── hooks.ts            # Hook system
+│   │   │   ├── plugins.ts          # definePlugin()
+│   │   │   ├── tools.ts            # defineSkill()
+│   │   │   ├── context.ts          # Context management
+│   │   │   ├── context-manager.ts  # Token budgeting & summarization
+│   │   │   ├── backend.ts          # Backend abstraction
+│   │   │   ├── subagents.ts        # createSubagent()
+│   │   │   ├── backends/           # Backend implementations
+│   │   │   ├── checkpointer/       # State checkpointing & interrupts
+│   │   │   ├── errors/             # Error types & graceful degradation
+│   │   │   ├── hooks/              # Hook utilities (guardrails, audit, etc.)
+│   │   │   ├── mcp/                # MCP (Model Context Protocol) support
+│   │   │   ├── memory/             # Memory systems & permissions
+│   │   │   ├── middleware/          # Middleware pipeline
+│   │   │   ├── observability/       # Logging, tracing, metrics, events
+│   │   │   ├── plugins/
+│   │   │   │   └── agent-teams/    # Multi-agent team coordination plugin
+│   │   │   ├── presets/            # Production agent presets
+│   │   │   ├── security/           # Security policy presets
+│   │   │   ├── subagents/          # Advanced subagent utilities
+│   │   │   ├── task-store/         # Background task persistence
+│   │   │   ├── testing/            # Comprehensive test utilities
+│   │   │   └── tools/              # Core tool implementations
+│   │   └── tests/
+│   │
+│   └── agent-threads/              # @lleverage-ai/agent-threads
+│       ├── src/
+│       │   ├── index.ts            # Unified barrel (stream + ledger)
+│       │   ├── stream/
+│       │   │   ├── index.ts        # Stream-only barrel
+│       │   │   ├── types.ts        # IEventStore, StoredEvent, ProjectorConfig
+│       │   │   ├── projector.ts    # Projector class
+│       │   │   ├── stream-event.ts # Event kinds, EventKindRegistry
+│       │   │   ├── stores/         # InMemoryEventStore, SQLiteEventStore
+│       │   │   ├── server/         # WsServer
+│       │   │   └── client/         # WsClient
+│       │   └── ledger/
+│       │       ├── index.ts        # Ledger-only barrel
+│       │       ├── types.ts        # CanonicalMessage, RunRecord, RunStatus
+│       │       ├── ulid.ts         # Self-contained ULID generator
+│       │       ├── accumulator.ts  # StreamEvent[] → CanonicalMessage[] reducer
+│       │       ├── run-manager.ts  # Run lifecycle orchestration
+│       │       ├── reconciliation.ts # Stale-run detection/recovery
+│       │       ├── context-builder.ts # IContextBuilder + FullContextBuilder
+│       │       └── stores/         # ILedgerStore, InMemoryLedgerStore, SQLiteLedgerStore
+│       └── tests/
+│           ├── stream/             # Stream layer tests
+│           └── ledger/             # Ledger layer tests
+│
+├── docs/
+│   └── architecture/               # Architecture specs (#50-53)
+├── biome.json                       # Shared linting/formatting config
+├── tsconfig.json                    # Shared base TypeScript config
+└── package.json                     # Workspace root
 ```
 
 ## Code Style

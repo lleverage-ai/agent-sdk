@@ -20,7 +20,7 @@ jobs:
           bun-version: latest
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: SKIP_INSTALL_SIMPLE_GIT_HOOKS=1 bun install --frozen-lockfile
 
       - name: Check formatting and linting
         run: bun run check
@@ -35,4 +35,6 @@ jobs:
         run: bun run build
 
       - name: Verify package contents
-        run: npm pack --dry-run
+        run: |
+          cd packages/agent-threads && npm pack --dry-run
+          cd ../agent-sdk && npm pack --dry-run

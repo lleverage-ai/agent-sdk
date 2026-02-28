@@ -1,0 +1,84 @@
+{
+  "name": "@lleverage-ai/agent-sdk",
+  "version": "0.0.13",
+  "description": "A TypeScript framework for building AI agents using the Vercel AI SDK v6",
+  "type": "module",
+  "license": "MIT",
+  "author": "Lleverage AI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lleverage-ai/agent-sdk.git",
+    "directory": "packages/agent-sdk"
+  },
+  "homepage": "https://github.com/lleverage-ai/agent-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/lleverage-ai/agent-sdk/issues"
+  },
+  "keywords": [
+    "ai",
+    "agent",
+    "llm",
+    "ai-sdk",
+    "vercel-ai",
+    "typescript",
+    "mcp",
+    "model-context-protocol",
+    "tools",
+    "plugins"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "testing": [
+        "dist/testing/index.d.ts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "import": "./dist/testing/index.js",
+      "default": "./dist/testing/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "clean": "rm -rf dist coverage"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "ajv": "^8.17.1",
+    "yaml": "^2.8.2"
+  },
+  "peerDependencies": {
+    "ai": "^6.0.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@ai-sdk/anthropic": "^3.0.36",
+    "@ai-sdk/gateway": "^3.0.57",
+    "ai": "^6.0.78",
+    "vitest": "^4.0.18",
+    "zod": "^4.3.6"
+  }
+}

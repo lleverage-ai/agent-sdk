@@ -1,0 +1,85 @@
+{
+  "description": "Parallel tool calls in one step",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "I'll check both." } },
+    {
+      "kind": "tool-call",
+      "payload": { "toolCallId": "tc-1", "toolName": "read", "input": { "path": "/a.txt" } }
+    },
+    {
+      "kind": "tool-call",
+      "payload": { "toolCallId": "tc-2", "toolName": "read", "input": { "path": "/b.txt" } }
+    },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "tool-calls" } },
+    {
+      "kind": "tool-result",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "read",
+        "output": "content-a",
+        "isError": false
+      }
+    },
+    {
+      "kind": "tool-result",
+      "payload": {
+        "toolCallId": "tc-2",
+        "toolName": "read",
+        "output": "content-b",
+        "isError": false
+      }
+    },
+    { "kind": "step-started", "payload": { "stepIndex": 1 } },
+    { "kind": "text-delta", "payload": { "delta": "Both files read." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 1, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "text", "text": "I'll check both." },
+        {
+          "type": "tool-call",
+          "toolCallId": "tc-1",
+          "toolName": "read",
+          "input": { "path": "/a.txt" }
+        },
+        {
+          "type": "tool-call",
+          "toolCallId": "tc-2",
+          "toolName": "read",
+          "input": { "path": "/b.txt" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool-result",
+          "toolCallId": "tc-1",
+          "toolName": "read",
+          "output": "content-a",
+          "isError": false
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool-result",
+          "toolCallId": "tc-2",
+          "toolName": "read",
+          "output": "content-b",
+          "isError": false
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "Both files read." }]
+    }
+  ]
+}

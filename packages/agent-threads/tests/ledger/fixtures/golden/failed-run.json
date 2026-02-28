@@ -1,0 +1,14 @@
+{
+  "description": "Events + error event",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "Processing..." } },
+    { "kind": "error", "payload": { "message": "Rate limit exceeded", "code": "rate_limit" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "Processing..." }]
+    }
+  ]
+}

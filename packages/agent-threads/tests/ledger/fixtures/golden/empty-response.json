@@ -1,0 +1,8 @@
+{
+  "description": "Step started/finished with no content",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "stop" } }
+  ],
+  "expectedMessages": []
+}

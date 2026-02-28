@@ -1,0 +1,14 @@
+{
+  "description": "Partial events, no step-finished (cancelled run)",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "Starting to resp" } },
+    { "kind": "text-delta", "payload": { "delta": "ond but cancel" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "Starting to respond but cancel" }]
+    }
+  ]
+}

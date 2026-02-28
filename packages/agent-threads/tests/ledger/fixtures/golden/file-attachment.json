@@ -1,0 +1,30 @@
+{
+  "description": "File event",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "Here is the file:" } },
+    {
+      "kind": "file",
+      "payload": {
+        "mimeType": "image/png",
+        "url": "data:image/png;base64,abc123",
+        "name": "screenshot.png"
+      }
+    },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "text", "text": "Here is the file:" },
+        {
+          "type": "file",
+          "mimeType": "image/png",
+          "url": "data:image/png;base64,abc123",
+          "name": "screenshot.png"
+        }
+      ]
+    }
+  ]
+}

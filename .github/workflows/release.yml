@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "agent-sdk@*"
+      - "agent-threads@*"
 
 jobs:
   release:
@@ -14,36 +15,122 @@ jobs:
       id-token: write
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: "20"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+      - name: Parse release tag
+        id: parse
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          PACKAGE_NAME="${TAG%%@*}"
+          PACKAGE_VERSION="${TAG##*@}"
+          PACKAGE_DIR="packages/${PACKAGE_NAME}"
 
-      - name: Check formatting and linting
-        run: bun run check
+          if [[ "$PACKAGE_VERSION" =~ -([a-zA-Z]+) ]]; then
+            NPM_TAG="${BASH_REMATCH[1]}"
+          else
+            NPM_TAG="latest"
+          fi
 
-      - name: Type check
-        run: bun run type-check
+          echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "package_version=$PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "package_dir=$PACKAGE_DIR" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$NPM_TAG" >> "$GITHUB_OUTPUT"
+          echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION from $PACKAGE_DIR (npm tag: $NPM_TAG)"
 
-      - name: Run tests
-        run: bun run test
+      - name: Validate tag version matches package.json
+        working-directory: ${{ steps.parse.outputs.package_dir }}
+        env:
+          EXPECTED_VERSION: ${{ steps.parse.outputs.package_version }}
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$PKG_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Tag version ($EXPECTED_VERSION) does not match package.json version ($PKG_VERSION)"
+            exit 1
+          fi
 
-      - name: Build
-        run: bun run build
+      - run: SKIP_INSTALL_SIMPLE_GIT_HOOKS=1 bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run type-check
+      - run: bun run test
+      - run: bun run build
 
-      - name: Publish to npm
-        run: npm publish --provenance --access public
+      - name: Resolve workspace dependencies
+        working-directory: ${{ steps.parse.outputs.package_dir }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+            let changed = false;
+            for (const field of ['dependencies', 'peerDependencies', 'optionalDependencies']) {
+              for (const [dep, ver] of Object.entries(pkg[field] || {})) {
+                if (typeof ver === 'string' && ver.startsWith('workspace:')) {
+                  const depDir = dep.replace('@lleverage-ai/', '');
+                  const depPkg = JSON.parse(fs.readFileSync('../' + depDir + '/package.json', 'utf8'));
+                  pkg[field][dep] = '^' + depPkg.version;
+                  changed = true;
+                }
+              }
+            }
+            if (changed) {
+              fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+              console.log('Resolved workspace dependencies');
+            }
+          "
+
+      - name: Validate internal runtime dependencies are published
+        working-directory: ${{ steps.parse.outputs.package_dir }}
+        run: |
+          # Dependency graph guard: verify any internal runtime dependencies are already
+          # published on npm at the resolved version range.
+          node <<'NODE'
+          const fs = require("fs");
+          const { execFileSync } = require("node:child_process");
+
+          const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+          const internalDeps = Object.entries({
+            ...(pkg.dependencies ?? {}),
+            ...(pkg.optionalDependencies ?? {}),
+          }).filter(([name]) => name.startsWith("@lleverage-ai/"));
+
+          if (internalDeps.length === 0) {
+            console.log("No internal runtime dependencies to validate.");
+            process.exit(0);
+          }
+
+          let hasError = false;
+          for (const [name, range] of internalDeps) {
+            try {
+              const published = execFileSync("npm", ["view", `${name}@${range}`, "version"], {
+                encoding: "utf8",
+                stdio: ["ignore", "pipe", "pipe"],
+              }).trim();
+              console.log(`Verified dependency: ${name}@${range} (resolved: ${published})`);
+            } catch (error) {
+              hasError = true;
+              const message = error instanceof Error ? error.message : String(error);
+              console.error(
+                `Missing internal dependency on npm: ${name}@${range}. Publish dependencies first.\n${message}`,
+              );
+            }
+          }
+
+          if (hasError) {
+            process.exit(1);
+          }
+          NODE
+
+      - name: Publish ${{ steps.parse.outputs.package_name }}
+        working-directory: ${{ steps.parse.outputs.package_dir }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TAG: ${{ steps.parse.outputs.npm_tag }}
+        run: npm publish --provenance --access public --tag "$NPM_TAG"
