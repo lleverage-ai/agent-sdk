@@ -17,6 +17,8 @@ describe("SQLiteLedgerStore", () => {
     expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS runs"))).toBe(true);
     expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS messages"))).toBe(true);
     expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS parts"))).toBe(true);
+    expect(execCalls.some((sql) => sql.includes("idx_messages_parent"))).toBe(true);
+    expect(execCalls.some((sql) => sql.includes("idx_messages_run_id"))).toBe(true);
   });
 
   it("persists message parts as JSON and round-trips correctly", async () => {
@@ -66,11 +68,14 @@ describe("SQLiteLedgerStore", () => {
     );
   });
 
-  it("throws when branch path resolution is requested", async () => {
+  it("throws when branch selector shape is invalid", async () => {
     const store = new SQLiteLedgerStore(new MockSQLiteDatabase());
 
     await expect(
-      store.getTranscript({ threadId: "t1", branch: { path: ["run-1"] } }),
-    ).rejects.toThrow("Branch path resolution is not yet implemented");
+      store.getTranscript({
+        threadId: "t1",
+        branch: { selections: "invalid" } as unknown as { selections: Record<string, string> },
+      }),
+    ).rejects.toThrow("Invalid branch selector");
   });
 });

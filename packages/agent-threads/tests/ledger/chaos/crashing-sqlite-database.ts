@@ -4,7 +4,6 @@ import { CrashSimulationError } from "./crashing-ledger-store.js";
 
 export type SQLCrashPoint =
   | "after-begin"
-  | "after-delete-messages"
   | "after-supersede"
   | "after-insert-messages"
   | "after-update-run"
@@ -20,6 +19,7 @@ export type SQLCrashPoint =
 export class CrashingSQLiteDatabase implements SQLiteDatabase {
   private armedPoint: SQLCrashPoint | null = null;
   private inTransaction = false;
+  private inWriteTransaction = false;
 
   constructor(private inner: SQLiteDatabase & { sqlExec(sql: string): void }) {}
 
@@ -40,24 +40,32 @@ export class CrashingSQLiteDatabase implements SQLiteDatabase {
   // Wraps the SQLite database exec — no shell commands
   exec(sql: string): void {
     const trimmed = sql.trim();
+    const normalized = trimmed.toUpperCase();
 
-    if (trimmed.startsWith("BEGIN")) {
+    if (normalized.startsWith("BEGIN")) {
       this.inner.sqlExec(sql);
       this.inTransaction = true;
-      this.maybeCrash("after-begin");
+      this.inWriteTransaction = normalized.startsWith("BEGIN IMMEDIATE");
+      if (this.inWriteTransaction) {
+        this.maybeCrash("after-begin");
+      }
       return;
     }
 
-    if (trimmed === "COMMIT") {
+    if (normalized === "COMMIT") {
       this.inner.sqlExec(sql);
+      if (this.inWriteTransaction) {
+        this.maybeCrash("after-commit");
+      }
       this.inTransaction = false;
-      this.maybeCrash("after-commit");
+      this.inWriteTransaction = false;
       return;
     }
 
-    if (trimmed === "ROLLBACK") {
+    if (normalized === "ROLLBACK") {
       this.inner.sqlExec(sql);
       this.inTransaction = false;
+      this.inWriteTransaction = false;
       return;
     }
 
@@ -72,14 +80,10 @@ export class CrashingSQLiteDatabase implements SQLiteDatabase {
       run(...params: unknown[]): void {
         innerStmt.run(...params);
 
-        if (!wrapper.inTransaction) return;
+        if (!wrapper.inTransaction || !wrapper.inWriteTransaction) return;
 
         // Track DML operations for crash point detection
-        if (/DELETE FROM/i.test(sql)) {
-          if (/DELETE FROM messages/i.test(sql)) {
-            wrapper.maybeCrash("after-delete-messages");
-          }
-        } else if (/UPDATE/i.test(sql)) {
+        if (/UPDATE/i.test(sql)) {
           if (/UPDATE runs/i.test(sql) && String(params[0]) === "superseded") {
             wrapper.maybeCrash("after-supersede");
           }

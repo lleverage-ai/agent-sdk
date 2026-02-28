@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@lleverage-ai/agent-threads` — new unified package merging `@lleverage-ai/agent-stream` (event transport/replay) and `@lleverage-ai/agent-ledger` (durable transcripts/run lifecycle) into a single package with subpath exports (`./stream`, `./ledger`, `./server`, `./client`, `./stores/*`)
 - Active/terminal run status helpers (`ACTIVE_RUN_STATUSES`, `TERMINAL_RUN_STATUSES`, `isActiveRunStatus()`, `isTerminalRunStatus()`) and the narrowed `ActiveRunStatus` / `TerminalRunStatus` types for safer lifecycle logic reuse
 - Protocol decoding now includes explicit `decodeClientMessage()` and `decodeServerMessage()` validators, enabling directional wire-message validation at transport boundaries
+- Branch navigation metadata via `ILedgerStore.getThreadTree(threadId)`, including message nodes and fork-point active-child resolution across both in-memory and SQLite ledger stores
 
 ### Changed
 
@@ -19,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workspace scripts (`build`, `type-check`, `test`, `clean`) now use the simplified two-package build order (`agent-threads` → `agent-sdk`)
 - `RecoverResult` typing is now status-narrowed to active-to-terminal transitions (`created|streaming` → `failed|cancelled`)
 - `TypedEmitter` now accepts interface-based event maps, allowing `WsClientEvents` to follow the repository `interface` convention without requiring index-signature workarounds
+- Fork finalization in both ledger stores is now non-destructive: committing a run at a fork point preserves previously committed branch messages while still superseding older runs at that fork
+- `GetTranscriptOptions.branch` now supports explicit branch selections via `{ selections: Record<string, string> }`, and ledger stores now resolve `"active"` transcripts by walking parent-child message links with committed-branch preference
 
 ### Fixed
 
@@ -40,9 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SQLiteLedgerStore.deleteThread()` now runs in a transaction to avoid partial thread deletion on crash
 - Stale-run reconciliation now continues recovering remaining runs when one recovery fails
 - Release workflow now validates that internal runtime dependencies are already published on npm before publishing a package
-- `SQLiteLedgerStore.getTranscript()` now throws for unsupported `branch: { path: string[] }` requests instead of silently ignoring the branch selector
+- `SQLiteLedgerStore.getTranscript()` now validates branch selector shape and rejects invalid selector payloads
 - `WsClient.subscribe()` now handles already-aborted `AbortSignal`s immediately and cleans up abort listeners across unsubscribe/close/failure paths to avoid orphaned iterators and dangling listeners
 - `Projector.getState()` now returns a cloned snapshot so external callers cannot mutate internal projector state by reference
+- `RunManager.finalizeRun()` now passes `forkFromMessageId` into accumulation so the first committed message of a forked run is correctly linked via `parentMessageId`
 - Added and fixed regression coverage for replay failures, websocket error cleanup, broadcast overflow behavior, projector reset mutability, terminal run append rejection, branched regeneration fixtures, and accumulator text-delta edge cases
 - Corrected architecture docs with current API/runtime behavior (`run-lifecycle`, `stream-ledger-contract`, `canonical-schema`, `compaction-retention`, and `AGENTS.md` websocket descriptions)
 

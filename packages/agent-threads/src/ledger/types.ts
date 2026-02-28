@@ -276,11 +276,75 @@ export interface FinalizeResult {
  *
  * @category Types
  */
+/**
+ * Explicit branch selections for transcript resolution.
+ *
+ * Keys are fork-point parent message IDs and values are the selected child
+ * message IDs to follow at those forks.
+ *
+ * @category Types
+ */
+export type BranchSelections = Record<string, string>;
+
+/**
+ * Branch selector modes for transcript retrieval:
+ *
+ * - `"active"` - Resolve a single active branch path through each fork (default)
+ * - `"all"` - Return all messages in insertion order across all branches
+ * - `{ selections }` - Force specific child selections at fork points, with
+ *   active-mode fallback when a selection key is missing
+ *
+ * @category Types
+ */
 export interface GetTranscriptOptions {
   /** Thread to retrieve from */
   threadId: string;
   /** Branch resolution strategy */
-  branch?: "active" | "all" | { path: string[] };
+  branch?: "active" | "all" | { selections: BranchSelections };
+}
+
+/**
+ * Lightweight message node metadata for thread tree navigation.
+ *
+ * @category Types
+ */
+export interface ThreadTreeNode {
+  /** Message identifier */
+  readonly messageId: string;
+  /** Parent message identifier (or null for roots) */
+  readonly parentMessageId: string | null;
+  /** Author role */
+  readonly role: CanonicalMessage["role"];
+  /** Run that produced this message */
+  readonly runId: string;
+  /** Current lifecycle status of the producing run */
+  readonly runStatus: RunStatus;
+}
+
+/**
+ * Metadata describing a branch fork point.
+ *
+ * @category Types
+ */
+export interface ForkPoint {
+  /** Message ID where the fork occurs (parent of diverging children) */
+  readonly forkMessageId: string;
+  /** Child message IDs at this fork, ordered by insertion order (`messages.ordinal`) */
+  readonly children: readonly [string, string, ...string[]];
+  /** Child currently considered active for this fork point */
+  readonly activeChildId: string;
+}
+
+/**
+ * Thread tree metadata for branch navigation UIs.
+ *
+ * @category Types
+ */
+export interface ThreadTree {
+  /** All message nodes in the thread */
+  readonly nodes: readonly ThreadTreeNode[];
+  /** Fork points with active branch selection */
+  readonly forkPoints: readonly ForkPoint[];
 }
 
 // ---------------------------------------------------------------------------

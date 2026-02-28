@@ -102,7 +102,9 @@ export class RunManager {
 
     if (status === "committed") {
       const storedEvents = await this.eventStore.replay(run.streamId);
-      const messages = accumulateEvents(storedEvents);
+      const messages = accumulateEvents(storedEvents, undefined, {
+        forkFromMessageId: run.forkFromMessageId ?? undefined,
+      });
       return this.ledgerStore.finalizeRun({
         runId,
         status,

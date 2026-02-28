@@ -18,6 +18,62 @@ function makeMessage(
   };
 }
 
+async function setupBranchedThread(store: ILedgerStore): Promise<{
+  rootId: string;
+  leftId: string;
+  rightId: string;
+  leftLeafId: string;
+  rightLeafId: string;
+}> {
+  const base = await store.beginRun({ threadId: "t-branch" });
+  await store.activateRun(base.runId);
+  await store.finalizeRun({
+    runId: base.runId,
+    status: "committed",
+    messages: [makeMessage("root", null, "assistant")],
+  });
+
+  const left = await store.beginRun({ threadId: "t-branch", forkFromMessageId: "root" });
+  await store.activateRun(left.runId);
+  await store.finalizeRun({
+    runId: left.runId,
+    status: "committed",
+    messages: [makeMessage("left-1", "root", "assistant")],
+  });
+
+  const right = await store.beginRun({ threadId: "t-branch", forkFromMessageId: "root" });
+  await store.activateRun(right.runId);
+  await store.finalizeRun({
+    runId: right.runId,
+    status: "committed",
+    messages: [makeMessage("right-1", "root", "assistant")],
+  });
+
+  const leftLeaf = await store.beginRun({ threadId: "t-branch", forkFromMessageId: "left-1" });
+  await store.activateRun(leftLeaf.runId);
+  await store.finalizeRun({
+    runId: leftLeaf.runId,
+    status: "committed",
+    messages: [makeMessage("left-2", "left-1", "assistant")],
+  });
+
+  const rightLeaf = await store.beginRun({ threadId: "t-branch", forkFromMessageId: "right-1" });
+  await store.activateRun(rightLeaf.runId);
+  await store.finalizeRun({
+    runId: rightLeaf.runId,
+    status: "committed",
+    messages: [makeMessage("right-2", "right-1", "assistant")],
+  });
+
+  return {
+    rootId: "root",
+    leftId: "left-1",
+    rightId: "right-1",
+    leftLeafId: "left-2",
+    rightLeafId: "right-2",
+  };
+}
+
 /**
  * Reusable conformance test suite for ILedgerStore implementations.
  *
@@ -174,6 +230,31 @@ export function ledgerStoreConformanceTests(name: string, createStore: () => ILe
       expect(superseded!.status).toBe("superseded");
     });
 
+    it("finalizeRun on fork preserves previously committed branch messages", async () => {
+      const store = createStore();
+
+      const r1 = await store.beginRun({ threadId: "t1", forkFromMessageId: "msg-root" });
+      await store.activateRun(r1.runId);
+      await store.finalizeRun({
+        runId: r1.runId,
+        status: "committed",
+        messages: [makeMessage("m1", "msg-root", "assistant")],
+      });
+
+      const r2 = await store.beginRun({ threadId: "t1", forkFromMessageId: "msg-root" });
+      await store.activateRun(r2.runId);
+      await store.finalizeRun({
+        runId: r2.runId,
+        status: "committed",
+        messages: [makeMessage("m2", "msg-root", "assistant")],
+      });
+
+      const transcript = await store.getTranscript({ threadId: "t1", branch: "all" });
+      const ids = transcript.map((message) => message.id);
+      expect(ids).toContain("m1");
+      expect(ids).toContain("m2");
+    });
+
     it("finalizeRun throws for non-existent run", async () => {
       const store = createStore();
       await expect(store.finalizeRun({ runId: "nonexistent", status: "failed" })).rejects.toThrow(
@@ -237,6 +318,93 @@ export function ledgerStoreConformanceTests(name: string, createStore: () => ILe
       expect(transcript).toHaveLength(2);
       expect(transcript[0]!.id).toBe("m1");
       expect(transcript[1]!.id).toBe("m2");
+    });
+
+    it("getTranscript branch 'all' returns all committed branch messages", async () => {
+      const store = createStore();
+      const branch = await setupBranchedThread(store);
+
+      const transcript = await store.getTranscript({ threadId: "t-branch", branch: "all" });
+      const ids = transcript.map((message) => message.id);
+
+      expect(ids).toContain(branch.rootId);
+      expect(ids).toContain(branch.leftId);
+      expect(ids).toContain(branch.rightId);
+      expect(ids).toContain(branch.leftLeafId);
+      expect(ids).toContain(branch.rightLeafId);
+    });
+
+    it("getTranscript branch 'active' resolves to latest committed branch at fork points", async () => {
+      const store = createStore();
+      const branch = await setupBranchedThread(store);
+
+      const transcript = await store.getTranscript({ threadId: "t-branch", branch: "active" });
+      const ids = transcript.map((message) => message.id);
+
+      expect(ids).toEqual([branch.rootId, branch.rightId, branch.rightLeafId]);
+    });
+
+    it("getTranscript branch selections follows explicit fork choices", async () => {
+      const store = createStore();
+      const branch = await setupBranchedThread(store);
+
+      const transcript = await store.getTranscript({
+        threadId: "t-branch",
+        branch: { selections: { [branch.rootId]: branch.leftId } },
+      });
+      const ids = transcript.map((message) => message.id);
+
+      expect(ids).toEqual([branch.rootId, branch.leftId, branch.leftLeafId]);
+    });
+
+    it("getTranscript branch selections falls back to active when selection is invalid", async () => {
+      const store = createStore();
+      const branch = await setupBranchedThread(store);
+
+      const transcript = await store.getTranscript({
+        threadId: "t-branch",
+        branch: { selections: { [branch.rootId]: "non-existent-child" } },
+      });
+      const ids = transcript.map((message) => message.id);
+
+      expect(ids).toEqual([branch.rootId, branch.rightId, branch.rightLeafId]);
+    });
+
+    it("getTranscript throws when branch selections contain non-string values", async () => {
+      const store = createStore();
+      await setupBranchedThread(store);
+
+      await expect(
+        store.getTranscript({
+          threadId: "t-branch",
+          branch: { selections: { root: 123 } } as unknown as {
+            selections: Record<string, string>;
+          },
+        }),
+      ).rejects.toThrow("selection value");
+    });
+
+    // --- getThreadTree ---
+
+    it("getThreadTree returns fork points with active child metadata", async () => {
+      const store = createStore();
+      const branch = await setupBranchedThread(store);
+
+      const tree = await store.getThreadTree("t-branch");
+      expect(tree.nodes.length).toBeGreaterThanOrEqual(5);
+
+      const rootFork = tree.forkPoints.find(
+        (forkPoint) => forkPoint.forkMessageId === branch.rootId,
+      );
+      expect(rootFork).toBeDefined();
+      expect(rootFork!.children).toEqual([branch.leftId, branch.rightId]);
+      expect(rootFork!.activeChildId).toBe(branch.rightId);
+    });
+
+    it("getThreadTree returns empty result for unknown thread", async () => {
+      const store = createStore();
+      const tree = await store.getThreadTree("unknown-thread");
+      expect(tree).toEqual({ nodes: [], forkPoints: [] });
     });
 
     // --- listStaleRuns ---

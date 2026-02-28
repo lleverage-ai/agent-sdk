@@ -8,6 +8,7 @@ import type {
   RecoverRunOptions,
   RunRecord,
   StaleRunInfo,
+  ThreadTree,
 } from "../types.js";
 
 /**
@@ -41,6 +42,8 @@ export interface ILedgerStore {
    *
    * For "committed" status, messages are stored and any prior committed
    * runs at the same fork point are superseded atomically.
+   * Existing messages from superseded runs are preserved for `"all"` branch
+   * transcript views (non-destructive history retention).
    *
    * Idempotent: calling with the same runId and matching status returns
    * `{ committed: true, supersededRunIds: [] }` without side effects.
@@ -75,6 +78,14 @@ export interface ILedgerStore {
    * @returns Ordered canonical messages
    */
   getTranscript(options: GetTranscriptOptions): Promise<CanonicalMessage[]>;
+
+  /**
+   * Get lightweight tree metadata for branch navigation.
+   *
+   * @param threadId - Thread to inspect
+   * @returns Thread tree nodes and fork points
+   */
+  getThreadTree(threadId: string): Promise<ThreadTree>;
 
   /**
    * List runs that may have been abandoned (still in created/streaming status).
