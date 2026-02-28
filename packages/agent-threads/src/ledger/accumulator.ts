@@ -105,6 +105,22 @@ function createReducer(
         break;
       }
 
+      case "user-message": {
+        commitCurrentMessage(state);
+        const p = payload as { content: string };
+        const userMsg = {
+          id: idGen(),
+          parentMessageId: state.lastMessageId,
+          role: "user" as const,
+          parts: [{ type: "text" as const, text: p.content }],
+          createdAt: new Date().toISOString(),
+          metadata: { schemaVersion: 1 },
+        };
+        state.messages.push(userMsg);
+        state.lastMessageId = userMsg.id;
+        break;
+      }
+
       case "text-delta": {
         ensureCurrentMessage(state, idGen);
         const p = payload as { delta: string };
