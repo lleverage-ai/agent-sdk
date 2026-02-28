@@ -1,6 +1,6 @@
 {
   "name": "@lleverage-ai/agent-threads",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Event transport, replay, and durable transcripts for AI agent conversations",
   "type": "module",
   "license": "MIT",
