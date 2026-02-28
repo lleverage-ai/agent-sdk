@@ -276,6 +276,14 @@ export interface FinalizeResult {
  *
  * @category Types
  */
+/**
+ * Explicit branch selections for transcript resolution.
+ *
+ * Keys are fork-point parent message IDs and values are the selected child
+ * message IDs to follow at those forks.
+ *
+ * @category Types
+ */
 export type BranchSelections = Record<string, string>;
 
 /**
@@ -322,7 +330,7 @@ export interface ForkPoint {
   /** Message ID where the fork occurs (parent of diverging children) */
   readonly forkMessageId: string;
   /** Child message IDs at this fork, ordered by insertion order (`messages.ordinal`) */
-  readonly children: readonly string[];
+  readonly children: readonly [string, string, ...string[]];
   /** Child currently considered active for this fork point */
   readonly activeChildId: string;
 }

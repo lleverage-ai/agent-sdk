@@ -138,4 +138,51 @@ describe("branch-resolution", () => {
       activeChildId: "right",
     });
   });
+
+  it("buildThreadTree throws when a node references an unknown run status", () => {
+    const records = [
+      makeRecord("root", null, "run-root", 0),
+      makeRecord("left", "root", "run-left", 1),
+      makeRecord("right", "root", "run-right", 2),
+    ];
+
+    expect(() => buildThreadTree(records, statusMap([["run-root", "committed"]]))).toThrow(
+      "Missing run status",
+    );
+  });
+
+  it("applies selections for orphan parent fork points", () => {
+    const records = [
+      makeRecord("orphan-left", "missing-parent", "run-left", 0),
+      makeRecord("orphan-right", "missing-parent", "run-right", 1),
+      makeRecord("orphan-left-leaf", "orphan-left", "run-left-leaf", 2),
+      makeRecord("orphan-right-leaf", "orphan-right", "run-right-leaf", 3),
+    ];
+    const statuses = statusMap([
+      ["run-left", "committed"],
+      ["run-right", "committed"],
+      ["run-left-leaf", "committed"],
+      ["run-right-leaf", "committed"],
+    ]);
+
+    const transcript = resolveTranscript(records, statuses, {
+      selections: { "missing-parent": "orphan-left" },
+    });
+    expect(transcript.map((message) => message.id)).toEqual(["orphan-left", "orphan-left-leaf"]);
+  });
+
+  it("does not report root siblings as a fork point", () => {
+    const records = [
+      makeRecord("root-1", null, "run-1", 0),
+      makeRecord("root-2", null, "run-2", 1),
+    ];
+    const statuses = statusMap([
+      ["run-1", "committed"],
+      ["run-2", "committed"],
+    ]);
+
+    const tree = buildThreadTree(records, statuses);
+    expect(tree.nodes).toHaveLength(2);
+    expect(tree.forkPoints).toEqual([]);
+  });
 });

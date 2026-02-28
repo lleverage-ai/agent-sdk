@@ -42,6 +42,8 @@ export interface ILedgerStore {
    *
    * For "committed" status, messages are stored and any prior committed
    * runs at the same fork point are superseded atomically.
+   * Existing messages from superseded runs are preserved for `"all"` branch
+   * transcript views (non-destructive history retention).
    *
    * Idempotent: calling with the same runId and matching status returns
    * `{ committed: true, supersededRunIds: [] }` without side effects.

@@ -305,13 +305,21 @@ export class SQLiteLedgerStore implements ILedgerStore {
   }
 
   async getTranscript(options: GetTranscriptOptions): Promise<CanonicalMessage[]> {
-    const records = this.readThreadMessageRecords(options.threadId);
-    return resolveTranscript(records, this.getRunStatusByThread(options.threadId), options.branch);
+    return this.withReadTransaction(() => {
+      const records = this.readThreadMessageRecords(options.threadId);
+      return resolveTranscript(
+        records,
+        this.getRunStatusByThread(options.threadId),
+        options.branch,
+      );
+    });
   }
 
   async getThreadTree(threadId: string): Promise<ThreadTree> {
-    const records = this.readThreadMessageRecords(threadId);
-    return buildThreadTree(records, this.getRunStatusByThread(threadId));
+    return this.withReadTransaction(() => {
+      const records = this.readThreadMessageRecords(threadId);
+      return buildThreadTree(records, this.getRunStatusByThread(threadId));
+    });
   }
 
   async listStaleRuns(options: {
@@ -440,6 +448,24 @@ export class SQLiteLedgerStore implements ILedgerStore {
 
     flushMessage();
     return records;
+  }
+
+  private withReadTransaction<T>(readFn: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = readFn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch (rollbackError) {
+        this.logger.error("[SQLiteLedgerStore] Rollback failed after read transaction error", {
+          rollbackError,
+        });
+      }
+      throw error;
+    }
   }
 }
 

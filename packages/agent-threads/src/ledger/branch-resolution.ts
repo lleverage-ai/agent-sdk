@@ -60,6 +60,9 @@ function chooseActiveChild(
   return children[children.length - 1];
 }
 
+/**
+ * Validates and normalizes branch selection input.
+ */
 function parseSelections(branch: GetTranscriptOptions["branch"]): BranchSelections | null {
   if (!branch || branch === "active" || branch === "all") {
     return null;
@@ -102,6 +105,14 @@ function chooseChildForParent(
 
 /**
  * Resolves branch-aware transcript views from a thread message set.
+ *
+ * Resolution behavior:
+ * - `"all"` returns all messages in insertion order
+ * - `"active"` returns a single path that prefers committed children at forks
+ * - `{ selections }` applies explicit fork choices, then falls back to active
+ *
+ * Messages whose parent ID is missing from the thread are treated as orphan
+ * branch roots and are still traversed to preserve recoverable history.
  *
  * @internal
  */
@@ -169,6 +180,9 @@ export function resolveTranscript(
 /**
  * Builds lightweight thread tree metadata from thread message records.
  *
+ * Fork points are emitted only for non-root parent messages with at least
+ * two children (root siblings are not considered a fork point).
+ *
  * @internal
  */
 export function buildThreadTree(
@@ -198,9 +212,10 @@ export function buildThreadTree(
     const active = chooseActiveChild(children, runStatusById);
     if (!active) continue;
 
+    const childIds = children.map((child) => child.message.id) as [string, string, ...string[]];
     forkPointsWithOrder.push({
       forkMessageId: parentMessageId,
-      children: children.map((child) => child.message.id),
+      children: childIds,
       activeChildId: active.message.id,
       order: children[0]!.order,
     });
