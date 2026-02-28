@@ -23,6 +23,7 @@ export type {
   FinalizeNonCommittedRunOptions,
   FinalizeRunOptions,
   FinalizeResult,
+  BranchSelections,
   GetTranscriptOptions,
   ThreadTreeNode,
   ForkPoint,

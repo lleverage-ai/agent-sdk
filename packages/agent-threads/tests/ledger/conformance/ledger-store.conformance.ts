@@ -370,6 +370,20 @@ export function ledgerStoreConformanceTests(name: string, createStore: () => ILe
       expect(ids).toEqual([branch.rootId, branch.rightId, branch.rightLeafId]);
     });
 
+    it("getTranscript throws when branch selections contain non-string values", async () => {
+      const store = createStore();
+      await setupBranchedThread(store);
+
+      await expect(
+        store.getTranscript({
+          threadId: "t-branch",
+          branch: { selections: { root: 123 } } as unknown as {
+            selections: Record<string, string>;
+          },
+        }),
+      ).rejects.toThrow("selection value");
+    });
+
     // --- getThreadTree ---
 
     it("getThreadTree returns fork points with active child metadata", async () => {

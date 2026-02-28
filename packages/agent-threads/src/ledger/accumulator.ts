@@ -271,7 +271,8 @@ export function accumulateEvents(
   options?: { forkFromMessageId?: string },
 ): CanonicalMessage[] {
   const config = createAccumulatorProjectorConfig(idGenerator);
-  if (options?.forkFromMessageId !== undefined) {
+  // Empty fork IDs are treated as absent to avoid creating dangling parent links.
+  if (options?.forkFromMessageId) {
     config.initialState.lastMessageId = options.forkFromMessageId;
   }
   const projector = new Projector(config);

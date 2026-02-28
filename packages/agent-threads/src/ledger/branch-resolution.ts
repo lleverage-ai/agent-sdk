@@ -1,4 +1,5 @@
 import type {
+  BranchSelections,
   CanonicalMessage,
   ForkPoint,
   GetTranscriptOptions,
@@ -18,16 +19,12 @@ export interface ThreadMessageRecord {
   order: number;
 }
 
-function toParentKey(parentMessageId: string | null): string | null {
-  return parentMessageId;
-}
-
 function buildChildrenByParent(
   records: ThreadMessageRecord[],
 ): Map<string | null, ThreadMessageRecord[]> {
   const byParent = new Map<string | null, ThreadMessageRecord[]>();
   for (const record of records) {
-    const key = toParentKey(record.message.parentMessageId);
+    const key = record.message.parentMessageId;
     const children = byParent.get(key) ?? [];
     children.push(record);
     byParent.set(key, children);
@@ -36,9 +33,17 @@ function buildChildrenByParent(
 }
 
 function getRunStatus(runStatusById: ReadonlyMap<string, RunStatus>, runId: string): RunStatus {
-  return runStatusById.get(runId) ?? "committed";
+  const status = runStatusById.get(runId);
+  if (!status) {
+    throw new Error(`Missing run status for runId: ${runId}`);
+  }
+  return status;
 }
 
+/**
+ * Active-branch heuristic: prefer the most recently inserted committed child.
+ * If none are committed, fall back to the most recently inserted child.
+ */
 function chooseActiveChild(
   children: ThreadMessageRecord[],
   runStatusById: ReadonlyMap<string, RunStatus>,
@@ -55,7 +60,7 @@ function chooseActiveChild(
   return children[children.length - 1];
 }
 
-function parseSelections(branch: GetTranscriptOptions["branch"]): Record<string, string> | null {
+function parseSelections(branch: GetTranscriptOptions["branch"]): BranchSelections | null {
   if (!branch || branch === "active" || branch === "all") {
     return null;
   }
@@ -65,11 +70,14 @@ function parseSelections(branch: GetTranscriptOptions["branch"]): Record<string,
     throw new Error("Invalid branch selector: expected { selections: Record<string, string> }");
   }
 
-  const selections: Record<string, string> = {};
+  const selections: BranchSelections = {};
   for (const [forkMessageId, childMessageId] of Object.entries(raw as Record<string, unknown>)) {
-    if (typeof childMessageId === "string") {
-      selections[forkMessageId] = childMessageId;
+    if (typeof childMessageId !== "string") {
+      throw new Error(
+        `Invalid branch selector: selection value for "${forkMessageId}" must be a string`,
+      );
     }
+    selections[forkMessageId] = childMessageId;
   }
   return selections;
 }
@@ -78,13 +86,15 @@ function chooseChildForParent(
   parentMessageId: string,
   children: ThreadMessageRecord[],
   runStatusById: ReadonlyMap<string, RunStatus>,
-  selections: Record<string, string> | null,
+  selections: BranchSelections | null,
 ): ThreadMessageRecord | undefined {
   if (selections) {
     const selectedChildId = selections[parentMessageId];
     if (selectedChildId) {
       const explicit = children.find((child) => child.message.id === selectedChildId);
       if (explicit) return explicit;
+      // Deliberate fallback contract: invalid/missing child selections at a fork
+      // fall back to active-branch resolution instead of hard-failing.
     }
   }
   return chooseActiveChild(children, runStatusById);
@@ -121,7 +131,7 @@ export function resolveTranscript(
       result.push(current);
       visited.add(current.message.id);
 
-      const children = childrenByParent.get(toParentKey(current.message.id)) ?? [];
+      const children = childrenByParent.get(current.message.id) ?? [];
       if (children.length === 0) break;
 
       const next = chooseChildForParent(current.message.id, children, runStatusById, selections);
@@ -138,15 +148,15 @@ export function resolveTranscript(
   const orphanParentIds = [...childrenByParent.keys()]
     .filter((parentId): parentId is string => parentId !== null && !messageById.has(parentId))
     .sort((a, b) => {
-      const aChildren = childrenByParent.get(toParentKey(a));
-      const bChildren = childrenByParent.get(toParentKey(b));
+      const aChildren = childrenByParent.get(a);
+      const bChildren = childrenByParent.get(b);
       const aOrder = aChildren?.[0]?.order ?? Number.MAX_SAFE_INTEGER;
       const bOrder = bChildren?.[0]?.order ?? Number.MAX_SAFE_INTEGER;
       return aOrder - bOrder;
     });
 
   for (const orphanParentId of orphanParentIds) {
-    const children = childrenByParent.get(toParentKey(orphanParentId)) ?? [];
+    const children = childrenByParent.get(orphanParentId) ?? [];
     const start = chooseChildForParent(orphanParentId, children, runStatusById, selections);
     if (start) {
       walkFrom(start);
