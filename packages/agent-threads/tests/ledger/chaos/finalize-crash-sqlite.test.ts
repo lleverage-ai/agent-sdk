@@ -291,7 +291,7 @@ describe("Finalize crash SQLite transaction atomicity", () => {
     // Messages written correctly:
     // History is preserved, so prior branch message msg-50 remains and
     // the retried run adds msg-10 and msg-11.
-    const transcript = await store.getTranscript({ threadId: "t1" });
+    const transcript = await store.getTranscript({ threadId: "t1", branch: "all" });
     expect(transcript).toHaveLength(6);
 
     // committedAtFork should be superseded

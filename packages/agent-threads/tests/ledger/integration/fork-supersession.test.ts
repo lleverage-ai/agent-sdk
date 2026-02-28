@@ -92,7 +92,7 @@ describe("Integration: fork + supersession", () => {
     const active = await ledgerStore.getRun(run2.runId);
     expect(active!.status).toBe("committed");
 
-    const transcript = await ledgerStore.getTranscript({ threadId: "t1" });
+    const transcript = await ledgerStore.getTranscript({ threadId: "t1", branch: "all" });
     const ids = transcript.map((message) => message.id);
     expect(ids).toContain("m1");
     expect(ids).toContain("m2");

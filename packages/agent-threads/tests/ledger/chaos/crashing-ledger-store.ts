@@ -9,6 +9,7 @@ import type {
   RecoverRunOptions,
   RunRecord,
   StaleRunInfo,
+  ThreadTree,
 } from "../../../src/ledger/types.js";
 
 export type CrashPoint = "before-finalize" | "after-commit";
@@ -83,6 +84,10 @@ export class CrashingLedgerStore implements ILedgerStore {
 
   getTranscript(options: GetTranscriptOptions): Promise<CanonicalMessage[]> {
     return this.inner.getTranscript(options);
+  }
+
+  getThreadTree(threadId: string): Promise<ThreadTree> {
+    return this.inner.getThreadTree(threadId);
   }
 
   listStaleRuns(options: { threadId?: string; olderThanMs: number }): Promise<StaleRunInfo[]> {

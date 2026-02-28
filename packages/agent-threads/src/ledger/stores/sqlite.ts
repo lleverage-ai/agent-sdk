@@ -1,7 +1,11 @@
 import type { SQLiteDatabase, SQLiteStatement } from "../../_shared/sqlite-types.js";
 import type { Logger } from "../../_shared/types.js";
 import { defaultLogger } from "../../_shared/types.js";
-
+import {
+  buildThreadTree,
+  resolveTranscript,
+  type ThreadMessageRecord,
+} from "../branch-resolution.js";
 import type {
   BeginRunOptions,
   CanonicalMessage,
@@ -13,8 +17,10 @@ import type {
   RecoverResult,
   RecoverRunOptions,
   RunRecord,
+  RunStatus,
   StaleRunInfo,
   TerminalRunStatus,
+  ThreadTree,
 } from "../types.js";
 import { isActiveRunStatus, isTerminalRunStatus } from "../types.js";
 import { ulid } from "../ulid.js";
@@ -56,6 +62,7 @@ export class SQLiteLedgerStore implements ILedgerStore {
   private readonly stmtDeleteThreadRuns: SQLiteStatement;
   // Cached statements for getTranscript, listStaleRuns, recoverRun
   private readonly stmtGetTranscript: SQLiteStatement;
+  private readonly stmtListRunStatusesByThread: SQLiteStatement;
   private readonly stmtListStaleRunsByThread: SQLiteStatement;
   private readonly stmtListStaleRunsAll: SQLiteStatement;
   private readonly stmtRecoverRun: SQLiteStatement;
@@ -147,13 +154,16 @@ export class SQLiteLedgerStore implements ILedgerStore {
     this.stmtDeleteThreadRuns = this.db.prepare("DELETE FROM runs WHERE thread_id = ?");
     this.stmtGetTranscript = this.db.prepare(
       [
-        "SELECT m.id, m.parent_message_id, m.role, m.created_at, m.metadata,",
+        "SELECT m.id, m.run_id, m.ordinal, m.parent_message_id, m.role, m.created_at, m.metadata,",
         "       p.data AS part_data, p.ordinal AS part_ordinal",
         "FROM messages m",
         "LEFT JOIN parts p ON p.message_id = m.id",
         "WHERE m.thread_id = ?",
         "ORDER BY m.ordinal ASC, p.ordinal ASC",
       ].join("\n"),
+    );
+    this.stmtListRunStatusesByThread = this.db.prepare(
+      "SELECT run_id, status FROM runs WHERE thread_id = ?",
     );
     this.stmtListStaleRunsByThread = this.db.prepare(
       "SELECT * FROM runs WHERE thread_id = ? AND (status = ? OR status = ?) ORDER BY created_at ASC",
@@ -295,61 +305,13 @@ export class SQLiteLedgerStore implements ILedgerStore {
   }
 
   async getTranscript(options: GetTranscriptOptions): Promise<CanonicalMessage[]> {
-    const branch = options.branch ?? "active";
-    if (typeof branch === "object") {
-      throw new Error("Branch path resolution is not yet implemented");
-    }
+    const records = this.readThreadMessageRecords(options.threadId);
+    return resolveTranscript(records, this.getRunStatusByThread(options.threadId), options.branch);
+  }
 
-    const rows = this.stmtGetTranscript.all(options.threadId);
-
-    const messages: CanonicalMessage[] = [];
-    let currentMsgId: string | null = null;
-    let parts: CanonicalPart[] = [];
-    let currentRow: Record<string, unknown> | null = null;
-
-    const flushMessage = () => {
-      if (!currentRow || !currentMsgId) return;
-      const metadata = parseCanonicalMessageMetadata(
-        currentRow["metadata"] as string,
-        currentMsgId,
-      );
-      messages.push({
-        id: currentMsgId,
-        parentMessageId: (currentRow["parent_message_id"] as string) ?? null,
-        role: currentRow["role"] as CanonicalMessage["role"],
-        parts,
-        createdAt: currentRow["created_at"] as string,
-        metadata,
-      });
-    };
-
-    for (const row of rows) {
-      const msgId = row["id"] as string;
-
-      if (msgId !== currentMsgId) {
-        flushMessage();
-        currentMsgId = msgId;
-        currentRow = row;
-        parts = [];
-      }
-
-      // LEFT JOIN may produce null part_data for messages with no parts
-      if (row["part_data"] != null) {
-        const raw = row["part_data"] as string;
-        try {
-          parts.push(JSON.parse(raw) as CanonicalPart);
-        } catch (error) {
-          throw new Error(
-            `Failed to parse part JSON for message ${msgId}: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-        }
-      }
-    }
-
-    flushMessage();
-    return messages;
+  async getThreadTree(threadId: string): Promise<ThreadTree> {
+    const records = this.readThreadMessageRecords(threadId);
+    return buildThreadTree(records, this.getRunStatusByThread(threadId));
   }
 
   async listStaleRuns(options: {
@@ -412,6 +374,72 @@ export class SQLiteLedgerStore implements ILedgerStore {
       }
       throw error;
     }
+  }
+
+  private getRunStatusByThread(threadId: string): Map<string, RunStatus> {
+    const rows = this.stmtListRunStatusesByThread.all(threadId);
+    const runStatusById = new Map<string, RunStatus>();
+    for (const row of rows) {
+      runStatusById.set(row["run_id"] as string, row["status"] as RunStatus);
+    }
+    return runStatusById;
+  }
+
+  private readThreadMessageRecords(threadId: string): ThreadMessageRecord[] {
+    const rows = this.stmtGetTranscript.all(threadId);
+
+    const records: ThreadMessageRecord[] = [];
+    let currentMsgId: string | null = null;
+    let parts: CanonicalPart[] = [];
+    let currentRow: Record<string, unknown> | null = null;
+
+    const flushMessage = () => {
+      if (!currentRow || !currentMsgId) return;
+      const metadata = parseCanonicalMessageMetadata(
+        currentRow["metadata"] as string,
+        currentMsgId,
+      );
+      records.push({
+        message: {
+          id: currentMsgId,
+          parentMessageId: (currentRow["parent_message_id"] as string) ?? null,
+          role: currentRow["role"] as CanonicalMessage["role"],
+          parts,
+          createdAt: currentRow["created_at"] as string,
+          metadata,
+        },
+        runId: currentRow["run_id"] as string,
+        order: currentRow["ordinal"] as number,
+      });
+    };
+
+    for (const row of rows) {
+      const msgId = row["id"] as string;
+
+      if (msgId !== currentMsgId) {
+        flushMessage();
+        currentMsgId = msgId;
+        currentRow = row;
+        parts = [];
+      }
+
+      // LEFT JOIN may produce null part_data for messages with no parts
+      if (row["part_data"] != null) {
+        const raw = row["part_data"] as string;
+        try {
+          parts.push(JSON.parse(raw) as CanonicalPart);
+        } catch (error) {
+          throw new Error(
+            `Failed to parse part JSON for message ${msgId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+    }
+
+    flushMessage();
+    return records;
   }
 }
 

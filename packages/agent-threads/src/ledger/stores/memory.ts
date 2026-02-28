@@ -1,3 +1,8 @@
+import {
+  buildThreadTree,
+  resolveTranscript,
+  type ThreadMessageRecord,
+} from "../branch-resolution.js";
 import type {
   BeginRunOptions,
   CanonicalMessage,
@@ -7,12 +12,19 @@ import type {
   RecoverResult,
   RecoverRunOptions,
   RunRecord,
+  RunStatus,
   StaleRunInfo,
   TerminalRunStatus,
+  ThreadTree,
 } from "../types.js";
 import { isActiveRunStatus, isTerminalRunStatus } from "../types.js";
 import { ulid } from "../ulid.js";
 import type { ILedgerStore } from "./ledger-store.js";
+
+interface StoredThreadMessage {
+  message: CanonicalMessage;
+  runId: string;
+}
 
 /**
  * In-memory ledger store backed by Maps.
@@ -25,7 +37,7 @@ import type { ILedgerStore } from "./ledger-store.js";
 export class InMemoryLedgerStore implements ILedgerStore {
   private runs = new Map<string, RunRecord>();
   private runsByThread = new Map<string, string[]>();
-  private messages = new Map<string, CanonicalMessage[]>();
+  private messages = new Map<string, StoredThreadMessage[]>();
 
   async beginRun(options: BeginRunOptions): Promise<RunRecord> {
     const runId = ulid();
@@ -96,7 +108,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
       }
 
       const current = this.messages.get(run.threadId) ?? [];
-      current.push(...options.messages);
+      current.push(...options.messages.map((message) => ({ message, runId: run.runId })));
       this.messages.set(run.threadId, current);
     }
 
@@ -126,16 +138,13 @@ export class InMemoryLedgerStore implements ILedgerStore {
   }
 
   async getTranscript(options: GetTranscriptOptions): Promise<CanonicalMessage[]> {
-    const messages = this.messages.get(options.threadId) ?? [];
-    const branch = options.branch ?? "active";
+    const records = this.getThreadMessageRecords(options.threadId);
+    return resolveTranscript(records, this.getRunStatusByThread(options.threadId), options.branch);
+  }
 
-    if (typeof branch === "object") {
-      throw new Error("Branch path resolution is not yet implemented");
-    }
-
-    // "active" and "all" currently return the same append-only committed
-    // messages; branch-aware resolution is not yet implemented.
-    return [...messages];
+  async getThreadTree(threadId: string): Promise<ThreadTree> {
+    const records = this.getThreadMessageRecords(threadId);
+    return buildThreadTree(records, this.getRunStatusByThread(threadId));
   }
 
   async listStaleRuns(options: {
@@ -187,5 +196,26 @@ export class InMemoryLedgerStore implements ILedgerStore {
     }
     this.runsByThread.delete(threadId);
     this.messages.delete(threadId);
+  }
+
+  private getRunStatusByThread(threadId: string): Map<string, RunStatus> {
+    const runStatusById = new Map<string, RunStatus>();
+    const runIds = this.runsByThread.get(threadId) ?? [];
+    for (const runId of runIds) {
+      const run = this.runs.get(runId);
+      if (run) {
+        runStatusById.set(runId, run.status);
+      }
+    }
+    return runStatusById;
+  }
+
+  private getThreadMessageRecords(threadId: string): ThreadMessageRecord[] {
+    const messages = this.messages.get(threadId) ?? [];
+    return messages.map((entry, index) => ({
+      message: entry.message,
+      runId: entry.runId,
+      order: index,
+    }));
   }
 }

@@ -280,7 +280,51 @@ export interface GetTranscriptOptions {
   /** Thread to retrieve from */
   threadId: string;
   /** Branch resolution strategy */
-  branch?: "active" | "all" | { path: string[] };
+  branch?: "active" | "all" | { selections: Record<string, string> };
+}
+
+/**
+ * Lightweight message node metadata for thread tree navigation.
+ *
+ * @category Types
+ */
+export interface ThreadTreeNode {
+  /** Message identifier */
+  messageId: string;
+  /** Parent message identifier (or null for roots) */
+  parentMessageId: string | null;
+  /** Author role */
+  role: CanonicalMessage["role"];
+  /** Run that produced this message */
+  runId: string;
+  /** Current lifecycle status of the producing run */
+  runStatus: RunStatus;
+}
+
+/**
+ * Metadata describing a branch fork point.
+ *
+ * @category Types
+ */
+export interface ForkPoint {
+  /** Message ID where the fork occurs (parent of diverging children) */
+  forkMessageId: string;
+  /** Child message IDs at this fork, ordered by creation/insertion time */
+  children: string[];
+  /** Child currently considered active for this fork point */
+  activeChildId: string;
+}
+
+/**
+ * Thread tree metadata for branch navigation UIs.
+ *
+ * @category Types
+ */
+export interface ThreadTree {
+  /** All message nodes in the thread */
+  nodes: ThreadTreeNode[];
+  /** Fork points with active branch selection */
+  forkPoints: ForkPoint[];
 }
 
 // ---------------------------------------------------------------------------
