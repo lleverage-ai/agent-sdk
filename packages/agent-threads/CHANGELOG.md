@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-02-28
+
+### Added
+
+- Accumulator reducer now handles `user-message` stream events by committing any in-progress assistant output and appending a canonical `role: "user"` message
+
 ## [0.1.0-alpha.2] - 2026-02-28
 
 ### Added
@@ -36,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ledger layer: canonical message schema, `RunManager`, accumulator, reconciliation, `FullContextBuilder`, ledger stores (`InMemoryLedgerStore`, `SQLiteLedgerStore`)
 - Subpath exports for granular imports: `./stream`, `./ledger`, `./server`, `./client`, `./stores/*`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.2...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.3...HEAD
+[0.1.0-alpha.3]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.2...agent-threads@0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.1...agent-threads@0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/lleverage-ai/agent-sdk/releases/tag/agent-threads@0.1.0-alpha.1

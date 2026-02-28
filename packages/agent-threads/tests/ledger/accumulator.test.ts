@@ -255,5 +255,32 @@ describe("Accumulator", () => {
       const messages = accumulateEvents(storedEvents, idGen);
       expect(messages[0]!.metadata).toHaveProperty("schemaVersion", 1);
     });
+
+    it("handles user-message events as canonical user messages", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        { kind: "text-delta", payload: { delta: "Assistant draft" } },
+        { kind: "user-message", payload: { content: "User follow-up" } },
+        { kind: "step-started", payload: { stepIndex: 1 } },
+        { kind: "text-delta", payload: { delta: "Assistant reply" } },
+        { kind: "step-finished", payload: { stepIndex: 1, finishReason: "stop" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      expect(messages).toHaveLength(3);
+
+      expect(messages[0]!.role).toBe("assistant");
+      expect(messages[0]!.parentMessageId).toBeNull();
+      expect(messages[0]!.parts).toEqual([{ type: "text", text: "Assistant draft" }]);
+
+      expect(messages[1]!.role).toBe("user");
+      expect(messages[1]!.parentMessageId).toBe("msg-1");
+      expect(messages[1]!.parts).toEqual([{ type: "text", text: "User follow-up" }]);
+
+      expect(messages[2]!.role).toBe("assistant");
+      expect(messages[2]!.parentMessageId).toBe("msg-2");
+      expect(messages[2]!.parts).toEqual([{ type: "text", text: "Assistant reply" }]);
+    });
   });
 });
