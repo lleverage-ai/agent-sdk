@@ -4,7 +4,6 @@ import { CrashSimulationError } from "./crashing-ledger-store.js";
 
 export type SQLCrashPoint =
   | "after-begin"
-  | "after-delete-messages"
   | "after-supersede"
   | "after-insert-messages"
   | "after-update-run"
@@ -75,11 +74,7 @@ export class CrashingSQLiteDatabase implements SQLiteDatabase {
         if (!wrapper.inTransaction) return;
 
         // Track DML operations for crash point detection
-        if (/DELETE FROM/i.test(sql)) {
-          if (/DELETE FROM messages/i.test(sql)) {
-            wrapper.maybeCrash("after-delete-messages");
-          }
-        } else if (/UPDATE/i.test(sql)) {
+        if (/UPDATE/i.test(sql)) {
           if (/UPDATE runs/i.test(sql) && String(params[0]) === "superseded") {
             wrapper.maybeCrash("after-supersede");
           }

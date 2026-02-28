@@ -73,6 +73,39 @@ describe("RunManager", () => {
     expect(transcript[0]!.parts[0]).toEqual({ type: "text", text: "Hello, world!" });
   });
 
+  it("finalizeRun links forked run output to forkFromMessageId", async () => {
+    const { manager, ledgerStore } = createTestSetup();
+
+    const baseRun = await manager.beginRun({ threadId: "t1" });
+    await manager.appendEvents(baseRun.runId, [
+      { kind: "step-started", payload: { stepIndex: 0 } },
+      { kind: "text-delta", payload: { delta: "Base response" } },
+      { kind: "step-finished", payload: { stepIndex: 0, finishReason: "stop" } },
+    ]);
+    await manager.finalizeRun(baseRun.runId, "committed");
+
+    const baseTranscript = await ledgerStore.getTranscript({ threadId: "t1" });
+    const forkFromMessageId = baseTranscript[0]!.id;
+
+    const forkedRun = await manager.beginRun({ threadId: "t1", forkFromMessageId });
+    await manager.appendEvents(forkedRun.runId, [
+      { kind: "step-started", payload: { stepIndex: 0 } },
+      { kind: "text-delta", payload: { delta: "Forked response" } },
+      { kind: "step-finished", payload: { stepIndex: 0, finishReason: "stop" } },
+    ]);
+    await manager.finalizeRun(forkedRun.runId, "committed");
+
+    const transcript = await ledgerStore.getTranscript({ threadId: "t1" });
+    const forkedMessage = transcript.find(
+      (message) =>
+        message.role === "assistant" &&
+        message.parts.some((part) => part.type === "text" && part.text === "Forked response"),
+    );
+
+    expect(forkedMessage).toBeDefined();
+    expect(forkedMessage!.parentMessageId).toBe(forkFromMessageId);
+  });
+
   it("finalizeRun with failed status does not accumulate messages", async () => {
     const { manager, ledgerStore } = createTestSetup();
     const run = await manager.beginRun({ threadId: "t1" });

@@ -78,16 +78,7 @@ export class InMemoryLedgerStore implements ILedgerStore {
 
     // Handle supersession for committed runs
     if (options.status === "committed") {
-      // Store messages in the thread
-      const existing = this.messages.get(run.threadId) ?? [];
-
       if (run.forkFromMessageId) {
-        // Remove messages after the fork point from prior committed runs
-        const forkIdx = existing.findIndex((m) => m.id === run.forkFromMessageId);
-        if (forkIdx >= 0) {
-          this.messages.set(run.threadId, existing.slice(0, forkIdx + 1));
-        }
-
         // Supersede other committed runs at the same fork point
         const threadRuns = this.runsByThread.get(run.threadId) ?? [];
         for (const rid of threadRuns) {
@@ -142,8 +133,8 @@ export class InMemoryLedgerStore implements ILedgerStore {
       throw new Error("Branch path resolution is not yet implemented");
     }
 
-    // "active" and "all" currently return the same result — the active
-    // transcript already reflects supersession from finalizeRun().
+    // "active" and "all" currently return the same append-only committed
+    // messages; branch-aware resolution is not yet implemented.
     return [...messages];
   }
 

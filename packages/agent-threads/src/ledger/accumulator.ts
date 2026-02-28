@@ -259,6 +259,8 @@ export function createAccumulatorProjector(
  *
  * @param events - Stored stream events to reduce
  * @param idGenerator - Optional custom ID generator
+ * @param options - Optional fork context; when `forkFromMessageId` is provided,
+ *   the first accumulated message is linked to that parent
  * @returns The resulting canonical messages
  *
  * @category Accumulator
@@ -266,8 +268,13 @@ export function createAccumulatorProjector(
 export function accumulateEvents(
   events: StoredEvent<StreamEvent>[],
   idGenerator?: IdGenerator,
+  options?: { forkFromMessageId?: string },
 ): CanonicalMessage[] {
-  const projector = createAccumulatorProjector(idGenerator);
+  const config = createAccumulatorProjectorConfig(idGenerator);
+  if (options?.forkFromMessageId !== undefined) {
+    config.initialState.lastMessageId = options.forkFromMessageId;
+  }
+  const projector = new Projector(config);
   projector.apply(events);
   // Flush any in-progress message (getState() returns a clone, so mutation is safe)
   const state = projector.getState();

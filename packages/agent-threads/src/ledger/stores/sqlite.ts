@@ -47,9 +47,6 @@ export class SQLiteLedgerStore implements ILedgerStore {
   private readonly stmtInsertMsg: SQLiteStatement;
   private readonly stmtInsertPart: SQLiteStatement;
   // Cached statements for finalizeRun transaction
-  private readonly stmtGetForkOrdinal: SQLiteStatement;
-  private readonly stmtDeletePartsAfterFork: SQLiteStatement;
-  private readonly stmtDeleteMessagesAfterFork: SQLiteStatement;
   private readonly stmtFindSupersedableRuns: SQLiteStatement;
   private readonly stmtSupersedeRun: SQLiteStatement;
   private readonly stmtMaxOrdinal: SQLiteStatement;
@@ -112,6 +109,8 @@ export class SQLiteLedgerStore implements ILedgerStore {
     this.db.exec(
       "CREATE INDEX IF NOT EXISTS idx_messages_thread_id ON messages (thread_id, ordinal)",
     );
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages (parent_message_id)");
+    this.db.exec("CREATE INDEX IF NOT EXISTS idx_messages_run_id ON messages (run_id)");
     this.db.exec("CREATE INDEX IF NOT EXISTS idx_parts_message_id ON parts (message_id, ordinal)");
 
     // Cache prepared statements for hot-path operations
@@ -131,15 +130,6 @@ export class SQLiteLedgerStore implements ILedgerStore {
     );
     this.stmtInsertPart = this.db.prepare(
       "INSERT INTO parts (message_id, type, data, ordinal) VALUES (?, ?, ?, ?)",
-    );
-    this.stmtGetForkOrdinal = this.db.prepare(
-      "SELECT ordinal FROM messages WHERE thread_id = ? AND id = ?",
-    );
-    this.stmtDeletePartsAfterFork = this.db.prepare(
-      "DELETE FROM parts WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ? AND ordinal > ?)",
-    );
-    this.stmtDeleteMessagesAfterFork = this.db.prepare(
-      "DELETE FROM messages WHERE thread_id = ? AND ordinal > ?",
     );
     this.stmtFindSupersedableRuns = this.db.prepare(
       "SELECT run_id FROM runs WHERE thread_id = ? AND run_id != ? AND status = ? AND fork_from_message_id = ?",
@@ -237,16 +227,6 @@ export class SQLiteLedgerStore implements ILedgerStore {
       if (options.status === "committed") {
         // Handle fork-based supersession
         if (run.forkFromMessageId) {
-          // Remove messages after fork point
-          const forkedMessages = this.stmtGetForkOrdinal.get(run.threadId, run.forkFromMessageId);
-
-          if (forkedMessages) {
-            const forkOrdinal = forkedMessages["ordinal"] as number;
-            // Delete parts of messages after fork point (single subquery)
-            this.stmtDeletePartsAfterFork.run(run.threadId, forkOrdinal);
-            this.stmtDeleteMessagesAfterFork.run(run.threadId, forkOrdinal);
-          }
-
           // Supersede other committed runs at same fork point
           const otherRuns = this.stmtFindSupersedableRuns.all(
             run.threadId,

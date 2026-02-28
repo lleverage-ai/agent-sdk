@@ -174,6 +174,31 @@ export function ledgerStoreConformanceTests(name: string, createStore: () => ILe
       expect(superseded!.status).toBe("superseded");
     });
 
+    it("finalizeRun on fork preserves previously committed branch messages", async () => {
+      const store = createStore();
+
+      const r1 = await store.beginRun({ threadId: "t1", forkFromMessageId: "msg-root" });
+      await store.activateRun(r1.runId);
+      await store.finalizeRun({
+        runId: r1.runId,
+        status: "committed",
+        messages: [makeMessage("m1", "msg-root", "assistant")],
+      });
+
+      const r2 = await store.beginRun({ threadId: "t1", forkFromMessageId: "msg-root" });
+      await store.activateRun(r2.runId);
+      await store.finalizeRun({
+        runId: r2.runId,
+        status: "committed",
+        messages: [makeMessage("m2", "msg-root", "assistant")],
+      });
+
+      const transcript = await store.getTranscript({ threadId: "t1" });
+      const ids = transcript.map((message) => message.id);
+      expect(ids).toContain("m1");
+      expect(ids).toContain("m2");
+    });
+
     it("finalizeRun throws for non-existent run", async () => {
       const store = createStore();
       await expect(store.finalizeRun({ runId: "nonexistent", status: "failed" })).rejects.toThrow(

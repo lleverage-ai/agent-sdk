@@ -17,6 +17,8 @@ describe("SQLiteLedgerStore", () => {
     expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS runs"))).toBe(true);
     expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS messages"))).toBe(true);
     expect(execCalls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS parts"))).toBe(true);
+    expect(execCalls.some((sql) => sql.includes("idx_messages_parent"))).toBe(true);
+    expect(execCalls.some((sql) => sql.includes("idx_messages_run_id"))).toBe(true);
   });
 
   it("persists message parts as JSON and round-trips correctly", async () => {

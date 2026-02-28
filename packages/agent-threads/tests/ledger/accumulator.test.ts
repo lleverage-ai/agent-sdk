@@ -205,6 +205,19 @@ describe("Accumulator", () => {
       expect(messages[2]!.parentMessageId).toBe("msg-2");
     });
 
+    it("links first message to forkFromMessageId when provided", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        { kind: "text-delta", payload: { delta: "Forked reply" } },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "stop" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen, { forkFromMessageId: "msg-root" });
+      expect(messages).toHaveLength(1);
+      expect(messages[0]!.parentMessageId).toBe("msg-root");
+    });
+
     it("coalesces consecutive text-deltas into single TextPart", () => {
       const idGen = createCounterIdGenerator("msg");
       const storedEvents = wrapEvents([

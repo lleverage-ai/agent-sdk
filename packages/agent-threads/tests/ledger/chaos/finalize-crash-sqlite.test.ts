@@ -76,32 +76,6 @@ describe("Finalize crash SQLite transaction atomicity", () => {
     expect(transcript).toHaveLength(0);
   });
 
-  it("crash after fork message pruning — ROLLBACK restores pruned messages", async () => {
-    const mockDb = new MockSQLiteDatabase();
-    const crashDb = new CrashingSQLiteDatabase(mockDb);
-    const store = new SQLiteLedgerStore(crashDb);
-
-    const { forkRun } = await setupWithForkPoint(store);
-
-    // Messages: msg-1, msg-2, msg-3 (from initial), msg-50 (from committedAtFork)
-    const beforeTranscript = await store.getTranscript({ threadId: "t1" });
-    expect(beforeTranscript).toHaveLength(4);
-
-    crashDb.arm("after-delete-messages");
-
-    await expect(
-      store.finalizeRun({
-        runId: forkRun.runId,
-        status: "committed",
-        messages: createMessages(2, 10),
-      }),
-    ).rejects.toThrow(CrashSimulationError);
-
-    // ROLLBACK should restore the deleted messages
-    const afterTranscript = await store.getTranscript({ threadId: "t1" });
-    expect(afterTranscript).toHaveLength(4);
-  });
-
   it("crash after supersession — ROLLBACK restores superseded run to committed", async () => {
     const mockDb = new MockSQLiteDatabase();
     const crashDb = new CrashingSQLiteDatabase(mockDb);
@@ -196,7 +170,6 @@ describe("Finalize crash SQLite transaction atomicity", () => {
 
   it.each([
     "after-begin",
-    "after-delete-messages",
     "after-supersede",
     "after-insert-messages",
     "after-update-run",
@@ -205,8 +178,8 @@ describe("Finalize crash SQLite transaction atomicity", () => {
     const crashDb = new CrashingSQLiteDatabase(mockDb);
     const store = new SQLiteLedgerStore(crashDb);
 
-    // Need a fork scenario for delete/supersede crash points
-    if (crashPoint === "after-delete-messages" || crashPoint === "after-supersede") {
+    // Need a fork scenario for supersede crash point
+    if (crashPoint === "after-supersede") {
       const { forkRun } = await setupWithForkPoint(store);
       crashDb.arm(crashPoint);
 
@@ -245,7 +218,6 @@ describe("Finalize crash SQLite transaction atomicity", () => {
 
   it.each([
     "after-begin",
-    "after-delete-messages",
     "after-supersede",
     "after-insert-messages",
     "after-update-run",
@@ -256,7 +228,7 @@ describe("Finalize crash SQLite transaction atomicity", () => {
 
     let runId: string;
 
-    if (crashPoint === "after-delete-messages" || crashPoint === "after-supersede") {
+    if (crashPoint === "after-supersede") {
       const { forkRun } = await setupWithForkPoint(store);
       runId = forkRun.runId;
     } else {
@@ -317,10 +289,10 @@ describe("Finalize crash SQLite transaction atomicity", () => {
     expect(result.committed).toBe(true);
 
     // Messages written correctly:
-    // Fork prunes messages after msg-3 (removes msg-50), adds msg-10 and msg-11
-    // Result: msg-1, msg-2, msg-3, msg-10, msg-11
+    // History is preserved, so prior branch message msg-50 remains and
+    // the retried run adds msg-10 and msg-11.
     const transcript = await store.getTranscript({ threadId: "t1" });
-    expect(transcript).toHaveLength(5);
+    expect(transcript).toHaveLength(6);
 
     // committedAtFork should be superseded
     const supersededRun = await store.getRun(committedAtFork.runId);
