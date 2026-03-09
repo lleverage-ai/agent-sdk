@@ -49,6 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunManager.finalizeRun()` now passes `forkFromMessageId` into accumulation so the first committed message of a forked run is correctly linked via `parentMessageId`
 - Added and fixed regression coverage for replay failures, websocket error cleanup, broadcast overflow behavior, projector reset mutability, terminal run append rejection, branched regeneration fixtures, and accumulator text-delta edge cases
 - Corrected architecture docs with current API/runtime behavior (`run-lifecycle`, `stream-ledger-contract`, `canonical-schema`, `compaction-retention`, and `AGENTS.md` websocket descriptions)
+- Deferred streaming plugin tools now receive request-local streaming context when invoked via `call_tool`, preventing concurrent `streamDataResponse()` calls from writing to the wrong UI stream
+- `search_tools` auto-threshold creation now only counts plugin tools that are actually indexed/discoverable via MCP, so eager streaming-only plugins no longer advertise an empty `search_tools` surface
 
 ## [0.0.13] - 2026-02-25
 
