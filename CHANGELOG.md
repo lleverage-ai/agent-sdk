@@ -49,7 +49,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunManager.finalizeRun()` now passes `forkFromMessageId` into accumulation so the first committed message of a forked run is correctly linked via `parentMessageId`
 - Added and fixed regression coverage for replay failures, websocket error cleanup, broadcast overflow behavior, projector reset mutability, terminal run append rejection, branched regeneration fixtures, and accumulator text-delta edge cases
 - Corrected architecture docs with current API/runtime behavior (`run-lifecycle`, `stream-ledger-contract`, `canonical-schema`, `compaction-retention`, and `AGENTS.md` websocket descriptions)
-- Deferred streaming plugin tools now receive request-local streaming context when invoked via `call_tool`, preventing concurrent `streamDataResponse()` calls from writing to the wrong UI stream
+
+## [0.0.14] - 2026-03-09
+
+### Added
+
+- `SkillOptions.skillPath` — `defineSkill()` now forwards `skillPath` to `SkillDefinition`, fixing a field that was present on the definition type but missing from the options interface
+- `MCPManager.registerStreamingPluginTools()` — registers function-based (streaming) plugin tools for deferred loading via `search_tools` / `call_tool`, calling the factory with `{ writer: null }` at init for schema extraction and re-invoking with request-local `StreamingContext` at execution time
+
+### Fixed
+
+- Function-based (streaming) plugin tools now respect `deferred: true` — the plugin processing loop applies the same deferred/proxy/eager logic as static tools (#89)
+- `call_tool` → `MCPManager.callTool()` now receives request-local `StreamingContext`, so deferred streaming tools can stream custom data to the client (#90)
+- Deferred streaming plugin tools receive request-local streaming context when invoked via `call_tool`, preventing concurrent `streamDataResponse()` calls from writing to the wrong UI stream
 - `search_tools` auto-threshold creation now only counts plugin tools that are actually indexed/discoverable via MCP, so eager streaming-only plugins no longer advertise an empty `search_tools` surface
 
 ## [0.0.13] - 2026-02-25
