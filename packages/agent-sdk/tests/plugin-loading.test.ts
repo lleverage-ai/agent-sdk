@@ -273,4 +273,115 @@ describe("Plugin Loading Modes", () => {
       expect(activeTools).toHaveProperty("search_tools");
     });
   });
+
+  describe("Function-based (streaming) plugin tools", () => {
+    it("deferred function-based plugin tools are NOT in getActiveTools", () => {
+      const streamingPlugin = definePlugin({
+        name: "streaming-plugin",
+        deferred: true,
+        tools: (ctx) => ({
+          render: tool({
+            description: "Render UI",
+            parameters: z.object({ html: z.string() }),
+            execute: async ({ html }) => `rendered: ${html}`,
+          }),
+        }),
+      });
+
+      const model = createMockModel();
+      const agent = createAgent({
+        model,
+        plugins: [streamingPlugin],
+      });
+
+      const activeTools = agent.getActiveTools();
+
+      // Deferred streaming plugin tools should NOT be in active tools
+      expect(activeTools).not.toHaveProperty("render");
+      expect(activeTools).not.toHaveProperty("mcp__streaming-plugin__render");
+
+      // call_tool and search_tools should be available
+      expect(activeTools).toHaveProperty("call_tool");
+      expect(activeTools).toHaveProperty("search_tools");
+    });
+
+    it("deferred function-based plugin tools are discoverable via search_tools metadata", () => {
+      const streamingPlugin = definePlugin({
+        name: "streaming-plugin",
+        deferred: true,
+        tools: (ctx) => ({
+          render: tool({
+            description: "Render UI components",
+            parameters: z.object({ html: z.string() }),
+            execute: async ({ html }) => `rendered: ${html}`,
+          }),
+        }),
+      });
+
+      const model = createMockModel();
+      const agent = createAgent({
+        model,
+        plugins: [streamingPlugin],
+      });
+
+      // The MCPManager should have the tool metadata from the factory
+      // (verified indirectly through search_tools being created)
+      const activeTools = agent.getActiveTools();
+      expect(activeTools).toHaveProperty("search_tools");
+    });
+
+    it("non-deferred function-based plugins still work eagerly (regression)", () => {
+      const streamingPlugin = definePlugin({
+        name: "eager-streaming",
+        tools: (ctx) => ({
+          render: tool({
+            description: "Render UI",
+            parameters: z.object({}),
+            execute: async () => "rendered",
+          }),
+        }),
+      });
+
+      const model = createMockModel();
+      const agent = createAgent({
+        model,
+        plugins: [streamingPlugin],
+      });
+
+      // Non-deferred function-based tools are NOT in getActiveTools (they need streaming context)
+      // They only appear in the streaming path (getActiveToolSetWithStreaming)
+      const activeTools = agent.getActiveTools();
+      expect(activeTools).not.toHaveProperty("render");
+      expect(activeTools).not.toHaveProperty("mcp__eager-streaming__render");
+    });
+
+    it("counts function-based plugin tools for threshold calculation", () => {
+      // Create a streaming plugin with many tools (>20)
+      const streamingPlugin = definePlugin({
+        name: "large-streaming",
+        tools: (ctx) => {
+          const tools: Record<string, ReturnType<typeof tool>> = {};
+          for (let i = 0; i < 25; i++) {
+            tools[`tool${i}`] = tool({
+              description: `Streaming tool ${i}`,
+              parameters: z.object({}),
+              execute: async () => `result${i}`,
+            });
+          }
+          return tools;
+        },
+      });
+
+      const model = createMockModel();
+      const agent = createAgent({
+        model,
+        plugins: [streamingPlugin],
+        toolSearch: { enabled: "auto", threshold: 20 },
+      });
+
+      // search_tools should be created since tool count > threshold
+      const activeTools = agent.getActiveTools();
+      expect(activeTools).toHaveProperty("search_tools");
+    });
+  });
 });

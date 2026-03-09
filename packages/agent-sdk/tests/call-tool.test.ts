@@ -145,6 +145,65 @@ describe("createCallToolTool", () => {
     });
   });
 
+  describe("with streaming factory-backed deferred tools", () => {
+    it("executes a streaming-factory-backed deferred tool successfully", async () => {
+      const manager = new MCPManager();
+      const factory = (ctx: { writer: unknown }) => ({
+        render: tool({
+          description: "Render UI",
+          inputSchema: z.object({ html: z.string() }),
+          execute: async ({ html }: { html: string }) =>
+            `rendered(writer=${ctx.writer !== null}): ${html}`,
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory, { autoLoad: false });
+
+      const callTool = createCallToolTool({ mcpManager: manager });
+
+      // Call without streaming context — factory gets { writer: null }
+      const result = await callTool.execute!(
+        {
+          tool_name: "mcp__ui__render",
+          arguments: { html: "<p>hello</p>" },
+        },
+        execOpts,
+      );
+
+      expect(result).toContain("rendered(writer=false): <p>hello</p>");
+    });
+
+    it("passes streaming context to factory when available", async () => {
+      const manager = new MCPManager();
+      const factory = (ctx: { writer: unknown }) => ({
+        render: tool({
+          description: "Render UI",
+          inputSchema: z.object({ html: z.string() }),
+          execute: async ({ html }: { html: string }) =>
+            `rendered(writer=${ctx.writer !== null}): ${html}`,
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory, { autoLoad: false });
+
+      // Set a streaming context
+      const fakeWriter = { write: () => {} };
+      manager.setStreamingContext({ writer: fakeWriter as never });
+
+      const callTool = createCallToolTool({ mcpManager: manager });
+
+      const result = await callTool.execute!(
+        {
+          tool_name: "mcp__ui__render",
+          arguments: { html: "<p>world</p>" },
+        },
+        execOpts,
+      );
+
+      expect(result).toContain("rendered(writer=true): <p>world</p>");
+    });
+  });
+
   it("has correct description and schema", () => {
     const callTool = createCallToolTool({});
 

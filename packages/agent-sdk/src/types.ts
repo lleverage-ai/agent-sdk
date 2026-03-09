@@ -2085,6 +2085,12 @@ export interface SkillOptions {
 
   /** Optional arbitrary metadata */
   metadata?: Record<string, string>;
+
+  /**
+   * Path to skill directory containing SKILL.md.
+   * @see {@link import("./tools/skills.js").SkillDefinition.skillPath}
+   */
+  skillPath?: string;
 }
 
 // =============================================================================

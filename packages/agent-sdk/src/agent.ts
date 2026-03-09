@@ -958,14 +958,19 @@ export function createAgent(options: AgentOptions): Agent {
   const autoSubagents: SubagentDefinition[] = [];
 
   // Count total plugin tools for threshold calculation and collect plugin skills.
-  // Note: Function-based (streaming) tools are not counted since we don't know
-  // their count until they're invoked with a streaming context.
+  // Function-based (streaming) tools are counted by invoking the factory with
+  // { writer: null } to extract tool schemas.
   // IMPORTANT: Plugin skills must be collected BEFORE createCoreTools() is called
   // so the skill tool includes them in progressive disclosure.
   let totalPluginToolCount = 0;
   for (const plugin of options.plugins ?? []) {
-    if (plugin.tools && typeof plugin.tools !== "function") {
-      totalPluginToolCount += Object.keys(plugin.tools).length;
+    if (plugin.tools) {
+      if (typeof plugin.tools === "function") {
+        const schemaTools = (plugin.tools as StreamingToolsFactory)({ writer: null });
+        totalPluginToolCount += Object.keys(schemaTools).length;
+      } else {
+        totalPluginToolCount += Object.keys(plugin.tools).length;
+      }
     }
     // Collect plugin skills early so they're available for skill tool creation
     if (plugin.skills) {
@@ -1004,10 +1009,28 @@ export function createAgent(options: AgentOptions): Agent {
   // Note: Plugin skills are collected earlier (before createCoreTools) so
   // the skill tool can include them in progressive disclosure.
   for (const plugin of options.plugins ?? []) {
-    // Handle tools via MCP manager for unified interface
-    // Note: Function-based (streaming) tools are handled separately in
-    // getActiveToolSetWithStreaming() and are not registered here
-    if (plugin.tools && typeof plugin.tools !== "function") {
+    if (plugin.tools && typeof plugin.tools === "function") {
+      // Function-based (streaming) tools
+      const factory = plugin.tools as StreamingToolsFactory;
+      const isDeferred =
+        plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
+
+      if (isDeferred) {
+        // Deferred streaming plugin: register factory in MCP for discovery via search_tools + call_tool
+        mcpManager.registerStreamingPluginTools(plugin.name, factory, {
+          autoLoad: false,
+        });
+        hasProxiedTools = true;
+      } else if (deferredLoadingActive && plugin.deferred !== false) {
+        // Deferred loading active: register but don't auto-load
+        mcpManager.registerStreamingPluginTools(plugin.name, factory, {
+          autoLoad: false,
+        });
+      }
+      // else: Eager non-deferred streaming plugins are handled directly in
+      // getActiveToolSetWithStreaming() — they're NOT registered in MCP.
+    } else if (plugin.tools) {
+      // Static tools
       // Check if this plugin is deferred (proxy mode or per-plugin opt-in)
       const isDeferred =
         plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
@@ -1252,6 +1275,9 @@ export function createAgent(options: AgentOptions): Agent {
 
   // Helper to get current active tools (core + runtime + MCP + dynamically loaded from registry)
   const getActiveToolSet = (threadId?: string): ToolSet => {
+    // Clear streaming context so streaming factories use null-writer tools
+    mcpManager.setStreamingContext(null);
+
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
 
@@ -1293,17 +1319,25 @@ export function createAgent(options: AgentOptions): Agent {
     threadId?: string,
     step?: number,
   ): ToolSet => {
+    // Set streaming context on MCP manager so streaming factories can use it
+    mcpManager.setStreamingContext(streamingContext);
+
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
 
     // Add runtime tools (added by plugins at runtime)
     Object.assign(allTools, runtimeTools);
 
-    // Process plugins - invoke function-based tools with streaming context
+    // Process plugins - invoke non-deferred function-based tools with streaming context.
+    // Deferred function-based plugins are registered in MCP and come via mcpManager.getToolSet().
     for (const plugin of options.plugins ?? []) {
       if (plugin.tools) {
         if (typeof plugin.tools === "function") {
-          // Streaming-aware tools: invoke factory with context
+          // Skip if registered in MCP (deferred or deferredLoadingActive plugins)
+          if (mcpManager.hasStreamingFactory(plugin.name)) {
+            continue;
+          }
+          // Non-deferred: eagerly invoke factory with streaming context (original names)
           const streamingTools = (plugin.tools as StreamingToolsFactory)(streamingContext);
           Object.assign(allTools, streamingTools);
         } else {
@@ -1313,7 +1347,7 @@ export function createAgent(options: AgentOptions): Agent {
       }
     }
 
-    // Add MCP tools from plugin registrations
+    // Add MCP tools from plugin registrations (includes streaming factory tools with live context)
     const mcpTools = mcpManager.getToolSet();
     Object.assign(allTools, mcpTools);
 
@@ -3476,7 +3510,7 @@ export function createAgent(options: AgentOptions): Agent {
                 }
               }
 
-              // --- Background task completion loop ---
+              // --- Background task completion loop (streamDataResponse) ---
               if (waitForBackgroundTasks && !signalState.interrupt) {
                 // Track accumulated steps for checkpoint saves
                 const initialSteps = await result.steps;

@@ -258,6 +258,139 @@ describe("MCPManager", () => {
     });
   });
 
+  describe("registerStreamingPluginTools", () => {
+    it("stores factory and creates virtual server for metadata", () => {
+      const factory = (ctx: { writer: unknown }) => ({
+        render: tool({
+          description: "Render UI",
+          inputSchema: z.object({ html: z.string() }),
+          execute: async ({ html }: { html: string }) => {
+            if (ctx.writer) {
+              // Would stream to writer
+            }
+            return `rendered: ${html}`;
+          },
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory);
+
+      // Metadata should be available for search
+      const metadata = manager.listTools();
+      expect(metadata).toHaveLength(1);
+      expect(metadata[0].name).toBe("mcp__ui__render");
+      expect(metadata[0].description).toBe("Render UI");
+
+      // Factory should be tracked
+      expect(manager.hasStreamingFactory("ui")).toBe(true);
+      expect(manager.hasStreamingFactory("nonexistent")).toBe(false);
+    });
+
+    it("deferred streaming tools are not in getToolSet by default", () => {
+      const factory = () => ({
+        render: tool({
+          description: "Render",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory, { autoLoad: false });
+
+      const toolSet = manager.getToolSet();
+      expect(Object.keys(toolSet)).not.toContain("mcp__ui__render");
+    });
+
+    it("eager streaming tools appear in getToolSet", () => {
+      const factory = () => ({
+        render: tool({
+          description: "Render",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory, { autoLoad: true });
+
+      const toolSet = manager.getToolSet();
+      expect(Object.keys(toolSet)).toContain("mcp__ui__render");
+    });
+  });
+
+  describe("setStreamingContext / getStreamingContext", () => {
+    it("stores and retrieves streaming context", () => {
+      expect(manager.getStreamingContext()).toBeNull();
+
+      const ctx = { writer: null };
+      manager.setStreamingContext(ctx);
+      expect(manager.getStreamingContext()).toBe(ctx);
+
+      manager.setStreamingContext(null);
+      expect(manager.getStreamingContext()).toBeNull();
+    });
+  });
+
+  describe("callTool with streaming factory", () => {
+    it("uses factory with current streaming context", async () => {
+      const receivedContexts: Array<{ writer: unknown }> = [];
+      const factory = (ctx: { writer: unknown }) => {
+        receivedContexts.push(ctx);
+        return {
+          render: tool({
+            description: "Render",
+            inputSchema: z.object({ html: z.string() }),
+            execute: async ({ html }: { html: string }) =>
+              `rendered(writer=${ctx.writer !== null}): ${html}`,
+          }),
+        };
+      };
+
+      manager.registerStreamingPluginTools("ui", factory);
+
+      // Without streaming context: callTool uses { writer: null }
+      const result1 = await manager.callTool("mcp__ui__render", { html: "<p>hello</p>" });
+      expect(result1).toBe("rendered(writer=false): <p>hello</p>");
+
+      // With streaming context: callTool uses the current context
+      const fakeWriter = { write: () => {} };
+      manager.setStreamingContext({ writer: fakeWriter as never });
+      const result2 = await manager.callTool("mcp__ui__render", { html: "<p>world</p>" });
+      expect(result2).toBe("rendered(writer=true): <p>world</p>");
+    });
+  });
+
+  describe("getToolSet with streaming factory and context", () => {
+    it("returns live factory tools when streaming context is set", () => {
+      let factoryCallCount = 0;
+      const factory = (ctx: { writer: unknown }) => {
+        factoryCallCount++;
+        return {
+          render: tool({
+            description: "Render",
+            inputSchema: z.object({}),
+            execute: async () => `writer=${ctx.writer !== null}`,
+          }),
+        };
+      };
+
+      manager.registerStreamingPluginTools("ui", factory, { autoLoad: true });
+
+      // Reset count (registration called factory once with null)
+      factoryCallCount = 0;
+
+      // Without context: uses schema tools from virtual server
+      const toolSet1 = manager.getToolSet();
+      expect(toolSet1).toHaveProperty("mcp__ui__render");
+
+      // With context: invokes factory with live context
+      const fakeWriter = { write: () => {} };
+      manager.setStreamingContext({ writer: fakeWriter as never });
+      const toolSet2 = manager.getToolSet();
+      expect(toolSet2).toHaveProperty("mcp__ui__render");
+      expect(factoryCallCount).toBeGreaterThanOrEqual(1);
+    });
+  });
+
   describe("disconnect", () => {
     it("clears all virtual servers", async () => {
       manager.registerPluginTools("test", {
@@ -269,6 +402,28 @@ describe("MCPManager", () => {
       });
       expect(manager.listTools()).toHaveLength(1);
       await manager.disconnect();
+      expect(manager.listTools()).toEqual([]);
+    });
+
+    it("clears streaming factories and context", async () => {
+      const factory = () => ({
+        render: tool({
+          description: "Render",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory);
+      manager.setStreamingContext({ writer: null });
+
+      expect(manager.hasStreamingFactory("ui")).toBe(true);
+      expect(manager.getStreamingContext()).not.toBeNull();
+
+      await manager.disconnect();
+
+      expect(manager.hasStreamingFactory("ui")).toBe(false);
+      expect(manager.getStreamingContext()).toBeNull();
       expect(manager.listTools()).toEqual([]);
     });
   });
