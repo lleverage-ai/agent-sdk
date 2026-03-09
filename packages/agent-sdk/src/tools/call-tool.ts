@@ -8,10 +8,11 @@
  * @packageDocumentation
  */
 
-import type { Tool } from "ai";
+import type { Tool, ToolExecutionOptions } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import type { MCPManager } from "../mcp/manager.js";
+import type { StreamingContext } from "../types.js";
 
 /**
  * Options for creating the call_tool proxy tool.
@@ -41,6 +42,13 @@ export interface CallToolOptions {
     args: Record<string, unknown>,
     result: unknown,
   ) => void | Promise<void>;
+
+  /**
+   * Optional fallback streaming context used when execution options do not carry one.
+   *
+   * This is primarily for request-scoped call_tool instances created in streaming flows.
+   */
+  streamingContext?: StreamingContext | null;
 }
 
 /**
@@ -67,7 +75,7 @@ export interface CallToolOptions {
  * @category Tools
  */
 export function createCallToolTool(options: CallToolOptions): Tool {
-  const { mcpManager, onBeforeCall, onAfterCall } = options;
+  const { mcpManager, onBeforeCall, onAfterCall, streamingContext } = options;
 
   return tool({
     description:
@@ -81,13 +89,16 @@ export function createCallToolTool(options: CallToolOptions): Tool {
         .default({})
         .describe("Arguments matching the tool's parameter schema"),
     }),
-    execute: async ({
-      tool_name,
-      arguments: args,
-    }: {
-      tool_name: string;
-      arguments: Record<string, unknown>;
-    }) => {
+    execute: async (
+      {
+        tool_name,
+        arguments: args,
+      }: {
+        tool_name: string;
+        arguments: Record<string, unknown>;
+      },
+      execOptions?: ToolExecutionOptions,
+    ) => {
       // Fire pre-call hook with the proxied tool name
       await onBeforeCall?.(tool_name, args);
 
@@ -98,7 +109,18 @@ export function createCallToolTool(options: CallToolOptions): Tool {
         const metadata = mcpManager.getToolMetadata(tool_name);
         if (metadata) {
           try {
-            result = await mcpManager.callTool(tool_name, args);
+            const requestStreamingContext =
+              (
+                execOptions as
+                  | (ToolExecutionOptions & {
+                      streamingContext?: StreamingContext | null;
+                    })
+                  | undefined
+              )?.streamingContext ??
+              streamingContext ??
+              null;
+
+            result = await mcpManager.callTool(tool_name, args, requestStreamingContext);
             await onAfterCall?.(tool_name, args, result);
             return formatResult(tool_name, result);
           } catch (error) {

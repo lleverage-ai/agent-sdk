@@ -957,22 +957,10 @@ export function createAgent(options: AgentOptions): Agent {
   // Auto-created subagent definitions from delegated plugins
   const autoSubagents: SubagentDefinition[] = [];
 
-  // Count total plugin tools for threshold calculation and collect plugin skills.
-  // Function-based (streaming) tools are counted by invoking the factory with
-  // { writer: null } to extract tool schemas.
+  // Collect plugin skills early so they're available for skill tool creation.
   // IMPORTANT: Plugin skills must be collected BEFORE createCoreTools() is called
   // so the skill tool includes them in progressive disclosure.
-  let totalPluginToolCount = 0;
   for (const plugin of options.plugins ?? []) {
-    if (plugin.tools) {
-      if (typeof plugin.tools === "function") {
-        const schemaTools = (plugin.tools as StreamingToolsFactory)({ writer: null });
-        totalPluginToolCount += Object.keys(schemaTools).length;
-      } else {
-        totalPluginToolCount += Object.keys(plugin.tools).length;
-      }
-    }
-    // Collect plugin skills early so they're available for skill tool creation
     if (plugin.skills) {
       skills.push(...plugin.skills);
     }
@@ -1056,6 +1044,9 @@ export function createAgent(options: AgentOptions): Agent {
     }
   }
 
+  // Only tools registered in MCP are discoverable via search_tools.
+  const discoverablePluginToolCount = mcpManager.listTools().length;
+
   // Create subagent definitions from plugins with subagent config
   for (const plugin of options.plugins ?? []) {
     if (plugin.subagent) {
@@ -1098,11 +1089,12 @@ export function createAgent(options: AgentOptions): Agent {
   // - Create when external MCP servers exist (for MCP tool search)
   // - Always auto-load tools when found (no manual load step) — unless proxy mode
   const shouldCreateSearchToolsForAutoThreshold =
-    toolSearchEnabled === "auto" && totalPluginToolCount > toolSearchThreshold;
+    toolSearchEnabled === "auto" && discoverablePluginToolCount > toolSearchThreshold;
 
   const shouldCreateSearchTools =
     !options.disabledCoreTools?.includes("search_tools") &&
-    ((deferredLoadingActive && (totalPluginToolCount > 0 || mcpManager.hasExternalServers())) ||
+    ((deferredLoadingActive &&
+      (discoverablePluginToolCount > 0 || mcpManager.hasExternalServers())) ||
       (isProxyMode && hasProxyTargets) ||
       shouldCreateSearchToolsForAutoThreshold ||
       (mcpManager.hasExternalServers() && toolSearchEnabled !== "never"));
@@ -1275,9 +1267,6 @@ export function createAgent(options: AgentOptions): Agent {
 
   // Helper to get current active tools (core + runtime + MCP + dynamically loaded from registry)
   const getActiveToolSet = (threadId?: string): ToolSet => {
-    // Clear streaming context so streaming factories use null-writer tools
-    mcpManager.setStreamingContext(null);
-
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
 
@@ -1319,9 +1308,6 @@ export function createAgent(options: AgentOptions): Agent {
     threadId?: string,
     step?: number,
   ): ToolSet => {
-    // Set streaming context on MCP manager so streaming factories can use it
-    mcpManager.setStreamingContext(streamingContext);
-
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
 
@@ -1348,7 +1334,7 @@ export function createAgent(options: AgentOptions): Agent {
     }
 
     // Add MCP tools from plugin registrations (includes streaming factory tools with live context)
-    const mcpTools = mcpManager.getToolSet();
+    const mcpTools = mcpManager.getToolSet(undefined, streamingContext);
     Object.assign(allTools, mcpTools);
 
     // Apply allowedTools filtering
@@ -1387,6 +1373,40 @@ export function createAgent(options: AgentOptions): Agent {
     const withTaskManager = wrapToolsWithTaskManager(tools, taskManager);
     // Then apply hooks for observability
     return wrapToolsWithHooks(withTaskManager, effectiveHooks, agent, threadId ?? "default");
+  };
+
+  /**
+   * Injects request-local streaming context into tool execution options.
+   *
+   * This keeps deferred streaming tools isolated per request instead of
+   * relying on mutable MCPManager state shared across concurrent generations.
+   */
+  const wrapToolsWithStreamingContext = (
+    tools: ToolSet,
+    streamingContext: StreamingContext,
+  ): ToolSet => {
+    const wrapped: ToolSet = {};
+
+    for (const [name, tool] of Object.entries(tools)) {
+      if (!tool.execute) {
+        wrapped[name] = tool;
+        continue;
+      }
+
+      const originalExecute = tool.execute;
+      wrapped[name] = {
+        ...tool,
+        execute: async (input: unknown, toolOptions?: ToolExecutionOptions) => {
+          const extendedOptions = {
+            ...toolOptions,
+            streamingContext,
+          } as ToolExecutionOptions;
+          return originalExecute(input, extendedOptions);
+        },
+      };
+    }
+
+    return wrapped;
   };
 
   /**
@@ -3357,7 +3377,14 @@ export function createAgent(options: AgentOptions): Agent {
                 ),
                 effectiveGenOptions.threadId,
               );
-              const streamingTools = wrapToolsWithSignalCatching(hookedStreamingTools, signalState);
+              const requestScopedStreamingTools = wrapToolsWithStreamingContext(
+                hookedStreamingTools,
+                streamingContext,
+              );
+              const streamingTools = wrapToolsWithSignalCatching(
+                requestScopedStreamingTools,
+                signalState,
+              );
 
               // Build prompt context and generate system prompt
               const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);

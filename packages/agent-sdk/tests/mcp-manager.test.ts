@@ -317,24 +317,9 @@ describe("MCPManager", () => {
     });
   });
 
-  describe("setStreamingContext / getStreamingContext", () => {
-    it("stores and retrieves streaming context", () => {
-      expect(manager.getStreamingContext()).toBeNull();
-
-      const ctx = { writer: null };
-      manager.setStreamingContext(ctx);
-      expect(manager.getStreamingContext()).toBe(ctx);
-
-      manager.setStreamingContext(null);
-      expect(manager.getStreamingContext()).toBeNull();
-    });
-  });
-
   describe("callTool with streaming factory", () => {
-    it("uses factory with current streaming context", async () => {
-      const receivedContexts: Array<{ writer: unknown }> = [];
+    it("uses the request-local streaming context", async () => {
       const factory = (ctx: { writer: unknown }) => {
-        receivedContexts.push(ctx);
         return {
           render: tool({
             description: "Render",
@@ -351,16 +336,39 @@ describe("MCPManager", () => {
       const result1 = await manager.callTool("mcp__ui__render", { html: "<p>hello</p>" });
       expect(result1).toBe("rendered(writer=false): <p>hello</p>");
 
-      // With streaming context: callTool uses the current context
+      // With streaming context: callTool uses the explicit request-local context
       const fakeWriter = { write: () => {} };
-      manager.setStreamingContext({ writer: fakeWriter as never });
-      const result2 = await manager.callTool("mcp__ui__render", { html: "<p>world</p>" });
+      const result2 = await manager.callTool(
+        "mcp__ui__render",
+        { html: "<p>world</p>" },
+        {
+          writer: fakeWriter as never,
+        },
+      );
       expect(result2).toBe("rendered(writer=true): <p>world</p>");
+    });
+
+    it("does not leak streaming context between requests", async () => {
+      const factory = (ctx: { writer: unknown }) => ({
+        render: tool({
+          description: "Render",
+          inputSchema: z.object({}),
+          execute: async () => (ctx.writer as { id: string } | null)?.id ?? "null",
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory);
+
+      const requestA = manager.callTool("mcp__ui__render", {}, { writer: { id: "A" } as never });
+      const requestB = manager.callTool("mcp__ui__render", {}, { writer: { id: "B" } as never });
+
+      await expect(requestA).resolves.toBe("A");
+      await expect(requestB).resolves.toBe("B");
     });
   });
 
   describe("getToolSet with streaming factory and context", () => {
-    it("returns live factory tools when streaming context is set", () => {
+    it("returns live factory tools when a request-local context is provided", async () => {
       let factoryCallCount = 0;
       const factory = (ctx: { writer: unknown }) => {
         factoryCallCount++;
@@ -368,7 +376,7 @@ describe("MCPManager", () => {
           render: tool({
             description: "Render",
             inputSchema: z.object({}),
-            execute: async () => `writer=${ctx.writer !== null}`,
+            execute: async () => `writer=${(ctx.writer as { id?: string } | null)?.id ?? "null"}`,
           }),
         };
       };
@@ -383,11 +391,12 @@ describe("MCPManager", () => {
       expect(toolSet1).toHaveProperty("mcp__ui__render");
 
       // With context: invokes factory with live context
-      const fakeWriter = { write: () => {} };
-      manager.setStreamingContext({ writer: fakeWriter as never });
-      const toolSet2 = manager.getToolSet();
+      const toolSet2 = manager.getToolSet(undefined, { writer: { id: "ctx" } as never });
       expect(toolSet2).toHaveProperty("mcp__ui__render");
       expect(factoryCallCount).toBeGreaterThanOrEqual(1);
+      await expect(toolSet2.mcp__ui__render.execute?.({}, undefined as never)).resolves.toBe(
+        "writer=ctx",
+      );
     });
   });
 
@@ -405,7 +414,7 @@ describe("MCPManager", () => {
       expect(manager.listTools()).toEqual([]);
     });
 
-    it("clears streaming factories and context", async () => {
+    it("clears streaming factories", async () => {
       const factory = () => ({
         render: tool({
           description: "Render",
@@ -415,15 +424,12 @@ describe("MCPManager", () => {
       });
 
       manager.registerStreamingPluginTools("ui", factory);
-      manager.setStreamingContext({ writer: null });
 
       expect(manager.hasStreamingFactory("ui")).toBe(true);
-      expect(manager.getStreamingContext()).not.toBeNull();
 
       await manager.disconnect();
 
       expect(manager.hasStreamingFactory("ui")).toBe(false);
-      expect(manager.getStreamingContext()).toBeNull();
       expect(manager.listTools()).toEqual([]);
     });
   });

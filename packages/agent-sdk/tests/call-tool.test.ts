@@ -186,10 +186,7 @@ describe("createCallToolTool", () => {
 
       manager.registerStreamingPluginTools("ui", factory, { autoLoad: false });
 
-      // Set a streaming context
       const fakeWriter = { write: () => {} };
-      manager.setStreamingContext({ writer: fakeWriter as never });
-
       const callTool = createCallToolTool({ mcpManager: manager });
 
       const result = await callTool.execute!(
@@ -197,10 +194,40 @@ describe("createCallToolTool", () => {
           tool_name: "mcp__ui__render",
           arguments: { html: "<p>world</p>" },
         },
-        execOpts,
+        {
+          ...execOpts,
+          streamingContext: { writer: fakeWriter as never },
+        } as typeof execOpts & { streamingContext: { writer: unknown } },
       );
 
       expect(result).toContain("rendered(writer=true): <p>world</p>");
+    });
+
+    it("keeps streaming contexts isolated per execution", async () => {
+      const manager = new MCPManager();
+      const factory = (ctx: { writer: unknown }) => ({
+        render: tool({
+          description: "Render UI",
+          inputSchema: z.object({}),
+          execute: async () => (ctx.writer as { id: string } | null)?.id ?? "null",
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory, { autoLoad: false });
+
+      const callTool = createCallToolTool({ mcpManager: manager });
+
+      const requestA = callTool.execute!({ tool_name: "mcp__ui__render", arguments: {} }, {
+        ...execOpts,
+        streamingContext: { writer: { id: "A" } as never },
+      } as typeof execOpts & { streamingContext: { writer: unknown } });
+      const requestB = callTool.execute!({ tool_name: "mcp__ui__render", arguments: {} }, {
+        ...execOpts,
+        streamingContext: { writer: { id: "B" } as never },
+      } as typeof execOpts & { streamingContext: { writer: unknown } });
+
+      await expect(requestA).resolves.toBe("A");
+      await expect(requestB).resolves.toBe("B");
     });
   });
 

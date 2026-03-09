@@ -355,8 +355,7 @@ describe("Plugin Loading Modes", () => {
       expect(activeTools).not.toHaveProperty("mcp__eager-streaming__render");
     });
 
-    it("counts function-based plugin tools for threshold calculation", () => {
-      // Create a streaming plugin with many tools (>20)
+    it("does not create search_tools for eager streaming plugins that are not discoverable", () => {
       const streamingPlugin = definePlugin({
         name: "large-streaming",
         tools: (ctx) => {
@@ -379,9 +378,47 @@ describe("Plugin Loading Modes", () => {
         toolSearch: { enabled: "auto", threshold: 20 },
       });
 
-      // search_tools should be created since tool count > threshold
+      const activeTools = agent.getActiveTools();
+      expect(activeTools).not.toHaveProperty("search_tools");
+    });
+
+    it("creates search_tools for deferred streaming plugins that are discoverable", async () => {
+      const streamingPlugin = definePlugin({
+        name: "large-deferred-streaming",
+        deferred: true,
+        tools: (ctx) => {
+          const tools: Record<string, ReturnType<typeof tool>> = {};
+          for (let i = 0; i < 25; i++) {
+            tools[`tool${i}`] = tool({
+              description: `Streaming tool ${i}`,
+              parameters: z.object({}),
+              execute: async () => `result${i}`,
+            });
+          }
+          return tools;
+        },
+      });
+
+      const model = createMockModel();
+      const agent = createAgent({
+        model,
+        plugins: [streamingPlugin],
+        toolSearch: { enabled: "auto", threshold: 20 },
+      });
+
       const activeTools = agent.getActiveTools();
       expect(activeTools).toHaveProperty("search_tools");
+
+      const result = await activeTools.search_tools.execute!(
+        { query: "tool0" },
+        {
+          toolCallId: "test-search",
+          messages: [],
+          abortSignal: new AbortController().signal,
+        },
+      );
+
+      expect(result).toContain("mcp__large-deferred-streaming__tool0");
     });
   });
 });
