@@ -26,55 +26,111 @@ export const PROTOCOL_ERRORS = {
   INVALID_MESSAGE: "INVALID_MESSAGE",
 } as const;
 
+/**
+ * Union of all protocol error codes emitted on the wire.
+ *
+ * @category Protocol
+ */
 export type ProtocolError = (typeof PROTOCOL_ERRORS)[keyof typeof PROTOCOL_ERRORS];
 
 // ── Client → Server ──
 
+/**
+ * Initial client handshake message for protocol negotiation.
+ *
+ * @category Protocol
+ */
 export interface HelloMessage {
   readonly type: "hello";
   readonly version: number;
 }
 
+/**
+ * Client request to subscribe to a stream and optionally replay from a sequence.
+ *
+ * @category Protocol
+ */
 export interface SubscribeMessage {
   readonly type: "subscribe";
   readonly streamId: string;
   readonly afterSeq?: number;
 }
 
+/**
+ * Client request to stop receiving events for a stream.
+ *
+ * @category Protocol
+ */
 export interface UnsubscribeMessage {
   readonly type: "unsubscribe";
   readonly streamId: string;
 }
 
+/**
+ * Client heartbeat acknowledgement sent in response to a server ping.
+ *
+ * @category Protocol
+ */
 export interface PongMessage {
   readonly type: "pong";
 }
 
+/**
+ * Union of all messages a client can send to the server.
+ *
+ * @category Protocol
+ */
 export type ClientMessage = HelloMessage | SubscribeMessage | UnsubscribeMessage | PongMessage;
 
 // ── Server → Client ──
 
+/**
+ * Server handshake acknowledgement with the negotiated protocol version.
+ *
+ * @category Protocol
+ */
 export interface ServerHelloMessage {
   readonly type: "server-hello";
   readonly version: number;
 }
 
+/**
+ * Stream event delivery message sent from server to client.
+ *
+ * @typeParam TEvent - Event payload type contained in the stored event
+ * @category Protocol
+ */
 export interface EventMessage<TEvent = unknown> {
   readonly type: "event";
   readonly streamId: string;
   readonly event: StoredEvent<TEvent>;
 }
 
+/**
+ * Marker indicating replay completion for a subscribed stream.
+ *
+ * @category Protocol
+ */
 export interface ReplayEndMessage {
   readonly type: "replay-end";
   readonly streamId: string;
   readonly lastReplaySeq: number;
 }
 
+/**
+ * Server heartbeat message used to keep a connection alive.
+ *
+ * @category Protocol
+ */
 export interface PingMessage {
   readonly type: "ping";
 }
 
+/**
+ * Error message sent from server to client for protocol or stream failures.
+ *
+ * @category Protocol
+ */
 export interface ErrorMessage {
   readonly type: "error";
   readonly code: ProtocolError;
@@ -83,6 +139,12 @@ export interface ErrorMessage {
   readonly streamId?: string;
 }
 
+/**
+ * Union of all messages a server can send to a client.
+ *
+ * @typeParam TEvent - Event payload type contained in event messages
+ * @category Protocol
+ */
 export type ServerMessage<TEvent = unknown> =
   | ServerHelloMessage
   | EventMessage<TEvent>
