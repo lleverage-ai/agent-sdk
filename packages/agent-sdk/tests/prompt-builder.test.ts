@@ -328,7 +328,7 @@ describe("Default Components", () => {
     it("should render default mode", () => {
       const ctx: PromptContext = { permissionMode: "default" };
       const result = permissionModeComponent.render(ctx);
-      expect(result).toContain("Default permission mode");
+      expect(result).toContain("Tools may require approval based on safety rules.");
     });
 
     it("should render acceptEdits mode", () => {
@@ -393,11 +393,11 @@ describe("createDefaultPromptBuilder", () => {
     expect(names).toContain("identity");
     expect(names).toContain("tools-listing");
     expect(names).toContain("skills-listing");
-    expect(names).toContain("plugins-listing");
     expect(names).toContain("capabilities");
     expect(names).toContain("permission-mode");
     expect(names).not.toContain("context");
     expect(names).toContain("delegation-instructions");
+    expect(names).not.toContain("plugins-listing");
   });
 
   it("should build a complete prompt with all components", () => {
@@ -422,10 +422,10 @@ describe("createDefaultPromptBuilder", () => {
     expect(prompt).toContain("You are a helpful AI assistant");
     expect(prompt).toContain("# Available Tools");
     expect(prompt).toContain("# Available Skills");
-    expect(prompt).toContain("# Loaded Plugins");
     expect(prompt).toContain("# Capabilities");
     expect(prompt).toContain("# Permission Mode");
     expect(prompt).not.toContain("# Context");
+    expect(prompt).not.toContain("# Loaded Plugins");
   });
 
   it("should be customizable via clone", () => {
@@ -492,7 +492,6 @@ describe("Integration scenarios", () => {
     // Verify content
     expect(prompt).toContain("read");
     expect(prompt).toContain("git");
-    expect(prompt).toContain("mcp-filesystem");
     expect(prompt).toContain("Execute shell commands");
     expect(prompt).not.toContain("session-abc123");
   });
