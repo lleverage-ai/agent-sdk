@@ -965,6 +965,10 @@ export function createAgent(options: AgentOptions): Agent {
   // so the skill tool includes them in progressive disclosure.
   let totalPluginToolCount = 0;
   for (const plugin of options.plugins ?? []) {
+    if (plugin.tools) {
+      // Fail fast on reserved inline plugin namespaces during agent creation.
+      formatPluginToolName(plugin.name, "__validation__");
+    }
     if (plugin.tools && typeof plugin.tools !== "function") {
       totalPluginToolCount += Object.keys(plugin.tools).length;
     }

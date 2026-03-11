@@ -1,6 +1,6 @@
 import { tool } from "ai";
 // tests/mcp-manager.test.ts
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { MCPManager } from "../src/mcp/manager.js";
 
@@ -207,6 +207,54 @@ describe("MCPManager", () => {
 
       const result = await manager.callTool("test__greet", { name: "World" });
       expect(result).toBe("Hello, World!");
+    });
+
+    it("routes inline plugin tools to virtual servers only", async () => {
+      const externalCall = vi.fn();
+      manager.registerPluginTools("test", {
+        greet: tool({
+          description: "Greet",
+          inputSchema: z.object({ name: z.string() }),
+          execute: async ({ name }) => `Hello, ${name}!`,
+        }),
+      });
+
+      manager["externalClients"].set("test", {
+        client: { callTool: externalCall },
+        tools: [{ name: "mcp__test__greet" }],
+        config: {},
+      } as never);
+
+      const result = await manager.callTool("test__greet", { name: "World" });
+      expect(result).toBe("Hello, World!");
+      expect(externalCall).not.toHaveBeenCalled();
+    });
+
+    it("routes external MCP tools to connected clients only", async () => {
+      const externalCall = vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "remote ok" }],
+      });
+
+      manager.registerPluginTools("test", {
+        greet: tool({
+          description: "Greet",
+          inputSchema: z.object({}),
+          execute: async () => "local ok",
+        }),
+      });
+
+      manager["externalClients"].set("test", {
+        client: { callTool: externalCall },
+        tools: [{ name: "mcp__test__greet" }],
+        config: {},
+      } as never);
+
+      const result = await manager.callTool("mcp__test__greet", {});
+      expect(result).toBe("remote ok");
+      expect(externalCall).toHaveBeenCalledWith({
+        name: "greet",
+        arguments: {},
+      });
     });
 
     it("throws for unknown tool", async () => {

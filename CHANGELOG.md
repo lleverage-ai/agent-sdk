@@ -24,7 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GetTranscriptOptions.branch` now supports explicit branch selections via `{ selections: Record<string, string> }`, and ledger stores now resolve `"active"` transcripts by walking parent-child message links with committed-branch preference
 - Removed the `simple-git-hooks` workspace dependency so `bun install` no longer depends on a failing Bun postinstall path
 - Refreshed contributor-facing docs to cover workspace commands, changelog expectations, and current deferred/proxy tool-loading behavior
-- **BREAKING**: Inline plugin tools now use the `<plugin>__<tool>` namespace instead of `mcp__<plugin>__<tool>`; external MCP servers keep the `mcp__<server>__<tool>` namespace, and DX helpers now distinguish the two with `pluginTools()` / `pluginToolsFor()` vs `mcpTools()` / `mcpToolsFor()`
+- **BREAKING**: Inline plugin tools now use the `<plugin>__<tool>` namespace instead of `mcp__<plugin>__<tool>`. This also changes helper outputs such as `toolsFromPlugin()` to return inline plugin names in the new qualified form. External MCP servers keep the `mcp__<server>__<tool>` namespace, and DX helpers now distinguish the two with `pluginTools()` / `pluginToolsFor()` vs `mcpTools()` / `mcpToolsFor()`
 
 ### Removed
 

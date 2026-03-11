@@ -48,11 +48,11 @@ bun run --filter '@lleverage-ai/agent-threads' test
 - Tests use [Vitest](https://vitest.dev/).
 - Keep tests in `tests/` and mirror the source layout when practical.
 - Prefer exported testing helpers from `@lleverage-ai/agent-sdk/testing` for public-API examples.
-- Repository tests also use local helpers such as [`packages/agent-sdk/tests/setup.ts`](/home/tvd/.t3/worktrees/agent-sdk/t3code-40f90d35/packages/agent-sdk/tests/setup.ts) when exercising internals.
+- Repository tests also use local helpers such as `packages/agent-sdk/tests/setup.ts` when exercising internals.
 
 ## Docs And Changelog
 
-- Update [`CHANGELOG.md`](/home/tvd/.t3/worktrees/agent-sdk/t3code-40f90d35/CHANGELOG.md) under `## [Unreleased]`.
+- Update `CHANGELOG.md` under `## [Unreleased]`.
 - Use Keep a Changelog section headings: `Added`, `Changed`, `Fixed`, `Removed`, `Deprecated`, `Security`.
 - Keep README/docs examples aligned with the shipped API, especially around tool loading, streaming, and package exports.
 

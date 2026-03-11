@@ -99,4 +99,25 @@ describe("tool DX helpers", () => {
       ]),
     ).toEqual(["read", "github__list_issues", "custom_tool", "github__list_issues"]);
   });
+
+  it("rejects inline plugin names that collide with the MCP namespace", () => {
+    expect(() => pluginTools("mcp")("list_issues")).toThrow(/reserved/);
+    expect(() => pluginTools("mcp_")("list_issues")).toThrow(/reserved/);
+    expect(() => pluginTools("mcp__shadow")("list_issues")).toThrow(/reserved/);
+  });
+
+  it("does not swallow inline plugin naming errors in toolsFrom", () => {
+    const plugin = definePlugin({
+      name: "mcp_",
+      tools: {
+        list_issues: tool({
+          description: "List issues",
+          inputSchema: z.object({}),
+          execute: async () => [],
+        }),
+      },
+    });
+
+    expect(() => toolsFrom(plugin)).toThrow(/reserved/);
+  });
 });

@@ -7,7 +7,7 @@ import {
   ModelError,
   ToolExecutionError,
 } from "../src/errors/index.js";
-import { createAgent } from "../src/index.js";
+import { createAgent, definePlugin } from "../src/index.js";
 import { createMockModel, resetMocks } from "./setup.js";
 
 // Mock the AI SDK functions
@@ -68,6 +68,22 @@ describe("createAgent", () => {
     const agent = createAgent({ model });
 
     expect(agent.getSkills()).toEqual([]);
+  });
+
+  it("rejects inline plugin names that collide with the MCP namespace", () => {
+    const model = createMockModel();
+    const plugin = definePlugin({
+      name: "mcp_",
+      tools: {
+        greet: tool({
+          description: "A test tool",
+          inputSchema: z.object({}),
+          execute: async () => "hello",
+        }),
+      },
+    });
+
+    expect(() => createAgent({ model, plugins: [plugin] })).toThrow(/reserved/);
   });
 });
 

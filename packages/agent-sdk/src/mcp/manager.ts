@@ -883,23 +883,23 @@ export class MCPManager {
   /**
    * Call a tool by its registered name.
    *
-   * @param mcpName - Tool name (`mcp__...` for external MCP, `<plugin>__...` for inline plugins)
+   * @param qualifiedName - Tool name (`mcp__...` for external MCP, `<plugin>__...` for inline plugins)
    * @param args - Tool arguments
    * @param options - Optional execution options
    * @returns Tool execution result
    */
   async callTool(
-    mcpName: string,
+    qualifiedName: string,
     args: unknown,
     options: {
       abortSignal?: AbortSignal;
       streamingContext?: StreamingContext;
     } = {},
   ): Promise<unknown> {
-    const mcpTool = isMcpToolName(mcpName);
-    const parts = mcpName.split("__");
+    const mcpTool = isMcpToolName(qualifiedName);
+    const parts = qualifiedName.split("__");
     if ((mcpTool && parts.length < 3) || (!mcpTool && parts.length < 2)) {
-      throw new Error(`Invalid qualified tool name format: ${mcpName}`);
+      throw new Error(`Invalid qualified tool name format: ${qualifiedName}`);
     }
 
     // Try to find a matching source by progressively shifting separators from
@@ -921,10 +921,10 @@ export class MCPManager {
 
       const externalClient = this.externalClients.get(sourceName);
       if (externalClient) {
-        const hasMatchingTool = externalClient.tools.some((t) => t.name === mcpName);
+        const hasMatchingTool = externalClient.tools.some((t) => t.name === qualifiedName);
         if (hasMatchingTool) {
           if (externalClient.config.validateInputs) {
-            this.validator.validate(mcpName, args);
+            this.validator.validate(qualifiedName, args);
           }
 
           const result = await externalClient.client.callTool({
@@ -937,7 +937,7 @@ export class MCPManager {
       }
     }
 
-    throw new Error(`Tool not found: ${mcpName}`);
+    throw new Error(`Tool not found: ${qualifiedName}`);
   }
 
   /**

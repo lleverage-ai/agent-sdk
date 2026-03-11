@@ -205,15 +205,13 @@ export function toolsFrom(...refs: ToolReference[]): string[] {
     } else if (Array.isArray(ref)) {
       names.push(...toolsFrom(...ref));
     } else if (isPlugin(ref)) {
-      // For plugins, extract tool names (throws for MCP without explicit names)
-      try {
-        names.push(...toolsFromPlugin(ref));
-      } catch {
-        // MCP plugin without tool names - skip with warning
+      if (ref.mcpServer) {
         console.warn(
           `Skipping MCP plugin "${ref.name}" in toolsFrom(). ` +
             `Use toolsFromPlugin(plugin, ["tool1", "tool2"]) for MCP plugins.`,
         );
+      } else {
+        names.push(...toolsFromPlugin(ref));
       }
     } else if (isToolSet(ref)) {
       names.push(...Object.keys(ref));
