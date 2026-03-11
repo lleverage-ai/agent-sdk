@@ -11,6 +11,19 @@ This monorepo contains two packages:
 | [`@lleverage-ai/agent-sdk`](./packages/agent-sdk) | Core agent framework — tools, plugins, hooks, teams | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-sdk)](https://www.npmjs.com/package/@lleverage-ai/agent-sdk) |
 | [`@lleverage-ai/agent-threads`](./packages/agent-threads) | Event transport, replay, and durable transcripts | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-threads)](https://www.npmjs.com/package/@lleverage-ai/agent-threads) |
 
+## Which Package Do I Need?
+
+Use `@lleverage-ai/agent-sdk` if you want to build agents with models, tools, plugins, hooks, sessions, and subagents. This is the default starting point for most users.
+
+Use `@lleverage-ai/agent-threads` if you need infrastructure for conversation transport and persistence: event streams, replay, WebSocket transport, run lifecycle management, and durable transcripts. You can use it by itself or alongside the SDK.
+
+The simplest way to think about the split is:
+
+- `@lleverage-ai/agent-sdk` is the agent framework
+- `@lleverage-ai/agent-threads` is the conversation infrastructure layer
+
+If you are unsure, start with `@lleverage-ai/agent-sdk` and only add `@lleverage-ai/agent-threads` when you need durable thread history, replay, or transport primitives.
+
 ## Installation
 
 ```bash
@@ -21,6 +34,12 @@ You'll also need at least one AI provider:
 
 ```bash
 bun add @ai-sdk/anthropic  # or @ai-sdk/openai
+```
+
+If you also need durable transcript or transport primitives:
+
+```bash
+bun add @lleverage-ai/agent-threads
 ```
 
 ## Quick Start
