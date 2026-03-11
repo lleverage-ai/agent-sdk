@@ -73,6 +73,7 @@ agent-sdk/                          # Workspace root
 │   │   │   ├── hooks.ts            # Hook system
 │   │   │   ├── plugins.ts          # definePlugin()
 │   │   │   ├── tools.ts            # defineSkill()
+│   │   │   ├── tool-names.ts       # Qualified inline/MCP tool naming helpers
 │   │   │   ├── context.ts          # Context management
 │   │   │   ├── context-manager.ts  # Token budgeting & summarization
 │   │   │   ├── backend.ts          # Backend abstraction

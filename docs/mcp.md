@@ -7,6 +7,15 @@ The SDK provides unified tool discovery for two different sources:
 
 Inline plugin tools use the same discovery and proxy-loading machinery as MCP tools, but they are no longer presented as MCP-namespaced tools.
 
+## Naming Migration
+
+If you used older releases or examples:
+
+- Inline plugin tools now use `<plugin>__<tool>`
+- Real MCP tools still use `mcp__<server>__<tool>`
+- Use `pluginTools()` / `pluginToolsFor()` for inline plugin names
+- Use `mcpTools()` / `mcpToolsFor()` for real MCP names
+
 ## External MCP Plugins
 
 Use `mcpServer` when a plugin should connect to a real MCP server:
@@ -60,7 +69,7 @@ import {
 const githubPlugin = pluginTools("github");
 githubPlugin("list_issues"); // "github__list_issues"
 
-// Build inline plugin tool names with autocomplete
+// Build inline plugin tool names with property autocomplete
 const githubPluginTools = pluginToolsFor("github", ["list_issues", "create_pr"] as const);
 githubPluginTools.list_issues; // "github__list_issues"
 
@@ -68,7 +77,7 @@ githubPluginTools.list_issues; // "github__list_issues"
 const githubMcp = mcpTools("github");
 githubMcp("list_issues"); // "mcp__github__list_issues"
 
-// Build external MCP tool names with autocomplete
+// Build external MCP tool names with property autocomplete
 const githubMcpTools = mcpToolsFor("github", ["list_issues", "create_pr"] as const);
 githubMcpTools.list_issues; // "mcp__github__list_issues"
 

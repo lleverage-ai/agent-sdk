@@ -89,8 +89,11 @@ export class VirtualMCPServer {
           if (jsonSchema && typeof jsonSchema === "object") {
             inputSchema = jsonSchema as MCPToolMetadata["inputSchema"];
           }
-        } catch {
-          // Fall back to empty schema if conversion fails
+        } catch (error) {
+          console.warn(
+            `[VirtualMCPServer] Failed to convert input schema for ${qualifiedName}; using an empty object schema instead.`,
+            error,
+          );
         }
       }
 

@@ -1,6 +1,6 @@
 import { tool } from "ai";
 // tests/mcp-virtual-server.test.ts
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { VirtualMCPServer } from "../src/mcp/virtual-server.js";
 
@@ -77,5 +77,31 @@ describe("VirtualMCPServer", () => {
   it("returns list of tool names", () => {
     const server = new VirtualMCPServer("my-plugin", testTools);
     expect(server.getToolNames()).toEqual(["greet", "add"]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("warns and falls back to an empty schema when schema conversion fails", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const server = new VirtualMCPServer("my-plugin", {
+      broken: {
+        description: "Broken tool",
+        inputSchema: 123 as never,
+        execute: async () => "ok",
+      } as never,
+    });
+
+    const [metadata] = server.getToolMetadata();
+
+    expect(metadata.inputSchema).toEqual({
+      type: "object",
+      properties: {},
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "[VirtualMCPServer] Failed to convert input schema for my-plugin__broken; using an empty object schema instead.",
+      expect.anything(),
+    );
   });
 });

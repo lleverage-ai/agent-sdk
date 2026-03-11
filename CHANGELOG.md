@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Restored missing package entrypoints/barrels after monorepo split, plus restored missing `errors/` and `security/` source trees under `packages/agent-sdk/src`
+- Inline plugin tool metadata generation now warns when input-schema conversion fails instead of silently falling back to an empty schema
 - Fixed CI/release Bun installs failing on hook setup by setting `SKIP_INSTALL_SIMPLE_GIT_HOOKS=1` in install steps
 - Published `@lleverage-ai/agent-sdk` package tarballs now include a package README for npm/GitHub package consumers
 - `SQLiteEventStore.append()` now runs in an explicit transaction and rolls back on failure, preventing read-head/insert races and partial writes under concurrency

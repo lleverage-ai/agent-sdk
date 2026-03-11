@@ -315,9 +315,9 @@ applySecurityPolicy(
 |----------------|-------------|
 | `MCPManager` | Manage MCP server connections |
 | `pluginTools()` | Build qualified names for inline plugin tools |
-| `pluginToolsFor()` | Build typed inline plugin tool names |
+| `pluginToolsFor()` | Build inline plugin tool names with property autocomplete |
 | `mcpTools()` | Build qualified names for external MCP tools |
-| `mcpToolsFor()` | Build typed external MCP tool names |
+| `mcpToolsFor()` | Build external MCP tool names with property autocomplete |
 | `toolsFromPlugin()` | Extract qualified tool names from plugin definitions |
 
 ### MCPManager
