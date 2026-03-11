@@ -154,7 +154,7 @@ describeE2E("Agent Teams E2E Tests", () => {
       agentsToDispose.push(agent);
 
       // Verify start_team is visible, team tools are not
-      expect(agent.getActiveTools()["mcp__agent-teams__start_team"]).toBeDefined();
+      expect(agent.getActiveTools()["agent-teams__start_team"]).toBeDefined();
       expect(agent.getActiveTools().team_spawn).toBeUndefined();
 
       // Step 1: Start the team with one initial task
@@ -223,7 +223,7 @@ describeE2E("Agent Teams E2E Tests", () => {
       expect(agent.getActiveTools().end_team).toBeUndefined();
 
       // start_team should still be available
-      expect(agent.getActiveTools()["mcp__agent-teams__start_team"]).toBeDefined();
+      expect(agent.getActiveTools()["agent-teams__start_team"]).toBeDefined();
 
       console.log("[E2E lifecycle] Teammate errors:", teammateErrors);
       console.log("[E2E lifecycle] PASSED");

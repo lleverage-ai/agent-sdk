@@ -83,4 +83,11 @@ export type { CallToolOptions } from "./call-tool.js";
 export { createCallToolTool } from "./call-tool.js";
 export type { ToolReference } from "./utils.js";
 // Tool utilities (DX helpers)
-export { mcpTools, mcpToolsFor, toolsFrom, toolsFromPlugin } from "./utils.js";
+export {
+  mcpTools,
+  mcpToolsFor,
+  pluginTools,
+  pluginToolsFor,
+  toolsFrom,
+  toolsFromPlugin,
+} from "./utils.js";

@@ -1,10 +1,15 @@
 # MCP Integration
 
-The SDK provides unified tool management through the Model Context Protocol (MCP).
+The SDK provides unified tool discovery for two different sources:
 
-## Plugin-based MCP Tools
+- Inline plugin tools, exposed as `<plugin>__<tool>`
+- External MCP servers, exposed as `mcp__<server>__<tool>`
 
-Plugin tools are automatically registered as virtual MCP servers:
+Inline plugin tools use the same discovery and proxy-loading machinery as MCP tools, but they are no longer presented as MCP-namespaced tools.
+
+## External MCP Plugins
+
+Use `mcpServer` when a plugin should connect to a real MCP server:
 
 ```typescript
 import { definePlugin } from "@lleverage-ai/agent-sdk";
@@ -38,22 +43,34 @@ const agent = createAgent({
 // Agent gets a `search_tools` tool to discover and load tools on-demand
 ```
 
-## MCP Tool Utilities
+## Tool Name Utilities
 
-Helper functions for working with MCP tool names:
+Helper functions for working with qualified tool names:
 
 ```typescript
 import {
+  pluginTools,
+  pluginToolsFor,
   mcpTools,
   mcpToolsFor,
   toolsFromPlugin,
 } from "@lleverage-ai/agent-sdk";
 
-// Get all MCP tool names from an agent
-const allMcpTools = mcpTools(agent); // ["mcp__github__list_issues", ...]
+// Build inline plugin tool names
+const githubPlugin = pluginTools("github");
+githubPlugin("list_issues"); // "github__list_issues"
 
-// Get tools for a specific plugin
-const githubTools = mcpToolsFor(agent, "github");
+// Build inline plugin tool names with autocomplete
+const githubPluginTools = pluginToolsFor("github", ["list_issues", "create_pr"] as const);
+githubPluginTools.list_issues; // "github__list_issues"
+
+// Build external MCP tool names
+const githubMcp = mcpTools("github");
+githubMcp("list_issues"); // "mcp__github__list_issues"
+
+// Build external MCP tool names with autocomplete
+const githubMcpTools = mcpToolsFor("github", ["list_issues", "create_pr"] as const);
+githubMcpTools.list_issues; // "mcp__github__list_issues"
 
 // Extract tools from a plugin definition
 const tools = toolsFromPlugin(myPlugin);
@@ -95,7 +112,7 @@ const agent = createAgent({
 
 | Option | Description |
 |--------|-------------|
-| `allowedTools` | Allowlist of permitted tool names (without `mcp__` prefix). Only tools in this list will be loaded. Useful for restricting access to dangerous operations. |
+| `allowedTools` | Allowlist of permitted raw tool names from this external MCP server. Only tools in this list will be loaded. Useful for restricting access to dangerous operations. |
 | `validateInputs` | When `true`, tool inputs are validated against their declared JSON Schema before execution. Invalid inputs throw `MCPInputValidationError` instead of being passed to the server. Protects against malformed or malicious inputs. |
 | `requireSchema` | When `true`, tools without meaningful schemas (empty or minimal schemas) are rejected during connection. Ensures all tools have explicit input validation. |
 

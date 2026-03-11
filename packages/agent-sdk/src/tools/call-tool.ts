@@ -8,10 +8,11 @@
  * @packageDocumentation
  */
 
-import type { Tool } from "ai";
+import type { Tool, ToolExecutionOptions } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import type { MCPManager } from "../mcp/manager.js";
+import type { StreamingContext } from "../types.js";
 
 /**
  * Options for creating the call_tool proxy tool.
@@ -20,11 +21,17 @@ import type { MCPManager } from "../mcp/manager.js";
  */
 export interface CallToolOptions {
   /**
-   * MCP manager for looking up plugin/MCP tools.
-   * Tools registered in MCP (both virtual plugin servers and external servers)
-   * are used for tool lookup and execution.
+   * Discovery manager for looking up inline plugin tools and external MCP tools.
    */
   mcpManager?: MCPManager;
+
+  /**
+   * Streaming context for proxied function-based tools.
+   *
+   * When provided, deferred plugin tools created from a {@link StreamingContext}
+   * receive the live writer when invoked via `call_tool`.
+   */
+  streamingContext?: StreamingContext;
 
   /**
    * Hook callback to fire before executing the proxied tool.
@@ -60,45 +67,51 @@ export interface CallToolOptions {
  * });
  *
  * // Agent uses:
- * // search_tools({ query: "payment" })  → finds mcp__stripe__create_payment
- * // call_tool({ tool_name: "mcp__stripe__create_payment", arguments: { amount: 100 } })
+ * // search_tools({ query: "payment" })  → finds stripe__create_payment
+ * // call_tool({ tool_name: "stripe__create_payment", arguments: { amount: 100 } })
  * ```
  *
  * @category Tools
  */
 export function createCallToolTool(options: CallToolOptions): Tool {
-  const { mcpManager, onBeforeCall, onAfterCall } = options;
+  const { mcpManager, onBeforeCall, onAfterCall, streamingContext } = options;
 
   return tool({
     description:
       "Call a tool by name. Use this to invoke tools discovered via search_tools " +
-      "that are not directly available as top-level tools. Pass the tool name from " +
+      "that are not directly available as top-level tools. Pass the qualified tool name from " +
       "search_tools results and the arguments matching the tool's parameter schema.",
     inputSchema: z.object({
-      tool_name: z.string().describe("Tool name from search_tools results"),
+      tool_name: z.string().describe("Qualified tool name from search_tools results"),
       arguments: z
         .record(z.string(), z.unknown())
         .default({})
         .describe("Arguments matching the tool's parameter schema"),
     }),
-    execute: async ({
-      tool_name,
-      arguments: args,
-    }: {
-      tool_name: string;
-      arguments: Record<string, unknown>;
-    }) => {
+    execute: async (
+      {
+        tool_name,
+        arguments: args,
+      }: {
+        tool_name: string;
+        arguments: Record<string, unknown>;
+      },
+      executionOptions?: ToolExecutionOptions,
+    ) => {
       // Fire pre-call hook with the proxied tool name
       await onBeforeCall?.(tool_name, args);
 
       let result: unknown;
 
-      // Look up tool in MCPManager (covers both virtual plugin tools and external MCP)
+      // Look up tool in MCPManager (covers both inline plugin tools and external MCP)
       if (mcpManager) {
         const metadata = mcpManager.getToolMetadata(tool_name);
         if (metadata) {
           try {
-            result = await mcpManager.callTool(tool_name, args);
+            result = await mcpManager.callTool(tool_name, args, {
+              abortSignal: executionOptions?.abortSignal,
+              streamingContext,
+            });
             await onAfterCall?.(tool_name, args, result);
             return formatResult(tool_name, result);
           } catch (error) {

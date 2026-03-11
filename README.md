@@ -74,7 +74,7 @@ const safeAgent = createAgent({
 });
 ```
 
-**Core tools included:** `read`, `write`, `edit`, `glob`, `grep`, `todo_write`, `bash` (requires backend with `enableBash: true`), `skill` (when skills are configured), `search_tools` (when enabled), `call_tool` (proxy mode only)
+**Core tools included:** `read`, `write`, `edit`, `glob`, `grep`, `todo_write`, `bash` (requires backend with `enableBash: true`), `skill` (when skills are configured), `search_tools` (when enabled), `call_tool` (when deferred or proxied tools are present)
 
 ### Tools
 
@@ -109,7 +109,7 @@ const agent = createAgent({
 
 ### Plugins
 
-Plugins bundle tools, skills, and hooks. Plugin tools are exposed with MCP naming: `mcp__<plugin>__<tool>`.
+Plugins bundle tools, skills, and hooks. Inline plugin tools are exposed as `<plugin>__<tool>`, while tools from external MCP servers use `mcp__<server>__<tool>`.
 
 ```typescript
 import { definePlugin } from "@lleverage-ai/agent-sdk";
@@ -130,7 +130,7 @@ const agent = createAgent({
   model,
   plugins: [myPlugin],
 });
-// Plugin tool available as: mcp__my-plugin__myTool
+// Inline plugin tool available as: my-plugin__myTool
 ```
 
 ### Skills
@@ -376,6 +376,10 @@ export async function POST(req: Request) {
 - [Context Compaction](./docs/context-compaction.md) — Automatic context management
 - [Error Handling](./docs/errors.md) — Typed errors and recovery
 - [API Reference](./docs/api-reference.md) — Complete API documentation
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, quality checks, changelog expectations, and pull request guidelines.
 
 ## License
 

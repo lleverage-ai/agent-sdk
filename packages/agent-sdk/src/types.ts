@@ -683,8 +683,11 @@ export interface AgentOptions {
    * Restrict which tools the agent can use.
    *
    * When provided, only tools whose names exactly match entries in this array
-   * will be available to the agent. For MCP tools, use the full name format:
-   * `mcp__<plugin>__<tool>` (e.g., `mcp__github__list_issues`).
+   * will be available to the agent.
+   *
+   * Qualified tool names:
+   * - Inline plugin tools: `<plugin>__<tool>`
+   * - External MCP tools: `mcp__<server>__<tool>`
    *
    * This is useful for:
    * - Security: limiting agent capabilities in production
@@ -720,8 +723,9 @@ export interface AgentOptions {
    * - Testing: disabling specific tools without listing all others
    * - Production hardening: preventing access to risky tools
    *
-   * For MCP tools, use the full name format: `mcp__<plugin>__<tool>`
-   * (e.g., `mcp__github__delete_repo`).
+   * For qualified tools, use the full name format:
+   * - Inline plugin tools: `<plugin>__<tool>`
+   * - External MCP tools: `mcp__<server>__<tool>`
    *
    * **Priority**: If a tool appears in both `allowedTools` and `disallowedTools`,
    * the tool is blocked (disallow takes precedence).
@@ -735,13 +739,13 @@ export interface AgentOptions {
    *   disallowedTools: ["bash", "rm"],
    * });
    *
-   * // Block dangerous MCP operations
+   * // Block dangerous plugin operations
    * const agent = createAgent({
    *   model,
    *   plugins: [githubPlugin],
    *   disallowedTools: [
-   *     "mcp__github__delete_repo",
-   *     "mcp__github__force_push",
+   *     "github__delete_repo",
+   *     "github__force_push",
    *   ],
    * });
    * ```
@@ -1163,7 +1167,8 @@ export interface Agent {
   /**
    * Get all currently active tools.
    *
-   * Returns the combined set of core tools, runtime tools, and MCP tools.
+   * Returns the combined set of core tools, runtime tools, inline plugin tools,
+   * and external MCP tools.
    *
    * @returns ToolSet containing all active tools
    */
@@ -1319,8 +1324,8 @@ export interface Agent {
    * Add tools to the agent at runtime.
    *
    * Runtime tools are included in the active tool set alongside core tools,
-   * MCP tools, and registry tools. Adding a tool with the same name as an
-   * existing runtime tool overwrites it.
+   * qualified plugin/MCP tools, and registry tools. Adding a tool with the
+   * same name as an existing runtime tool overwrites it.
    *
    * This is primarily used by plugins that need to dynamically inject tools
    * (e.g., team management tools that appear only when a team is active).
@@ -1926,7 +1931,7 @@ export interface AgentPlugin {
    * MCP server configuration for external tool integration.
    *
    * When provided, the agent will connect to this MCP server and expose
-   * its tools with the naming pattern `mcp__<plugin-name>__<tool-name>`.
+   * its tools with the naming pattern `mcp__<server-name>__<tool-name>`.
    *
    * @example
    * ```typescript
@@ -1958,6 +1963,10 @@ export interface AgentPlugin {
    *
    * Deferred tools are discoverable via `search_tools` and callable via `call_tool`,
    * but never added to the active tool set — keeping the schema stable and cacheable.
+   * This works for both static tool sets and function-based tools created from
+   * {@link StreamingContext}. For function-based tools, discovery metadata is
+   * derived with `writer: null`, and `call_tool` receives the live streaming
+   * context during `streamDataResponse()`.
    *
    * @defaultValue false
    */
@@ -2028,6 +2037,8 @@ export interface PluginOptions {
 
   /**
    * When true, this plugin's tools are accessible only via `call_tool` proxy.
+   * Supports both static tools and function-based tools created from
+   * {@link StreamingContext}.
    * @see {@link AgentPlugin.deferred}
    * @defaultValue false
    */
@@ -2550,7 +2561,8 @@ export interface HookMatcher {
    * Regex pattern to match tool names (omit for all tools).
    * Examples:
    * - 'Write|Edit' - File modification tools
-   * - '^mcp__' - All MCP tools
+   * - '^mcp__' - All external MCP tools
+   * - '^github__' - Specific inline plugin namespace
    * - 'mcp__playwright__' - Specific MCP server
    * - undefined - All tools (no filter)
    */
@@ -3053,7 +3065,7 @@ interface MCPServerConfigBase {
   /**
    * Security: Allowlist of permitted tool names from this server.
    * If specified, only tools in this list will be loaded and available for use.
-   * Tool names should be the original names (without the mcp__ prefix).
+   * Tool names should be the raw server tool names (without any `mcp__...` qualifier).
    *
    * @example
    * ```typescript

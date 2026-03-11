@@ -19,6 +19,12 @@ vi.mock("ai", async (importOriginal) => {
 
 import { createUIMessageStream, createUIMessageStreamResponse, streamText } from "ai";
 
+const execOpts = {
+  toolCallId: "test",
+  messages: [],
+  abortSignal: undefined as unknown as AbortSignal,
+};
+
 describe("Streaming Tools", () => {
   beforeEach(() => {
     resetMocks();
@@ -270,6 +276,69 @@ describe("Streaming Tools", () => {
         stream: mockStream,
       });
     });
+
+    it("passes the live writer to deferred function-based tools invoked via call_tool", async () => {
+      const writer = {
+        write: vi.fn(),
+        merge: vi.fn(),
+        onError: undefined,
+      };
+
+      vi.mocked(createUIMessageStream).mockImplementation(({ execute }) => {
+        void execute({ writer });
+        return new ReadableStream();
+      });
+
+      const plugin = definePlugin({
+        name: "streaming-plugin",
+        deferred: true,
+        tools: (ctx: StreamingContext) => ({
+          deferredWidget: tool({
+            description: "Render a deferred widget",
+            inputSchema: z.object({ data: z.string() }),
+            execute: async ({ data }) => {
+              ctx.writer?.write({ type: "text", text: `widget:${data}` });
+              return `widget:${data}`;
+            },
+          }),
+        }),
+      });
+
+      vi.mocked(streamText).mockImplementation((params) => {
+        expect(params.tools).toHaveProperty("call_tool");
+        expect(params.tools).not.toHaveProperty("deferredWidget");
+        expect(params.tools).not.toHaveProperty("streaming-plugin__deferredWidget");
+
+        const proxiedCall = params.tools.call_tool.execute!(
+          {
+            tool_name: "streaming-plugin__deferredWidget",
+            arguments: { data: "hello" },
+          },
+          execOpts,
+        );
+
+        return {
+          toUIMessageStream: () => new ReadableStream(),
+          text: proxiedCall.then(() => "ok"),
+          response: Promise.resolve({ messages: [] }),
+          usage: Promise.resolve({ inputTokens: 10, outputTokens: 20 }),
+          finishReason: Promise.resolve("stop"),
+          steps: Promise.resolve([]),
+          fullStream: (async function* () {
+            yield { type: "text-delta" as const, text: "ok", id: "1" };
+          })(),
+        } as ReturnType<typeof streamText>;
+      });
+
+      const agent = createAgent({
+        model: createMockModel(),
+        plugins: [plugin],
+      });
+
+      await agent.streamDataResponse({ prompt: "Render the widget" });
+
+      expect(writer.write).toHaveBeenCalledWith({ type: "text", text: "widget:hello" });
+    });
   });
 
   describe("getActiveTools with streaming plugins", () => {
@@ -294,7 +363,7 @@ describe("Streaming Tools", () => {
 
       // Note: Static tools should be in getActiveTools
       const tools = agent.getActiveTools();
-      // The tools may be prefixed with mcp__ when registered through MCPManager
+      // Static plugin tools are namespaced as <plugin>__<tool> when registered through MCPManager
       expect(tools).toBeDefined();
     });
 
@@ -320,8 +389,8 @@ describe("Streaming Tools", () => {
       const tools = agent.getActiveTools();
       // The streaming tool should NOT be in the static tools
       expect(tools).not.toHaveProperty("streamingTool");
-      // Nor with MCP prefix
-      expect(tools).not.toHaveProperty("mcp__streaming-plugin__streamingTool");
+      // Nor with the plugin namespace
+      expect(tools).not.toHaveProperty("streaming-plugin__streamingTool");
     });
   });
 });

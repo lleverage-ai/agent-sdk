@@ -6,8 +6,8 @@
  * tools at runtime.
  *
  * NOTE: Plugin tools are registered through the MCP manager and get
- * prefixed with `mcp__<pluginName>__`. So `start_team` becomes
- * `mcp__agent-teams__start_team` in the primary agent's tool set.
+ * prefixed with `<pluginName>__`. So `start_team` becomes
+ * `agent-teams__start_team` in the primary agent's tool set.
  * The dynamically added team tools (via addRuntimeTools) are NOT prefixed.
  */
 
@@ -32,15 +32,15 @@ vi.mock("ai", async (importOriginal) => {
 
 const mockedGenerateText = vi.mocked(generateText);
 
-/** MCP-prefixed name for the start_team tool on the primary agent */
-const START_TEAM = "mcp__agent-teams__start_team";
+/** Namespaced name for the start_team tool on the primary agent */
+const START_TEAM = "agent-teams__start_team";
 
 /**
  * Helper: find a tool by name in opts.tools, checking both
- * direct and MCP-prefixed names.
+ * direct and namespaced names.
  */
 function findTool(tools: Record<string, any>, name: string) {
-  return tools[name] ?? tools[`mcp__agent-teams__${name}`];
+  return tools[name] ?? tools[`agent-teams__${name}`];
 }
 
 /**
@@ -387,7 +387,7 @@ describe("Agent Teams Integration Tests", () => {
       // Should also have primary agent's custom tools
       expect(toolNamesInGeneration).toContain("custom_tool");
 
-      // start_team should still be present (as MCP-prefixed)
+      // start_team should still be present (under the plugin namespace)
       expect(toolNamesInGeneration).toContain(START_TEAM);
     });
   });

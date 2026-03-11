@@ -42,7 +42,7 @@ describe("createCallToolTool", () => {
 
       const result = await callTool.execute!(
         {
-          tool_name: "mcp__stripe__create_payment",
+          tool_name: "stripe__create_payment",
           arguments: { amount: 100, currency: "usd" },
         },
         execOpts,
@@ -57,7 +57,7 @@ describe("createCallToolTool", () => {
 
       const result = await callTool.execute!(
         {
-          tool_name: "mcp__stripe__nonexistent",
+          tool_name: "stripe__nonexistent",
           arguments: {},
         },
         execOpts,
@@ -84,7 +84,7 @@ describe("createCallToolTool", () => {
 
       const callTool = createCallToolTool({ mcpManager: manager });
       const result = await callTool.execute!(
-        { tool_name: "mcp__failing__fail_tool", arguments: {} },
+        { tool_name: "failing__fail_tool", arguments: {} },
         execOpts,
       );
 
@@ -114,9 +114,9 @@ describe("createCallToolTool", () => {
         onBeforeCall,
       });
 
-      await callTool.execute!({ tool_name: "mcp__test__my_tool", arguments: {} }, execOpts);
+      await callTool.execute!({ tool_name: "test__my_tool", arguments: {} }, execOpts);
 
-      expect(onBeforeCall).toHaveBeenCalledWith("mcp__test__my_tool", {});
+      expect(onBeforeCall).toHaveBeenCalledWith("test__my_tool", {});
     });
 
     it("fires onAfterCall with result", async () => {
@@ -139,9 +139,9 @@ describe("createCallToolTool", () => {
         onAfterCall,
       });
 
-      await callTool.execute!({ tool_name: "mcp__test__my_tool", arguments: {} }, execOpts);
+      await callTool.execute!({ tool_name: "test__my_tool", arguments: {} }, execOpts);
 
-      expect(onAfterCall).toHaveBeenCalledWith("mcp__test__my_tool", {}, "result-value");
+      expect(onAfterCall).toHaveBeenCalledWith("test__my_tool", {}, "result-value");
     });
   });
 

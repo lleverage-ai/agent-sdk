@@ -448,7 +448,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
         description: "A test plugin for verification",
       });
       expect(toolsInContext).toBeDefined();
-      expect(toolsInContext?.some((t) => t.name === "mcp__test-plugin__testTool")).toBe(true);
+      expect(toolsInContext?.some((t) => t.name === "test-plugin__testTool")).toBe(true);
     });
   });
 

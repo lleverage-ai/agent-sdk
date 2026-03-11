@@ -14,7 +14,7 @@
  *
  * Uses mocked generateText with discriminated routing: teammate calls are
  * identified by the presence of `team_task_claim` in opts.tools (a teammate-
- * only tool). Lead calls have `team_spawn` or `mcp__agent-teams__start_team`.
+ * only tool). Lead calls have `team_spawn` or `agent-teams__start_team`.
  */
 
 import { generateText } from "ai";
@@ -40,9 +40,9 @@ const mockedGenerateText = vi.mocked(generateText);
 // Helpers
 // =============================================================================
 
-/** Find a tool by name, checking both direct and MCP-prefixed names. */
+/** Find a tool by name, checking both direct and namespaced names. */
 function findTool(tools: Record<string, any>, name: string) {
-  return tools[name] ?? tools[`mcp__agent-teams__${name}`];
+  return tools[name] ?? tools[`agent-teams__${name}`];
 }
 
 /** Create a valid generateText response (no tool calls). */

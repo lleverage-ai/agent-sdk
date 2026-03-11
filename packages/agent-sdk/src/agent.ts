@@ -53,6 +53,7 @@ import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { createSubagent } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
+import { formatPluginToolName } from "./tool-names.js";
 import { createCallToolTool } from "./tools/call-tool.js";
 import {
   coreToolsToToolSet,
@@ -982,6 +983,9 @@ export function createAgent(options: AgentOptions): Agent {
   // Removed: auto threshold no longer forces deferred loading
   // The default eager loading should be respected
 
+  const isPluginDeferred = (plugin: { deferred?: boolean }): boolean =>
+    plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
+
   // Auto-create core tools (unless user provides explicit tools)
   // Note: search_tools is created separately below based on loading mode
   const { tools: autoCreatedCoreTools, skillRegistry: createdSkillRegistry } = createCoreTools({
@@ -1004,13 +1008,19 @@ export function createAgent(options: AgentOptions): Agent {
   // Note: Plugin skills are collected earlier (before createCoreTools) so
   // the skill tool can include them in progressive disclosure.
   for (const plugin of options.plugins ?? []) {
-    // Handle tools via MCP manager for unified interface
-    // Note: Function-based (streaming) tools are handled separately in
-    // getActiveToolSetWithStreaming() and are not registered here
-    if (plugin.tools && typeof plugin.tools !== "function") {
-      // Check if this plugin is deferred (proxy mode or per-plugin opt-in)
-      const isDeferred =
-        plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
+    // Handle tools via MCP manager for unified interface.
+    // Function-based tools are also registered when they participate in
+    // deferred discovery/proxy loading so search_tools/call_tool can find them.
+    if (plugin.tools) {
+      const isDeferred = isPluginDeferred(plugin);
+      const shouldRegisterForDiscovery =
+        typeof plugin.tools !== "function" ||
+        isDeferred ||
+        (deferredLoadingActive && plugin.deferred !== false);
+
+      if (!shouldRegisterForDiscovery) {
+        continue;
+      }
 
       if (isDeferred) {
         // Deferred plugin: register in MCP for discovery via search_tools + call_tool
@@ -1019,8 +1029,7 @@ export function createAgent(options: AgentOptions): Agent {
         });
         hasProxiedTools = true;
       } else if (deferredLoadingActive && plugin.deferred !== false) {
-        // Deferred loading (auto threshold or always enabled): register tools but don't load them initially
-        // Respect explicit deferred: false opt-out
+        // Deferred loading: register tools but don't load them initially
         mcpManager.registerPluginTools(plugin.name, plugin.tools, {
           autoLoad: false,
         });
@@ -1296,25 +1305,37 @@ export function createAgent(options: AgentOptions): Agent {
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
 
+    if (allTools.call_tool) {
+      allTools.call_tool = createCallToolTool({
+        mcpManager,
+        streamingContext,
+      });
+    }
+
     // Add runtime tools (added by plugins at runtime)
     Object.assign(allTools, runtimeTools);
 
-    // Process plugins - invoke function-based tools with streaming context
+    // Process eager function-based plugins with streaming context.
+    // Static tools and deferred/proxy tools flow through MCPManager so loading
+    // rules stay consistent between streaming and non-streaming execution.
     for (const plugin of options.plugins ?? []) {
-      if (plugin.tools) {
-        if (typeof plugin.tools === "function") {
-          // Streaming-aware tools: invoke factory with context
-          const streamingTools = (plugin.tools as StreamingToolsFactory)(streamingContext);
-          Object.assign(allTools, streamingTools);
-        } else {
-          // Static tools: use as-is
-          Object.assign(allTools, plugin.tools);
+      if (plugin.tools && typeof plugin.tools === "function") {
+        const isDeferred = isPluginDeferred(plugin);
+        const isDiscoveryDeferred = deferredLoadingActive && plugin.deferred !== false;
+
+        if (isDeferred || isDiscoveryDeferred) {
+          continue;
+        }
+
+        const streamingTools = (plugin.tools as StreamingToolsFactory)(streamingContext);
+        for (const [toolName, tool] of Object.entries(streamingTools)) {
+          allTools[formatPluginToolName(plugin.name, toolName)] = tool;
         }
       }
     }
 
     // Add MCP tools from plugin registrations
-    const mcpTools = mcpManager.getToolSet();
+    const mcpTools = mcpManager.getToolSet(undefined, streamingContext);
     Object.assign(allTools, mcpTools);
 
     // Apply allowedTools filtering

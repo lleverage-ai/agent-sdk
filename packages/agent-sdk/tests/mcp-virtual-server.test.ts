@@ -26,20 +26,20 @@ describe("VirtualMCPServer", () => {
     expect(server.name).toBe("my-plugin");
   });
 
-  it("generates MCP tool names", () => {
+  it("generates plugin-namespaced tool names", () => {
     const server = new VirtualMCPServer("my-plugin", testTools);
     const metadata = server.getToolMetadata();
 
     expect(metadata).toHaveLength(2);
-    expect(metadata[0].name).toBe("mcp__my-plugin__greet");
-    expect(metadata[1].name).toBe("mcp__my-plugin__add");
+    expect(metadata[0].name).toBe("my-plugin__greet");
+    expect(metadata[1].name).toBe("my-plugin__add");
   });
 
   it("includes descriptions in metadata", () => {
     const server = new VirtualMCPServer("my-plugin", testTools);
     const metadata = server.getToolMetadata();
 
-    const greetMeta = metadata.find((m) => m.name === "mcp__my-plugin__greet");
+    const greetMeta = metadata.find((m) => m.name === "my-plugin__greet");
     expect(greetMeta?.description).toBe("Greet someone");
   });
 
@@ -61,11 +61,11 @@ describe("VirtualMCPServer", () => {
     await expect(server.callTool("unknown", {})).rejects.toThrow("Tool 'unknown' not found");
   });
 
-  it("returns AI SDK compatible tools with MCP names", () => {
+  it("returns AI SDK compatible tools with plugin-namespaced names", () => {
     const server = new VirtualMCPServer("my-plugin", testTools);
     const tools = server.getToolSet();
 
-    expect(Object.keys(tools)).toEqual(["mcp__my-plugin__greet", "mcp__my-plugin__add"]);
+    expect(Object.keys(tools)).toEqual(["my-plugin__greet", "my-plugin__add"]);
   });
 
   it("checks if tool exists", () => {

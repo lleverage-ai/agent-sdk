@@ -1,7 +1,7 @@
 /**
- * Virtual MCP server for inline plugin tools.
+ * Internal wrapper for inline plugin tools.
  *
- * Wraps AI SDK tools with MCP-compatible naming and metadata
+ * Wraps AI SDK tools with plugin-namespaced naming and metadata
  * without running an actual MCP server process.
  *
  * @packageDocumentation
@@ -9,13 +9,17 @@
 
 import type { Tool, ToolSet } from "ai";
 import { asSchema } from "ai";
+import { formatPluginToolName } from "../tool-names.js";
+import type { StreamingContext, StreamingToolsFactory } from "../types.js";
 import type { MCPToolMetadata } from "./types.js";
 
+const DEFAULT_STREAMING_CONTEXT: StreamingContext = { writer: null };
+
 /**
- * Virtual MCP server that wraps inline plugin tools.
+ * Internal wrapper that presents inline plugin tools through the shared discovery interface.
  *
- * This provides a consistent interface for tools defined in code,
- * making them appear the same as tools from external MCP servers.
+ * This keeps inline plugin tools on the same discovery path as external MCP tools
+ * while exposing them as plain `<plugin>__<tool>` names to callers.
  *
  * @example
  * ```typescript
@@ -28,7 +32,7 @@ import type { MCPToolMetadata } from "./types.js";
  * });
  *
  * const metadata = server.getToolMetadata();
- * // [{ name: "mcp__my-plugin__greet", ... }]
+ * // [{ name: "my-plugin__greet", ... }]
  * ```
  *
  * @category MCP
@@ -37,32 +41,39 @@ export class VirtualMCPServer {
   /** Server/plugin name */
   readonly name: string;
 
-  /** Original tools keyed by original name */
+  /** Registered tools keyed by original name for metadata/name lookups */
   private tools: Map<string, Tool> = new Map();
 
+  /** Optional factory for streaming-aware inline tools */
+  private readonly toolsFactory?: StreamingToolsFactory;
+
   /**
-   * Create a virtual MCP server.
+   * Create an inline plugin tool wrapper.
    *
-   * @param name - Server/plugin name (used in mcp__<name>__<tool> naming)
-   * @param tools - AI SDK tools to wrap
+   * @param name - Plugin name (used in <name>__<tool> naming)
+   * @param tools - AI SDK tools or tool factory to wrap
    */
-  constructor(name: string, tools: ToolSet) {
+  constructor(name: string, tools: ToolSet | StreamingToolsFactory) {
     this.name = name;
-    for (const [toolName, tool] of Object.entries(tools)) {
+    this.toolsFactory = typeof tools === "function" ? tools : undefined;
+
+    const initialTools = typeof tools === "function" ? tools(DEFAULT_STREAMING_CONTEXT) : tools;
+
+    for (const [toolName, tool] of Object.entries(initialTools)) {
       this.tools.set(toolName, tool);
     }
   }
 
   /**
-   * Get MCP-formatted metadata for all tools.
+   * Get qualified metadata for all tools.
    *
-   * @returns Array of tool metadata with MCP naming
+   * @returns Array of tool metadata with plugin-namespaced naming
    */
   getToolMetadata(): MCPToolMetadata[] {
     const metadata: MCPToolMetadata[] = [];
 
     for (const [toolName, tool] of this.tools) {
-      const mcpName = `mcp__${this.name}__${toolName}`;
+      const qualifiedName = formatPluginToolName(this.name, toolName);
 
       // Convert FlexibleSchema to JSON Schema using AI SDK's asSchema
       let inputSchema: MCPToolMetadata["inputSchema"] = {
@@ -84,7 +95,7 @@ export class VirtualMCPServer {
       }
 
       metadata.push({
-        name: mcpName,
+        name: qualifiedName,
         description: tool.description ?? "",
         inputSchema,
         source: this.name,
@@ -98,16 +109,23 @@ export class VirtualMCPServer {
   /**
    * Execute a tool by its original name.
    *
-   * @param toolName - Original tool name (without mcp__ prefix)
+   * @param toolName - Original tool name (without the plugin namespace)
    * @param args - Tool arguments
-   * @param abortSignal - Optional abort signal for cancellation
+   * @param options - Optional execution options
    * @returns Tool execution result
    * @throws If tool not found
    */
-  async callTool(toolName: string, args: unknown, abortSignal?: AbortSignal): Promise<unknown> {
-    const tool = this.tools.get(toolName);
+  async callTool(
+    toolName: string,
+    args: unknown,
+    options: {
+      abortSignal?: AbortSignal;
+      streamingContext?: StreamingContext;
+    } = {},
+  ): Promise<unknown> {
+    const tool = this.resolveTool(toolName, options.streamingContext);
     if (!tool) {
-      throw new Error(`Tool '${toolName}' not found in virtual server '${this.name}'`);
+      throw new Error(`Tool '${toolName}' not found in inline plugin '${this.name}'`);
     }
 
     if (!tool.execute) {
@@ -117,21 +135,22 @@ export class VirtualMCPServer {
     return tool.execute(args as Parameters<typeof tool.execute>[0], {
       toolCallId: `virtual-${Date.now()}`,
       messages: [],
-      abortSignal: abortSignal ?? new AbortController().signal,
+      abortSignal: options.abortSignal ?? new AbortController().signal,
     });
   }
 
   /**
-   * Get AI SDK compatible ToolSet with MCP naming.
+   * Get AI SDK compatible ToolSet with plugin-namespaced naming.
    *
-   * @returns ToolSet with mcp__<name>__<tool> keys
+   * @param streamingContext - Optional streaming context for tool factories
+   * @returns ToolSet with <name>__<tool> keys
    */
-  getToolSet(): ToolSet {
+  getToolSet(streamingContext?: StreamingContext): ToolSet {
     const toolSet: ToolSet = {};
 
-    for (const [toolName, tool] of this.tools) {
-      const mcpName = `mcp__${this.name}__${toolName}`;
-      toolSet[mcpName] = tool;
+    for (const [toolName, tool] of Object.entries(this.getResolvedTools(streamingContext))) {
+      const qualifiedName = formatPluginToolName(this.name, toolName);
+      toolSet[qualifiedName] = tool;
     }
 
     return toolSet;
@@ -151,5 +170,29 @@ export class VirtualMCPServer {
    */
   getToolNames(): string[] {
     return Array.from(this.tools.keys());
+  }
+
+  /**
+   * Resolve a tool definition, invoking the streaming factory when needed.
+   * @internal
+   */
+  private resolveTool(toolName: string, streamingContext?: StreamingContext): Tool | undefined {
+    if (!this.toolsFactory) {
+      return this.tools.get(toolName);
+    }
+
+    return this.toolsFactory(streamingContext ?? DEFAULT_STREAMING_CONTEXT)[toolName];
+  }
+
+  /**
+   * Get the current tool set, resolving streaming-aware factories when needed.
+   * @internal
+   */
+  private getResolvedTools(streamingContext?: StreamingContext): ToolSet {
+    if (!this.toolsFactory) {
+      return Object.fromEntries(this.tools.entries());
+    }
+
+    return this.toolsFactory(streamingContext ?? DEFAULT_STREAMING_CONTEXT);
   }
 }

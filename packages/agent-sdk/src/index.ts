@@ -627,6 +627,8 @@ export {
   // Tool utilities (DX helpers)
   mcpTools,
   mcpToolsFor,
+  pluginTools,
+  pluginToolsFor,
   recoverFailedTasks,
   recoverRunningTasks,
   // Skill tool (progressive disclosure)
