@@ -2999,15 +2999,8 @@ export interface SubagentCreateContext {
 /**
  * Context for managing state during agent execution.
  *
- * @example
- * ```typescript
- * const ctx = createContext();
- * ctx.set("user", { id: 123, name: "Alice" });
- *
- * const user = ctx.get<{ id: number; name: string }>("user");
- * ```
- *
  * @category Context
+ * @internal
  */
 export interface AgentContext {
   /** The underlying data store */

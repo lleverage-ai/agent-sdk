@@ -14,9 +14,6 @@
  * const state: AgentState = { todos: [], files: {} };
  * const backend = new StateBackend(state);
  *
- * // Or use the factory pattern
- * const backendFactory = createStateBackend();
- * const backend = backendFactory(state);
  * ```
  *
  * @packageDocumentation
@@ -496,6 +493,7 @@ export class StateBackend implements BackendProtocol {
  * ```
  *
  * @category Backend
+ * @internal
  */
 export function createStateBackend(): (state: AgentState) => StateBackend {
   return (state: AgentState) => new StateBackend(state);

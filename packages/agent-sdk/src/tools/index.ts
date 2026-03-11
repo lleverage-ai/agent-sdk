@@ -14,13 +14,11 @@
 export type { BashResult, BashToolOptions } from "./execute.js";
 // Bash tool
 export { createBashTool } from "./execute.js";
-// Tool factory - internal exports for agent.ts
-// Note: createCoreTools is intentionally NOT exported publicly.
-// Users should use createAgent() which handles tool creation automatically.
+// Tool factory
+// These low-level composition helpers are public for advanced integrations and tests.
 export {
   coreToolsToToolSet,
   createCoreTools,
-  createFilesystemToolsOnly,
   type CoreTools,
   type CoreToolsOptions,
   type CreateCoreToolsResult,

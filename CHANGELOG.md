@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Refreshed contributor-facing docs to cover workspace commands, changelog expectations, and current deferred/proxy tool-loading behavior
 - **BREAKING**: Inline plugin tools now use the `<plugin>__<tool>` namespace instead of `mcp__<plugin>__<tool>`; external MCP servers keep the `mcp__<server>__<tool>` namespace, and DX helpers now distinguish the two with `pluginTools()` / `pluginToolsFor()` vs `mcpTools()` / `mcpToolsFor()`
 
+### Removed
+
+- **BREAKING**: Removed the redundant package-root exports `createFilesystemToolsOnly()`, `createContext()`, `AgentContext`, and `createStateBackend()`. Use `createFilesystemTools()`, an inline `BackendFactory` such as `(state) => new StateBackend(state)`, or your own app-level context object instead.
+
 ### Fixed
 
 - Restored missing package entrypoints/barrels after monorepo split, plus restored missing `errors/` and `security/` source trees under `packages/agent-sdk/src`
