@@ -53,6 +53,7 @@ import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { createSubagent } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
+import { formatPluginToolName } from "./tool-names.js";
 import { createCallToolTool } from "./tools/call-tool.js";
 import {
   coreToolsToToolSet,
@@ -83,7 +84,6 @@ import type {
   PostToolUseInput,
   PreToolUseInput,
   StreamingContext,
-  StreamingToolsFactory,
   StreamPart,
   SubagentDefinition,
   ToolCallResult,
@@ -961,6 +961,10 @@ export function createAgent(options: AgentOptions): Agent {
   // IMPORTANT: Plugin skills must be collected BEFORE createCoreTools() is called
   // so the skill tool includes them in progressive disclosure.
   for (const plugin of options.plugins ?? []) {
+    if (plugin.tools) {
+      // Fail fast on reserved inline plugin namespaces during agent creation.
+      formatPluginToolName(plugin.name, "__validation__");
+    }
     if (plugin.skills) {
       skills.push(...plugin.skills);
     }
@@ -974,6 +978,9 @@ export function createAgent(options: AgentOptions): Agent {
   }
   // Removed: auto threshold no longer forces deferred loading
   // The default eager loading should be respected
+
+  const isPluginDeferred = (plugin: { deferred?: boolean }): boolean =>
+    plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
 
   // Auto-create core tools (unless user provides explicit tools)
   // Note: search_tools is created separately below based on loading mode
@@ -997,50 +1004,18 @@ export function createAgent(options: AgentOptions): Agent {
   // Note: Plugin skills are collected earlier (before createCoreTools) so
   // the skill tool can include them in progressive disclosure.
   for (const plugin of options.plugins ?? []) {
-    if (plugin.tools && typeof plugin.tools === "function") {
-      // Function-based (streaming) tools
-      const factory = plugin.tools as StreamingToolsFactory;
-      const isDeferred =
-        plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
+    if (plugin.tools) {
+      const isDeferred = isPluginDeferred(plugin);
+      const autoLoad = !(isDeferred || (deferredLoadingActive && plugin.deferred !== false));
 
       if (isDeferred) {
-        // Deferred streaming plugin: register factory in MCP for discovery via search_tools + call_tool
-        mcpManager.registerStreamingPluginTools(plugin.name, factory, {
-          autoLoad: false,
-        });
         hasProxiedTools = true;
-      } else if (deferredLoadingActive && plugin.deferred !== false) {
-        // Deferred loading active: register but don't auto-load
-        mcpManager.registerStreamingPluginTools(plugin.name, factory, {
-          autoLoad: false,
-        });
       }
-      // else: Eager non-deferred streaming plugins are handled directly in
-      // getActiveToolSetWithStreaming() — they're NOT registered in MCP.
-    } else if (plugin.tools) {
-      // Static tools
-      // Check if this plugin is deferred (proxy mode or per-plugin opt-in)
-      const isDeferred =
-        plugin.deferred === true || (pluginLoadingMode === "proxy" && plugin.deferred !== false);
 
-      if (isDeferred) {
-        // Deferred plugin: register in MCP for discovery via search_tools + call_tool
-        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
-          autoLoad: false,
-        });
-        hasProxiedTools = true;
-      } else if (deferredLoadingActive && plugin.deferred !== false) {
-        // Deferred loading (auto threshold or always enabled): register tools but don't load them initially
-        // Respect explicit deferred: false opt-out
-        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
-          autoLoad: false,
-        });
-      } else {
-        // Default eager mode: load immediately
-        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
-          autoLoad: true,
-        });
-      }
+      // Register all plugin tools through the shared discovery manager.
+      // Eager tools auto-load into the active ToolSet; deferred/proxy tools stay
+      // discoverable via search_tools + call_tool.
+      mcpManager.registerPluginTools(plugin.name, plugin.tools, { autoLoad });
     }
   }
 
@@ -1311,29 +1286,17 @@ export function createAgent(options: AgentOptions): Agent {
     // Start with core tools
     const allTools: ToolSet = { ...coreTools };
 
+    if (allTools.call_tool) {
+      allTools.call_tool = createCallToolTool({
+        mcpManager,
+        streamingContext,
+      });
+    }
+
     // Add runtime tools (added by plugins at runtime)
     Object.assign(allTools, runtimeTools);
 
-    // Process plugins - invoke non-deferred function-based tools with streaming context.
-    // Deferred function-based plugins are registered in MCP and come via mcpManager.getToolSet().
-    for (const plugin of options.plugins ?? []) {
-      if (plugin.tools) {
-        if (typeof plugin.tools === "function") {
-          // Skip if registered in MCP (deferred or deferredLoadingActive plugins)
-          if (mcpManager.hasStreamingFactory(plugin.name)) {
-            continue;
-          }
-          // Non-deferred: eagerly invoke factory with streaming context (original names)
-          const streamingTools = (plugin.tools as StreamingToolsFactory)(streamingContext);
-          Object.assign(allTools, streamingTools);
-        } else {
-          // Static tools: use as-is
-          Object.assign(allTools, plugin.tools);
-        }
-      }
-    }
-
-    // Add MCP tools from plugin registrations (includes streaming factory tools with live context)
+    // Add MCP tools from plugin registrations
     const mcpTools = mcpManager.getToolSet(undefined, streamingContext);
     Object.assign(allTools, mcpTools);
 

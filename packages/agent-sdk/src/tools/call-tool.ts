@@ -21,11 +21,19 @@ import type { StreamingContext } from "../types.js";
  */
 export interface CallToolOptions {
   /**
-   * MCP manager for looking up plugin/MCP tools.
-   * Tools registered in MCP (both virtual plugin servers and external servers)
-   * are used for tool lookup and execution.
+   * Discovery manager for looking up inline plugin tools and external MCP tools.
    */
   mcpManager?: MCPManager;
+
+  /**
+   * Optional fallback streaming context for proxied function-based tools.
+   *
+   * When provided, deferred plugin tools created from a {@link StreamingContext}
+   * receive the live writer when invoked via `call_tool`.
+   *
+   * This is primarily for request-scoped call_tool instances created in streaming flows.
+   */
+  streamingContext?: StreamingContext | null;
 
   /**
    * Hook callback to fire before executing the proxied tool.
@@ -42,13 +50,6 @@ export interface CallToolOptions {
     args: Record<string, unknown>,
     result: unknown,
   ) => void | Promise<void>;
-
-  /**
-   * Optional fallback streaming context used when execution options do not carry one.
-   *
-   * This is primarily for request-scoped call_tool instances created in streaming flows.
-   */
-  streamingContext?: StreamingContext | null;
 }
 
 /**
@@ -68,8 +69,8 @@ export interface CallToolOptions {
  * });
  *
  * // Agent uses:
- * // search_tools({ query: "payment" })  → finds mcp__stripe__create_payment
- * // call_tool({ tool_name: "mcp__stripe__create_payment", arguments: { amount: 100 } })
+ * // search_tools({ query: "payment" })  → finds stripe__create_payment
+ * // call_tool({ tool_name: "stripe__create_payment", arguments: { amount: 100 } })
  * ```
  *
  * @category Tools
@@ -80,10 +81,10 @@ export function createCallToolTool(options: CallToolOptions): Tool {
   return tool({
     description:
       "Call a tool by name. Use this to invoke tools discovered via search_tools " +
-      "that are not directly available as top-level tools. Pass the tool name from " +
+      "that are not directly available as top-level tools. Pass the qualified tool name from " +
       "search_tools results and the arguments matching the tool's parameter schema.",
     inputSchema: z.object({
-      tool_name: z.string().describe("Tool name from search_tools results"),
+      tool_name: z.string().describe("Qualified tool name from search_tools results"),
       arguments: z
         .record(z.string(), z.unknown())
         .default({})
@@ -104,7 +105,7 @@ export function createCallToolTool(options: CallToolOptions): Tool {
 
       let result: unknown;
 
-      // Look up tool in MCPManager (covers both virtual plugin tools and external MCP)
+      // Look up tool in MCPManager (covers both inline plugin tools and external MCP)
       if (mcpManager) {
         const metadata = mcpManager.getToolMetadata(tool_name);
         if (metadata) {
@@ -120,7 +121,10 @@ export function createCallToolTool(options: CallToolOptions): Tool {
               streamingContext ??
               null;
 
-            result = await mcpManager.callTool(tool_name, args, requestStreamingContext);
+            result = await mcpManager.callTool(tool_name, args, {
+              abortSignal: execOptions?.abortSignal,
+              streamingContext: requestStreamingContext,
+            });
             await onAfterCall?.(tool_name, args, result);
             return formatResult(tool_name, result);
           } catch (error) {

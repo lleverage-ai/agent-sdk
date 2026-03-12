@@ -586,19 +586,9 @@ export function coreToolsToToolSet(coreTools: CoreTools): ToolSet {
 /**
  * Creates filesystem tools only.
  *
- * Use this when you only need file operations without other tools.
+ * Thin internal alias over {@link createFilesystemTools}.
  *
- * @param options - Filesystem tools options
- * @returns Object containing filesystem tools
- *
- * @example
- * ```typescript
- * const fsTools = createFilesystemToolsOnly({
- *   backend: new FilesystemBackend({ rootDir: process.cwd() }),
- * });
- * ```
- *
- * @category Tools
+ * @internal
  */
 export function createFilesystemToolsOnly(options: FilesystemToolsOptions): FilesystemTools {
   return createFilesystemTools(options);

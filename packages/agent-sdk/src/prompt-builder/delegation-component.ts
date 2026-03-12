@@ -20,7 +20,7 @@ context focused on the final result.
 **When to delegate:**
 - Multi-step tool workflows (search → read → analyze → summarize)
 - Operations that produce large intermediate outputs
-- Tasks requiring specialized plugin tools
+- Tasks requiring specialized tools or focused exploration
 - Any work where you only need the final result
 
 **How to delegate:**

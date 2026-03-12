@@ -57,7 +57,7 @@ export interface SearchToolsOptions {
 }
 
 /**
- * Creates the search_tools meta-tool for discovering MCP tools.
+ * Creates the search_tools meta-tool for discovering inline plugin tools and MCP tools.
  *
  * This tool allows agents to search for available tools by query,
  * enabling progressive disclosure of capabilities.

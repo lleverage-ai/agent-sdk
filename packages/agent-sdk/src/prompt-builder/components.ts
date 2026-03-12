@@ -45,7 +45,7 @@ export const toolsComponent: PromptComponent = {
   condition: (ctx) => ctx.tools !== undefined && ctx.tools.length > 0,
   render: (ctx) => {
     const toolLines = ctx.tools!.map((t) => `- **${t.name}**: ${t.description}`);
-    return `# Available Tools\n\nYou have access to the following tools:\n${toolLines.join("\n")}`;
+    return `# Available Tools\n\n${toolLines.join("\n")}`;
   },
 };
 
@@ -68,7 +68,7 @@ export const skillsComponent: PromptComponent = {
   condition: (ctx) => ctx.skills !== undefined && ctx.skills.length > 0,
   render: (ctx) => {
     const skillLines = ctx.skills!.map((s) => `- **${s.name}**: ${s.description}`);
-    return `# Available Skills\n\nYou can activate these skills on-demand:\n${skillLines.join("\n")}`;
+    return `# Available Skills\n\n${skillLines.join("\n")}`;
   },
 };
 
@@ -148,9 +148,10 @@ export const contextComponent: PromptComponent = {
 };
 
 /**
- * Lists loaded plugins.
+ * Optional component that lists loaded plugins.
  *
  * Only included if plugins are available.
+ * Not included in {@link createDefaultPromptBuilder}.
  * Priority: 68
  *
  * @example
@@ -192,13 +193,13 @@ export const permissionModeComponent: PromptComponent = {
     let description = "";
 
     if (mode === "default") {
-      description = "Default permission mode: tools may require approval based on safety rules.";
+      description = "Tools may require approval based on safety rules.";
     } else if (mode === "acceptEdits") {
-      description = "File editing tools are auto-approved; other tools may require approval.";
+      description = "File editing tools are auto-approved. Other tools may still require approval.";
     } else if (mode === "bypassPermissions") {
-      description = "All tools are auto-approved without permission checks.";
+      description = "All tools are auto-approved.";
     } else if (mode === "plan") {
-      description = "Plan mode: tool use is planned but not executed.";
+      description = "Plan mode: propose tool usage without executing it.";
     } else {
       description = `Permission mode: ${String(mode)}`;
     }
@@ -214,7 +215,6 @@ export const permissionModeComponent: PromptComponent = {
  * - `identity`: Basic agent identity
  * - `tools-listing`: Available tools
  * - `skills-listing`: Available skills
- * - `plugins-listing`: Loaded plugins
  * - `capabilities`: Backend capabilities
  * - `permission-mode`: Permission mode info
  *
@@ -256,7 +256,6 @@ export function createDefaultPromptBuilder(): PromptBuilder {
     delegationComponent,
     toolsComponent,
     skillsComponent,
-    pluginsComponent,
     capabilitiesComponent,
     permissionModeComponent,
   ]);

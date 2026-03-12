@@ -23,7 +23,7 @@ vi.mock("ai", async (importOriginal) => {
 const mockedGenerateText = vi.mocked(generateText);
 
 function findTool(tools: Record<string, any>, name: string) {
-  return tools[name] ?? tools[`mcp__agent-teams__${name}`];
+  return tools[name] ?? tools[`agent-teams__${name}`];
 }
 
 function mockGenerateTextWithToolCall(toolCallFn: (opts: any) => Promise<void>) {

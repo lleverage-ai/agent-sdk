@@ -18,15 +18,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `@lleverage-ai/agent-stream` and `@lleverage-ai/agent-ledger` have been merged into `@lleverage-ai/agent-threads` with subpath exports (`./stream`, `./ledger`, `./server`, `./client`, `./stores/*`)
 - Workspace scripts (`build`, `type-check`, `test`, `clean`) now use the simplified two-package build order (`agent-threads` → `agent-sdk`)
+- Default prompt builder output is now more minimal by listing tools, skills, capabilities, and permission mode without a separate "Loaded Plugins" section; inline plugin tools still appear in the tool list
 - `RecoverResult` typing is now status-narrowed to active-to-terminal transitions (`created|streaming` → `failed|cancelled`)
 - `TypedEmitter` now accepts interface-based event maps, allowing `WsClientEvents` to follow the repository `interface` convention without requiring index-signature workarounds
 - Fork finalization in both ledger stores is now non-destructive: committing a run at a fork point preserves previously committed branch messages while still superseding older runs at that fork
 - `GetTranscriptOptions.branch` now supports explicit branch selections via `{ selections: Record<string, string> }`, and ledger stores now resolve `"active"` transcripts by walking parent-child message links with committed-branch preference
+- Removed the `simple-git-hooks` workspace dependency so `bun install` no longer depends on a failing Bun postinstall path
+- Refreshed contributor-facing docs to cover workspace commands, changelog expectations, and current deferred/proxy tool-loading behavior
+- **BREAKING**: Inline plugin tools now use the `<plugin>__<tool>` namespace instead of `mcp__<plugin>__<tool>`. This also changes helper outputs such as `toolsFromPlugin()` to return inline plugin names in the new qualified form. External MCP servers keep the `mcp__<server>__<tool>` namespace, and DX helpers now distinguish the two with `pluginTools()` / `pluginToolsFor()` vs `mcpTools()` / `mcpToolsFor()`
+
+### Removed
+
+- **BREAKING**: Removed the redundant package-root exports `createFilesystemToolsOnly()`, `createContext()`, `AgentContext`, and `createStateBackend()`. Use `createFilesystemTools()`, an inline `BackendFactory` such as `(state) => new StateBackend(state)`, or your own app-level context object instead.
 
 ### Fixed
 
 - Restored missing package entrypoints/barrels after monorepo split, plus restored missing `errors/` and `security/` source trees under `packages/agent-sdk/src`
+- Inline plugin tool metadata generation now warns when input-schema conversion fails instead of silently falling back to an empty schema
 - Fixed CI/release Bun installs failing on hook setup by setting `SKIP_INSTALL_SIMPLE_GIT_HOOKS=1` in install steps
+- Published `@lleverage-ai/agent-sdk` package tarballs now include a package README for npm/GitHub package consumers
 - `SQLiteEventStore.append()` now runs in an explicit transaction and rolls back on failure, preventing read-head/insert races and partial writes under concurrency
 - `Projector.reset()` no longer reuses mutable initial-state references, preventing dirty-state reuse with mutating reducers (including accumulator flows)
 - WebSocket server/client transport resilience hardening in agent-threads (stream layer):
@@ -49,6 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `RunManager.finalizeRun()` now passes `forkFromMessageId` into accumulation so the first committed message of a forked run is correctly linked via `parentMessageId`
 - Added and fixed regression coverage for replay failures, websocket error cleanup, broadcast overflow behavior, projector reset mutability, terminal run append rejection, branched regeneration fixtures, and accumulator text-delta edge cases
 - Corrected architecture docs with current API/runtime behavior (`run-lifecycle`, `stream-ledger-contract`, `canonical-schema`, `compaction-retention`, and `AGENTS.md` websocket descriptions)
+- Deferred function-based plugin tools now register for discovery/proxy loading, and `call_tool` forwards the live `StreamingContext` when they run during `streamDataResponse()`
+- `streamDataResponse()` now respects deferred/proxy loading rules for plugin tools instead of leaking deferred tools directly into the active tool set
 
 ## [0.0.14] - 2026-03-09
 

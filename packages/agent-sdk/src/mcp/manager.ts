@@ -12,6 +12,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { type Tool, type ToolSet, tool } from "ai";
+import { formatMcpToolName, isMcpToolName } from "../tool-names.js";
 import type {
   HttpMCPServerConfig,
   MCPServerConfig,
@@ -393,7 +394,7 @@ export interface MCPManagerOptions {
  * Manages MCP tool registration, discovery, and execution.
  *
  * Provides a unified interface for tools from:
- * - Inline plugin definitions (wrapped as virtual MCP servers)
+ * - Inline plugin definitions (managed under `<plugin>__<tool>` names)
  * - External MCP servers (stdio, http, sse)
  *
  * @example
@@ -419,7 +420,7 @@ export interface MCPManagerOptions {
  * @category MCP
  */
 export class MCPManager {
-  /** Virtual servers for inline plugin tools */
+  /** Internal wrappers for inline plugin tools */
   private virtualServers: Map<string, VirtualMCPServer> = new Map();
 
   /** Connected external MCP clients */
@@ -551,7 +552,7 @@ export class MCPManager {
           continue; // Skip tools without meaningful schema
         }
 
-        const mcpName = `mcp__${name}__${t.name}`;
+        const mcpName = formatMcpToolName(name, t.name);
         tools.push({
           name: mcpName,
           description: t.description ?? "",
@@ -631,17 +632,17 @@ export class MCPManager {
   }
 
   /**
-   * Register inline plugin tools as a virtual MCP server.
+   * Register inline plugin tools in the shared discovery manager.
    *
-   * Tools will be exposed with naming pattern `mcp__<pluginName>__<toolName>`.
+   * Tools will be exposed with naming pattern `<pluginName>__<toolName>`.
    *
-   * @param pluginName - Plugin/server name
-   * @param tools - AI SDK tools to register
+   * @param pluginName - Plugin name
+   * @param tools - AI SDK tools or streaming-aware tool factory to register
    * @param options - Registration options
    */
   registerPluginTools(
     pluginName: string,
-    tools: ToolSet,
+    tools: ToolSet | StreamingToolsFactory,
     options: { autoLoad?: boolean } = {},
   ): void {
     const { autoLoad = true } = options;
@@ -710,7 +711,7 @@ export class MCPManager {
   /**
    * Check if a specific tool is currently loaded.
    *
-   * @param name - MCP tool name to check
+   * @param name - Qualified tool name to check
    * @returns True if the tool is loaded and available
    */
   isToolLoaded(name: string): boolean {
@@ -720,7 +721,7 @@ export class MCPManager {
   /**
    * Get metadata for a specific tool by name.
    *
-   * @param name - MCP tool name
+   * @param name - Qualified tool name
    * @returns Tool metadata or undefined if not found
    */
   getToolMetadata(name: string): MCPToolMetadata | undefined {
@@ -842,7 +843,7 @@ export class MCPManager {
    *
    * @param filter - Optional list of tool names to include
    * @param streamingContext - Optional request-local streaming context for live factory tools
-   * @returns ToolSet with MCP-named tools
+   * @returns ToolSet with qualified tool names
    */
   getToolSet(filter?: string[], streamingContext?: StreamingContext | null): ToolSet {
     const toolSet: ToolSet = {};
@@ -850,26 +851,22 @@ export class MCPManager {
 
     // Include virtual server tools (only if loaded)
     for (const [serverName, server] of this.virtualServers) {
-      // For streaming factories with an active context, use live factory tools
       const factory = this.streamingFactories.get(serverName);
       if (factory && streamingContext) {
         const liveTools = factory(streamingContext);
         for (const [toolName, t] of Object.entries(liveTools)) {
-          const mcpName = `mcp__${serverName}__${toolName}`;
-          if (this.loadedTools.has(mcpName)) {
-            if (!filterSet || filterSet.has(mcpName)) {
-              toolSet[mcpName] = t;
-            }
+          const qualifiedName = `${serverName}__${toolName}`;
+          if (this.loadedTools.has(qualifiedName) && (!filterSet || filterSet.has(qualifiedName))) {
+            toolSet[qualifiedName] = t;
           }
         }
-      } else {
-        const serverTools = server.getToolSet();
-        for (const [name, t] of Object.entries(serverTools)) {
-          if (this.loadedTools.has(name)) {
-            if (!filterSet || filterSet.has(name)) {
-              toolSet[name] = t;
-            }
-          }
+        continue;
+      }
+
+      const serverTools = server.getToolSet(streamingContext ?? undefined);
+      for (const [name, t] of Object.entries(serverTools)) {
+        if (this.loadedTools.has(name) && (!filterSet || filterSet.has(name))) {
+          toolSet[name] = t;
         }
       }
     }
@@ -910,7 +907,7 @@ export class MCPManager {
    * @internal
    */
   private createExternalTool(serverName: string, metadata: MCPToolMetadata): Tool {
-    const originalName = metadata.name.replace(`mcp__${serverName}__`, "");
+    const originalName = metadata.name.replace(formatMcpToolName(serverName, ""), "");
 
     // Convert JSON Schema to Zod schema for tighter model-facing validation
     // This gives the AI model better constraints about what inputs are valid
@@ -942,58 +939,66 @@ export class MCPManager {
   }
 
   /**
-   * Call a tool by its MCP name.
+   * Call a tool by its registered name.
    *
-   * @param mcpName - Full MCP tool name (mcp__<source>__<tool>)
+   * @param qualifiedName - Tool name (`mcp__...` for external MCP, `<plugin>__...` for inline plugins)
    * @param args - Tool arguments
-   * @param streamingContext - Optional request-local streaming context for live factory tools
+   * @param options - Optional execution options
    * @returns Tool execution result
    */
   async callTool(
-    mcpName: string,
+    qualifiedName: string,
     args: unknown,
-    streamingContext?: StreamingContext | null,
+    options: {
+      abortSignal?: AbortSignal;
+      streamingContext?: StreamingContext | null;
+    } = {},
   ): Promise<unknown> {
-    // Parse MCP name: mcp__<source>__<tool>
-    const parts = mcpName.split("__");
-    if (parts.length < 3 || parts[0] !== "mcp") {
-      throw new Error(`Invalid MCP tool name format: ${mcpName}`);
+    const mcpTool = isMcpToolName(qualifiedName);
+    const parts = qualifiedName.split("__");
+    if ((mcpTool && parts.length < 3) || (!mcpTool && parts.length < 2)) {
+      throw new Error(`Invalid qualified tool name format: ${qualifiedName}`);
     }
 
-    // Try to find a matching server
-    // Start by assuming the tool name is just the last part
-    for (let i = parts.length - 1; i >= 2; i--) {
-      const sourceName = parts.slice(1, i).join("__");
+    // Try to find a matching source by progressively shifting separators from
+    // the right. This supports source and tool names that themselves contain "__".
+    const sourceStart = mcpTool ? 1 : 0;
+    const minSourceEnd = mcpTool ? 2 : 1;
+
+    for (let i = parts.length - 1; i >= minSourceEnd; i--) {
+      const sourceName = parts.slice(sourceStart, i).join("__");
       const toolName = parts.slice(i).join("__");
 
-      // Check virtual servers first
-      const virtualServer = this.virtualServers.get(sourceName);
-      if (virtualServer?.hasTool(toolName)) {
-        // If a streaming factory exists, invoke with the request-local context.
-        const factory = this.streamingFactories.get(sourceName);
-        if (factory) {
-          const ctx = streamingContext ?? { writer: null };
-          const liveTools = factory(ctx);
-          const liveTool = liveTools[toolName];
-          if (liveTool?.execute) {
-            return liveTool.execute(args as Parameters<typeof liveTool.execute>[0], {
-              toolCallId: `virtual-${Date.now()}`,
-              messages: [],
-              abortSignal: new AbortController().signal,
-            });
+      if (!mcpTool) {
+        const virtualServer = this.virtualServers.get(sourceName);
+        if (virtualServer?.hasTool(toolName)) {
+          const factory = this.streamingFactories.get(sourceName);
+          if (factory) {
+            const liveTools = factory(options.streamingContext ?? { writer: null });
+            const liveTool = liveTools[toolName];
+            if (liveTool?.execute) {
+              return liveTool.execute(args as Parameters<typeof liveTool.execute>[0], {
+                toolCallId: `virtual-${Date.now()}`,
+                messages: [],
+                abortSignal: options.abortSignal ?? new AbortController().signal,
+              });
+            }
           }
+
+          return virtualServer.callTool(toolName, args, {
+            abortSignal: options.abortSignal,
+            streamingContext: options.streamingContext ?? undefined,
+          });
         }
-        return virtualServer.callTool(toolName, args);
+        continue;
       }
 
-      // Check external clients
       const externalClient = this.externalClients.get(sourceName);
       if (externalClient) {
-        const hasMatchingTool = externalClient.tools.some((t) => t.name === mcpName);
+        const hasMatchingTool = externalClient.tools.some((t) => t.name === qualifiedName);
         if (hasMatchingTool) {
-          // Validate inputs if enabled for this server
           if (externalClient.config.validateInputs) {
-            this.validator.validate(mcpName, args);
+            this.validator.validate(qualifiedName, args);
           }
 
           const result = await externalClient.client.callTool({
@@ -1006,13 +1011,13 @@ export class MCPManager {
       }
     }
 
-    throw new Error(`Tool not found: ${mcpName}`);
+    throw new Error(`Tool not found: ${qualifiedName}`);
   }
 
   /**
    * Load specific tools by name, making them available via getToolSet().
    *
-   * @param toolNames - MCP tool names to load
+   * @param toolNames - Registered tool names to load
    * @returns Load result with loaded/alreadyLoaded/notFound lists
    */
   loadTools(toolNames: string[]): MCPToolLoadResult {

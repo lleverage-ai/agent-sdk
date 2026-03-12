@@ -48,8 +48,8 @@ describe("createSearchToolsTool", () => {
       { toolCallId: "test", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
 
-    expect(result).toContain("mcp__github__list_issues");
-    expect(result).toContain("mcp__github__create_pr");
+    expect(result).toContain("github__list_issues");
+    expect(result).toContain("github__create_pr");
   });
 
   it("returns formatted results with descriptions", async () => {
@@ -61,7 +61,7 @@ describe("createSearchToolsTool", () => {
       { toolCallId: "test", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
 
-    expect(result).toContain("mcp__db__query");
+    expect(result).toContain("db__query");
     expect(result).toContain("Execute a database query");
   });
 
@@ -74,9 +74,12 @@ describe("createSearchToolsTool", () => {
       { toolCallId: "test", messages: [], abortSignal: undefined as unknown as AbortSignal },
     );
 
-    // Should only have one tool in results
-    const toolMatches = (result as string).match(/mcp__/g) || [];
-    expect(toolMatches.length).toBe(1);
+    const listedTools = (result as string)
+      .split("\n")
+      .filter((line) => line.startsWith("- "))
+      .map((line) => line.slice(2).split(":")[0]?.trim());
+
+    expect(listedTools).toHaveLength(1);
   });
 
   it("returns helpful message when no matches", async () => {

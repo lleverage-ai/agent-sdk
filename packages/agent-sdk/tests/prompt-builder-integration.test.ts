@@ -99,7 +99,7 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     expect(systemPrompt).toContain("git");
   });
 
-  it("should pass plugin information to system prompt", async () => {
+  it("should expose plugin tools without listing plugins in the default prompt", async () => {
     const testPlugin = definePlugin({
       name: "test-plugin",
       description: "A plugin for testing",
@@ -123,13 +123,11 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     const callArgs = (generateText as any).mock.calls[0][0];
     const systemPrompt = callArgs.system;
 
-    // Should include plugin info
-    expect(systemPrompt).toContain("# Loaded Plugins");
-    expect(systemPrompt).toContain("- **test-plugin**: A plugin for testing");
-
-    // Should also include the plugin's tools
+    // Plugin tools should appear as regular available tools.
     expect(systemPrompt).toContain("# Available Tools");
-    expect(systemPrompt).toContain("pluginTool");
+    expect(systemPrompt).toContain("test-plugin__pluginTool");
+    expect(systemPrompt).not.toContain("# Loaded Plugins");
+    expect(systemPrompt).not.toContain("- **test-plugin**: A plugin for testing");
   });
 
   it("should include backend capabilities in system prompt", async () => {
@@ -241,16 +239,16 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     // Verify all sections are present
     expect(systemPrompt).toContain("You are a helpful AI assistant");
     expect(systemPrompt).toContain("# Available Tools");
-    expect(systemPrompt).toContain("# Loaded Plugins");
     expect(systemPrompt).toContain("# Capabilities");
     expect(systemPrompt).toContain("# Permission Mode");
+    expect(systemPrompt).not.toContain("# Loaded Plugins");
 
     // Verify specific content
     expect(systemPrompt).toContain("- **read**: Read files");
     // The git skill is registered in the skill registry, accessible via the skill tool
     expect(systemPrompt).toContain("skill");
     expect(systemPrompt).toContain("git");
-    expect(systemPrompt).toContain("- **custom-plugin**: Custom functionality");
+    expect(systemPrompt).toContain("custom-plugin__customTool");
     expect(systemPrompt).toContain("Execute shell commands (bash)");
     expect(systemPrompt).toContain("File editing tools are auto-approved");
   });
@@ -448,7 +446,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
         description: "A test plugin for verification",
       });
       expect(toolsInContext).toBeDefined();
-      expect(toolsInContext?.some((t) => t.name === "mcp__test-plugin__testTool")).toBe(true);
+      expect(toolsInContext?.some((t) => t.name === "test-plugin__testTool")).toBe(true);
     });
   });
 

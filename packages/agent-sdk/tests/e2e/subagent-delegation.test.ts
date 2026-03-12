@@ -65,12 +65,12 @@ describe("E2E: Subagent Delegation", () => {
       const activeTools = agent.getActiveTools();
 
       // GitHub subagent tools should NOT be in main agent
-      expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
-      expect(activeTools).not.toHaveProperty("mcp__github__create_pr");
-      expect(activeTools).not.toHaveProperty("mcp__github__review_pr");
+      expect(activeTools).not.toHaveProperty("github__list_issues");
+      expect(activeTools).not.toHaveProperty("github__create_pr");
+      expect(activeTools).not.toHaveProperty("github__review_pr");
 
       // Util plugin tools SHOULD be loaded (not in subagent)
-      expect(activeTools).toHaveProperty("mcp__utils__format_date");
+      expect(activeTools).toHaveProperty("utils__format_date");
     });
 
     it("handles multiple plugins with subagents", () => {
@@ -111,8 +111,8 @@ describe("E2E: Subagent Delegation", () => {
       const activeTools = agent.getActiveTools();
 
       // Neither plugin's subagent tools should be in active set
-      expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
-      expect(activeTools).not.toHaveProperty("mcp__slack__send_message");
+      expect(activeTools).not.toHaveProperty("github__list_issues");
+      expect(activeTools).not.toHaveProperty("slack__send_message");
     });
 
     it("plugin with both tools and subagent loads main tools only", () => {
@@ -146,10 +146,10 @@ describe("E2E: Subagent Delegation", () => {
       const activeTools = agent.getActiveTools();
 
       // Main tools loaded
-      expect(activeTools).toHaveProperty("mcp__github__ping");
+      expect(activeTools).toHaveProperty("github__ping");
 
       // Subagent tools not loaded
-      expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+      expect(activeTools).not.toHaveProperty("github__list_issues");
     });
   });
 
@@ -178,7 +178,7 @@ describe("E2E: Subagent Delegation", () => {
 
       // Verify agent was created successfully with no subagent tools in active set
       const activeTools = agent.getActiveTools();
-      expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+      expect(activeTools).not.toHaveProperty("github__list_issues");
     });
 
     it("custom delegation instructions override default", () => {
@@ -205,7 +205,7 @@ describe("E2E: Subagent Delegation", () => {
       });
 
       const activeTools = agent.getActiveTools();
-      expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+      expect(activeTools).not.toHaveProperty("github__list_issues");
     });
   });
 });

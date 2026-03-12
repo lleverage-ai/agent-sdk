@@ -73,6 +73,7 @@ agent-sdk/                          # Workspace root
 │   │   │   ├── hooks.ts            # Hook system
 │   │   │   ├── plugins.ts          # definePlugin()
 │   │   │   ├── tools.ts            # defineSkill()
+│   │   │   ├── tool-names.ts       # Qualified inline/MCP tool naming helpers
 │   │   │   ├── context.ts          # Context management
 │   │   │   ├── context-manager.ts  # Token budgeting & summarization
 │   │   │   ├── backend.ts          # Backend abstraction
@@ -138,14 +139,15 @@ agent-sdk/                          # Workspace root
 
 ## TSDoc Guidelines
 
-Documentation is auto-generated using TypeDoc. All public exports must have TSDoc comments.
+Documentation is maintained through source TSDoc comments plus the markdown guides in `README.md` and `docs/`. All public exports must have TSDoc comments.
 
-### Generate Docs
+### Documentation Maintenance
 
-```bash
-bun run docs          # Generate docs to ./docs
-bun run docs:watch    # Watch mode
-```
+There is currently no dedicated docs-generation script in this repository. When public APIs change:
+
+- update the relevant TSDoc comments in source
+- update `README.md` and any affected files under `docs/`
+- keep examples aligned with the shipped API and package exports
 
 ### TSDoc Format
 

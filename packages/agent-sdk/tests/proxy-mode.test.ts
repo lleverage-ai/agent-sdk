@@ -41,7 +41,7 @@ describe("Proxy Mode (pluginLoading: 'proxy')", () => {
 
     const activeTools = agent.getActiveTools();
     // Plugin tool should NOT be directly in the active set
-    expect(activeTools).not.toHaveProperty("mcp__stripe__create_payment");
+    expect(activeTools).not.toHaveProperty("stripe__create_payment");
   });
 
   it("creates call_tool in active tools", () => {
@@ -128,9 +128,9 @@ describe("Proxy Mode (pluginLoading: 'proxy')", () => {
     const activeTools = agent.getActiveTools();
 
     // No plugin tools directly loaded
-    expect(activeTools).not.toHaveProperty("mcp__stripe__create_payment");
-    expect(activeTools).not.toHaveProperty("mcp__stripe__refund");
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+    expect(activeTools).not.toHaveProperty("stripe__create_payment");
+    expect(activeTools).not.toHaveProperty("stripe__refund");
+    expect(activeTools).not.toHaveProperty("github__list_issues");
 
     // Meta tools present
     expect(activeTools).toHaveProperty("call_tool");
@@ -201,10 +201,10 @@ describe("Per-plugin deferred: true", () => {
     const activeTools = agent.getActiveTools();
 
     // Eager plugin tools ARE loaded
-    expect(activeTools).toHaveProperty("mcp__core-utils__ping");
+    expect(activeTools).toHaveProperty("core-utils__ping");
 
     // Deferred plugin tools are NOT loaded
-    expect(activeTools).not.toHaveProperty("mcp__stripe__create_payment");
+    expect(activeTools).not.toHaveProperty("stripe__create_payment");
 
     // call_tool is created because there are proxied tools
     expect(activeTools).toHaveProperty("call_tool");
@@ -268,9 +268,9 @@ describe("Per-plugin deferred: true", () => {
     const activeTools = agent.getActiveTools();
 
     // Opted-out plugin IS loaded eagerly
-    expect(activeTools).toHaveProperty("mcp__core-utils__ping");
+    expect(activeTools).toHaveProperty("core-utils__ping");
 
     // Default plugin in proxy mode is NOT loaded
-    expect(activeTools).not.toHaveProperty("mcp__stripe__create_payment");
+    expect(activeTools).not.toHaveProperty("stripe__create_payment");
   });
 });

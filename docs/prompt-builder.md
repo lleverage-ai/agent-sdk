@@ -1,6 +1,6 @@
 # Prompt Builder
 
-The Prompt Builder system enables creating dynamic, context-aware system prompts from composable components. Instead of static strings, prompts can automatically include information about the agent's tools, skills, backend capabilities, and configuration.
+The Prompt Builder system enables creating dynamic, context-aware system prompts from composable components. Instead of static strings, prompts can automatically include information about the agent's tools, skills, capabilities, and runtime constraints.
 
 ## Table of Contents
 
@@ -25,7 +25,7 @@ The Prompt Builder system enables creating dynamic, context-aware system prompts
 
 **Benefits of Dynamic Prompts:**
 - ✅ Automatically lists available tools and their descriptions
-- ✅ Includes skills and plugins when present
+- ✅ Includes skills when present
 - ✅ Communicates backend capabilities (bash, filesystem access)
 - ✅ Shows permission mode information
 - ✅ Composable components with priorities
@@ -78,7 +78,6 @@ You are a helpful AI assistant.
 
 # Available Tools
 
-You have access to the following tools:
 - **read**: Read a file from disk
 - **write**: Write content to a file
 
@@ -215,7 +214,7 @@ class PromptBuilder {
 
 ## Default Components
 
-The default builder includes 7 components:
+The default builder includes 6 components:
 
 ### 1. Identity Component (Priority: 100)
 
@@ -238,7 +237,7 @@ Lists available tools with descriptions. Only shown when tools are present.
   condition: (ctx) => ctx.tools && ctx.tools.length > 0,
   render: (ctx) => {
     const toolLines = ctx.tools!.map(t => `- **${t.name}**: ${t.description}`);
-    return `# Available Tools\n\nYou have access to the following tools:\n${toolLines.join("\n")}`;
+    return `# Available Tools\n\n${toolLines.join("\n")}`;
   }
 }
 ```
@@ -254,20 +253,16 @@ Lists available skills. Only shown when skills are present.
   condition: (ctx) => ctx.skills && ctx.skills.length > 0,
   render: (ctx) => {
     const skillLines = ctx.skills!.map(s => `- **${s.name}**: ${s.description}`);
-    return `# Available Skills\n\nYou can activate these skills on-demand:\n${skillLines.join("\n")}`;
+    return `# Available Skills\n\n${skillLines.join("\n")}`;
   }
 }
 ```
 
-### 4. Plugins Component (Priority: 68)
-
-Lists loaded plugins. Only shown when plugins are present.
-
-### 5. Delegation Component (Priority: 75)
+### 4. Delegation Component (Priority: 75)
 
 Shows subagent delegation guidance when subagents are configured.
 
-### 6. Capabilities Component (Priority: 60)
+### 5. Capabilities Component (Priority: 60)
 
 Shows what the agent can do based on backend configuration:
 
@@ -289,7 +284,7 @@ Shows what the agent can do based on backend configuration:
 }
 ```
 
-### 7. Permission Mode Component (Priority: 55)
+### 6. Permission Mode Component (Priority: 55)
 
 Explains the current permission mode. Only shown when set.
 
@@ -618,6 +613,7 @@ function createDefaultPromptBuilder(): PromptBuilder;
 export const identityComponent: PromptComponent;
 export const toolsComponent: PromptComponent;
 export const skillsComponent: PromptComponent;
+export const delegationComponent: PromptComponent;
 export const pluginsComponent: PromptComponent;
 export const capabilitiesComponent: PromptComponent;
 export const permissionModeComponent: PromptComponent;

@@ -1,6 +1,6 @@
 import { tool } from "ai";
 // tests/mcp-manager.test.ts
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { MCPManager } from "../src/mcp/manager.js";
 
@@ -12,7 +12,7 @@ describe("MCPManager", () => {
   });
 
   describe("registerPluginTools", () => {
-    it("registers plugin tools as virtual server", () => {
+    it("registers plugin tools with plugin-namespaced names", () => {
       const tools = {
         greet: tool({
           description: "Greet someone",
@@ -25,7 +25,7 @@ describe("MCPManager", () => {
 
       const metadata = manager.listTools();
       expect(metadata).toHaveLength(1);
-      expect(metadata[0].name).toBe("mcp__test-plugin__greet");
+      expect(metadata[0].name).toBe("test-plugin__greet");
     });
 
     it("registers multiple plugins", () => {
@@ -82,13 +82,13 @@ describe("MCPManager", () => {
     it("searches by description", () => {
       const results = manager.searchTools("issues");
       expect(results).toHaveLength(1);
-      expect(results[0].name).toBe("mcp__github__list_issues");
+      expect(results[0].name).toBe("github__list_issues");
     });
 
     it("searches by tool name", () => {
       const results = manager.searchTools("query");
       expect(results).toHaveLength(1);
-      expect(results[0].name).toBe("mcp__db__query");
+      expect(results[0].name).toBe("db__query");
     });
 
     it("returns multiple matches", () => {
@@ -127,7 +127,7 @@ describe("MCPManager", () => {
       });
 
       const [top] = localManager.searchTools("create payment", 2);
-      expect(top?.name).toBe("mcp__payments__create_payment");
+      expect(top?.name).toBe("payments__create_payment");
     });
 
     it("searches by schema property names", () => {
@@ -144,7 +144,7 @@ describe("MCPManager", () => {
       });
 
       const results = localManager.searchTools("repository");
-      expect(results[0]?.name).toBe("mcp__repos__mirror");
+      expect(results[0]?.name).toBe("repos__mirror");
     });
 
     it("matches typo queries with fuzzy fallback", () => {
@@ -158,7 +158,7 @@ describe("MCPManager", () => {
       });
 
       const results = localManager.searchTools("paymnt");
-      expect(results[0]?.name).toBe("mcp__payments__create_payment");
+      expect(results[0]?.name).toBe("payments__create_payment");
     });
   });
 
@@ -173,7 +173,7 @@ describe("MCPManager", () => {
       });
 
       const toolSet = manager.getToolSet();
-      expect(Object.keys(toolSet)).toContain("mcp__test__my_tool");
+      expect(Object.keys(toolSet)).toContain("test__my_tool");
     });
 
     it("filters by tool names", () => {
@@ -190,8 +190,8 @@ describe("MCPManager", () => {
         }),
       });
 
-      const toolSet = manager.getToolSet(["mcp__test__tool_a"]);
-      expect(Object.keys(toolSet)).toEqual(["mcp__test__tool_a"]);
+      const toolSet = manager.getToolSet(["test__tool_a"]);
+      expect(Object.keys(toolSet)).toEqual(["test__tool_a"]);
     });
   });
 
@@ -205,12 +205,60 @@ describe("MCPManager", () => {
         }),
       });
 
-      const result = await manager.callTool("mcp__test__greet", { name: "World" });
+      const result = await manager.callTool("test__greet", { name: "World" });
       expect(result).toBe("Hello, World!");
     });
 
+    it("routes inline plugin tools to virtual servers only", async () => {
+      const externalCall = vi.fn();
+      manager.registerPluginTools("test", {
+        greet: tool({
+          description: "Greet",
+          inputSchema: z.object({ name: z.string() }),
+          execute: async ({ name }) => `Hello, ${name}!`,
+        }),
+      });
+
+      manager["externalClients"].set("test", {
+        client: { callTool: externalCall },
+        tools: [{ name: "mcp__test__greet" }],
+        config: {},
+      } as never);
+
+      const result = await manager.callTool("test__greet", { name: "World" });
+      expect(result).toBe("Hello, World!");
+      expect(externalCall).not.toHaveBeenCalled();
+    });
+
+    it("routes external MCP tools to connected clients only", async () => {
+      const externalCall = vi.fn().mockResolvedValue({
+        content: [{ type: "text", text: "remote ok" }],
+      });
+
+      manager.registerPluginTools("test", {
+        greet: tool({
+          description: "Greet",
+          inputSchema: z.object({}),
+          execute: async () => "local ok",
+        }),
+      });
+
+      manager["externalClients"].set("test", {
+        client: { callTool: externalCall },
+        tools: [{ name: "mcp__test__greet" }],
+        config: {},
+      } as never);
+
+      const result = await manager.callTool("mcp__test__greet", {});
+      expect(result).toBe("remote ok");
+      expect(externalCall).toHaveBeenCalledWith({
+        name: "greet",
+        arguments: {},
+      });
+    });
+
     it("throws for unknown tool", async () => {
-      await expect(manager.callTool("mcp__unknown__tool", {})).rejects.toThrow();
+      await expect(manager.callTool("unknown__tool", {})).rejects.toThrow();
     });
   });
 
@@ -228,8 +276,8 @@ describe("MCPManager", () => {
         },
         { autoLoad: false },
       );
-      const result = manager.loadTools(["mcp__test__tool_a"]);
-      expect(result.loaded).toEqual(["mcp__test__tool_a"]);
+      const result = manager.loadTools(["test__tool_a"]);
+      expect(result.loaded).toEqual(["test__tool_a"]);
       expect(result.alreadyLoaded).toEqual([]);
       expect(result.notFound).toEqual([]);
     });
@@ -243,18 +291,18 @@ describe("MCPManager", () => {
           execute: async () => "a",
         }),
       });
-      const result = manager.loadTools(["mcp__test__tool_a"]);
+      const result = manager.loadTools(["test__tool_a"]);
       // Tool was auto-loaded, so it should be in alreadyLoaded
       expect(result.loaded).toEqual([]);
-      expect(result.alreadyLoaded).toEqual(["mcp__test__tool_a"]);
+      expect(result.alreadyLoaded).toEqual(["test__tool_a"]);
       expect(result.notFound).toEqual([]);
     });
 
     it("returns notFound for missing tools", () => {
-      const result = manager.loadTools(["mcp__unknown__tool"]);
+      const result = manager.loadTools(["unknown__tool"]);
       expect(result.loaded).toEqual([]);
       expect(result.alreadyLoaded).toEqual([]);
-      expect(result.notFound).toEqual(["mcp__unknown__tool"]);
+      expect(result.notFound).toEqual(["unknown__tool"]);
     });
   });
 
@@ -278,7 +326,7 @@ describe("MCPManager", () => {
       // Metadata should be available for search
       const metadata = manager.listTools();
       expect(metadata).toHaveLength(1);
-      expect(metadata[0].name).toBe("mcp__ui__render");
+      expect(metadata[0].name).toBe("ui__render");
       expect(metadata[0].description).toBe("Render UI");
 
       // Factory should be tracked
@@ -313,7 +361,7 @@ describe("MCPManager", () => {
       manager.registerStreamingPluginTools("ui", factory, { autoLoad: true });
 
       const toolSet = manager.getToolSet();
-      expect(Object.keys(toolSet)).toContain("mcp__ui__render");
+      expect(Object.keys(toolSet)).toContain("ui__render");
     });
   });
 
@@ -333,16 +381,16 @@ describe("MCPManager", () => {
       manager.registerStreamingPluginTools("ui", factory);
 
       // Without streaming context: callTool uses { writer: null }
-      const result1 = await manager.callTool("mcp__ui__render", { html: "<p>hello</p>" });
+      const result1 = await manager.callTool("ui__render", { html: "<p>hello</p>" });
       expect(result1).toBe("rendered(writer=false): <p>hello</p>");
 
       // With streaming context: callTool uses the explicit request-local context
       const fakeWriter = { write: () => {} };
       const result2 = await manager.callTool(
-        "mcp__ui__render",
+        "ui__render",
         { html: "<p>world</p>" },
         {
-          writer: fakeWriter as never,
+          streamingContext: { writer: fakeWriter as never },
         },
       );
       expect(result2).toBe("rendered(writer=true): <p>world</p>");
@@ -359,8 +407,20 @@ describe("MCPManager", () => {
 
       manager.registerStreamingPluginTools("ui", factory);
 
-      const requestA = manager.callTool("mcp__ui__render", {}, { writer: { id: "A" } as never });
-      const requestB = manager.callTool("mcp__ui__render", {}, { writer: { id: "B" } as never });
+      const requestA = manager.callTool(
+        "ui__render",
+        {},
+        {
+          streamingContext: { writer: { id: "A" } as never },
+        },
+      );
+      const requestB = manager.callTool(
+        "ui__render",
+        {},
+        {
+          streamingContext: { writer: { id: "B" } as never },
+        },
+      );
 
       await expect(requestA).resolves.toBe("A");
       await expect(requestB).resolves.toBe("B");
@@ -388,13 +448,13 @@ describe("MCPManager", () => {
 
       // Without context: uses schema tools from virtual server
       const toolSet1 = manager.getToolSet();
-      expect(toolSet1).toHaveProperty("mcp__ui__render");
+      expect(toolSet1).toHaveProperty("ui__render");
 
       // With context: invokes factory with live context
       const toolSet2 = manager.getToolSet(undefined, { writer: { id: "ctx" } as never });
-      expect(toolSet2).toHaveProperty("mcp__ui__render");
+      expect(toolSet2).toHaveProperty("ui__render");
       expect(factoryCallCount).toBeGreaterThanOrEqual(1);
-      await expect(toolSet2.mcp__ui__render.execute?.({}, undefined as never)).resolves.toBe(
+      await expect(toolSet2.ui__render.execute?.({}, undefined as never)).resolves.toBe(
         "writer=ctx",
       );
     });

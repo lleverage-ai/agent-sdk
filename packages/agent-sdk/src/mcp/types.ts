@@ -7,9 +7,9 @@
 import type { JSONSchema7 } from "json-schema";
 
 /**
- * Source type for MCP tools.
+ * Source type for discovered tools managed by {@link MCPManager}.
  *
- * - `inline` - Tool defined in plugin code (virtual MCP server)
+ * - `inline` - Tool defined in plugin code
  * - `stdio` - Tool from stdio-based MCP server
  * - `http` - Tool from HTTP-based MCP server
  * - `sse` - Tool from SSE-based MCP server
@@ -27,8 +27,11 @@ export type MCPToolSource = "inline" | "stdio" | "http" | "sse";
  */
 export interface MCPToolMetadata {
   /**
-   * Full MCP tool name.
-   * Format: `mcp__<source>__<tool-name>`
+   * Qualified tool name.
+   *
+   * Formats:
+   * - `<plugin>__<tool-name>` for inline plugins
+   * - `mcp__<source>__<tool-name>` for external MCP servers
    */
   name: string;
 

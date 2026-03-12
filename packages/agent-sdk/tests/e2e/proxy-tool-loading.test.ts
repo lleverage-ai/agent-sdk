@@ -64,7 +64,7 @@ describe("E2E: Proxy Tool Loading", () => {
       // Step 2: Invoke via the agent's call_tool
       const callResult = await activeTools.call_tool.execute!(
         {
-          tool_name: "mcp__stripe__create_payment",
+          tool_name: "stripe__create_payment",
           arguments: { amount: 42, currency: "usd" },
         },
         execOpts,
@@ -105,14 +105,14 @@ describe("E2E: Proxy Tool Loading", () => {
 
       // Invoke stripe tool
       const chargeResult = await activeTools.call_tool.execute!(
-        { tool_name: "mcp__stripe__charge", arguments: { amount: 99 } },
+        { tool_name: "stripe__charge", arguments: { amount: 99 } },
         execOpts,
       );
       expect(chargeResult).toContain("Charged $99");
 
       // Invoke github tool
       const issueResult = await activeTools.call_tool.execute!(
-        { tool_name: "mcp__github__create_issue", arguments: { title: "Fix bug" } },
+        { tool_name: "github__create_issue", arguments: { title: "Fix bug" } },
         execOpts,
       );
       expect(issueResult).toContain("Issue created: Fix bug");
@@ -151,12 +151,12 @@ describe("E2E: Proxy Tool Loading", () => {
       const activeTools = agent.getActiveTools();
 
       // Eager plugin tool is directly available
-      expect(activeTools).toHaveProperty("mcp__core-utils__ping");
+      expect(activeTools).toHaveProperty("core-utils__ping");
 
       // Deferred tool is NOT in active set but IS callable via proxy
-      expect(activeTools).not.toHaveProperty("mcp__stripe__create_payment");
+      expect(activeTools).not.toHaveProperty("stripe__create_payment");
       const result = await activeTools.call_tool.execute!(
-        { tool_name: "mcp__stripe__create_payment", arguments: { amount: 100 } },
+        { tool_name: "stripe__create_payment", arguments: { amount: 100 } },
         execOpts,
       );
       expect(result).toContain("Paid 100");
@@ -193,11 +193,11 @@ describe("E2E: Proxy Tool Loading", () => {
       // Invoke both tools through call_tool
       const activeTools = agent.getActiveTools();
       await activeTools.call_tool.execute!(
-        { tool_name: "mcp__stripe__create_payment", arguments: { amount: 1 } },
+        { tool_name: "stripe__create_payment", arguments: { amount: 1 } },
         execOpts,
       );
       await activeTools.call_tool.execute!(
-        { tool_name: "mcp__stripe__refund", arguments: { id: "pi_123" } },
+        { tool_name: "stripe__refund", arguments: { id: "pi_123" } },
         execOpts,
       );
 
@@ -208,8 +208,8 @@ describe("E2E: Proxy Tool Loading", () => {
       expect(toolNamesAfter).toEqual(toolNamesBefore);
 
       // Plugin tools must still NOT be in the active set
-      expect(toolNamesAfter).not.toContain("mcp__stripe__create_payment");
-      expect(toolNamesAfter).not.toContain("mcp__stripe__refund");
+      expect(toolNamesAfter).not.toContain("stripe__create_payment");
+      expect(toolNamesAfter).not.toContain("stripe__refund");
     });
 
     it("search_tools does not load tools into the active set", async () => {
@@ -237,7 +237,7 @@ describe("E2E: Proxy Tool Loading", () => {
 
       const toolNamesAfter = Object.keys(agent.getActiveTools()).sort();
       expect(toolNamesAfter).toEqual(toolNamesBefore);
-      expect(toolNamesAfter).not.toContain("mcp__stripe__charge");
+      expect(toolNamesAfter).not.toContain("stripe__charge");
     });
   });
 
@@ -261,7 +261,7 @@ describe("E2E: Proxy Tool Loading", () => {
       });
 
       const result = await agent.getActiveTools().call_tool.execute!(
-        { tool_name: "mcp__stripe__nonexistent", arguments: {} },
+        { tool_name: "stripe__nonexistent", arguments: {} },
         execOpts,
       );
 
@@ -289,7 +289,7 @@ describe("E2E: Proxy Tool Loading", () => {
       });
 
       const result = await agent.getActiveTools().call_tool.execute!(
-        { tool_name: "mcp__test__fail", arguments: {} },
+        { tool_name: "test__fail", arguments: {} },
         execOpts,
       );
 

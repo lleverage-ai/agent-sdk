@@ -45,8 +45,8 @@ describe("Plugin Loading Modes", () => {
 
       // Tools should be available immediately via getActiveTools()
       const activeTools = agent.getActiveTools();
-      expect(activeTools).toHaveProperty("mcp__test-plugin__tool1");
-      expect(activeTools).toHaveProperty("mcp__test-plugin__tool2");
+      expect(activeTools).toHaveProperty("test-plugin__tool1");
+      expect(activeTools).toHaveProperty("test-plugin__tool2");
     });
 
     it("loads tools eagerly even with many tools (new default behavior)", () => {
@@ -73,7 +73,7 @@ describe("Plugin Loading Modes", () => {
 
       // NEW BEHAVIOR: Tools ARE loaded eagerly by default
       const activeTools = agent.getActiveTools();
-      expect(activeTools).toHaveProperty("mcp__large-plugin__tool0");
+      expect(activeTools).toHaveProperty("large-plugin__tool0");
 
       // search_tools is created for auto-discovery (>20 tools)
       expect(activeTools).toHaveProperty("search_tools");
@@ -106,8 +106,8 @@ describe("Plugin Loading Modes", () => {
 
       // Tools should be available immediately despite >20 tools
       const activeTools = agent.getActiveTools();
-      expect(activeTools).toHaveProperty("mcp__large-plugin__tool0");
-      expect(activeTools).toHaveProperty("mcp__large-plugin__tool24");
+      expect(activeTools).toHaveProperty("large-plugin__tool0");
+      expect(activeTools).toHaveProperty("large-plugin__tool24");
     });
 
     it("loads tools immediately with toolSearch never", () => {
@@ -132,7 +132,7 @@ describe("Plugin Loading Modes", () => {
 
       // Tools should be available immediately
       const activeTools = agent.getActiveTools();
-      expect(activeTools).toHaveProperty("mcp__test-plugin__tool1");
+      expect(activeTools).toHaveProperty("test-plugin__tool1");
       // search_tools should NOT be present
       expect(activeTools).not.toHaveProperty("search_tools");
     });
@@ -164,7 +164,7 @@ describe("Plugin Loading Modes", () => {
 
       // Tools should be loaded despite count (no deferred loading)
       const activeTools = agent.getActiveTools();
-      expect(activeTools).toHaveProperty("mcp__large-plugin__tool0");
+      expect(activeTools).toHaveProperty("large-plugin__tool0");
       expect(activeTools).not.toHaveProperty("search_tools");
     });
 
@@ -190,7 +190,7 @@ describe("Plugin Loading Modes", () => {
 
       // Tools should NOT be loaded (deferred loading explicitly requested)
       const activeTools = agent.getActiveTools();
-      expect(activeTools).not.toHaveProperty("mcp__small-plugin__tool1");
+      expect(activeTools).not.toHaveProperty("small-plugin__tool1");
       expect(activeTools).toHaveProperty("search_tools");
     });
 
@@ -222,7 +222,7 @@ describe("Plugin Loading Modes", () => {
 
       // NEW BEHAVIOR: Tools ARE loaded eagerly (default behavior)
       const activeTools = agent.getActiveTools();
-      expect(activeTools).toHaveProperty("mcp__medium-plugin__tool0");
+      expect(activeTools).toHaveProperty("medium-plugin__tool0");
 
       // search_tools is created because count > custom threshold
       expect(activeTools).toHaveProperty("search_tools");
@@ -263,10 +263,10 @@ describe("Plugin Loading Modes", () => {
       const activeTools = agent.getActiveTools();
 
       // Eager plugin should be available
-      expect(activeTools).toHaveProperty("mcp__plugin1__tool1");
+      expect(activeTools).toHaveProperty("plugin1__tool1");
 
       // Deferred plugin should NOT be in active tools
-      expect(activeTools).not.toHaveProperty("mcp__plugin2__tool2");
+      expect(activeTools).not.toHaveProperty("plugin2__tool2");
 
       // call_tool and search_tools should be available for deferred plugins
       expect(activeTools).toHaveProperty("call_tool");
@@ -348,14 +348,14 @@ describe("Plugin Loading Modes", () => {
         plugins: [streamingPlugin],
       });
 
-      // Non-deferred function-based tools are NOT in getActiveTools (they need streaming context)
-      // They only appear in the streaming path (getActiveToolSetWithStreaming)
+      // Non-deferred function-based tools are available eagerly under their
+      // qualified inline plugin names. They receive `{ writer: null }` outside
+      // of streaming responses and a live writer during streamDataResponse().
       const activeTools = agent.getActiveTools();
-      expect(activeTools).not.toHaveProperty("render");
-      expect(activeTools).not.toHaveProperty("mcp__eager-streaming__render");
+      expect(activeTools).toHaveProperty("eager-streaming__render");
     });
 
-    it("does not create search_tools for eager streaming plugins that are not discoverable", () => {
+    it("creates search_tools for eager streaming plugins when tool count exceeds the auto threshold", () => {
       const streamingPlugin = definePlugin({
         name: "large-streaming",
         tools: (ctx) => {
@@ -379,7 +379,7 @@ describe("Plugin Loading Modes", () => {
       });
 
       const activeTools = agent.getActiveTools();
-      expect(activeTools).not.toHaveProperty("search_tools");
+      expect(activeTools).toHaveProperty("search_tools");
     });
 
     it("creates search_tools for deferred streaming plugins that are discoverable", async () => {
@@ -418,7 +418,7 @@ describe("Plugin Loading Modes", () => {
         },
       );
 
-      expect(result).toContain("mcp__large-deferred-streaming__tool0");
+      expect(result).toContain("large-deferred-streaming__tool0");
     });
   });
 });
