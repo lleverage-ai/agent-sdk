@@ -26,12 +26,14 @@ export interface CallToolOptions {
   mcpManager?: MCPManager;
 
   /**
-   * Streaming context for proxied function-based tools.
+   * Optional fallback streaming context for proxied function-based tools.
    *
    * When provided, deferred plugin tools created from a {@link StreamingContext}
    * receive the live writer when invoked via `call_tool`.
+   *
+   * This is primarily for request-scoped call_tool instances created in streaming flows.
    */
-  streamingContext?: StreamingContext;
+  streamingContext?: StreamingContext | null;
 
   /**
    * Hook callback to fire before executing the proxied tool.
@@ -96,7 +98,7 @@ export function createCallToolTool(options: CallToolOptions): Tool {
         tool_name: string;
         arguments: Record<string, unknown>;
       },
-      executionOptions?: ToolExecutionOptions,
+      execOptions?: ToolExecutionOptions,
     ) => {
       // Fire pre-call hook with the proxied tool name
       await onBeforeCall?.(tool_name, args);
@@ -108,9 +110,20 @@ export function createCallToolTool(options: CallToolOptions): Tool {
         const metadata = mcpManager.getToolMetadata(tool_name);
         if (metadata) {
           try {
+            const requestStreamingContext =
+              (
+                execOptions as
+                  | (ToolExecutionOptions & {
+                      streamingContext?: StreamingContext | null;
+                    })
+                  | undefined
+              )?.streamingContext ??
+              streamingContext ??
+              null;
+
             result = await mcpManager.callTool(tool_name, args, {
-              abortSignal: executionOptions?.abortSignal,
-              streamingContext,
+              abortSignal: execOptions?.abortSignal,
+              streamingContext: requestStreamingContext,
             });
             await onAfterCall?.(tool_name, args, result);
             return formatResult(tool_name, result);

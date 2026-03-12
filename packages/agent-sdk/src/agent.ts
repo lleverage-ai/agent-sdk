@@ -84,7 +84,6 @@ import type {
   PostToolUseInput,
   PreToolUseInput,
   StreamingContext,
-  StreamingToolsFactory,
   StreamPart,
   SubagentDefinition,
   ToolCallResult,
@@ -958,21 +957,14 @@ export function createAgent(options: AgentOptions): Agent {
   // Auto-created subagent definitions from delegated plugins
   const autoSubagents: SubagentDefinition[] = [];
 
-  // Count total plugin tools for threshold calculation and collect plugin skills.
-  // Note: Function-based (streaming) tools are not counted since we don't know
-  // their count until they're invoked with a streaming context.
+  // Collect plugin skills early so they're available for skill tool creation.
   // IMPORTANT: Plugin skills must be collected BEFORE createCoreTools() is called
   // so the skill tool includes them in progressive disclosure.
-  let totalPluginToolCount = 0;
   for (const plugin of options.plugins ?? []) {
     if (plugin.tools) {
       // Fail fast on reserved inline plugin namespaces during agent creation.
       formatPluginToolName(plugin.name, "__validation__");
     }
-    if (plugin.tools && typeof plugin.tools !== "function") {
-      totalPluginToolCount += Object.keys(plugin.tools).length;
-    }
-    // Collect plugin skills early so they're available for skill tool creation
     if (plugin.skills) {
       skills.push(...plugin.skills);
     }
@@ -1012,39 +1004,23 @@ export function createAgent(options: AgentOptions): Agent {
   // Note: Plugin skills are collected earlier (before createCoreTools) so
   // the skill tool can include them in progressive disclosure.
   for (const plugin of options.plugins ?? []) {
-    // Handle tools via MCP manager for unified interface.
-    // Function-based tools are also registered when they participate in
-    // deferred discovery/proxy loading so search_tools/call_tool can find them.
     if (plugin.tools) {
       const isDeferred = isPluginDeferred(plugin);
-      const shouldRegisterForDiscovery =
-        typeof plugin.tools !== "function" ||
-        isDeferred ||
-        (deferredLoadingActive && plugin.deferred !== false);
-
-      if (!shouldRegisterForDiscovery) {
-        continue;
-      }
+      const autoLoad = !(isDeferred || (deferredLoadingActive && plugin.deferred !== false));
 
       if (isDeferred) {
-        // Deferred plugin: register in MCP for discovery via search_tools + call_tool
-        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
-          autoLoad: false,
-        });
         hasProxiedTools = true;
-      } else if (deferredLoadingActive && plugin.deferred !== false) {
-        // Deferred loading: register tools but don't load them initially
-        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
-          autoLoad: false,
-        });
-      } else {
-        // Default eager mode: load immediately
-        mcpManager.registerPluginTools(plugin.name, plugin.tools, {
-          autoLoad: true,
-        });
       }
+
+      // Register all plugin tools through the shared discovery manager.
+      // Eager tools auto-load into the active ToolSet; deferred/proxy tools stay
+      // discoverable via search_tools + call_tool.
+      mcpManager.registerPluginTools(plugin.name, plugin.tools, { autoLoad });
     }
   }
+
+  // Only tools registered in MCP are discoverable via search_tools.
+  const discoverablePluginToolCount = mcpManager.listTools().length;
 
   // Create subagent definitions from plugins with subagent config
   for (const plugin of options.plugins ?? []) {
@@ -1088,11 +1064,12 @@ export function createAgent(options: AgentOptions): Agent {
   // - Create when external MCP servers exist (for MCP tool search)
   // - Always auto-load tools when found (no manual load step) — unless proxy mode
   const shouldCreateSearchToolsForAutoThreshold =
-    toolSearchEnabled === "auto" && totalPluginToolCount > toolSearchThreshold;
+    toolSearchEnabled === "auto" && discoverablePluginToolCount > toolSearchThreshold;
 
   const shouldCreateSearchTools =
     !options.disabledCoreTools?.includes("search_tools") &&
-    ((deferredLoadingActive && (totalPluginToolCount > 0 || mcpManager.hasExternalServers())) ||
+    ((deferredLoadingActive &&
+      (discoverablePluginToolCount > 0 || mcpManager.hasExternalServers())) ||
       (isProxyMode && hasProxyTargets) ||
       shouldCreateSearchToolsForAutoThreshold ||
       (mcpManager.hasExternalServers() && toolSearchEnabled !== "never"));
@@ -1319,25 +1296,6 @@ export function createAgent(options: AgentOptions): Agent {
     // Add runtime tools (added by plugins at runtime)
     Object.assign(allTools, runtimeTools);
 
-    // Process eager function-based plugins with streaming context.
-    // Static tools and deferred/proxy tools flow through MCPManager so loading
-    // rules stay consistent between streaming and non-streaming execution.
-    for (const plugin of options.plugins ?? []) {
-      if (plugin.tools && typeof plugin.tools === "function") {
-        const isDeferred = isPluginDeferred(plugin);
-        const isDiscoveryDeferred = deferredLoadingActive && plugin.deferred !== false;
-
-        if (isDeferred || isDiscoveryDeferred) {
-          continue;
-        }
-
-        const streamingTools = (plugin.tools as StreamingToolsFactory)(streamingContext);
-        for (const [toolName, tool] of Object.entries(streamingTools)) {
-          allTools[formatPluginToolName(plugin.name, toolName)] = tool;
-        }
-      }
-    }
-
     // Add MCP tools from plugin registrations
     const mcpTools = mcpManager.getToolSet(undefined, streamingContext);
     Object.assign(allTools, mcpTools);
@@ -1378,6 +1336,40 @@ export function createAgent(options: AgentOptions): Agent {
     const withTaskManager = wrapToolsWithTaskManager(tools, taskManager);
     // Then apply hooks for observability
     return wrapToolsWithHooks(withTaskManager, effectiveHooks, agent, threadId ?? "default");
+  };
+
+  /**
+   * Injects request-local streaming context into tool execution options.
+   *
+   * This keeps deferred streaming tools isolated per request instead of
+   * relying on mutable MCPManager state shared across concurrent generations.
+   */
+  const wrapToolsWithStreamingContext = (
+    tools: ToolSet,
+    streamingContext: StreamingContext,
+  ): ToolSet => {
+    const wrapped: ToolSet = {};
+
+    for (const [name, tool] of Object.entries(tools)) {
+      if (!tool.execute) {
+        wrapped[name] = tool;
+        continue;
+      }
+
+      const originalExecute = tool.execute;
+      wrapped[name] = {
+        ...tool,
+        execute: async (input: unknown, toolOptions?: ToolExecutionOptions) => {
+          const extendedOptions = {
+            ...toolOptions,
+            streamingContext,
+          } as ToolExecutionOptions;
+          return originalExecute(input, extendedOptions);
+        },
+      };
+    }
+
+    return wrapped;
   };
 
   /**
@@ -3348,7 +3340,14 @@ export function createAgent(options: AgentOptions): Agent {
                 ),
                 effectiveGenOptions.threadId,
               );
-              const streamingTools = wrapToolsWithSignalCatching(hookedStreamingTools, signalState);
+              const requestScopedStreamingTools = wrapToolsWithStreamingContext(
+                hookedStreamingTools,
+                streamingContext,
+              );
+              const streamingTools = wrapToolsWithSignalCatching(
+                requestScopedStreamingTools,
+                signalState,
+              );
 
               // Build prompt context and generate system prompt
               const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
@@ -3501,7 +3500,7 @@ export function createAgent(options: AgentOptions): Agent {
                 }
               }
 
-              // --- Background task completion loop ---
+              // --- Background task completion loop (streamDataResponse) ---
               if (waitForBackgroundTasks && !signalState.interrupt) {
                 // Track accumulated steps for checkpoint saves
                 const initialSteps = await result.steps;

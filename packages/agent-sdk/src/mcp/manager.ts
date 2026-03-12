@@ -450,6 +450,9 @@ export class MCPManager {
   /** Input validator for MCP tools */
   private validator: MCPInputValidator = new MCPInputValidator();
 
+  /** Streaming tool factories from function-based plugins */
+  private streamingFactories: Map<string, StreamingToolsFactory> = new Map();
+
   /**
    * Creates a new MCP manager.
    *
@@ -660,6 +663,52 @@ export class MCPManager {
   }
 
   /**
+   * Register streaming (function-based) plugin tools.
+   *
+   * Calls the factory with `{ writer: null }` to extract tool schemas for
+   * metadata/search. Stores the factory for later invocation with a real
+   * streaming context during `callTool()`.
+   *
+   * @param pluginName - Plugin/server name
+   * @param factory - Streaming tools factory function
+   * @param options - Registration options
+   */
+  registerStreamingPluginTools(
+    pluginName: string,
+    factory: StreamingToolsFactory,
+    options: { autoLoad?: boolean } = {},
+  ): void {
+    const { autoLoad = true } = options;
+
+    // Call factory with null writer to get tool schemas
+    const schemaTools = factory({ writer: null });
+
+    // Create a virtual server for metadata/search
+    const server = new VirtualMCPServer(pluginName, schemaTools);
+    this.virtualServers.set(pluginName, server);
+    this.streamingFactories.set(pluginName, factory);
+    this.cacheInvalid = true;
+
+    if (autoLoad) {
+      this.autoLoadServers.add(pluginName);
+      const serverTools = server.getToolSet();
+      for (const name of Object.keys(serverTools)) {
+        this.loadedTools.add(name);
+      }
+    }
+  }
+
+  /**
+   * Check if a plugin has a streaming factory registered.
+   *
+   * @param pluginName - Plugin name to check
+   * @returns True if a streaming factory exists for this plugin
+   */
+  hasStreamingFactory(pluginName: string): boolean {
+    return this.streamingFactories.has(pluginName);
+  }
+
+  /**
    * Check if a specific tool is currently loaded.
    *
    * @param name - Qualified tool name to check
@@ -793,22 +842,31 @@ export class MCPManager {
    * Only returns tools that have been loaded (either via autoLoad or explicit loadTools call).
    *
    * @param filter - Optional list of tool names to include
-   * @param streamingContext - Optional streaming context for function-based tools
+   * @param streamingContext - Optional request-local streaming context for live factory tools
    * @returns ToolSet with qualified tool names
    */
-  getToolSet(filter?: string[], streamingContext?: StreamingContext): ToolSet {
+  getToolSet(filter?: string[], streamingContext?: StreamingContext | null): ToolSet {
     const toolSet: ToolSet = {};
     const filterSet = filter ? new Set(filter) : null;
 
     // Include virtual server tools (only if loaded)
-    for (const server of this.virtualServers.values()) {
-      const serverTools = server.getToolSet(streamingContext);
-      for (const [name, t] of Object.entries(serverTools)) {
-        // Only include if loaded and passes filter
-        if (this.loadedTools.has(name)) {
-          if (!filterSet || filterSet.has(name)) {
-            toolSet[name] = t;
+    for (const [serverName, server] of this.virtualServers) {
+      const factory = this.streamingFactories.get(serverName);
+      if (factory && streamingContext) {
+        const liveTools = factory(streamingContext);
+        for (const [toolName, t] of Object.entries(liveTools)) {
+          const qualifiedName = `${serverName}__${toolName}`;
+          if (this.loadedTools.has(qualifiedName) && (!filterSet || filterSet.has(qualifiedName))) {
+            toolSet[qualifiedName] = t;
           }
+        }
+        continue;
+      }
+
+      const serverTools = server.getToolSet(streamingContext ?? undefined);
+      for (const [name, t] of Object.entries(serverTools)) {
+        if (this.loadedTools.has(name) && (!filterSet || filterSet.has(name))) {
+          toolSet[name] = t;
         }
       }
     }
@@ -893,7 +951,7 @@ export class MCPManager {
     args: unknown,
     options: {
       abortSignal?: AbortSignal;
-      streamingContext?: StreamingContext;
+      streamingContext?: StreamingContext | null;
     } = {},
   ): Promise<unknown> {
     const mcpTool = isMcpToolName(qualifiedName);
@@ -914,7 +972,23 @@ export class MCPManager {
       if (!mcpTool) {
         const virtualServer = this.virtualServers.get(sourceName);
         if (virtualServer?.hasTool(toolName)) {
-          return virtualServer.callTool(toolName, args, options);
+          const factory = this.streamingFactories.get(sourceName);
+          if (factory) {
+            const liveTools = factory(options.streamingContext ?? { writer: null });
+            const liveTool = liveTools[toolName];
+            if (liveTool?.execute) {
+              return liveTool.execute(args as Parameters<typeof liveTool.execute>[0], {
+                toolCallId: `virtual-${Date.now()}`,
+                messages: [],
+                abortSignal: options.abortSignal ?? new AbortController().signal,
+              });
+            }
+          }
+
+          return virtualServer.callTool(toolName, args, {
+            abortSignal: options.abortSignal,
+            streamingContext: options.streamingContext ?? undefined,
+          });
         }
         continue;
       }
@@ -983,8 +1057,9 @@ export class MCPManager {
     }
     this.externalClients.clear();
 
-    // Clear virtual servers
+    // Clear virtual servers and streaming factories
     this.virtualServers.clear();
+    this.streamingFactories.clear();
     this.cacheInvalid = true;
     this.searchIndex = buildSearchIndex([]);
 

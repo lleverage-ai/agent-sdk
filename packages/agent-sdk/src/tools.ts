@@ -75,6 +75,7 @@ export function defineSkill(options: SkillOptions): SkillDefinition {
     license: options.license,
     compatibility: options.compatibility,
     metadata: options.metadata,
+    skillPath: options.skillPath,
   };
 }
 

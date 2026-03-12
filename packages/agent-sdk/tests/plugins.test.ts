@@ -392,4 +392,25 @@ describe("defineSkill", () => {
     expect(skill.tools).toBeDefined();
     expect(skill.tools?.skillTool).toBeDefined();
   });
+
+  it("forwards skillPath from options", () => {
+    const skill = defineSkill({
+      name: "file-skill",
+      description: "A file-based skill",
+      instructions: "Use the file tools",
+      skillPath: "/path/to/skills/file-skill",
+    });
+
+    expect(skill.skillPath).toBe("/path/to/skills/file-skill");
+  });
+
+  it("skillPath is undefined when not provided", () => {
+    const skill = defineSkill({
+      name: "no-path",
+      description: "No path",
+      instructions: "Instructions",
+    });
+
+    expect(skill.skillPath).toBeUndefined();
+  });
 });

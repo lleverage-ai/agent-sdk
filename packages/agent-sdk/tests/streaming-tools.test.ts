@@ -367,7 +367,7 @@ describe("Streaming Tools", () => {
       expect(tools).toBeDefined();
     });
 
-    it("excludes function-based plugin tools from static tool set", () => {
+    it("includes function-based plugin tools in the active tool set under their qualified names", () => {
       const model = createMockModel();
       const plugin: AgentPlugin = {
         name: "streaming-plugin",
@@ -385,12 +385,11 @@ describe("Streaming Tools", () => {
         plugins: [plugin],
       });
 
-      // Function-based tools are not in getActiveTools (they need streaming context)
+      // Outside streaming responses these tools still exist, but run with a
+      // null writer until a live streaming context is provided.
       const tools = agent.getActiveTools();
-      // The streaming tool should NOT be in the static tools
       expect(tools).not.toHaveProperty("streamingTool");
-      // Nor with the plugin namespace
-      expect(tools).not.toHaveProperty("streaming-plugin__streamingTool");
+      expect(tools).toHaveProperty("streaming-plugin__streamingTool");
     });
   });
 });
