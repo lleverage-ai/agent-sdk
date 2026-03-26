@@ -590,6 +590,8 @@ export type {
   TodoWriteToolOptions,
   // Tool utilities types
   ToolReference,
+  // View tool types
+  ViewToolOptions,
 } from "./tools/index.js";
 // Core Tools
 export {
@@ -631,6 +633,8 @@ export {
   SkillRegistry,
   toolsFrom,
   toolsFromPlugin,
+  // View tool (multimodal file inspection)
+  createViewTool,
 } from "./tools/index.js";
 // Skills (tools use AI SDK's tool() directly)
 export { defineSkill } from "./tools.js";

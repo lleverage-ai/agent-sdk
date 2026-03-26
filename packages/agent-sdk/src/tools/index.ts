@@ -89,3 +89,6 @@ export {
   toolsFrom,
   toolsFromPlugin,
 } from "./utils.js";
+// View tool (multimodal file inspection)
+export type { ViewToolOptions } from "./view.js";
+export { createViewTool } from "./view.js";

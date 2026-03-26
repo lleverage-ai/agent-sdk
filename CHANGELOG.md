@@ -31,6 +31,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **BREAKING**: Removed the redundant package-root exports `createFilesystemToolsOnly()`, `createContext()`, `AgentContext`, and `createStateBackend()`. Use `createFilesystemTools()`, an inline `BackendFactory` such as `(state) => new StateBackend(state)`, or your own app-level context object instead.
 
+### Added
+
+- `createViewTool` — multimodal file inspection tool that lets agents visually see images, PDFs, and DOCX files. Returns page images as `image-data` content parts at optimal resolution (110 DPI / ≤1568px for Claude). Uses `toModelOutput` to ensure images are sent as proper image blocks (~1560 tokens/page) rather than JSON-serialized text (~150K tokens/page).
+
 ### Fixed
 
 - Restored missing package entrypoints/barrels after monorepo split, plus restored missing `errors/` and `security/` source trees under `packages/agent-sdk/src`
