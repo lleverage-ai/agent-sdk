@@ -688,9 +688,7 @@ export class FilesystemBackend implements BackendProtocol {
       let truncated = false;
       let resolved = false;
 
-      const shellArgs = process.platform === "win32" ? ["/c", command] : ["-c", command];
-
-      const child = spawn(this.shell, shellArgs, {
+      const child = spawn(this.shell, this.buildShellArgs(command), {
         cwd: this.rootDir,
         env: this.env,
         stdio: ["ignore", "pipe", "pipe"],
@@ -782,9 +780,7 @@ export class FilesystemBackend implements BackendProtocol {
     let truncated = false;
     let aborted = false;
 
-    const shellArgs = process.platform === "win32" ? ["/c", command] : ["-c", command];
-
-    const child = spawn(this.shell, shellArgs, {
+    const child = spawn(this.shell, this.buildShellArgs(command), {
       cwd: this.rootDir,
       env: this.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -924,6 +920,23 @@ export class FilesystemBackend implements BackendProtocol {
   /**
    * Validate a command before execution.
    *
+   * Build the shell argument array for spawning a command.
+   *
+   * cmd.exe uses `/c` to pass a command string, while bash/sh use `-c`.
+   * When a user configures a bash-like shell on Windows (e.g. Git Bash),
+   * we must use `-c` rather than the platform default `/c`.
+   *
+   * @param command - Command string to wrap
+   * @returns Argument array suitable for `spawn(this.shell, args)`
+   * @internal
+   */
+  private buildShellArgs(command: string): string[] {
+    const isBashLike = /(?:^|[\\/])(?:ba)?sh(?:\.exe)?$/i.test(this.shell);
+    if (isBashLike) return ["-c", command];
+    return process.platform === "win32" ? ["/c", command] : ["-c", command];
+  }
+
+  /**
    * @param command - Command to validate
    * @throws {CommandBlockedError} If the command is blocked
    * @internal

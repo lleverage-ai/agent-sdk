@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `FilesystemBackend` bash execution now correctly uses `-c` when a bash-like shell is configured on Windows (e.g. Git Bash). Previously, the backend always used `/c` on Windows regardless of the configured shell, causing all commands to fail silently.
+- `getUserMemoryPath()` and `getUserAgentDir()` now normalize paths to forward slashes on all platforms, ensuring consistent path output regardless of OS
+- Skipped the directory symlink security test on Windows, where `fs.symlink(..., "dir")` creates a junction that Node's `lstat().isSymbolicLink()` does not detect (file symlink tests still run on all platforms)
 - Restored missing package entrypoints/barrels after monorepo split, plus restored missing `errors/` and `security/` source trees under `packages/agent-sdk/src`
 - Inline plugin tool metadata generation now warns when input-schema conversion fails instead of silently falling back to an empty schema
 - Fixed CI/release Bun installs failing on hook setup by setting `SKIP_INSTALL_SIMPLE_GIT_HOOKS=1` in install steps

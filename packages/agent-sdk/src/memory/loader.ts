@@ -263,7 +263,8 @@ export async function getProjectMemoryPath(workingDirectory: string): Promise<st
  */
 export function getUserMemoryPath(agentId: string, homeDir?: string): string {
   const home = homeDir ?? process.env.HOME ?? "~";
-  return path.join(home, ".deepagents", agentId, "agent.md");
+  // Normalize to forward slashes for cross-platform consistency
+  return path.join(home, ".deepagents", agentId, "agent.md").replace(/\\/g, "/");
 }
 
 /**
@@ -277,7 +278,8 @@ export function getUserMemoryPath(agentId: string, homeDir?: string): string {
  */
 export function getUserAgentDir(agentId: string, homeDir?: string): string {
   const home = homeDir ?? process.env.HOME ?? "~";
-  return path.join(home, ".deepagents", agentId);
+  // Normalize to forward slashes for cross-platform consistency
+  return path.join(home, ".deepagents", agentId).replace(/\\/g, "/");
 }
 
 // =============================================================================
