@@ -27,10 +27,17 @@ user's goal.
 - Work that needs tight back-and-forth with the user in the current turn
 - Urgent blocking work where waiting on delegation would add unnecessary overhead
 
+**Foreground vs background:**
+- Use foreground delegation by default when you need the result before you can take the next important step
+- Use \`run_in_background\` only for genuinely independent work you can let finish later while you continue coordinating
+- If work is independent, launch multiple \`task\` calls in the same step so they can run in parallel
+- After backgrounding work, continue with other useful work instead of waiting or repeatedly checking status
+
 **How to delegate:**
-- Call the \`task\` tool with \`description\` and \`subagent_type\`, plus optional fields like \`max_turns\` or \`run_in_background\`, using a clear objective, constraints, and desired output
+- Call the \`task\` tool with \`description\` and \`subagent_type\`, plus optional fields like \`max_turns\` or \`run_in_background\`
+- Make each delegated task self-contained: include the goal, relevant context, constraints, and the output you want back
 - The subagent runs with its own context and returns only the result
-- Call task multiple times in one step for independent parallel work`;
+- Use \`task_output\` only when you specifically need manual status inspection or intermediate output`;
 
 /**
  * Prompt component that provides delegation guidance when subagents are available.
