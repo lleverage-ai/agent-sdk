@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Active/terminal run status helpers (`ACTIVE_RUN_STATUSES`, `TERMINAL_RUN_STATUSES`, `isActiveRunStatus()`, `isTerminalRunStatus()`) and the narrowed `ActiveRunStatus` / `TerminalRunStatus` types for safer lifecycle logic reuse
 - Protocol decoding now includes explicit `decodeClientMessage()` and `decodeServerMessage()` validators, enabling directional wire-message validation at transport boundaries
 - Branch navigation metadata via `ILedgerStore.getThreadTree(threadId)`, including message nodes and fork-point active-child resolution across both in-memory and SQLite ledger stores
+- Architecture RFC for Prompt Builder V2 covering behavior-first prompting, instruction layering, progressive skill disclosure, structured memory injection, and static versus dynamic prompt sections ([docs/architecture/prompt-builder-v2.md](docs/architecture/prompt-builder-v2.md))
 
 ### Changed
 
@@ -22,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `TypedEmitter` now accepts interface-based event maps, allowing `WsClientEvents` to follow the repository `interface` convention without requiring index-signature workarounds
 - Fork finalization in both ledger stores is now non-destructive: committing a run at a fork point preserves previously committed branch messages while still superseding older runs at that fork
 - `GetTranscriptOptions.branch` now supports explicit branch selections via `{ selections: Record<string, string> }`, and ledger stores now resolve `"active"` transcripts by walking parent-child message links with committed-branch preference
+- `createDefaultPromptBuilder()` now uses a goal-directed, behavior-first default prompt shape with compact capability summaries; verbose tool, skill, and plugin listings remain available as opt-in components
 
 ### Fixed
 

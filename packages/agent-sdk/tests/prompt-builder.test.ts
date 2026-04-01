@@ -4,12 +4,17 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import {
+  actionPolicyComponent,
   capabilitiesComponent,
+  capabilitySummaryComponent,
   contextComponent,
   createDefaultPromptBuilder,
   identityComponent,
+  interactionContractComponent,
+  memoryPolicyComponent,
   permissionModeComponent,
   pluginsComponent,
+  skillLoadingPolicyComponent,
   skillsComponent,
   toolsComponent,
 } from "../src/prompt-builder/components.js";
@@ -197,11 +202,90 @@ describe("Default Components", () => {
   describe("identityComponent", () => {
     it("should render a basic identity", () => {
       const result = identityComponent.render(context);
-      expect(result).toBe("You are a helpful AI assistant.");
+      expect(result).toBe(
+        "You are an interactive agent. Your job is to help the user achieve their goal using the instructions below and the tools available to you.",
+      );
     });
 
     it("should have high priority", () => {
       expect(identityComponent.priority).toBe(100);
+    });
+  });
+
+  describe("interactionContractComponent", () => {
+    it("should render interaction guidance", () => {
+      const result = interactionContractComponent.render(context);
+      expect(result).toContain("# Interaction Contract");
+      expect(result).toContain("shown directly to the user");
+      expect(result).toContain("Do not claim actions");
+    });
+  });
+
+  describe("actionPolicyComponent", () => {
+    it("should render action guidance", () => {
+      const result = actionPolicyComponent.render(context);
+      expect(result).toContain("# Action Policy");
+      expect(result).toContain("Choose the simplest effective action");
+      expect(result).toContain("Verify important results");
+    });
+  });
+
+  describe("capabilitySummaryComponent", () => {
+    it("should render empty string when no capabilities are available", () => {
+      const result = capabilitySummaryComponent.render(context);
+      expect(result).toBe("");
+    });
+
+    it("should summarize broad capabilities without listing tools by name", () => {
+      const ctx: PromptContext = {
+        tools: [
+          { name: "read", description: "Read files" },
+          { name: "write", description: "Write files" },
+        ],
+        backend: {
+          type: "filesystem",
+          hasExecuteCapability: true,
+          rootDir: "/home/user/project",
+        },
+        plugins: [{ name: "plugin-a", description: "Plugin A" }],
+      };
+
+      const result = capabilitySummaryComponent.render(ctx);
+      expect(result).toContain("# Capability Summary");
+      expect(result).toContain("configured workspace");
+      expect(result).toContain("Workspace root: /home/user/project");
+      expect(result).toContain("run shell commands");
+      expect(result).toContain("Additional capabilities are available through installed plugins");
+      expect(result).not.toContain("plugin-a");
+      expect(result).not.toContain("read");
+    });
+  });
+
+  describe("skillLoadingPolicyComponent", () => {
+    it("should not render when no skill loading capability is available", () => {
+      const condition = skillLoadingPolicyComponent.condition?.(context);
+      expect(condition).toBe(false);
+    });
+
+    it("should render when the skill tool is available", () => {
+      const ctx: PromptContext = {
+        tools: [{ name: "skill", description: "Load skills" }],
+      };
+      const condition = skillLoadingPolicyComponent.condition?.(ctx);
+      expect(condition).toBe(true);
+
+      const result = skillLoadingPolicyComponent.render(ctx);
+      expect(result).toContain("# Skill Loading");
+      expect(result).toContain("load it before improvising");
+    });
+  });
+
+  describe("memoryPolicyComponent", () => {
+    it("should render general memory guidance", () => {
+      const result = memoryPolicyComponent.render(context);
+      expect(result).toContain("# Memory");
+      expect(result).toContain("durable instructions");
+      expect(result).toContain("re-check reality");
     });
   });
 
@@ -391,11 +475,16 @@ describe("createDefaultPromptBuilder", () => {
     const names = builder.getComponentNames();
 
     expect(names).toContain("identity");
-    expect(names).toContain("tools-listing");
-    expect(names).toContain("skills-listing");
-    expect(names).toContain("plugins-listing");
-    expect(names).toContain("capabilities");
+    expect(names).toContain("interaction-contract");
+    expect(names).toContain("action-policy");
+    expect(names).toContain("capability-summary");
+    expect(names).toContain("skill-loading-policy");
+    expect(names).toContain("memory-policy");
     expect(names).toContain("permission-mode");
+    expect(names).not.toContain("tools-listing");
+    expect(names).not.toContain("skills-listing");
+    expect(names).not.toContain("plugins-listing");
+    expect(names).not.toContain("capabilities");
     expect(names).not.toContain("context");
     expect(names).toContain("delegation-instructions");
   });
@@ -419,12 +508,16 @@ describe("createDefaultPromptBuilder", () => {
     const prompt = builder.build(context);
 
     // Check that all sections are present
-    expect(prompt).toContain("You are a helpful AI assistant");
-    expect(prompt).toContain("# Available Tools");
-    expect(prompt).toContain("# Available Skills");
-    expect(prompt).toContain("# Loaded Plugins");
-    expect(prompt).toContain("# Capabilities");
+    expect(prompt).toContain("help the user achieve their goal");
+    expect(prompt).toContain("# Interaction Contract");
+    expect(prompt).toContain("# Action Policy");
+    expect(prompt).toContain("# Capability Summary");
+    expect(prompt).toContain("# Skill Loading");
+    expect(prompt).toContain("# Memory");
     expect(prompt).toContain("# Permission Mode");
+    expect(prompt).not.toContain("# Available Tools");
+    expect(prompt).not.toContain("# Available Skills");
+    expect(prompt).not.toContain("# Loaded Plugins");
     expect(prompt).not.toContain("# Context");
   });
 
@@ -441,7 +534,7 @@ describe("createDefaultPromptBuilder", () => {
 
     const prompt = custom.build({});
     expect(prompt).toContain("You are a specialized assistant");
-    expect(prompt).not.toContain("You are a helpful AI assistant");
+    expect(prompt).not.toContain("help the user achieve their goal");
   });
 });
 
@@ -451,7 +544,8 @@ describe("Integration scenarios", () => {
     const prompt = builder.build({});
 
     // Should at least have identity
-    expect(prompt).toContain("You are a helpful AI assistant");
+    expect(prompt).toContain("help the user achieve their goal");
+    expect(prompt).toContain("# Interaction Contract");
   });
 
   it("should handle rich context", () => {
@@ -490,10 +584,12 @@ describe("Integration scenarios", () => {
     expect(sections.length).toBeGreaterThan(3);
 
     // Verify content
-    expect(prompt).toContain("read");
-    expect(prompt).toContain("git");
-    expect(prompt).toContain("mcp-filesystem");
-    expect(prompt).toContain("Execute shell commands");
+    expect(prompt).toContain("# Capability Summary");
+    expect(prompt).toContain("run shell commands");
+    expect(prompt).toContain("# Skill Loading");
+    expect(prompt).not.toContain("# Available Tools");
+    expect(prompt).not.toContain("# Loaded Plugins");
+    expect(prompt).not.toContain("mcp-filesystem");
     expect(prompt).not.toContain("session-abc123");
   });
 

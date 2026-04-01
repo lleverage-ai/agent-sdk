@@ -68,10 +68,11 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     const callArgs = (generateText as any).mock.calls[0][0];
     const systemPrompt = callArgs.system;
 
-    // Verify the system prompt contains tool information
-    expect(systemPrompt).toContain("# Available Tools");
-    expect(systemPrompt).toContain("- **read**: Read a file from disk");
-    expect(systemPrompt).toContain("- **write**: Write content to a file");
+    // Verify the system prompt stays behavior-first and does not dump tool inventories
+    expect(systemPrompt).toContain("# Capability Summary");
+    expect(systemPrompt).toContain("use tools to inspect, modify, and act");
+    expect(systemPrompt).not.toContain("# Available Tools");
+    expect(systemPrompt).not.toContain("- **read**: Read a file from disk");
   });
 
   it("should pass skills to system prompt when agent has skills", async () => {
@@ -92,11 +93,9 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     const callArgs = (generateText as any).mock.calls[0][0];
     const systemPrompt = callArgs.system;
 
-    // Skills are registered in the skill registry and accessible via the skill tool,
-    // so they appear in the tools section rather than a separate skills section
-    expect(systemPrompt).toContain("# Available Tools");
-    expect(systemPrompt).toContain("skill");
-    expect(systemPrompt).toContain("git");
+    expect(systemPrompt).toContain("# Skill Loading");
+    expect(systemPrompt).toContain("load it before improvising");
+    expect(systemPrompt).not.toContain("# Available Skills");
   });
 
   it("should pass plugin information to system prompt", async () => {
@@ -123,13 +122,10 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     const callArgs = (generateText as any).mock.calls[0][0];
     const systemPrompt = callArgs.system;
 
-    // Should include plugin info
-    expect(systemPrompt).toContain("# Loaded Plugins");
-    expect(systemPrompt).toContain("- **test-plugin**: A plugin for testing");
-
-    // Should also include the plugin's tools
-    expect(systemPrompt).toContain("# Available Tools");
-    expect(systemPrompt).toContain("pluginTool");
+    expect(systemPrompt).toContain("# Capability Summary");
+    expect(systemPrompt).toContain("installed plugins");
+    expect(systemPrompt).not.toContain("# Loaded Plugins");
+    expect(systemPrompt).not.toContain("pluginTool");
   });
 
   it("should include backend capabilities in system prompt", async () => {
@@ -149,9 +145,9 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     const callArgs = (generateText as any).mock.calls[0][0];
     const systemPrompt = callArgs.system;
 
-    expect(systemPrompt).toContain("# Capabilities");
-    expect(systemPrompt).toContain("Execute shell commands (bash)");
-    expect(systemPrompt).toContain("Read and write files to the filesystem");
+    expect(systemPrompt).toContain("# Capability Summary");
+    expect(systemPrompt).toContain("run shell commands");
+    expect(systemPrompt).toContain("configured workspace");
   });
 
   it("should include permission mode in system prompt", async () => {
@@ -190,7 +186,7 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
 
     // Should use the static prompt, not the builder
     expect(systemPrompt).toBe("You are a test assistant with special instructions.");
-    expect(systemPrompt).not.toContain("# Available Tools");
+    expect(systemPrompt).not.toContain("# Capability Summary");
   });
 
   it("should build complete prompt with all components", async () => {
@@ -239,20 +235,18 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     const systemPrompt = callArgs.system;
 
     // Verify all sections are present
-    expect(systemPrompt).toContain("You are a helpful AI assistant");
-    expect(systemPrompt).toContain("# Available Tools");
-    expect(systemPrompt).toContain("# Loaded Plugins");
-    expect(systemPrompt).toContain("# Capabilities");
+    expect(systemPrompt).toContain("help the user achieve their goal");
+    expect(systemPrompt).toContain("# Interaction Contract");
+    expect(systemPrompt).toContain("# Capability Summary");
+    expect(systemPrompt).toContain("# Memory");
     expect(systemPrompt).toContain("# Permission Mode");
 
     // Verify specific content
-    expect(systemPrompt).toContain("- **read**: Read files");
-    // The git skill is registered in the skill registry, accessible via the skill tool
-    expect(systemPrompt).toContain("skill");
-    expect(systemPrompt).toContain("git");
-    expect(systemPrompt).toContain("- **custom-plugin**: Custom functionality");
-    expect(systemPrompt).toContain("Execute shell commands (bash)");
+    expect(systemPrompt).toContain("# Skill Loading");
+    expect(systemPrompt).toContain("run shell commands");
     expect(systemPrompt).toContain("File editing tools are auto-approved");
+    expect(systemPrompt).not.toContain("# Available Tools");
+    expect(systemPrompt).not.toContain("# Loaded Plugins");
   });
 
   it("should update prompt context on subsequent generations", async () => {
@@ -278,9 +272,9 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     const secondCall = (generateText as any).mock.calls[1][0];
     const secondSystemPrompt = secondCall.system;
 
-    // Both should have the same tools (context is rebuilt each time)
-    expect(firstSystemPrompt).toContain("# Available Tools");
-    expect(secondSystemPrompt).toContain("# Available Tools");
+    // Both should have the same stable prompt shape (context is rebuilt each time)
+    expect(firstSystemPrompt).toContain("# Capability Summary");
+    expect(secondSystemPrompt).toContain("# Capability Summary");
     expect(firstSystemPrompt).toEqual(secondSystemPrompt);
   });
 });
@@ -588,10 +582,10 @@ describe("Prompt Builder Integration with Real Agents", () => {
       const builder = createDefaultPromptBuilder();
       const prompt = builder.build({});
 
-      expect(prompt).toContain("You are a helpful AI assistant");
+      expect(prompt).toContain("help the user achieve their goal");
     });
 
-    it("should render tools component when tools are present", () => {
+    it("should not render tool inventories by default when tools are present", () => {
       const builder = createDefaultPromptBuilder();
       const prompt = builder.build({
         tools: [
@@ -600,19 +594,19 @@ describe("Prompt Builder Integration with Real Agents", () => {
         ],
       });
 
-      expect(prompt).toContain("# Available Tools");
-      expect(prompt).toContain("- **read**: Read files");
-      expect(prompt).toContain("- **write**: Write files");
+      expect(prompt).toContain("# Capability Summary");
+      expect(prompt).not.toContain("# Available Tools");
+      expect(prompt).not.toContain("- **read**: Read files");
     });
 
-    it("should not render tools component when no tools", () => {
+    it("should not render capability summary when there are no capabilities", () => {
       const builder = createDefaultPromptBuilder();
       const prompt = builder.build({});
 
-      expect(prompt).not.toContain("# Available Tools");
+      expect(prompt).not.toContain("# Capability Summary");
     });
 
-    it("should render skills component when skills are present", () => {
+    it("should render skill-loading guidance when skills are present", () => {
       const builder = createDefaultPromptBuilder();
       const prompt = builder.build({
         skills: [
@@ -621,12 +615,11 @@ describe("Prompt Builder Integration with Real Agents", () => {
         ],
       });
 
-      expect(prompt).toContain("# Available Skills");
-      expect(prompt).toContain("- **git**: Git operations");
-      expect(prompt).toContain("- **npm**: NPM commands");
+      expect(prompt).toContain("# Skill Loading");
+      expect(prompt).not.toContain("# Available Skills");
     });
 
-    it("should render capabilities component with backend info", () => {
+    it("should render capability summary with backend info", () => {
       const builder = createDefaultPromptBuilder();
       const prompt = builder.build({
         backend: {
@@ -636,10 +629,10 @@ describe("Prompt Builder Integration with Real Agents", () => {
         },
       });
 
-      expect(prompt).toContain("# Capabilities");
-      expect(prompt).toContain("Execute shell commands (bash)");
-      expect(prompt).toContain("Read and write files to the filesystem");
-      expect(prompt).toContain("Working directory: /home/user/project");
+      expect(prompt).toContain("# Capability Summary");
+      expect(prompt).toContain("run shell commands");
+      expect(prompt).toContain("configured workspace");
+      expect(prompt).toContain("Workspace root: /home/user/project");
     });
 
     it("should render permission mode component", () => {
@@ -675,13 +668,13 @@ describe("Prompt Builder Integration with Real Agents", () => {
         permissionMode: "default",
       });
 
-      // Identity (priority 100) should come before tools (priority 70)
-      const identityIndex = prompt.indexOf("You are a helpful AI assistant");
-      const toolsIndex = prompt.indexOf("# Available Tools");
+      // Identity (priority 100) should come before capability summary (priority 85)
+      const identityIndex = prompt.indexOf("help the user achieve their goal");
+      const capabilitiesIndex = prompt.indexOf("# Capability Summary");
 
-      expect(identityIndex).toBeLessThan(toolsIndex);
+      expect(identityIndex).toBeLessThan(capabilitiesIndex);
       expect(identityIndex).toBeGreaterThan(-1);
-      expect(toolsIndex).toBeGreaterThan(-1);
+      expect(capabilitiesIndex).toBeGreaterThan(-1);
     });
   });
 
@@ -699,7 +692,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
 
       // Custom header should come before identity
       const customIndex = prompt.indexOf("# Custom Agent Configuration");
-      const identityIndex = prompt.indexOf("You are a helpful AI assistant");
+      const identityIndex = prompt.indexOf("help the user achieve their goal");
 
       expect(customIndex).toBeLessThan(identityIndex);
     });
@@ -709,7 +702,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
 
       const prompt = builder.build({});
 
-      expect(prompt).not.toContain("You are a helpful AI assistant");
+      expect(prompt).not.toContain("help the user achieve their goal");
     });
 
     it("should allow replacing default components", () => {
@@ -724,7 +717,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
       const prompt = builder.build({});
 
       expect(prompt).toContain("You are a specialized coding assistant");
-      expect(prompt).not.toContain("You are a helpful AI assistant");
+      expect(prompt).not.toContain("help the user achieve their goal");
     });
   });
 });
