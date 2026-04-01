@@ -8,8 +8,14 @@ import { delegationComponent } from "./delegation-component.js";
 import type { PromptComponent, PromptContext } from "./index.js";
 import { PromptBuilder } from "./index.js";
 
+function getNormalizedToolName(name: string): string {
+  const parts = name.split("__");
+  const leafName = parts[parts.length - 1] ?? name;
+  return leafName.toLowerCase();
+}
+
 function hasSkillLoadingCapability(ctx: PromptContext): boolean {
-  return !!ctx.tools?.some((tool) => tool.name === "skill");
+  return !!ctx.tools?.some((tool) => getNormalizedToolName(tool.name) === "skill");
 }
 
 function hasTool(
@@ -20,16 +26,20 @@ function hasTool(
 }
 
 function hasWorkspaceTool(ctx: PromptContext): boolean {
-  return hasTool(ctx, (tool) => ["read", "write", "edit", "glob", "grep"].includes(tool.name));
+  return hasTool(ctx, (tool) => {
+    const normalizedName = getNormalizedToolName(tool.name);
+    return ["read", "write", "edit", "glob", "grep"].includes(normalizedName);
+  });
 }
 
 function hasShellTool(ctx: PromptContext): boolean {
-  return hasTool(
-    ctx,
-    (tool) =>
-      ["bash", "sh", "zsh", "shell", "terminal", "cli"].includes(tool.name) ||
-      /\b(bash|shell|terminal|cli)\b/i.test(tool.description),
-  );
+  return hasTool(ctx, (tool) => {
+    const normalizedName = getNormalizedToolName(tool.name);
+    return (
+      ["bash", "sh", "zsh", "shell", "terminal", "cli"].includes(normalizedName) ||
+      /\b(bash|sh|zsh|shell|terminal)\b/i.test(tool.description)
+    );
+  });
 }
 
 /**
@@ -102,26 +112,47 @@ export const capabilitySummaryComponent: PromptComponent = {
     const capabilities: string[] = [];
     const hasWorkspaceAccess = hasWorkspaceTool(ctx);
     const hasShellAccess = hasShellTool(ctx);
+    const isPlanMode = ctx.permissionMode === "plan";
 
     if (hasWorkspaceAccess && ctx.backend?.type === "filesystem") {
-      capabilities.push("- You can work with files in the configured workspace.");
+      capabilities.push(
+        isPlanMode
+          ? "- You can inspect the configured workspace and propose file changes."
+          : "- You can work with files in the configured workspace.",
+      );
       if (ctx.backend.rootDir) {
         capabilities.push(`- Workspace root: ${ctx.backend.rootDir}`);
       }
     } else if (hasWorkspaceAccess && ctx.backend?.type === "state") {
-      capabilities.push("- You can work in a sandboxed in-memory environment.");
+      capabilities.push(
+        isPlanMode
+          ? "- You can inspect the sandboxed in-memory environment and propose changes."
+          : "- You can work in a sandboxed in-memory environment.",
+      );
     }
 
     if (hasShellAccess) {
-      capabilities.push("- You can run shell commands when that helps achieve the user's goal.");
+      capabilities.push(
+        isPlanMode
+          ? "- You can propose shell commands when that helps achieve the user's goal."
+          : "- You can run shell commands when that helps achieve the user's goal.",
+      );
     }
 
     if ((ctx.tools?.length ?? 0) > 0) {
-      capabilities.push("- You can use tools to inspect information or take actions when needed.");
+      capabilities.push(
+        isPlanMode
+          ? "- You can inspect available tools and propose actions when needed."
+          : "- You can use tools to inspect information or take actions when needed.",
+      );
     }
 
     if (hasSkillLoadingCapability(ctx)) {
-      capabilities.push("- You can load specialized skills on demand.");
+      capabilities.push(
+        isPlanMode
+          ? "- You can propose loading specialized skills when they clearly match the user's goal."
+          : "- You can load specialized skills on demand.",
+      );
     }
 
     if ((ctx.plugins?.length ?? 0) > 0) {
@@ -146,7 +177,7 @@ export const capabilitySummaryComponent: PromptComponent = {
 export const skillLoadingPolicyComponent: PromptComponent = {
   name: "skill-loading-policy",
   priority: 80,
-  condition: (ctx) => hasSkillLoadingCapability(ctx),
+  condition: (ctx) => hasSkillLoadingCapability(ctx) && ctx.permissionMode !== "plan",
   render: () => `# Skill Loading
 
 - If a specialized skill clearly matches the user's goal, load it before improvising.

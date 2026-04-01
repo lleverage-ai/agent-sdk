@@ -120,7 +120,7 @@ The default builder registers these components:
 - `capability-summary`
 - `skill-loading-policy`
 - `delegation-instructions` when subagents are available
-- `memory-policy` when `PromptContext.memoryAvailable` is true
+- `memory-policy` unless `PromptContext.memoryAvailable` is explicitly `false`
 - `permission-mode` when a permission mode is set
 
 These components are exported individually, so you can remove or replace any of them.
@@ -182,6 +182,8 @@ interface PromptContext {
 ```
 
 When using `createAgent()`, `memoryAvailable` is controlled by `AgentOptions.memoryAvailable`. It defaults to `false` because the SDK does not wire durable memory into the agent automatically.
+
+When using `PromptBuilder` directly, `memoryAvailable` remains opt-out for backward compatibility. The default memory component renders unless `memoryAvailable` is explicitly set to `false`.
 
 ### PromptComponent
 

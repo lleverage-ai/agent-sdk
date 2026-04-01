@@ -261,6 +261,51 @@ describe("Default Components", () => {
       expect(result).not.toContain("# Available Tools");
       expect(result).not.toContain("- **read**:");
     });
+
+    it("should recognize qualified tool names when summarizing capabilities", () => {
+      const ctx: PromptContext = {
+        tools: [
+          { name: "filesystem__read", description: "Read files" },
+          { name: "mcp__shell__bash", description: "Run bash commands" },
+          { name: "plugin__skill", description: "Load skills" },
+        ],
+        backend: {
+          type: "filesystem",
+          hasExecuteCapability: true,
+          rootDir: "/home/user/project",
+        },
+      };
+
+      const result = capabilitySummaryComponent.render(ctx);
+      expect(result).toContain("configured workspace");
+      expect(result).toContain("run shell commands");
+      expect(result).toContain("load specialized skills");
+    });
+
+    it("should rephrase capabilities in plan mode", () => {
+      const ctx: PromptContext = {
+        tools: [
+          { name: "read", description: "Read files" },
+          { name: "bash", description: "Run bash commands" },
+          { name: "skill", description: "Load skills" },
+        ],
+        backend: {
+          type: "filesystem",
+          hasExecuteCapability: true,
+          rootDir: "/home/user/project",
+        },
+        permissionMode: "plan",
+      };
+
+      const result = capabilitySummaryComponent.render(ctx);
+      expect(result).toContain("inspect the configured workspace and propose file changes");
+      expect(result).toContain("propose shell commands");
+      expect(result).toContain("inspect available tools and propose actions");
+      expect(result).toContain("propose loading specialized skills");
+      expect(result).not.toContain("You can work with files in the configured workspace.");
+      expect(result).not.toContain("You can run shell commands");
+      expect(result).not.toContain("You can load specialized skills on demand.");
+    });
   });
 
   describe("skillLoadingPolicyComponent", () => {
@@ -284,6 +329,15 @@ describe("Default Components", () => {
     it("should not render when skills exist but the skill tool is unavailable", () => {
       const ctx: PromptContext = {
         skills: [{ name: "git", description: "Git operations" }],
+      };
+      const condition = skillLoadingPolicyComponent.condition?.(ctx);
+      expect(condition).toBe(false);
+    });
+
+    it("should not render in plan mode", () => {
+      const ctx: PromptContext = {
+        tools: [{ name: "skill", description: "Load skills" }],
+        permissionMode: "plan",
       };
       const condition = skillLoadingPolicyComponent.condition?.(ctx);
       expect(condition).toBe(false);
