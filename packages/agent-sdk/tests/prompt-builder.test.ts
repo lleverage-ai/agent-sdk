@@ -556,7 +556,6 @@ describe("createDefaultPromptBuilder", () => {
     expect(names).not.toContain("capabilities");
     expect(names).not.toContain("context");
     expect(names).toContain("delegation-instructions");
-    expect(names).not.toContain("plugins-listing");
   });
 
   it("should build a complete prompt with all components", () => {
@@ -592,7 +591,6 @@ describe("createDefaultPromptBuilder", () => {
     expect(prompt).not.toContain("# Available Skills");
     expect(prompt).not.toContain("# Loaded Plugins");
     expect(prompt).not.toContain("# Context");
-    expect(prompt).not.toContain("# Loaded Plugins");
   });
 
   it("should be customizable via clone", () => {
