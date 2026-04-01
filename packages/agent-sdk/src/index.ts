@@ -308,12 +308,17 @@ export type { PromptComponent, PromptContext } from "./prompt-builder/index.js";
 // Prompt Builder System
 export { PromptBuilder } from "./prompt-builder/index.js";
 export {
+  actionPolicyComponent,
+  capabilitySummaryComponent,
   capabilitiesComponent,
   contextComponent,
   createDefaultPromptBuilder,
   identityComponent,
+  interactionContractComponent,
+  memoryPolicyComponent,
   permissionModeComponent,
   pluginsComponent,
+  skillLoadingPolicyComponent,
   skillsComponent,
   toolsComponent,
 } from "./prompt-builder/components.js";

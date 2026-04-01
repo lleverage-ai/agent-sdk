@@ -13,25 +13,29 @@ import type { PromptComponent } from "./index.js";
  */
 export const DEFAULT_DELEGATION_INSTRUCTIONS = `# Task Delegation
 
-When accomplishing a goal that requires multiple intermediate steps, delegate
-the intermediate work to a subagent using the \`task\` tool. This keeps your
-context focused on the final result.
+Delegate work to a subagent when that will keep your own context focused on the
+user's goal.
 
 **When to delegate:**
-- Multi-step tool workflows (search → read → analyze → summarize)
-- Operations that produce large intermediate outputs
-- Tasks requiring specialized tools or focused exploration
-- Any work where you only need the final result
+- Multi-step workflows with substantial intermediate output
+- Specialized work where you mainly need the result, not the full process
+- Independent tasks that can run in parallel
+- Work that would otherwise distract from coordinating the overall goal
+
+**When not to delegate:**
+- Simple tasks you can complete directly
+- Work that needs tight back-and-forth with the user in the current turn
+- Urgent blocking work where waiting on delegation would add unnecessary overhead
 
 **How to delegate:**
-- Use task(description, subagent_type) with a clear description of what you need
+- Call the \`task\` tool with \`description\` and \`subagent_type\`, plus optional fields like \`max_turns\` or \`run_in_background\`, using a clear objective, constraints, and desired output
 - The subagent runs with its own context and returns only the result
-- Call task multiple times in one step for parallel execution`;
+- Call task multiple times in one step for independent parallel work`;
 
 /**
  * Prompt component that provides delegation guidance when subagents are available.
  *
- * Priority: 75 (above tools-listing at 70, below identity at 100).
+ * Priority: 75 (below identity at 100 and above memory/permission guidance).
  * Condition: `ctx.custom?.hasSubagents === true`.
  *
  * @example

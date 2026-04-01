@@ -444,6 +444,17 @@ export interface AgentOptions {
   promptBuilder?: import("./prompt-builder/index.js").PromptBuilder;
 
   /**
+   * Whether the host application exposes persistent memory to the agent.
+   *
+   * This controls `PromptContext.memoryAvailable` for default and custom prompt
+   * components. `createAgent()` does not wire durable memory automatically, so
+   * leave this disabled unless your host actually provides a memory surface.
+   *
+   * @defaultValue false
+   */
+  memoryAvailable?: boolean;
+
+  /**
    * Maximum number of tool call steps allowed per generation.
    * @defaultValue 10
    */
