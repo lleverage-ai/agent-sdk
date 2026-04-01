@@ -11,6 +11,19 @@ This monorepo contains two packages:
 | [`@lleverage-ai/agent-sdk`](./packages/agent-sdk) | Core agent framework — tools, plugins, hooks, teams | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-sdk)](https://www.npmjs.com/package/@lleverage-ai/agent-sdk) |
 | [`@lleverage-ai/agent-threads`](./packages/agent-threads) | Event transport, replay, and durable transcripts | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-threads)](https://www.npmjs.com/package/@lleverage-ai/agent-threads) |
 
+## Which Package Do I Need?
+
+Use `@lleverage-ai/agent-sdk` if you want to build agents with models, tools, plugins, hooks, sessions, and subagents. This is the default starting point for most users.
+
+Use `@lleverage-ai/agent-threads` if you need infrastructure for conversation transport and persistence: event streams, replay, WebSocket transport, run lifecycle management, and durable transcripts. You can use it by itself or alongside the SDK.
+
+The simplest way to think about the split is:
+
+- `@lleverage-ai/agent-sdk` is the agent framework
+- `@lleverage-ai/agent-threads` is the conversation infrastructure layer
+
+If you are unsure, start with `@lleverage-ai/agent-sdk` and only add `@lleverage-ai/agent-threads` when you need durable thread history, replay, or transport primitives.
+
 ## Installation
 
 ```bash
@@ -21,6 +34,12 @@ You'll also need at least one AI provider:
 
 ```bash
 bun add @ai-sdk/anthropic  # or @ai-sdk/openai
+```
+
+If you also need durable transcript or transport primitives:
+
+```bash
+bun add @lleverage-ai/agent-threads
 ```
 
 ## Quick Start
@@ -74,7 +93,7 @@ const safeAgent = createAgent({
 });
 ```
 
-**Core tools included:** `read`, `write`, `edit`, `glob`, `grep`, `todo_write`, `bash` (requires backend with `enableBash: true`), `skill` (when skills are configured), `search_tools` (when enabled), `call_tool` (proxy mode only)
+**Core tools included:** `read`, `write`, `edit`, `glob`, `grep`, `todo_write`, `bash` (requires backend with `enableBash: true`), `skill` (when skills are configured), `search_tools` (when enabled), `call_tool` (when deferred or proxied tools are present)
 
 ### Tools
 
@@ -109,7 +128,7 @@ const agent = createAgent({
 
 ### Plugins
 
-Plugins bundle tools, skills, and hooks. Plugin tools are exposed with MCP naming: `mcp__<plugin>__<tool>`.
+Plugins bundle tools, skills, and hooks. Inline plugin tools are exposed as `<plugin>__<tool>`, while tools from external MCP servers use `mcp__<server>__<tool>`.
 
 ```typescript
 import { definePlugin } from "@lleverage-ai/agent-sdk";
@@ -130,7 +149,7 @@ const agent = createAgent({
   model,
   plugins: [myPlugin],
 });
-// Plugin tool available as: mcp__my-plugin__myTool
+// Inline plugin tool available as: my-plugin__myTool
 ```
 
 ### Skills
@@ -376,6 +395,10 @@ export async function POST(req: Request) {
 - [Context Compaction](./docs/context-compaction.md) — Automatic context management
 - [Error Handling](./docs/errors.md) — Typed errors and recovery
 - [API Reference](./docs/api-reference.md) — Complete API documentation
+
+## Contributing
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, quality checks, changelog expectations, and pull request guidelines.
 
 ## License
 

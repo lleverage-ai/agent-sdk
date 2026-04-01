@@ -2,6 +2,10 @@
 
 Event transport, replay, and durable transcripts for AI agent conversations.
 
+`@lleverage-ai/agent-threads` is the infrastructure package in this monorepo. It is for teams that need reusable primitives for conversation transport, replay, and persistence, whether or not they use `@lleverage-ai/agent-sdk`.
+
+If you want to build agents, start with `@lleverage-ai/agent-sdk`. Add `@lleverage-ai/agent-threads` when you need lower-level control over thread history, transport, or transcript storage.
+
 ## Installation
 
 ```bash
@@ -11,6 +15,11 @@ bun add @lleverage-ai/agent-threads zod
 ## Overview
 
 `agent-threads` provides the full infrastructure stack for durable AI agent conversations — from low-level event sourcing and real-time WebSocket transport to high-level canonical transcripts and run lifecycle management.
+
+This package is useful in two common situations:
+
+- you are building your own agent runtime or app-specific orchestration layer and need conversation infrastructure directly
+- you are using `@lleverage-ai/agent-sdk` and want separate, explicit transport/transcript primitives in your broader system architecture
 
 The package is organized into two layers:
 

@@ -14,13 +14,11 @@
 export type { BashResult, BashToolOptions } from "./execute.js";
 // Bash tool
 export { createBashTool } from "./execute.js";
-// Tool factory - internal exports for agent.ts
-// Note: createCoreTools is intentionally NOT exported publicly.
-// Users should use createAgent() which handles tool creation automatically.
+// Tool factory
+// These low-level composition helpers are public for advanced integrations and tests.
 export {
   coreToolsToToolSet,
   createCoreTools,
-  createFilesystemToolsOnly,
   type CoreTools,
   type CoreToolsOptions,
   type CreateCoreToolsResult,
@@ -83,4 +81,11 @@ export type { CallToolOptions } from "./call-tool.js";
 export { createCallToolTool } from "./call-tool.js";
 export type { ToolReference } from "./utils.js";
 // Tool utilities (DX helpers)
-export { mcpTools, mcpToolsFor, toolsFrom, toolsFromPlugin } from "./utils.js";
+export {
+  mcpTools,
+  mcpToolsFor,
+  pluginTools,
+  pluginToolsFor,
+  toolsFrom,
+  toolsFromPlugin,
+} from "./utils.js";

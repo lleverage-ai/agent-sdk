@@ -241,6 +241,7 @@ describe("Default Components", () => {
         tools: [
           { name: "read", description: "Read files" },
           { name: "write", description: "Write files" },
+          { name: "bash", description: "Execute shell commands" },
         ],
         backend: {
           type: "filesystem",
@@ -425,7 +426,7 @@ describe("Default Components", () => {
     it("should render default mode", () => {
       const ctx: PromptContext = { permissionMode: "default" };
       const result = permissionModeComponent.render(ctx);
-      expect(result).toContain("Default permission mode");
+      expect(result).toContain("Tools may require approval based on safety rules.");
     });
 
     it("should render acceptEdits mode", () => {
@@ -500,6 +501,7 @@ describe("createDefaultPromptBuilder", () => {
     expect(names).not.toContain("capabilities");
     expect(names).not.toContain("context");
     expect(names).toContain("delegation-instructions");
+    expect(names).not.toContain("plugins-listing");
   });
 
   it("should build a complete prompt with all components", () => {
@@ -535,6 +537,7 @@ describe("createDefaultPromptBuilder", () => {
     expect(prompt).not.toContain("# Available Skills");
     expect(prompt).not.toContain("# Loaded Plugins");
     expect(prompt).not.toContain("# Context");
+    expect(prompt).not.toContain("# Loaded Plugins");
   });
 
   it("should be customizable via clone", () => {

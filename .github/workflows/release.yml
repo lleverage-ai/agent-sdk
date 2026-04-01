@@ -57,7 +57,7 @@ jobs:
             exit 1
           fi
 
-      - run: SKIP_INSTALL_SIMPLE_GIT_HOOKS=1 bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run type-check
       - run: bun run test

@@ -12,6 +12,25 @@ function hasSkillLoadingCapability(ctx: PromptContext): boolean {
   return !!ctx.tools?.some((tool) => tool.name === "skill");
 }
 
+function hasTool(
+  ctx: PromptContext,
+  predicate: (tool: { name: string; description: string }) => boolean,
+): boolean {
+  return !!ctx.tools?.some(predicate);
+}
+
+function hasWorkspaceTool(ctx: PromptContext): boolean {
+  return hasTool(ctx, (tool) => ["read", "write", "edit", "glob", "grep"].includes(tool.name));
+}
+
+function hasShellTool(ctx: PromptContext): boolean {
+  return hasTool(
+    ctx,
+    (tool) =>
+      tool.name === "bash" || /\b(shell|command(?:s)?|terminal|execute)\b/i.test(tool.description),
+  );
+}
+
 /**
  * Default identity component providing a goal-directed agent identity.
  *
@@ -80,24 +99,24 @@ export const capabilitySummaryComponent: PromptComponent = {
   priority: 85,
   render: (ctx) => {
     const capabilities: string[] = [];
+    const hasWorkspaceAccess = hasWorkspaceTool(ctx);
+    const hasShellAccess = hasShellTool(ctx);
 
-    if (ctx.backend?.type === "filesystem") {
+    if (hasWorkspaceAccess && ctx.backend?.type === "filesystem") {
       capabilities.push("- You can work with files in the configured workspace.");
       if (ctx.backend.rootDir) {
         capabilities.push(`- Workspace root: ${ctx.backend.rootDir}`);
       }
-    } else if (ctx.backend?.type === "state") {
+    } else if (hasWorkspaceAccess && ctx.backend?.type === "state") {
       capabilities.push("- You can work in a sandboxed in-memory environment.");
     }
 
-    if (ctx.backend?.hasExecuteCapability) {
+    if (hasShellAccess) {
       capabilities.push("- You can run shell commands when that helps achieve the user's goal.");
     }
 
     if ((ctx.tools?.length ?? 0) > 0) {
-      capabilities.push(
-        "- You can use tools to inspect, modify, and act on the user's environment when needed.",
-      );
+      capabilities.push("- You can use tools to inspect information or take actions when needed.");
     }
 
     if (hasSkillLoadingCapability(ctx)) {
@@ -171,7 +190,7 @@ export const toolsComponent: PromptComponent = {
   condition: (ctx) => ctx.tools !== undefined && ctx.tools.length > 0,
   render: (ctx) => {
     const toolLines = ctx.tools!.map((t) => `- **${t.name}**: ${t.description}`);
-    return `# Available Tools\n\nYou have access to the following tools:\n${toolLines.join("\n")}`;
+    return `# Available Tools\n\n${toolLines.join("\n")}`;
   },
 };
 
@@ -194,7 +213,7 @@ export const skillsComponent: PromptComponent = {
   condition: (ctx) => ctx.skills !== undefined && ctx.skills.length > 0,
   render: (ctx) => {
     const skillLines = ctx.skills!.map((s) => `- **${s.name}**: ${s.description}`);
-    return `# Available Skills\n\nYou can activate these skills on-demand:\n${skillLines.join("\n")}`;
+    return `# Available Skills\n\n${skillLines.join("\n")}`;
   },
 };
 
@@ -274,9 +293,10 @@ export const contextComponent: PromptComponent = {
 };
 
 /**
- * Lists loaded plugins.
+ * Optional component that lists loaded plugins.
  *
  * Only included if plugins are available.
+ * Not included in {@link createDefaultPromptBuilder}.
  * Priority: 68
  *
  * @example
@@ -318,13 +338,13 @@ export const permissionModeComponent: PromptComponent = {
     let description = "";
 
     if (mode === "default") {
-      description = "Default permission mode: tools may require approval based on safety rules.";
+      description = "Tools may require approval based on safety rules.";
     } else if (mode === "acceptEdits") {
-      description = "File editing tools are auto-approved; other tools may require approval.";
+      description = "File editing tools are auto-approved. Other tools may still require approval.";
     } else if (mode === "bypassPermissions") {
-      description = "All tools are auto-approved without permission checks.";
+      description = "All tools are auto-approved.";
     } else if (mode === "plan") {
-      description = "Plan mode: tool use is planned but not executed.";
+      description = "Plan mode: propose tool usage without executing it.";
     } else {
       description = `Permission mode: ${String(mode)}`;
     }
@@ -343,7 +363,7 @@ export const permissionModeComponent: PromptComponent = {
  * - `capability-summary`: Broad capability classes without full inventories
  * - `skill-loading-policy`: Guidance for loading specialized skills
  * - `delegation-instructions`: Guidance for using subagents
- * - `memory-policy`: Guidance for persistent memory usage
+ * - `memory-policy`: Guidance for persistent memory usage when available
  * - `permission-mode`: Permission mode info
  *
  * Verbose inventory components such as `tools-listing`, `skills-listing`,

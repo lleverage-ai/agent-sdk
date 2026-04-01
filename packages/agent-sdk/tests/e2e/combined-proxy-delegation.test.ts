@@ -83,16 +83,16 @@ describe("E2E: Combined Proxy + Delegation", () => {
     const activeTools = agent.getActiveTools();
 
     // Core plugin: eagerly loaded
-    expect(activeTools).toHaveProperty("mcp__core__ping");
-    expect(activeTools).toHaveProperty("mcp__core__version");
+    expect(activeTools).toHaveProperty("core__ping");
+    expect(activeTools).toHaveProperty("core__version");
 
     // Stripe plugin: deferred (not in active set, accessible via call_tool)
-    expect(activeTools).not.toHaveProperty("mcp__stripe__create_payment");
-    expect(activeTools).not.toHaveProperty("mcp__stripe__refund");
+    expect(activeTools).not.toHaveProperty("stripe__create_payment");
+    expect(activeTools).not.toHaveProperty("stripe__refund");
 
     // GitHub plugin: subagent (not in active set at all)
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
-    expect(activeTools).not.toHaveProperty("mcp__github__create_pr");
+    expect(activeTools).not.toHaveProperty("github__list_issues");
+    expect(activeTools).not.toHaveProperty("github__create_pr");
 
     // Meta tools present
     expect(activeTools).toHaveProperty("call_tool");
@@ -122,7 +122,7 @@ describe("E2E: Combined Proxy + Delegation", () => {
     });
 
     const activeTools = agent.getActiveTools();
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+    expect(activeTools).not.toHaveProperty("github__list_issues");
   });
 
   it("custom delegation instructions override default", () => {
@@ -150,7 +150,7 @@ describe("E2E: Combined Proxy + Delegation", () => {
     });
 
     const activeTools = agent.getActiveTools();
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+    expect(activeTools).not.toHaveProperty("github__list_issues");
   });
 
   it("tool set is stable with mixed strategy", () => {

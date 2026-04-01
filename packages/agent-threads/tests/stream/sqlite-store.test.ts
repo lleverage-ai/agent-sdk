@@ -215,7 +215,7 @@ describe("SQLiteEventStore", () => {
     const table = (db as unknown as { tables: Map<string, Record<string, unknown>[]> }).tables.get(
       "events",
     );
-    if (table && table[0]) {
+    if (table?.[0]) {
       table[0]["event"] = "{broken json";
     }
 

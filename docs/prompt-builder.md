@@ -1,6 +1,6 @@
 # Prompt Builder
 
-The Prompt Builder system creates dynamic system prompts from composable components. Instead of maintaining one large static prompt string, you can assemble a prompt from small sections that react to the agent's tools, backend, permissions, and runtime context.
+The Prompt Builder system creates dynamic system prompts from composable components. Instead of maintaining one large static prompt string, you can assemble a prompt from small sections that react to the agent's tools, plugins, backend, permissions, and runtime context.
 
 ## Overview
 
@@ -12,14 +12,14 @@ The default builder is designed around three ideas:
 - the default prompt should define operating behavior before it advertises capabilities
 - verbose capability inventories should be opt-in, not forced into every prompt
 
-That means the default builder now emphasizes:
+That means the default builder emphasizes:
 
 - identity and interaction contract
 - action and verification policy
 - compact capability summaries
 - skill-loading guidance
 - delegation guidance
-- memory guidance
+- memory guidance when durable memory is actually available
 - permission mode
 
 It no longer dumps full tool, skill, and plugin inventories by default.
@@ -60,7 +60,8 @@ You are an interactive agent. Your job is to help the user achieve their goal us
 ...
 
 # Capability Summary
-- You can use tools to inspect, modify, and act on the user's environment when needed.
+- You can work with files in the configured workspace.
+- You can use tools to inspect information or take actions when needed.
 ...
 ```
 
@@ -69,7 +70,8 @@ You are an interactive agent. Your job is to help the user achieve their goal us
 You can replace the default builder entirely:
 
 ```typescript
-import { PromptBuilder } from "@lleverage-ai/agent-sdk";
+import { PromptBuilder, createAgent } from "@lleverage-ai/agent-sdk";
+import { anthropic } from "@ai-sdk/anthropic";
 
 const builder = new PromptBuilder()
   .register({
@@ -94,7 +96,8 @@ const agent = createAgent({
 The default builder is still fully composable:
 
 ```typescript
-import { createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
+import { createAgent, createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
+import { anthropic } from "@ai-sdk/anthropic";
 
 const builder = createDefaultPromptBuilder().register({
   name: "project-context",
@@ -103,7 +106,7 @@ const builder = createDefaultPromptBuilder().register({
 });
 
 const agent = createAgent({
-  model,
+  model: anthropic("claude-sonnet-4-20250514"),
   promptBuilder: builder,
 });
 ```
@@ -118,7 +121,7 @@ The default builder registers these components:
 - `capability-summary`
 - `skill-loading-policy`
 - `delegation-instructions` when subagents are available
-- `memory-policy`
+- `memory-policy` when `PromptContext.memoryAvailable` is true
 - `permission-mode` when a permission mode is set
 
 These components are exported individually, so you can remove or replace any of them.
@@ -139,9 +142,9 @@ If you want the old-style explicit listings, add them yourself:
 import {
   capabilitiesComponent,
   createDefaultPromptBuilder,
-  toolsComponent,
-  skillsComponent,
   pluginsComponent,
+  skillsComponent,
+  toolsComponent,
 } from "@lleverage-ai/agent-sdk";
 
 const builder = createDefaultPromptBuilder().registerMany([
@@ -179,6 +182,8 @@ interface PromptContext {
 }
 ```
 
+When using `createAgent()`, `memoryAvailable` is controlled by `AgentOptions.memoryAvailable`. It defaults to `false` because the SDK does not wire durable memory into the agent automatically.
+
 ### PromptComponent
 
 Each component contributes one section to the final prompt:
@@ -207,12 +212,16 @@ The builder:
 ### Remove a Default Component
 
 ```typescript
+import { createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
+
 const builder = createDefaultPromptBuilder().unregister("memory-policy");
 ```
 
 ### Replace a Default Component
 
 ```typescript
+import { createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
+
 const builder = createDefaultPromptBuilder()
   .unregister("identity")
   .register({
@@ -225,6 +234,8 @@ const builder = createDefaultPromptBuilder()
 ### Add a Low-Priority Reminder
 
 ```typescript
+import { createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
+
 const builder = createDefaultPromptBuilder().register({
   name: "final-reminder",
   priority: 10,
@@ -235,6 +246,8 @@ const builder = createDefaultPromptBuilder().register({
 ### Inspect Context Without Changing Output
 
 ```typescript
+import { createDefaultPromptBuilder } from "@lleverage-ai/agent-sdk";
+
 const builder = createDefaultPromptBuilder().register({
   name: "debug",
   priority: 0,
@@ -242,6 +255,18 @@ const builder = createDefaultPromptBuilder().register({
     console.log(ctx.tools);
     return "";
   },
+});
+```
+
+### Advertise Memory Only When It Exists
+
+```typescript
+import { createAgent } from "@lleverage-ai/agent-sdk";
+import { anthropic } from "@ai-sdk/anthropic";
+
+const agent = createAgent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  memoryAvailable: true,
 });
 ```
 

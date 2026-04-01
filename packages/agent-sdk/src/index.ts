@@ -95,7 +95,6 @@ export {
   createCompositeBackend,
   createFilesystemBackend,
   createPersistentBackend,
-  createStateBackend,
   DANGEROUS_COMMAND_PATTERNS,
   FileSizeLimitError,
   FilesystemBackend,
@@ -142,8 +141,6 @@ export {
   MemorySaver,
   updateCheckpoint,
 } from "./checkpointer/index.js";
-// Context
-export { createContext } from "./context.js";
 // Context Manager types
 export type {
   CompactionPolicy,
@@ -607,7 +604,6 @@ export {
   createBashTool,
   createEditTool,
   createFilesystemTools,
-  createFilesystemToolsOnly,
   createGlobTool,
   createGrepTool,
   // Task management tools
@@ -632,6 +628,8 @@ export {
   // Tool utilities (DX helpers)
   mcpTools,
   mcpToolsFor,
+  pluginTools,
+  pluginToolsFor,
   recoverFailedTasks,
   recoverRunningTasks,
   // Skill tool (progressive disclosure)
@@ -655,8 +653,6 @@ export {
 export type {
   // Agent-specific types
   Agent,
-  // Context types
-  AgentContext,
   AgentDataTypes,
   AgentOptions,
   AgentPlugin,

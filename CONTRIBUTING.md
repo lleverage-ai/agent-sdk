@@ -1,61 +1,66 @@
 # Contributing to @lleverage-ai/agent-sdk
 
-Thank you for your interest in contributing! This document explains how to get started.
+This repository is a Bun workspace with two published packages:
 
-## Development Setup
+- `packages/agent-sdk` — agent framework, tools, plugins, hooks, and sessions
+- `packages/agent-threads` — event transport, replay, and durable transcripts
+
+## Getting Started
 
 ```bash
-# Clone the repo
 git clone https://github.com/lleverage-ai/agent-sdk.git
 cd agent-sdk
-
-# Install dependencies
 bun install
-
-# Build all packages (in dependency order)
-bun run build
-
-# Run all tests
-bun run test
-
-# Lint and format
-bun run check
-bun run format
 ```
 
-## Project Structure
+Useful workspace commands:
 
-This is a monorepo with two packages:
+```bash
+bun run build
+bun run check
+bun run type-check
+bun run test
 
-- `packages/agent-sdk` — Core agent framework
-- `packages/agent-threads` — Event transport, replay, and durable transcripts
+# Target a single package
+bun run --filter '@lleverage-ai/agent-sdk' test
+bun run --filter '@lleverage-ai/agent-threads' test
+```
 
-## Making Changes
+## Workflow
 
-1. Create a branch from `main`
-2. Make your changes
-3. Run the full check suite: `bun run check && bun run type-check && bun run test`
-4. Commit with a clear message describing the change
-5. Open a pull request against `main`
+1. Branch from `main`.
+2. Make the smallest coherent change you can.
+3. Add or update tests when behavior changes.
+4. Update docs and the changelog when public behavior changes.
+5. Run `bun run check && bun run type-check && bun run test`.
+6. Open a pull request against `main` with a clear summary and verification notes.
 
-## Code Style
+## Code Standards
 
-- TypeScript with strict mode
-- Formatting and linting enforced by [Biome](https://biomejs.dev/)
-- Run `bun run format` to auto-fix formatting
-- Run `bun run check` to verify lint rules
-- Use `npx biome check --write --unsafe` to auto-fix unused imports
+- Use TypeScript strict mode and ESM imports with explicit `.js` extensions.
+- Prefer `interface` over `type` for object shapes.
+- Document all public exports with TSDoc.
+- Keep functions focused and comments sparse but useful.
+- Run `bun run format` or `bun run check:fix` before submitting if formatting changed.
 
-## Testing
+## Tests
 
-- Tests use [Vitest](https://vitest.dev/)
-- Place tests in `tests/` mirroring the `src/` structure
-- Use `createMockModel()` from `tests/setup.ts` for agent tests
-- Run a single package's tests: `cd packages/agent-sdk && bun run test`
+- Tests use [Vitest](https://vitest.dev/).
+- Keep tests in `tests/` and mirror the source layout when practical.
+- Prefer exported testing helpers from `@lleverage-ai/agent-sdk/testing` for public-API examples.
+- Repository tests also use local helpers such as `packages/agent-sdk/tests/setup.ts` when exercising internals.
 
-## Reporting Issues
+## Docs And Changelog
 
-Open an issue at [github.com/lleverage-ai/agent-sdk/issues](https://github.com/lleverage-ai/agent-sdk/issues).
+- Update `CHANGELOG.md` under `## [Unreleased]`.
+- Use Keep a Changelog section headings: `Added`, `Changed`, `Fixed`, `Removed`, `Deprecated`, `Security`.
+- Keep README/docs examples aligned with the shipped API, especially around tool loading, streaming, and package exports.
+
+## Issues And Pull Requests
+
+- Report bugs and feature requests at [github.com/lleverage-ai/agent-sdk/issues](https://github.com/lleverage-ai/agent-sdk/issues).
+- Include reproduction steps, expected behavior, and actual behavior for bug reports.
+- Call out breaking changes explicitly in the PR description and changelog entry.
 
 ## License
 

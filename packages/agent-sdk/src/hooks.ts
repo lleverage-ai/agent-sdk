@@ -454,7 +454,8 @@ export function createToolHook(
      * Regex pattern to match tool names (omit for all tools).
      * @example
      * - 'read|write' - File operations
-     * - '^mcp__' - All MCP tools
+     * - '^mcp__' - All external MCP tools
+     * - '^github__' - Specific inline plugin namespace
      * - 'mcp__playwright__' - Specific MCP server
      */
     matcher?: string;

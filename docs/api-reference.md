@@ -102,7 +102,7 @@ const { tools } = createCoreTools({
 - `todo_write` — Manage task list
 - `bash` — Execute shell commands (requires backend with `enableBash: true`)
 - `search_tools` — Search available tools (when enabled)
-- `call_tool` — Invoke proxied/deferred MCP tools (proxy mode)
+- `call_tool` — Invoke proxied/deferred qualified tools (inline plugin or external MCP)
 
 ## Plugins
 
@@ -314,9 +314,11 @@ applySecurityPolicy(
 | Class/Function | Description |
 |----------------|-------------|
 | `MCPManager` | Manage MCP server connections |
-| `mcpTools()` | Get all MCP tool names from agent |
-| `mcpToolsFor()` | Get tools for specific plugin |
-| `toolsFromPlugin()` | Extract tools from plugin |
+| `pluginTools()` | Build qualified names for inline plugin tools |
+| `pluginToolsFor()` | Build inline plugin tool names with property autocomplete |
+| `mcpTools()` | Build qualified names for external MCP tools |
+| `mcpToolsFor()` | Build external MCP tool names with property autocomplete |
+| `toolsFromPlugin()` | Extract qualified tool names from plugin definitions |
 
 ### MCPManager
 

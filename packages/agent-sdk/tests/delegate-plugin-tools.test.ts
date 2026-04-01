@@ -50,8 +50,8 @@ describe("Plugin subagent delegation", () => {
     // Subagent tools should NOT be in the active set
     expect(activeTools).not.toHaveProperty("list_issues");
     expect(activeTools).not.toHaveProperty("create_pr");
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
-    expect(activeTools).not.toHaveProperty("mcp__github__create_pr");
+    expect(activeTools).not.toHaveProperty("github__list_issues");
+    expect(activeTools).not.toHaveProperty("github__create_pr");
   });
 
   it("loads plugin.tools but not plugin.subagent.tools", () => {
@@ -85,10 +85,10 @@ describe("Plugin subagent delegation", () => {
     const activeTools = agent.getActiveTools();
 
     // Main tools loaded
-    expect(activeTools).toHaveProperty("mcp__github__ping");
+    expect(activeTools).toHaveProperty("github__ping");
 
     // Subagent tools NOT loaded
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+    expect(activeTools).not.toHaveProperty("github__list_issues");
     expect(activeTools).not.toHaveProperty("list_issues");
   });
 
@@ -132,7 +132,7 @@ describe("Plugin subagent delegation", () => {
     const activeTools = agent.getActiveTools();
 
     // Small plugin should be eagerly loaded
-    expect(activeTools).toHaveProperty("mcp__small__ping");
+    expect(activeTools).toHaveProperty("small__ping");
 
     // search_tools should NOT be created since only 1 main tool counts
     // (subagent tools don't count toward threshold)
@@ -177,8 +177,8 @@ describe("Plugin subagent delegation", () => {
     const activeTools = agent.getActiveTools();
 
     // Neither plugin's subagent tools should be in active set
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
-    expect(activeTools).not.toHaveProperty("mcp__slack__send_message");
+    expect(activeTools).not.toHaveProperty("github__list_issues");
+    expect(activeTools).not.toHaveProperty("slack__send_message");
   });
 
   it("mixes eager and subagent plugins correctly", () => {
@@ -216,9 +216,9 @@ describe("Plugin subagent delegation", () => {
     const activeTools = agent.getActiveTools();
 
     // Eager plugin loaded
-    expect(activeTools).toHaveProperty("mcp__core__ping");
+    expect(activeTools).toHaveProperty("core__ping");
 
     // Subagent plugin NOT loaded
-    expect(activeTools).not.toHaveProperty("mcp__github__list_issues");
+    expect(activeTools).not.toHaveProperty("github__list_issues");
   });
 });

@@ -2,7 +2,7 @@
  * MCP Integration Tests
  *
  * Comprehensive tests for MCP (Model Context Protocol) integration covering:
- * - Virtual MCP servers (inline plugin tools)
+ * - Inline plugin tool discovery
  * - Tool search functionality
  * - Deferred tool loading
  * - Skill integration with MCP tools
@@ -71,14 +71,14 @@ function createMockModel() {
 }
 
 describe("MCP Integration", () => {
-  describe("MCPManager with virtual servers", () => {
+  describe("MCPManager with inline plugin tools", () => {
     let manager: MCPManager;
 
     beforeEach(() => {
       manager = new MCPManager();
     });
 
-    it("registers plugin tools as virtual MCP server", () => {
+    it("registers plugin tools with plugin-namespaced names", () => {
       manager.registerPluginTools("my-plugin", {
         my_tool: tool({
           description: "A test tool",
@@ -89,7 +89,7 @@ describe("MCP Integration", () => {
 
       const tools = manager.listTools();
       expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe("mcp__my-plugin__my_tool");
+      expect(tools[0].name).toBe("my-plugin__my_tool");
     });
 
     it("supports deferred loading with autoLoad: false", () => {
@@ -110,8 +110,8 @@ describe("MCP Integration", () => {
       expect(Object.keys(manager.getToolSet())).toHaveLength(0);
 
       // Load the tool
-      const result = manager.loadTools(["mcp__deferred__tool_a"]);
-      expect(result.loaded).toContain("mcp__deferred__tool_a");
+      const result = manager.loadTools(["deferred__tool_a"]);
+      expect(result.loaded).toContain("deferred__tool_a");
 
       // Now it should be in getToolSet
       expect(Object.keys(manager.getToolSet())).toHaveLength(1);
@@ -134,12 +134,12 @@ describe("MCP Integration", () => {
       // Search by name
       const byName = manager.searchTools("issue");
       expect(byName).toHaveLength(1);
-      expect(byName[0].name).toBe("mcp__search-test__create_issue");
+      expect(byName[0].name).toBe("search-test__create_issue");
 
       // Search by description
       const byDesc = manager.searchTools("pull request");
       expect(byDesc).toHaveLength(1);
-      expect(byDesc[0].name).toBe("mcp__search-test__list_prs");
+      expect(byDesc[0].name).toBe("search-test__list_prs");
     });
 
     it("loadTools returns alreadyLoaded for auto-loaded tools", () => {
@@ -151,8 +151,8 @@ describe("MCP Integration", () => {
         }),
       });
 
-      const result = manager.loadTools(["mcp__auto-load__tool"]);
-      expect(result.alreadyLoaded).toContain("mcp__auto-load__tool");
+      const result = manager.loadTools(["auto-load__tool"]);
+      expect(result.alreadyLoaded).toContain("auto-load__tool");
       expect(result.loaded).toHaveLength(0);
     });
   });
@@ -178,7 +178,7 @@ describe("MCP Integration", () => {
         },
       );
 
-      expect(result).toContain("mcp__test-plugin__search_docs");
+      expect(result).toContain("test-plugin__search_docs");
       expect(result).toContain("Search documentation");
     });
 
@@ -218,7 +218,7 @@ describe("MCP Integration", () => {
 
       // Now loaded
       expect(Object.keys(manager.getToolSet())).toHaveLength(1);
-      expect(onToolsLoaded).toHaveBeenCalledWith(["mcp__loadable__loadable_tool"]);
+      expect(onToolsLoaded).toHaveBeenCalledWith(["loadable__loadable_tool"]);
     });
   });
 
@@ -252,7 +252,7 @@ describe("MCP Integration", () => {
       expect(tools.write).toBeUndefined();
     });
 
-    it("plugin tools are exposed with MCP naming", async () => {
+    it("plugin tools are exposed with plugin-namespaced naming", async () => {
       const model = createMockModel();
       const plugin = definePlugin({
         name: "test-plugin",
@@ -272,8 +272,8 @@ describe("MCP Integration", () => {
 
       const tools = agent.getActiveTools();
 
-      // Plugin tool should have MCP naming
-      expect(tools["mcp__test-plugin__plugin_tool"]).toBeDefined();
+      // Plugin tool should have plugin-namespaced naming
+      expect(tools["test-plugin__plugin_tool"]).toBeDefined();
     });
 
     it("user-provided tools override auto-created tools", async () => {

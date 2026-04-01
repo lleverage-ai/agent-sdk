@@ -159,11 +159,11 @@ describe("plugin integration with agent", () => {
 
     await agent.generate({ prompt: "Test" });
 
-    // Plugin tools are now exposed with MCP naming: mcp__<plugin>__<tool>
+    // Plugin tools are exposed with plugin-namespaced naming: <plugin>__<tool>
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
         tools: expect.objectContaining({
-          "mcp__test-plugin__pluginTool": expect.any(Object),
+          "test-plugin__pluginTool": expect.any(Object),
         }),
       }),
     );
@@ -225,13 +225,13 @@ describe("plugin integration with agent", () => {
 
     await agent.generate({ prompt: "Test" });
 
-    // directTool is passed directly, pluginTool is exposed via MCP naming
+    // directTool is passed directly, pluginTool is exposed via plugin-namespaced naming
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
         tools: expect.objectContaining({
           directTool: expect.any(Object),
-          // Plugin tools are now exposed with MCP naming: mcp__<plugin>__<tool>
-          "mcp__test-plugin__pluginTool": expect.any(Object),
+          // Plugin tools are exposed with plugin-namespaced naming: <plugin>__<tool>
+          "test-plugin__pluginTool": expect.any(Object),
         }),
       }),
     );
@@ -297,12 +297,12 @@ describe("plugin integration with agent", () => {
 
     await agent.generate({ prompt: "Test" });
 
-    // Plugin tools are now exposed with MCP naming: mcp__<plugin>__<tool>
+    // Plugin tools are exposed with plugin-namespaced naming: <plugin>__<tool>
     expect(mockGenerateText).toHaveBeenCalledWith(
       expect.objectContaining({
         tools: expect.objectContaining({
-          "mcp__plugin-1__tool1": expect.any(Object),
-          "mcp__plugin-2__tool2": expect.any(Object),
+          "plugin-1__tool1": expect.any(Object),
+          "plugin-2__tool2": expect.any(Object),
         }),
       }),
     );
@@ -391,5 +391,26 @@ describe("defineSkill", () => {
 
     expect(skill.tools).toBeDefined();
     expect(skill.tools?.skillTool).toBeDefined();
+  });
+
+  it("forwards skillPath from options", () => {
+    const skill = defineSkill({
+      name: "file-skill",
+      description: "A file-based skill",
+      instructions: "Use the file tools",
+      skillPath: "/path/to/skills/file-skill",
+    });
+
+    expect(skill.skillPath).toBe("/path/to/skills/file-skill");
+  });
+
+  it("skillPath is undefined when not provided", () => {
+    const skill = defineSkill({
+      name: "no-path",
+      description: "No path",
+      instructions: "Instructions",
+    });
+
+    expect(skill.skillPath).toBeUndefined();
   });
 });

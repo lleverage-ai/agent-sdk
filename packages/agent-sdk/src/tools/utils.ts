@@ -1,13 +1,14 @@
 /**
  * Tool utilities for improved developer experience.
  *
- * Provides helpers for working with tool names, especially for MCP tools
- * which have verbose prefixed names.
+ * Provides helpers for working with qualified tool names for inline plugins
+ * and external MCP servers.
  *
  * @packageDocumentation
  */
 
 import type { Tool, ToolSet } from "ai";
+import { formatMcpToolName, formatPluginToolName } from "../tool-names.js";
 import type { PluginOptions } from "../types.js";
 
 /**
@@ -16,7 +17,7 @@ import type { PluginOptions } from "../types.js";
  * Can be:
  * - A string (tool name directly)
  * - A Tool object (name extracted from key when in a ToolSet)
- * - A Plugin (all tool names extracted, or MCP tool names generated)
+ * - A Plugin (all inline plugin tool names extracted, or external MCP tool names generated)
  * - A ToolSet record (all keys extracted as tool names)
  *
  * @category Tools
@@ -24,46 +25,46 @@ import type { PluginOptions } from "../types.js";
 export type ToolReference = string | Tool | PluginOptions | ToolSet | ToolReference[];
 
 /**
- * Creates a helper for generating MCP tool names for a specific plugin.
+ * Creates a helper for generating qualified tool names for a specific inline plugin.
  *
- * MCP tools are prefixed with `mcp__<plugin-name>__<tool-name>`. This helper
+ * Inline plugin tools use `<plugin-name>__<tool-name>` names. This helper
  * makes it easier to reference these tools without typing the full name.
  *
- * @param pluginName - The MCP plugin name (e.g., "web-search")
- * @returns A function that generates full MCP tool names
+ * @param pluginName - The inline plugin name (e.g., "web-search")
+ * @returns A function that generates full plugin tool names
  *
  * @example
  * ```typescript
- * const webSearch = mcpTools("web-search");
+ * const webSearch = pluginTools("web-search");
  *
  * const subagent = createSubagent(parent, {
  *   allowedTools: [webSearch("search"), webSearch("extract")],
- *   // Equivalent to: ["mcp__web-search__search", "mcp__web-search__extract"]
+ *   // Equivalent to: ["web-search__search", "web-search__extract"]
  * });
  * ```
  *
  * @category Tools
  */
-export function mcpTools(pluginName: string): (toolName: string) => string {
-  return (toolName: string) => `mcp__${pluginName}__${toolName}`;
+export function pluginTools(pluginName: string): (toolName: string) => string {
+  return (toolName: string) => formatPluginToolName(pluginName, toolName);
 }
 
 /**
- * Creates a helper for a specific MCP plugin with known tools.
+ * Creates a helper for a specific inline plugin with known tools.
  *
  * Returns an object with tool name properties for better IDE autocomplete.
  *
- * @param pluginName - The MCP plugin name
+ * @param pluginName - The inline plugin name
  * @param toolNames - Array of tool names provided by the plugin
- * @returns An object mapping tool names to their full MCP names
+ * @returns An object mapping tool names to their full plugin-namespaced names
  *
  * @example
  * ```typescript
- * const webSearch = mcpToolsFor("web-search", ["search", "extract"] as const);
+ * const webSearch = pluginToolsFor("web-search", ["search", "extract"] as const);
  *
  * // Now you get autocomplete:
- * webSearch.search  // "mcp__web-search__search"
- * webSearch.extract // "mcp__web-search__extract"
+ * webSearch.search  // "web-search__search"
+ * webSearch.extract // "web-search__extract"
  *
  * const subagent = createSubagent(parent, {
  *   allowedTools: [webSearch.search, webSearch.extract],
@@ -72,23 +73,57 @@ export function mcpTools(pluginName: string): (toolName: string) => string {
  *
  * @category Tools
  */
-export function mcpToolsFor<T extends readonly string[]>(
+export function pluginToolsFor<T extends readonly string[]>(
   pluginName: string,
   toolNames: T,
 ): { [K in T[number]]: string } {
   const result = {} as { [K in T[number]]: string };
   for (const name of toolNames) {
-    (result as Record<string, string>)[name] = `mcp__${pluginName}__${name}`;
+    (result as Record<string, string>)[name] = formatPluginToolName(pluginName, name);
   }
   return result;
 }
 
 /**
- * Extracts tool names from a plugin.
+ * Creates a helper for generating qualified tool names for an external MCP server.
  *
- * For regular plugins, extracts tool names from the tools property.
- * For MCP plugins, generates tool names based on the plugin name and
- * optionally specified tool names.
+ * External MCP tools are prefixed with `mcp__<server-name>__<tool-name>`.
+ *
+ * @param serverName - The MCP server name
+ * @returns A function that generates full MCP tool names
+ *
+ * @category Tools
+ */
+export function mcpTools(serverName: string): (toolName: string) => string {
+  return (toolName: string) => formatMcpToolName(serverName, toolName);
+}
+
+/**
+ * Creates a helper for a specific external MCP server with known tools.
+ *
+ * @param serverName - The MCP server name
+ * @param toolNames - Array of tool names provided by the server
+ * @returns An object mapping tool names to their full MCP names
+ *
+ * @category Tools
+ */
+export function mcpToolsFor<T extends readonly string[]>(
+  serverName: string,
+  toolNames: T,
+): { [K in T[number]]: string } {
+  const result = {} as { [K in T[number]]: string };
+  for (const name of toolNames) {
+    (result as Record<string, string>)[name] = formatMcpToolName(serverName, name);
+  }
+  return result;
+}
+
+/**
+ * Extracts qualified tool names from a plugin.
+ *
+ * For inline plugins, returns `<plugin>__<tool>` names.
+ * For MCP plugins, generates `mcp__<server>__<tool>` names from the provided
+ * tool list.
  *
  * @param plugin - The plugin to extract tool names from
  * @param mcpToolNames - For MCP plugins, the specific tool names to include
@@ -98,7 +133,7 @@ export function mcpToolsFor<T extends readonly string[]>(
  * ```typescript
  * // Regular plugin with tools
  * const names = toolsFromPlugin(myPlugin);
- * // Returns: ["tool1", "tool2", ...]
+ * // Returns: ["my-plugin__tool1", "my-plugin__tool2", ...]
  *
  * // MCP plugin with specific tools
  * const names = toolsFromPlugin(webSearchPlugin, ["search", "extract"]);
@@ -128,7 +163,8 @@ export function toolsFromPlugin(plugin: PluginOptions, mcpToolNames?: string[]):
           `Tool names cannot be extracted statically. Use string tool names instead.`,
       );
     }
-    return Object.keys(plugin.tools);
+    const helper = pluginTools(plugin.name);
+    return Object.keys(plugin.tools).map(helper);
   }
 
   return [];
@@ -169,15 +205,13 @@ export function toolsFrom(...refs: ToolReference[]): string[] {
     } else if (Array.isArray(ref)) {
       names.push(...toolsFrom(...ref));
     } else if (isPlugin(ref)) {
-      // For plugins, extract tool names (throws for MCP without explicit names)
-      try {
-        names.push(...toolsFromPlugin(ref));
-      } catch {
-        // MCP plugin without tool names - skip with warning
+      if (ref.mcpServer) {
         console.warn(
           `Skipping MCP plugin "${ref.name}" in toolsFrom(). ` +
             `Use toolsFromPlugin(plugin, ["tool1", "tool2"]) for MCP plugins.`,
         );
+      } else {
+        names.push(...toolsFromPlugin(ref));
       }
     } else if (isToolSet(ref)) {
       names.push(...Object.keys(ref));

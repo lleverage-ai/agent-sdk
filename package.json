@@ -11,18 +11,13 @@
     "check": "biome check .",
     "check:fix": "biome check --write .",
     "format": "biome format --write .",
-    "clean": "bun run --filter '@lleverage-ai/agent-sdk' clean && bun run --filter '@lleverage-ai/agent-threads' clean",
-    "prepare": "simple-git-hooks"
+    "clean": "bun run --filter '@lleverage-ai/agent-sdk' clean && bun run --filter '@lleverage-ai/agent-threads' clean"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.4.4",
     "@tsconfig/node18": "^18.2.4",
     "@types/json-schema": "^7.0.15",
     "@types/node": "^25.1.0",
-    "simple-git-hooks": "^2.11.1",
     "typescript": "^5.9.2"
-  },
-  "simple-git-hooks": {
-    "pre-push": "bun run check && bun run test"
   }
 }

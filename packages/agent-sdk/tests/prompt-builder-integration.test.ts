@@ -70,7 +70,7 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
 
     // Verify the system prompt stays behavior-first and does not dump tool inventories
     expect(systemPrompt).toContain("# Capability Summary");
-    expect(systemPrompt).toContain("use tools to inspect, modify, and act");
+    expect(systemPrompt).toContain("use tools to inspect information or take actions");
     expect(systemPrompt).not.toContain("# Available Tools");
     expect(systemPrompt).not.toContain("- **read**: Read a file from disk");
   });
@@ -98,7 +98,7 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     expect(systemPrompt).not.toContain("# Available Skills");
   });
 
-  it("should pass plugin information to system prompt", async () => {
+  it("should expose plugin tools without listing plugins in the default prompt", async () => {
     const testPlugin = definePlugin({
       name: "test-plugin",
       description: "A plugin for testing",
@@ -217,6 +217,7 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
       model: mockModel,
       promptBuilder: createDefaultPromptBuilder(),
       backend,
+      memoryAvailable: true,
       tools: {
         read: tool({
           description: "Read files",
@@ -240,6 +241,7 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     expect(systemPrompt).toContain("# Capability Summary");
     expect(systemPrompt).toContain("# Memory");
     expect(systemPrompt).toContain("# Permission Mode");
+    expect(systemPrompt).not.toContain("# Loaded Plugins");
 
     // Verify specific content
     expect(systemPrompt).toContain("# Skill Loading");
@@ -442,7 +444,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
         description: "A test plugin for verification",
       });
       expect(toolsInContext).toBeDefined();
-      expect(toolsInContext?.some((t) => t.name === "mcp__test-plugin__testTool")).toBe(true);
+      expect(toolsInContext?.some((t) => t.name === "test-plugin__testTool")).toBe(true);
     });
   });
 
@@ -623,11 +625,16 @@ describe("Prompt Builder Integration with Real Agents", () => {
     it("should render capability summary with backend info", () => {
       const builder = createDefaultPromptBuilder();
       const prompt = builder.build({
+        tools: [
+          { name: "read", description: "Read files" },
+          { name: "bash", description: "Execute shell commands" },
+        ],
         backend: {
           type: "filesystem",
           hasExecuteCapability: true,
           rootDir: "/home/user/project",
         },
+        memoryAvailable: false,
       });
 
       expect(prompt).toContain("# Capability Summary");

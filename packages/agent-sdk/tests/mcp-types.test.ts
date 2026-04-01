@@ -99,7 +99,7 @@ describe("MCP Tool Metadata", () => {
 
   it("supports inline source type", () => {
     const metadata: MCPToolMetadata = {
-      name: "mcp__my-plugin__my_tool",
+      name: "my-plugin__my_tool",
       description: "A custom tool",
       inputSchema: { type: "object", properties: {} },
       source: "my-plugin",

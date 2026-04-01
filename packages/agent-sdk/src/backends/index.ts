@@ -36,7 +36,6 @@ export {
 export {
   type AgentState,
   createAgentState,
-  createStateBackend,
   StateBackend,
   type TodoItem,
   type TodoStatus,
