@@ -513,6 +513,16 @@ describe("Task Tool", () => {
       expect(tool.description).toContain("fire-and-forget");
     });
 
+    it("task tool description should mention self-contained descriptions", () => {
+      const tool = createTaskTool({
+        subagents,
+        defaultModel: {} as LanguageModel,
+        parentAgent,
+      });
+
+      expect(tool.description).toContain("self-contained");
+    });
+
     it("task_output tool description should mention fire-and-forget", () => {
       const taskOutput = createTaskOutputTool();
 
@@ -523,6 +533,12 @@ describe("Task Tool", () => {
       const taskOutput = createTaskOutputTool();
 
       expect(taskOutput.description).toContain("parallel foreground tasks");
+    });
+
+    it("task_output tool description should mention automatic background completion handling", () => {
+      const taskOutput = createTaskOutputTool();
+
+      expect(taskOutput.description).toContain("automatic background completion handling");
     });
   });
 });

@@ -17,6 +17,10 @@ import { hasExecuteCapability } from "./backend.js";
 import { CommandBlockedError } from "./backends/filesystem.js";
 import type { AgentState } from "./backends/state.js";
 import { createAgentState, StateBackend } from "./backends/state.js";
+import {
+  formatDefaultTaskCompletionPrompt,
+  formatDefaultTaskFailurePrompt,
+} from "./background-task-formatting.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
 import {
   createCheckpoint,
@@ -866,16 +870,10 @@ export function createAgent(options: AgentOptions): Agent {
   const waitForBackgroundTasks = options.waitForBackgroundTasks ?? true;
   const formatTaskCompletion =
     options.formatTaskCompletion ??
-    ((task: BackgroundTask): string => {
-      const command = task.metadata?.command ?? "unknown command";
-      return `[Background task completed: ${task.id}]\nCommand: ${command}\nOutput:\n${task.result ?? "(no output)"}`;
-    });
+    ((task: BackgroundTask): string => formatDefaultTaskCompletionPrompt(task));
   const formatTaskFailure =
     options.formatTaskFailure ??
-    ((task: BackgroundTask): string => {
-      const command = task.metadata?.command ?? "unknown command";
-      return `[Background task failed: ${task.id}]\nCommand: ${command}\nError: ${task.error ?? "Unknown error"}`;
-    });
+    ((task: BackgroundTask): string => formatDefaultTaskFailurePrompt(task));
 
   // Determine plugin loading mode
   const pluginLoadingMode = options.pluginLoading ?? "eager";

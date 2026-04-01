@@ -497,7 +497,9 @@ export function createTaskTool(options: TaskToolOptions): Tool {
 
 When you call this tool multiple times in the same step (without run_in_background), the AI SDK automatically executes them in parallel via Promise.all. This is the preferred way to run concurrent tasks — no special flags needed.
 
-Use run_in_background ONLY for true fire-and-forget tasks where you want to continue the conversation immediately and be notified later when the task completes.
+Use foreground execution by default when you need the result before your next important step. Use run_in_background ONLY for true fire-and-forget tasks where you have other useful work to do while the task runs.
+
+Make the description self-contained. Include the goal, relevant context, constraints, and the output you want back.
 
 Available subagent types:
 ${subagentDescriptions}`;
@@ -517,7 +519,7 @@ ${subagentDescriptions}`;
         .boolean()
         .optional()
         .describe(
-          "Fire-and-forget: start the task in the background and continue the conversation immediately. The session will notify you when it completes. Only use this for tasks you don't need to wait on — for parallel execution, simply call the task tool multiple times in the same step (they run concurrently automatically).",
+          "Fire-and-forget: start the task in the background and continue the conversation immediately. Only use this for work you do not need before your next important step. If your host surfaces background completions automatically, prefer waiting for that notification rather than polling. For parallel execution where you still need the results before continuing, call the task tool multiple times in the same step instead.",
         ),
     }),
     execute: async (params) => {
@@ -723,7 +725,7 @@ ${subagentDescriptions}`;
         return {
           taskId,
           status: "running",
-          message: `Task started in background. Use the task_output tool with task_id "${taskId}" to check status or retrieve the result.`,
+          message: `Task started in background. Continue with other work while it runs. Use task_output with task_id "${taskId}" only if you specifically need manual status inspection or output retrieval.`,
         };
       }
 
@@ -847,9 +849,9 @@ export function createTaskOutputTool(options: TaskOutputToolOptions = {}): Tool 
 
   const toolDescription =
     options.description ??
-    `Inspect a fire-and-forget background task's current state or wait for completion.
+    `Inspect a fire-and-forget background task's current state or wait for completion when you specifically need manual status or output access.
 
-This tool is for tasks started with run_in_background=true. You do NOT need this for parallel foreground tasks — those return results directly.
+This tool is for tasks started with run_in_background=true. You do NOT need this for parallel foreground tasks — those return results directly. You also do not need it for automatic background completion handling when your host already surfaces task completions for you.
 
 For running tasks, shows:
 - Current status and progress
