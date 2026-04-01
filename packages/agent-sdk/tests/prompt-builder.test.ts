@@ -258,7 +258,8 @@ describe("Default Components", () => {
       expect(result).toContain("run shell commands");
       expect(result).toContain("Additional capabilities are available through installed plugins");
       expect(result).not.toContain("plugin-a");
-      expect(result).not.toContain("read");
+      expect(result).not.toContain("# Available Tools");
+      expect(result).not.toContain("- **read**:");
     });
   });
 

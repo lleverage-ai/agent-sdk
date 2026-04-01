@@ -60,8 +60,7 @@ You are an interactive agent. Your job is to help the user achieve their goal us
 ...
 
 # Capability Summary
-- You can work with files in the configured workspace.
-- You can use tools to inspect information or take actions when needed.
+- You can use the configured tools to inspect information or take actions when needed.
 ...
 ```
 

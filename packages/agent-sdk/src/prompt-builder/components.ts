@@ -27,7 +27,8 @@ function hasShellTool(ctx: PromptContext): boolean {
   return hasTool(
     ctx,
     (tool) =>
-      tool.name === "bash" || /\b(shell|command(?:s)?|terminal|execute)\b/i.test(tool.description),
+      ["bash", "sh", "zsh", "shell", "terminal", "cli"].includes(tool.name) ||
+      /\b(bash|shell|terminal|cli)\b/i.test(tool.description),
   );
 }
 
