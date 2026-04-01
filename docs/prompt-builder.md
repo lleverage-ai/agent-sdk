@@ -137,6 +137,7 @@ If you want the old-style explicit listings, add them yourself:
 
 ```typescript
 import {
+  capabilitiesComponent,
   createDefaultPromptBuilder,
   toolsComponent,
   skillsComponent,
@@ -144,6 +145,7 @@ import {
 } from "@lleverage-ai/agent-sdk";
 
 const builder = createDefaultPromptBuilder().registerMany([
+  capabilitiesComponent,
   toolsComponent,
   skillsComponent,
   pluginsComponent,
@@ -172,6 +174,7 @@ interface PromptContext {
   permissionMode?: PermissionMode;
   currentMessages?: ModelMessage[];
   threadId?: string;
+  memoryAvailable?: boolean;
   custom?: Record<string, unknown>;
 }
 ```

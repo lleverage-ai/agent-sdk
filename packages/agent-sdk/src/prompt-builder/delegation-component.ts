@@ -28,7 +28,7 @@ user's goal.
 - Urgent blocking work where waiting on delegation would add unnecessary overhead
 
 **How to delegate:**
-- Use task(description, subagent_type) with a clear objective, constraints, and desired output
+- Call the \`task\` tool with \`description\` and \`subagent_type\`, plus optional fields like \`max_turns\` or \`run_in_background\`, using a clear objective, constraints, and desired output
 - The subagent runs with its own context and returns only the result
 - Call task multiple times in one step for independent parallel work`;
 

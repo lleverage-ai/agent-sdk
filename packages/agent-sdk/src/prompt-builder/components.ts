@@ -9,7 +9,7 @@ import type { PromptComponent, PromptContext } from "./index.js";
 import { PromptBuilder } from "./index.js";
 
 function hasSkillLoadingCapability(ctx: PromptContext): boolean {
-  return (ctx.skills?.length ?? 0) > 0 || !!ctx.tools?.some((tool) => tool.name === "skill");
+  return !!ctx.tools?.some((tool) => tool.name === "skill");
 }
 
 /**
@@ -144,6 +144,7 @@ export const skillLoadingPolicyComponent: PromptComponent = {
 export const memoryPolicyComponent: PromptComponent = {
   name: "memory-policy",
   priority: 60,
+  condition: (ctx) => ctx.memoryAvailable ?? true,
   render: () => `# Memory
 
 - Use persistent memory for durable instructions, preferences, and facts that are likely to matter again.

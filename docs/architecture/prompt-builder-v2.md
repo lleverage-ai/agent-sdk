@@ -399,3 +399,16 @@ Mitigation:
 ## Status
 
 Proposed.
+
+Phase 1 in this PR implements the behavior-first default components in
+`components.ts` and moves verbose inventory components to opt-in use.
+
+The RFC sections that introduce `PromptInstructionLayer`,
+`PromptMemoryContext`, and the proposed `PromptContext` extensions
+(`instructionLayers`, `memory`, `loadedSkills`) describe future work and are
+not implemented by the current `PromptContext` or default components in
+`components.ts`.
+
+Likewise, the proposed `PromptComponent` enhancements for section stability
+metadata and budgets remain planned follow-up work rather than part of the
+current implementation.

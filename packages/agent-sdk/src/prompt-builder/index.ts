@@ -76,6 +76,14 @@ export interface PromptContext {
   threadId?: string;
 
   /**
+   * Whether the current agent/host has persistent memory support available.
+   *
+   * Defaults to true when omitted so general memory guidance remains available
+   * for existing custom builders unless they explicitly disable it.
+   */
+  memoryAvailable?: boolean;
+
+  /**
    * Custom user-defined data that can be passed to components.
    */
   custom?: Record<string, unknown>;

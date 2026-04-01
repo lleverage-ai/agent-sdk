@@ -278,6 +278,14 @@ describe("Default Components", () => {
       expect(result).toContain("# Skill Loading");
       expect(result).toContain("load it before improvising");
     });
+
+    it("should not render when skills exist but the skill tool is unavailable", () => {
+      const ctx: PromptContext = {
+        skills: [{ name: "git", description: "Git operations" }],
+      };
+      const condition = skillLoadingPolicyComponent.condition?.(ctx);
+      expect(condition).toBe(false);
+    });
   });
 
   describe("memoryPolicyComponent", () => {
@@ -286,6 +294,11 @@ describe("Default Components", () => {
       expect(result).toContain("# Memory");
       expect(result).toContain("durable instructions");
       expect(result).toContain("re-check reality");
+    });
+
+    it("should not render when memory is explicitly unavailable", () => {
+      const condition = memoryPolicyComponent.condition?.({ memoryAvailable: false });
+      expect(condition).toBe(false);
     });
   });
 
@@ -492,7 +505,10 @@ describe("createDefaultPromptBuilder", () => {
   it("should build a complete prompt with all components", () => {
     const builder = createDefaultPromptBuilder();
     const context: PromptContext = {
-      tools: [{ name: "read", description: "Read files" }],
+      tools: [
+        { name: "read", description: "Read files" },
+        { name: "skill", description: "Load skills" },
+      ],
       skills: [{ name: "git", description: "Git operations" }],
       plugins: [{ name: "test-plugin", description: "Test plugin" }],
       backend: {
@@ -555,6 +571,7 @@ describe("Integration scenarios", () => {
         { name: "read", description: "Read files" },
         { name: "write", description: "Write files" },
         { name: "bash", description: "Execute commands" },
+        { name: "skill", description: "Load skills" },
       ],
       skills: [
         { name: "git", description: "Git operations" },

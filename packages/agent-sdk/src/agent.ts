@@ -1193,6 +1193,7 @@ export function createAgent(options: AgentOptions): Agent {
       permissionMode,
       currentMessages: messages,
       threadId,
+      memoryAvailable: true,
       custom: {
         hasSubagents,
         delegationInstructions: options.delegationInstructions,

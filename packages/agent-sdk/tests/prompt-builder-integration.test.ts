@@ -609,6 +609,7 @@ describe("Prompt Builder Integration with Real Agents", () => {
     it("should render skill-loading guidance when skills are present", () => {
       const builder = createDefaultPromptBuilder();
       const prompt = builder.build({
+        tools: [{ name: "skill", description: "Load skills" }],
         skills: [
           { name: "git", description: "Git operations" },
           { name: "npm", description: "NPM commands" },
