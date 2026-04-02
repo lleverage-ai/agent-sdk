@@ -270,11 +270,46 @@ const agent = createAgent({
 
 **Available hooks:**
 - `PreGenerate`, `PostGenerate`, `PostGenerateFailure` — Generation lifecycle
+- `GenerationRetryDecision` — Retry-policy observability for classified generation failures
 - `PreToolUse`, `PostToolUse`, `PostToolUseFailure` — Tool execution lifecycle
 - `MCPConnectionFailed`, `MCPConnectionRestored` — MCP server connection lifecycle
 - `Custom` — Plugin-defined custom events (see below)
 
 **Hook utilities:** `createRetryHooks`, `createRateLimitHooks`, `createLoggingHooks`, `createGuardrailsHooks`, `createSecretsFilterHooks`, `createToolHook`
+
+**Request-class-aware generation retry:** You can configure `generationRetryPolicy` on `createAgent()` and set `requestClass` per request to vary overload behavior for interactive vs background work, recover from authentication or stale-socket failures, and optionally shrink `maxTokens` after context-overflow errors.
+
+```typescript
+const agent = createAgent({
+  model,
+  fallbackModel,
+  generationRetryPolicy: {
+    requestClasses: {
+      foreground: { maxConsecutiveOverloadRetries: 2 },
+      background: {
+        maxConsecutiveOverloadRetries: 0,
+        fallbackOnOverloadExhaustion: false,
+      },
+    },
+    onAuthenticationFailure: async ({ options }) => ({
+      retry: true,
+      updatedOptions: {
+        ...options,
+        headers: { ...options.headers, Authorization: `Bearer ${await refreshToken()}` },
+      },
+    }),
+    contextOverflow: {
+      reductionFactor: 0.5,
+      minMaxTokens: 256,
+    },
+  },
+});
+
+await agent.generate({
+  prompt: "Generate a summary",
+  requestClass: "background",
+});
+```
 
 **Plugin hooks:** Plugins can define hooks in their configuration, which are automatically merged into the agent's hook registration:
 

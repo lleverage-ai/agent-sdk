@@ -223,41 +223,6 @@ function wrapBackendWithBlockedPatterns<T extends ExecutableBackend>(
 }
 
 /**
- * Determines if an error should trigger fallback to an alternative model.
- * @internal
- */
-function shouldUseFallback(error: AgentError): boolean {
-  // Check error code for known fallback-triggering conditions
-  if (error.code === "RATE_LIMIT_ERROR" || error.code === "TIMEOUT_ERROR") {
-    return true;
-  }
-
-  // Check for model unavailability or service errors
-  const message = error.message.toLowerCase();
-  const causeMessage = error.cause?.message?.toLowerCase() ?? "";
-
-  if (
-    error.code === "MODEL_ERROR" ||
-    error.code === "UNKNOWN_ERROR" ||
-    error.code === "AGENT_ERROR"
-  ) {
-    // Check both the AgentError message and the original error message
-    if (
-      message.includes("unavailable") ||
-      message.includes("503") ||
-      message.includes("service unavailable") ||
-      causeMessage.includes("unavailable") ||
-      causeMessage.includes("503") ||
-      causeMessage.includes("service unavailable")
-    ) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-/**
  * Determines if an error is related to context length/token limits.
  * @internal
  */
@@ -2048,7 +2013,10 @@ export function createAgent(options: AgentOptions): Agent {
       let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
       // Track messages for emergency compaction (accessible in catch block)
       let lastBuiltMessages: ModelMessage[] = [];
 
@@ -2420,17 +2388,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying
@@ -2500,7 +2473,10 @@ export function createAgent(options: AgentOptions): Agent {
       const effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
@@ -2745,17 +2721,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying
@@ -2800,7 +2781,10 @@ export function createAgent(options: AgentOptions): Agent {
       const effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
@@ -3063,17 +3047,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying
@@ -3107,7 +3096,10 @@ export function createAgent(options: AgentOptions): Agent {
       const effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
@@ -3251,17 +3243,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying
@@ -3306,7 +3303,10 @@ export function createAgent(options: AgentOptions): Agent {
       const effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
@@ -3616,17 +3616,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying

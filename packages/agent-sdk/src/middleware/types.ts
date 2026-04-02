@@ -39,6 +39,12 @@ export interface MiddlewareContext {
   onPostGenerateFailure(callback: HookCallback): void;
 
   /**
+   * Register a GenerationRetryDecision hook.
+   * Called after generation retry policy decides to retry, fallback, or fail.
+   */
+  onGenerationRetryDecision(callback: HookCallback): void;
+
+  /**
    * Register a PreToolUse hook.
    * Called before each tool execution.
    *

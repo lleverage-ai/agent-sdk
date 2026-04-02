@@ -153,7 +153,12 @@ function mergeHooks(
   }
 
   // Merge generation lifecycle hooks (HookCallback[])
-  const genEvents = ["PreGenerate", "PostGenerate", "PostGenerateFailure"] as const;
+  const genEvents = [
+    "PreGenerate",
+    "PostGenerate",
+    "PostGenerateFailure",
+    "GenerationRetryDecision",
+  ] as const;
   for (const eventType of genEvents) {
     const parentCallbacks = parentHooks[eventType];
     const subagentCallbacks = subagentHooks[eventType];
@@ -181,7 +186,12 @@ function filterHookEvents(parentHooks: HookRegistration, events: string[]): Hook
   }
 
   // Filter generation lifecycle hooks (HookCallback[])
-  const genEvents = ["PreGenerate", "PostGenerate", "PostGenerateFailure"] as const;
+  const genEvents = [
+    "PreGenerate",
+    "PostGenerate",
+    "PostGenerateFailure",
+    "GenerationRetryDecision",
+  ] as const;
   for (const event of genEvents) {
     if (events.includes(event) && parentHooks[event]) {
       filtered[event] = parentHooks[event];

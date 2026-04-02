@@ -21,6 +21,12 @@ import type {
   Agent,
   GenerateOptions,
   GenerateResult,
+  GenerationFailureClassification,
+  GenerationRecoveryContext,
+  GenerationRecoveryResult,
+  GenerationRetryDecisionInput,
+  GenerationRetryPolicy,
+  GenerationRequestClass,
   HookCallback,
   PostGenerateFailureInput,
   PreGenerateInput,
@@ -31,6 +37,14 @@ import type {
  * @internal
  */
 export const DEFAULT_MAX_RETRIES = 10;
+
+const DEFAULT_REQUEST_CLASS = "foreground" satisfies GenerationRequestClass;
+
+const DEFAULT_FAILURE_CLASSIFICATION: GenerationFailureClassification = {
+  type: "unknown",
+  subtype: "unknown",
+  retryable: false,
+};
 
 /**
  * State for the retry loop used by generation methods.
@@ -45,6 +59,10 @@ export interface RetryLoopState {
   currentModel: LanguageModel;
   /** Whether fallback model has been used */
   usedFallback: boolean;
+  /** Consecutive overload failures observed so far */
+  consecutiveOverloadCount: number;
+  /** Number of context-overflow retries already attempted */
+  contextOverflowRetryCount: number;
 }
 
 /**
@@ -59,7 +77,7 @@ export interface PreGenerateHookResult<T = GenerateResult> {
 }
 
 /**
- * Decision from error handling (PostGenerateFailure hooks + fallback logic).
+ * Decision from error handling (PostGenerateFailure hooks + retry policy).
  * @internal
  */
 export interface ErrorHandlingDecision {
@@ -69,8 +87,33 @@ export interface ErrorHandlingDecision {
   retryDelayMs: number;
   /** Updated model to use (if switched to fallback) */
   updatedModel?: LanguageModel;
+  /** Updated generation options to use on the next attempt */
+  updatedOptions?: GenerateOptions;
   /** Whether fallback was just activated */
   activatedFallback?: boolean;
+  /** Request class used for the decision */
+  requestClass: GenerationRequestClass;
+  /** Failure classification used for the decision */
+  classification: GenerationFailureClassification;
+  /** Final retry outcome */
+  outcome: "retry" | "fallback" | "fail";
+  /** Source that produced the decision */
+  source: "hooks" | "policy" | "none";
+}
+
+/**
+ * Parameters for generation error handling.
+ * @internal
+ */
+export interface HandleGenerationErrorParams {
+  error: AgentError;
+  failureHooks: HookCallback[];
+  decisionHooks?: HookCallback[];
+  genOptions: GenerateOptions;
+  agent: Agent;
+  state: RetryLoopState;
+  fallbackModel?: LanguageModel;
+  retryPolicy?: GenerationRetryPolicy;
 }
 
 /**
@@ -91,6 +134,8 @@ export function createRetryLoopState(
     maxRetries,
     currentModel: model,
     usedFallback: false,
+    consecutiveOverloadCount: 0,
+    contextOverflowRetryCount: 0,
   };
 }
 
@@ -129,7 +174,6 @@ export async function invokePreGenerateHooks<T = GenerateResult>(
   // Check for permission denial (e.g., guardrails blocking input)
   const permissionDecision = aggregatePermissionDecisions(hookOutputs);
   if (permissionDecision === "deny") {
-    // Find the reason and blocked message IDs from hook outputs
     const denyingOutput = hookOutputs.find(
       (o) => o.hookSpecificOutput?.permissionDecision === "deny",
     )?.hookSpecificOutput;
@@ -143,13 +187,11 @@ export async function invokePreGenerateHooks<T = GenerateResult>(
     });
   }
 
-  // Check for cache short-circuit via respondWith
   const cachedResult = extractRespondWith<T>(hookOutputs);
   if (cachedResult !== undefined) {
     return { effectiveOptions: genOptions, cachedResult };
   }
 
-  // Apply input transformation via updatedInput
   const updatedOptions = extractUpdatedInput<GenerateOptions>(hookOutputs);
   const effectiveOptions = updatedOptions !== undefined ? updatedOptions : genOptions;
 
@@ -180,42 +222,359 @@ export function normalizeError(
   });
 }
 
+function getMessageVariants(error: Error): string[] {
+  const messages = [error.message];
+  if ("cause" in error && error.cause instanceof Error) {
+    messages.push(error.cause.message);
+  }
+  return messages.map((value) => value.toLowerCase());
+}
+
+function includesAny(values: string[], patterns: string[]): boolean {
+  return values.some((value) => patterns.some((pattern) => value.includes(pattern)));
+}
+
+function classifyGenerationFailure(
+  error: AgentError,
+  retryPolicy?: GenerationRetryPolicy,
+): GenerationFailureClassification {
+  const override = retryPolicy?.classifyFailure?.(error);
+  if (override) {
+    if (typeof override === "string") {
+      return {
+        type: override,
+        subtype: "unknown",
+        retryable: override === "overload" || override === "transport",
+      };
+    }
+    return override;
+  }
+
+  const messages = getMessageVariants(error);
+
+  if (
+    includesAny(messages, [
+      "context length",
+      "context_length",
+      "token limit",
+      "maximum context",
+      "max tokens",
+      "context size",
+      "context window",
+      "too long",
+    ])
+  ) {
+    return {
+      type: "context_overflow",
+      subtype: "context_length",
+      retryable: true,
+    };
+  }
+
+  if (
+    error.code === "AUTHENTICATION_ERROR" ||
+    includesAny(messages, ["401", "unauthorized", "invalid api key", "invalid auth", "auth"])
+  ) {
+    return {
+      type: "authentication",
+      subtype: "invalid_auth",
+      retryable: false,
+    };
+  }
+
+  if (
+    error.code === "AUTHORIZATION_ERROR" ||
+    includesAny(messages, ["403", "forbidden", "permission denied"])
+  ) {
+    return {
+      type: "authorization",
+      subtype: "forbidden",
+      retryable: false,
+    };
+  }
+
+  if (
+    error.code === "RATE_LIMIT_ERROR" ||
+    includesAny(messages, ["rate limit", "429", "overloaded", "overload"])
+  ) {
+    return {
+      type: "overload",
+      subtype: "rate_limit",
+      retryable: true,
+    };
+  }
+
+  if (error.code === "TIMEOUT_ERROR" || includesAny(messages, ["timeout", "timed out"])) {
+    return {
+      type: "overload",
+      subtype: "timeout",
+      retryable: true,
+    };
+  }
+
+  if (
+    includesAny(messages, [
+      "503",
+      "502",
+      "504",
+      "service unavailable",
+      "model unavailable",
+      "temporarily unavailable",
+      "unavailable",
+    ])
+  ) {
+    return {
+      type: "overload",
+      subtype: "model_unavailable",
+      retryable: true,
+    };
+  }
+
+  if (
+    error.code === "NETWORK_ERROR" ||
+    includesAny(messages, [
+      "econnreset",
+      "epipe",
+      "socket hang up",
+      "broken pipe",
+      "connection reset",
+      "connection closed",
+      "stale socket",
+      "stale connection",
+      "network",
+      "fetch failed",
+      "econnrefused",
+      "etimedout",
+    ])
+  ) {
+    const staleTransport = includesAny(messages, [
+      "econnreset",
+      "epipe",
+      "socket hang up",
+      "broken pipe",
+      "connection reset",
+      "connection closed",
+      "stale socket",
+      "stale connection",
+    ]);
+
+    return {
+      type: "transport",
+      subtype: staleTransport ? "stale_socket" : "network",
+      retryable: true,
+    };
+  }
+
+  return DEFAULT_FAILURE_CLASSIFICATION;
+}
+
+function resolveRequestClass(
+  genOptions: GenerateOptions,
+  retryPolicy?: GenerationRetryPolicy,
+): GenerationRequestClass {
+  return genOptions.requestClass ?? retryPolicy?.defaultRequestClass ?? DEFAULT_REQUEST_CLASS;
+}
+
+function normalizeRecoveryResult(
+  value: boolean | void | GenerationRecoveryResult,
+): GenerationRecoveryResult | undefined {
+  if (value === true) {
+    return { retry: true };
+  }
+  if (value && typeof value === "object") {
+    return value;
+  }
+  return undefined;
+}
+
+async function runRecoveryHandler(
+  handler: GenerationRetryPolicy["onAuthenticationFailure"] | GenerationRetryPolicy["onTransportFailure"],
+  context: GenerationRecoveryContext,
+): Promise<GenerationRecoveryResult | undefined> {
+  if (!handler) {
+    return undefined;
+  }
+
+  return normalizeRecoveryResult(await handler(context));
+}
+
+function resolveContextOverflowOptions(
+  genOptions: GenerateOptions,
+  retryPolicy: GenerationRetryPolicy,
+  state: RetryLoopState,
+): GenerateOptions | undefined {
+  const contextPolicy = retryPolicy.contextOverflow;
+  if (!contextPolicy) {
+    return undefined;
+  }
+
+  const maxAttempts = Math.max(0, contextPolicy.maxAttempts ?? 1);
+  if (state.contextOverflowRetryCount >= maxAttempts) {
+    return undefined;
+  }
+
+  const reductionFactor = contextPolicy.reductionFactor ?? 0.5;
+  const minMaxTokens = contextPolicy.minMaxTokens ?? 256;
+  const currentMaxTokens = genOptions.maxTokens ?? contextPolicy.fallbackMaxTokens;
+
+  if (currentMaxTokens === undefined) {
+    return undefined;
+  }
+
+  const reducedMaxTokens = Math.max(
+    minMaxTokens,
+    Math.floor(currentMaxTokens * reductionFactor),
+  );
+
+  if (reducedMaxTokens >= currentMaxTokens) {
+    return undefined;
+  }
+
+  return {
+    ...genOptions,
+    maxTokens: reducedMaxTokens,
+  };
+}
+
+function buildOverloadDecision(
+  error: AgentError,
+  state: RetryLoopState,
+  requestClass: GenerationRequestClass,
+  classification: GenerationFailureClassification,
+  fallbackModel: LanguageModel | undefined,
+  retryPolicy: GenerationRetryPolicy | undefined,
+  updatedOptions?: GenerateOptions,
+): ErrorHandlingDecision {
+  const requestClassPolicy =
+    retryPolicy?.requestClasses?.[requestClass] ??
+    retryPolicy?.requestClasses?.[DEFAULT_REQUEST_CLASS] ??
+    undefined;
+  const maxConsecutiveOverloadRetries = Math.max(
+    0,
+    requestClassPolicy?.maxConsecutiveOverloadRetries ?? 0,
+  );
+  const nextConsecutiveOverloadCount = state.consecutiveOverloadCount + 1;
+
+  if (
+    nextConsecutiveOverloadCount <= maxConsecutiveOverloadRetries &&
+    state.retryAttempt < state.maxRetries
+  ) {
+    return {
+      shouldRetry: true,
+      retryDelayMs: requestClassPolicy?.retryDelayMs ?? error.retryAfterMs ?? 0,
+      updatedOptions,
+      requestClass,
+      classification,
+      outcome: "retry",
+      source: "policy",
+    };
+  }
+
+  if (
+    fallbackModel &&
+    !state.usedFallback &&
+    requestClassPolicy?.fallbackOnOverloadExhaustion !== false &&
+    state.retryAttempt < state.maxRetries
+  ) {
+    return {
+      shouldRetry: true,
+      retryDelayMs: 0,
+      updatedModel: fallbackModel,
+      updatedOptions,
+      activatedFallback: true,
+      requestClass,
+      classification,
+      outcome: "fallback",
+      source: "policy",
+    };
+  }
+
+  return {
+    shouldRetry: false,
+    retryDelayMs: 0,
+    requestClass,
+    classification,
+    outcome: "fail",
+    source: "none",
+  };
+}
+
+async function emitRetryDecisionHooks(
+  hooks: HookCallback[] | undefined,
+  agent: Agent,
+  genOptions: GenerateOptions,
+  error: AgentError,
+  state: RetryLoopState,
+  decision: ErrorHandlingDecision,
+): Promise<void> {
+  if (!hooks || hooks.length === 0) {
+    return;
+  }
+
+  const nextConsecutiveOverloadCount =
+    decision.classification.type === "overload" ? state.consecutiveOverloadCount + 1 : 0;
+
+  const input: GenerationRetryDecisionInput = {
+    hook_event_name: "GenerationRetryDecision",
+    session_id: genOptions.threadId ?? "default",
+    cwd: process.cwd(),
+    options: genOptions,
+    error,
+    requestClass: decision.requestClass,
+    failureClassification: decision.classification,
+    retryAttempt: state.retryAttempt,
+    consecutiveOverloadCount: nextConsecutiveOverloadCount,
+    decision: decision.outcome,
+    decisionSource: decision.source,
+    retryDelayMs: decision.retryDelayMs,
+  };
+
+  await invokeHooksWithTimeout(hooks, input, null, agent, 60000, state.retryAttempt);
+}
+
 /**
- * Handles errors during generation by invoking PostGenerateFailure hooks
- * and checking for fallback model usage.
- *
- * @param error - The normalized error
- * @param hooks - PostGenerateFailure hook callbacks
- * @param genOptions - The generation options
- * @param agent - The agent instance
- * @param state - Current retry loop state
- * @param fallbackModel - Optional fallback model
- * @param shouldUseFallback - Function to check if fallback should be used
- * @returns Decision on whether to retry and how
+ * Handles errors during generation by invoking PostGenerateFailure hooks,
+ * applying request-class-aware retry policy, and emitting retry decisions.
  *
  * @internal
  */
-export async function handleGenerationError(
-  error: AgentError,
-  hooks: HookCallback[],
-  genOptions: GenerateOptions,
-  agent: Agent,
-  state: RetryLoopState,
-  fallbackModel?: LanguageModel,
-  shouldUseFallback?: (error: AgentError) => boolean,
-): Promise<ErrorHandlingDecision> {
-  // Invoke PostGenerateFailure hooks to check for retry
-  if (hooks.length > 0) {
+export async function handleGenerationError({
+  error,
+  failureHooks,
+  decisionHooks = [],
+  genOptions,
+  agent,
+  state,
+  fallbackModel,
+  retryPolicy,
+}: HandleGenerationErrorParams): Promise<ErrorHandlingDecision> {
+  const requestClass = resolveRequestClass(genOptions, retryPolicy);
+  const classification = classifyGenerationFailure(error, retryPolicy);
+
+  let updatedOptions = genOptions;
+  let decision: ErrorHandlingDecision = {
+    shouldRetry: false,
+    retryDelayMs: 0,
+    requestClass,
+    classification,
+    outcome: "fail",
+    source: "none",
+  };
+
+  if (failureHooks.length > 0) {
     const failureInput: PostGenerateFailureInput = {
       hook_event_name: "PostGenerateFailure",
       session_id: genOptions.threadId ?? "default",
       cwd: process.cwd(),
       options: genOptions,
       error,
+      requestClass,
+      failureClassification: classification,
+      consecutiveOverloadCount: state.consecutiveOverloadCount,
     };
 
     const hookOutputs = await invokeHooksWithTimeout(
-      hooks,
+      failureHooks,
       failureInput,
       null,
       agent,
@@ -223,36 +582,103 @@ export async function handleGenerationError(
       state.retryAttempt,
     );
 
-    // Check if hooks request a retry
+    updatedOptions = extractUpdatedInput<GenerateOptions>(hookOutputs) ?? genOptions;
+
     const retryDecision = extractRetryDecision(hookOutputs);
     if (retryDecision && state.retryAttempt < state.maxRetries) {
-      return {
+      decision = {
         shouldRetry: true,
         retryDelayMs: retryDecision.retryDelayMs,
+        updatedOptions,
+        requestClass,
+        classification,
+        outcome: "retry",
+        source: "hooks",
       };
+      await emitRetryDecisionHooks(decisionHooks, agent, updatedOptions, error, state, decision);
+      return decision;
     }
   }
 
-  // Check if we should fallback to alternative model
-  if (
-    fallbackModel &&
-    !state.usedFallback &&
-    shouldUseFallback?.(error) &&
-    state.retryAttempt < state.maxRetries
-  ) {
-    return {
-      shouldRetry: true,
-      retryDelayMs: 0,
-      updatedModel: fallbackModel,
-      activatedFallback: true,
-    };
+  if (retryPolicy) {
+    if (classification.type === "authentication") {
+      const recovery = await runRecoveryHandler(retryPolicy.onAuthenticationFailure, {
+        options: updatedOptions,
+        error,
+        requestClass,
+        failureClassification: classification,
+        retryAttempt: state.retryAttempt,
+        consecutiveOverloadCount: state.consecutiveOverloadCount,
+      });
+      if (recovery?.retry && state.retryAttempt < state.maxRetries) {
+        decision = {
+          shouldRetry: true,
+          retryDelayMs: recovery.retryDelayMs ?? 0,
+          updatedOptions: recovery.updatedOptions ?? updatedOptions,
+          requestClass,
+          classification,
+          outcome: "retry",
+          source: "policy",
+        };
+      }
+    } else if (classification.type === "transport") {
+      const recovery = await runRecoveryHandler(retryPolicy.onTransportFailure, {
+        options: updatedOptions,
+        error,
+        requestClass,
+        failureClassification: classification,
+        retryAttempt: state.retryAttempt,
+        consecutiveOverloadCount: state.consecutiveOverloadCount,
+      });
+      if (recovery?.retry && state.retryAttempt < state.maxRetries) {
+        decision = {
+          shouldRetry: true,
+          retryDelayMs: recovery.retryDelayMs ?? 0,
+          updatedOptions: recovery.updatedOptions ?? updatedOptions,
+          requestClass,
+          classification,
+          outcome: "retry",
+          source: "policy",
+        };
+      }
+    } else if (classification.type === "context_overflow") {
+      const reducedOptions = resolveContextOverflowOptions(updatedOptions, retryPolicy, state);
+      if (reducedOptions && state.retryAttempt < state.maxRetries) {
+        decision = {
+          shouldRetry: true,
+          retryDelayMs: 0,
+          updatedOptions: reducedOptions,
+          requestClass,
+          classification,
+          outcome: "retry",
+          source: "policy",
+        };
+      }
+    } else if (classification.type === "overload") {
+      decision = buildOverloadDecision(
+        error,
+        state,
+        requestClass,
+        classification,
+        fallbackModel,
+        retryPolicy,
+        updatedOptions,
+      );
+    }
+  } else if (classification.type === "overload") {
+    decision = buildOverloadDecision(
+      error,
+      state,
+      requestClass,
+      classification,
+      fallbackModel,
+      undefined,
+      updatedOptions,
+    );
   }
 
-  // No retry requested or max retries exceeded
-  return {
-    shouldRetry: false,
-    retryDelayMs: 0,
-  };
+  await emitRetryDecisionHooks(decisionHooks, agent, updatedOptions, error, state, decision);
+  return decision;
 }
 
 /**
@@ -268,11 +694,22 @@ export function updateRetryLoopState(
   state: RetryLoopState,
   decision: ErrorHandlingDecision,
 ): RetryLoopState {
+  const switchedModel = decision.updatedModel !== undefined && decision.updatedModel !== state.currentModel;
+
   return {
     ...state,
     retryAttempt: state.retryAttempt + 1,
     currentModel: decision.updatedModel ?? state.currentModel,
     usedFallback: state.usedFallback || decision.activatedFallback === true,
+    consecutiveOverloadCount: switchedModel
+      ? 0
+      : decision.classification.type === "overload"
+        ? state.consecutiveOverloadCount + 1
+        : 0,
+    contextOverflowRetryCount:
+      decision.classification.type === "context_overflow"
+        ? state.contextOverflowRetryCount + 1
+        : state.contextOverflowRetryCount,
   };
 }
 

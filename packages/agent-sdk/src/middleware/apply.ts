@@ -137,6 +137,12 @@ export function mergeHooks(...registrations: (HookRegistration | undefined)[]): 
         ...reg.PostGenerateFailure,
       ];
     }
+    if (reg.GenerationRetryDecision) {
+      result.GenerationRetryDecision = [
+        ...(result.GenerationRetryDecision ?? []),
+        ...reg.GenerationRetryDecision,
+      ];
+    }
 
     // Merge tool hooks (arrays of HookMatcher)
     if (reg.PreToolUse) {

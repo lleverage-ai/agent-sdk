@@ -64,6 +64,8 @@ describe("generation-helpers", () => {
         maxRetries: DEFAULT_MAX_RETRIES,
         currentModel: model,
         usedFallback: false,
+        consecutiveOverloadCount: 0,
+        contextOverflowRetryCount: 0,
       });
     });
 
@@ -76,6 +78,8 @@ describe("generation-helpers", () => {
         maxRetries: 5,
         currentModel: model,
         usedFallback: false,
+        consecutiveOverloadCount: 0,
+        contextOverflowRetryCount: 0,
       });
     });
   });
@@ -115,6 +119,10 @@ describe("generation-helpers", () => {
       const updated = updateRetryLoopState(state, {
         shouldRetry: true,
         retryDelayMs: 0,
+        requestClass: "foreground",
+        classification: { type: "unknown", subtype: "unknown", retryable: false },
+        outcome: "retry",
+        source: "hooks",
       });
 
       expect(updated.retryAttempt).toBe(1);
@@ -128,6 +136,10 @@ describe("generation-helpers", () => {
         shouldRetry: true,
         retryDelayMs: 0,
         updatedModel: fallbackModel,
+        requestClass: "foreground",
+        classification: { type: "overload", subtype: "rate_limit", retryable: true },
+        outcome: "fallback",
+        source: "policy",
       });
 
       expect(updated.currentModel).toBe(fallbackModel);
@@ -140,6 +152,10 @@ describe("generation-helpers", () => {
         shouldRetry: true,
         retryDelayMs: 0,
         activatedFallback: true,
+        requestClass: "foreground",
+        classification: { type: "overload", subtype: "rate_limit", retryable: true },
+        outcome: "fallback",
+        source: "policy",
       });
 
       expect(updated.usedFallback).toBe(true);
@@ -151,6 +167,10 @@ describe("generation-helpers", () => {
       const updated = updateRetryLoopState(state, {
         shouldRetry: true,
         retryDelayMs: 0,
+        requestClass: "foreground",
+        classification: { type: "unknown", subtype: "unknown", retryable: false },
+        outcome: "retry",
+        source: "hooks",
       });
 
       expect(updated.currentModel).toBe(model);
@@ -270,18 +290,17 @@ describe("generation-helpers", () => {
       const error = new AgentError("test error");
       const genOptions: GenerateOptions = { prompt: "test" };
 
-      const result = await handleGenerationError(
+      const result = await handleGenerationError({
         error,
-        [],
+        failureHooks: [],
         genOptions,
         agent,
         state,
-        undefined,
-        undefined,
-      );
+      });
 
       expect(result.shouldRetry).toBe(false);
       expect(result.retryDelayMs).toBe(0);
+      expect(result.classification.type).toBe("unknown");
     });
 
     it("should return shouldRetry: true when hook requests retry", async () => {
@@ -301,15 +320,13 @@ describe("generation-helpers", () => {
         });
       };
 
-      const result = await handleGenerationError(
+      const result = await handleGenerationError({
         error,
-        [hook],
+        failureHooks: [hook],
         genOptions,
         agent,
         state,
-        undefined,
-        undefined,
-      );
+      });
 
       expect(result.shouldRetry).toBe(true);
       expect(result.retryDelayMs).toBe(100);
@@ -333,15 +350,13 @@ describe("generation-helpers", () => {
         });
       };
 
-      const result = await handleGenerationError(
+      const result = await handleGenerationError({
         error,
-        [hook],
+        failureHooks: [hook],
         genOptions,
         agent,
         state,
-        undefined,
-        undefined,
-      );
+      });
 
       expect(result.shouldRetry).toBe(false);
     });
@@ -354,18 +369,14 @@ describe("generation-helpers", () => {
       const error = new ModelError("rate limit");
       const genOptions: GenerateOptions = { prompt: "test" };
 
-      // shouldUseFallback returns true for any error
-      const shouldUseFallback = vi.fn().mockReturnValue(true);
-
-      const result = await handleGenerationError(
+      const result = await handleGenerationError({
         error,
-        [],
+        failureHooks: [],
         genOptions,
         agent,
         state,
         fallbackModel,
-        shouldUseFallback,
-      );
+      });
 
       expect(result.shouldRetry).toBe(true);
       expect(result.updatedModel).toBe(fallbackModel);
@@ -381,43 +392,105 @@ describe("generation-helpers", () => {
       const error = new ModelError("rate limit");
       const genOptions: GenerateOptions = { prompt: "test" };
 
-      const shouldUseFallback = vi.fn().mockReturnValue(true);
-
-      const result = await handleGenerationError(
+      const result = await handleGenerationError({
         error,
-        [],
+        failureHooks: [],
         genOptions,
         agent,
         state,
         fallbackModel,
-        shouldUseFallback,
-      );
+      });
 
       expect(result.shouldRetry).toBe(false);
       expect(result.updatedModel).toBeUndefined();
     });
 
-    it("should not activate fallback if shouldUseFallback returns false", async () => {
+    it("uses request-class policy to fail fast on overload", async () => {
       const agent = createMockAgent();
       const model = createMockModel();
       const fallbackModel = createMockModel();
       const state = createRetryLoopState(model);
       const error = new ModelError("rate limit");
-      const genOptions: GenerateOptions = { prompt: "test" };
+      const genOptions: GenerateOptions = { prompt: "test", requestClass: "background" };
 
-      const shouldUseFallback = vi.fn().mockReturnValue(false);
-
-      const result = await handleGenerationError(
+      const result = await handleGenerationError({
         error,
-        [],
+        failureHooks: [],
         genOptions,
         agent,
         state,
         fallbackModel,
-        shouldUseFallback,
-      );
+        retryPolicy: {
+          requestClasses: {
+            background: {
+              maxConsecutiveOverloadRetries: 0,
+              fallbackOnOverloadExhaustion: false,
+            },
+          },
+        },
+      });
 
       expect(result.shouldRetry).toBe(false);
+      expect(result.requestClass).toBe("background");
+    });
+
+    it("retries after authentication recovery updates options", async () => {
+      const agent = createMockAgent();
+      const model = createMockModel();
+      const state = createRetryLoopState(model);
+      const error = new AgentError("Invalid API key", {
+        code: "AUTHENTICATION_ERROR",
+      });
+      const genOptions: GenerateOptions = { prompt: "test" };
+
+      const result = await handleGenerationError({
+        error,
+        failureHooks: [],
+        genOptions,
+        agent,
+        state,
+        retryPolicy: {
+          onAuthenticationFailure: async ({ options }) => ({
+            retry: true,
+            updatedOptions: {
+              ...options,
+              headers: { Authorization: "Bearer refreshed-token" },
+            },
+          }),
+        },
+      });
+
+      expect(result.shouldRetry).toBe(true);
+      expect(result.updatedOptions?.headers).toEqual({
+        Authorization: "Bearer refreshed-token",
+      });
+      expect(result.classification.type).toBe("authentication");
+    });
+
+    it("reduces maxTokens on context overflow when configured", async () => {
+      const agent = createMockAgent();
+      const model = createMockModel();
+      const state = createRetryLoopState(model);
+      const error = new AgentError("maximum context length exceeded");
+      const genOptions: GenerateOptions = { prompt: "test", maxTokens: 1000 };
+
+      const result = await handleGenerationError({
+        error,
+        failureHooks: [],
+        genOptions,
+        agent,
+        state,
+        retryPolicy: {
+          contextOverflow: {
+            reductionFactor: 0.5,
+            minMaxTokens: 100,
+          },
+        },
+      });
+
+      expect(result.shouldRetry).toBe(true);
+      expect(result.updatedOptions?.maxTokens).toBe(500);
+      expect(result.classification.type).toBe("context_overflow");
     });
   });
 });

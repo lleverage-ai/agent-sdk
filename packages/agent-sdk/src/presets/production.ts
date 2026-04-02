@@ -34,6 +34,7 @@ function mergeHooks(target: HookRegistration, source: Partial<HookRegistration>)
     "PreGenerate",
     "PostGenerate",
     "PostGenerateFailure",
+    "GenerationRetryDecision",
     "SessionStart",
     "SessionEnd",
     "SubagentStart",
