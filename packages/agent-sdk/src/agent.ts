@@ -1147,8 +1147,10 @@ export function createAgent(options: AgentOptions): Agent {
     const standingInstructions = [
       ...(base?.standingInstructions ?? []),
       ...(override?.standingInstructions ?? []),
-    ];
-    const recall = [...(base?.recall ?? []), ...(override?.recall ?? [])];
+    ].filter((entry) => entry.content.trim().length > 0);
+    const recall = [...(base?.recall ?? []), ...(override?.recall ?? [])].filter(
+      (entry) => entry.content.trim().length > 0,
+    );
 
     if (standingInstructions.length === 0 && recall.length === 0) {
       return undefined;
@@ -1233,7 +1235,7 @@ export function createAgent(options: AgentOptions): Agent {
       permissionMode,
       currentMessages: messages,
       threadId,
-      memoryAvailable: options.memoryAvailable ?? memoryContext !== undefined,
+      memoryAvailable: options.memoryAvailable ?? false,
       custom: {
         hasSubagents,
         delegationInstructions: options.delegationInstructions,

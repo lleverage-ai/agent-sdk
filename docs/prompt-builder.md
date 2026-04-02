@@ -223,6 +223,8 @@ When using `createAgent()`, `memoryAvailable` is controlled by `AgentOptions.mem
 
 When using `PromptBuilder` directly, `memoryAvailable` remains opt-out for backward compatibility. The default memory component renders unless `memoryAvailable` is explicitly set to `false`.
 
+Supplying structured `memory` through `createAgent()` or `generate()` populates `PromptContext.memory`, but it does not implicitly enable `memoryAvailable`. That means the default builder can render instruction layers and recalled memory from structured inputs while still keeping the general persistent-memory policy opt-in.
+
 When using `createAgent()`, the prompt context is populated from three sources:
 
 - agent configuration such as `instructionLayers`, `memory`, tools, plugins, and permissions

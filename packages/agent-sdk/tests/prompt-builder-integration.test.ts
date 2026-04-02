@@ -591,12 +591,23 @@ describe("Prompt Builder Integration with Real Agents", () => {
             instructions: "Follow the shared agent policy.",
             precedence: 60,
           },
+          {
+            label: "Agent Tie Layer",
+            instructions: "Agent-level tie-break instructions.",
+            precedence: 80,
+          },
         ],
         memory: {
           standingInstructions: [
             {
               label: "Project Memory",
               content: "Use Bun for workspace commands.",
+            },
+          ],
+          recall: [
+            {
+              label: "Agent Recall",
+              content: "The agent-level recall should come first.",
             },
           ],
         },
@@ -610,8 +621,19 @@ describe("Prompt Builder Integration with Real Agents", () => {
             instructions: "Focus on the current ticket.",
             precedence: 90,
           },
+          {
+            label: "Run Tie Layer",
+            instructions: "Generation-level tie-break instructions.",
+            precedence: 80,
+          },
         ],
         memory: {
+          standingInstructions: [
+            {
+              label: "Run Standing Memory",
+              content: "Generation standing instructions should be appended.",
+            },
+          ],
           recall: [
             {
               label: "Recent Recall",
@@ -628,9 +650,19 @@ describe("Prompt Builder Integration with Real Agents", () => {
           precedence: 60,
         },
         {
+          label: "Agent Tie Layer",
+          instructions: "Agent-level tie-break instructions.",
+          precedence: 80,
+        },
+        {
           label: "Run Layer",
           instructions: "Focus on the current ticket.",
           precedence: 90,
+        },
+        {
+          label: "Run Tie Layer",
+          instructions: "Generation-level tie-break instructions.",
+          precedence: 80,
         },
       ]);
       expect(capturedContext.memory).toEqual({
@@ -639,8 +671,16 @@ describe("Prompt Builder Integration with Real Agents", () => {
             label: "Project Memory",
             content: "Use Bun for workspace commands.",
           },
+          {
+            label: "Run Standing Memory",
+            content: "Generation standing instructions should be appended.",
+          },
         ],
         recall: [
+          {
+            label: "Agent Recall",
+            content: "The agent-level recall should come first.",
+          },
           {
             label: "Recent Recall",
             content: "Issue #107 is about prompt composition inputs.",

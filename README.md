@@ -234,6 +234,7 @@ const agent = createAgent({
 ```typescript
 const agent = createAgent({
   model,
+  memoryAvailable: true,
   instructionLayers: [
     {
       label: "App Policy",
@@ -255,6 +256,8 @@ await agent.generate({
   },
 });
 ```
+
+Set `memoryAvailable: true` when you want the default builder to advertise the general `# Memory` policy. Passing `memory` to `agent.generate()` still populates `PromptContext.memory` either way, so instruction layers and recalled memory can render without opting into persistent-memory guidance.
 
 **Static prompts still work:**
 ```typescript

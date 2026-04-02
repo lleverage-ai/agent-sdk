@@ -360,7 +360,8 @@ export class SkillRegistry {
    * @returns The retained loaded skill metadata, or undefined if not loaded
    */
   getLoaded(name: string): LoadedSkillInfo | undefined {
-    return this.loadedSkills.get(name);
+    const loaded = this.loadedSkills.get(name);
+    return loaded ? { ...loaded } : undefined;
   }
 
   /**
@@ -469,7 +470,7 @@ export class SkillRegistry {
    * @returns Array of loaded skill metadata
    */
   listLoadedDetails(): LoadedSkillInfo[] {
-    return Array.from(this.loadedSkills.values());
+    return Array.from(this.loadedSkills.values(), (loaded) => ({ ...loaded }));
   }
 
   /**

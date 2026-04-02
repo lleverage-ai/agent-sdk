@@ -14,7 +14,7 @@ import type { PermissionMode } from "../types.js";
  * Higher `precedence` values win when instructions conflict. Layers with the
  * same precedence preserve their original array order.
  *
- * @category Prompt Builder
+ * @category Types
  */
 export interface PromptInstructionLayer {
   /**
@@ -43,7 +43,7 @@ export interface PromptInstructionLayer {
 /**
  * A single structured memory item used for standing instructions or recall.
  *
- * @category Prompt Builder
+ * @category Types
  */
 export interface PromptMemoryEntry {
   /**
@@ -69,7 +69,7 @@ export interface PromptMemoryEntry {
  * precedence instruction layer. `recall` is volatile, task-relevant context
  * that should be rendered separately from standing policy.
  *
- * @category Prompt Builder
+ * @category Context
  */
 export interface PromptMemoryContext {
   /**
@@ -86,7 +86,7 @@ export interface PromptMemoryContext {
 /**
  * Metadata about a skill that has already been activated.
  *
- * @category Prompt Builder
+ * @category Types
  */
 export interface PromptLoadedSkill {
   /**
@@ -109,7 +109,7 @@ export interface PromptLoadedSkill {
  * Context available to prompt components when building prompts.
  * Contains all relevant agent state and configuration.
  *
- * @category Prompt Builder
+ * @category Context
  */
 export interface PromptContext {
   /**
@@ -223,7 +223,7 @@ export interface PromptContext {
  * };
  * ```
  *
- * @category Prompt Builder
+ * @category Types
  */
 export interface PromptComponent {
   /**
@@ -280,7 +280,7 @@ export interface PromptComponent {
  * const prompt = builder.build({ tools: [{ name: 'read', description: 'Read files' }] });
  * ```
  *
- * @category Prompt Builder
+ * @category Context
  */
 export class PromptBuilder {
   private components: PromptComponent[] = [];

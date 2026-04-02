@@ -88,7 +88,7 @@ function resolveInstructionLayers(ctx: PromptContext): PromptInstructionLayer[] 
       label: entry.label,
       instructions: entry.content,
       precedence: MEMORY_STANDING_INSTRUCTION_PRECEDENCE,
-      source: entry.source ?? "memory",
+      source: entry.source,
     });
   }
 

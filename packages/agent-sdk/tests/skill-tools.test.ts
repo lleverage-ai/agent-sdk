@@ -161,6 +161,49 @@ describe("SkillRegistry", () => {
       });
     });
 
+    it("should return a defensive copy of retained loaded-skill metadata", () => {
+      const skill = createTestSkill("git", "Git operations");
+      registry.register(skill);
+      registry.load("git");
+
+      const loaded = registry.getLoaded("git");
+      expect(loaded).toBeDefined();
+
+      if (!loaded) {
+        throw new Error("Expected loaded skill metadata");
+      }
+
+      loaded.instructions = "Mutated";
+
+      expect(registry.getLoaded("git")).toEqual({
+        name: "git",
+        description: "Git operations",
+        instructions: "You have loaded the git skill.",
+      });
+    });
+
+    it("should resolve and retain function-backed instructions with args", () => {
+      const skill: SkillDefinition = {
+        name: "review",
+        description: "Code review",
+        tools: {},
+        instructions: (args) => `Review target: ${args ?? "all files"}`,
+      };
+      registry.register(skill);
+      registry.load("review", "src/index.ts");
+
+      expect(registry.getLoaded("review")).toEqual({
+        name: "review",
+        description: "Code review",
+        instructions: "Review target: src/index.ts",
+      });
+      expect(registry.listLoadedDetails()).toContainEqual({
+        name: "review",
+        description: "Code review",
+        instructions: "Review target: src/index.ts",
+      });
+    });
+
     it("should return undefined when the skill has not been loaded", () => {
       registry.register(createTestSkill("git", "Git operations"));
       expect(registry.getLoaded("git")).toBeUndefined();
@@ -294,6 +337,25 @@ describe("SkillRegistry", () => {
           name: "git",
           description: "Git operations",
           instructions: "You have loaded the git skill.",
+        },
+      ]);
+    });
+
+    it("should store rendered instructions instead of function references", () => {
+      const skill: SkillDefinition = {
+        name: "review",
+        description: "Code review",
+        tools: {},
+        instructions: (args) => `Review target: ${args ?? "all files"}`,
+      };
+      registry.register(skill);
+      registry.load("review", "src/index.ts");
+
+      expect(registry.listLoadedDetails()).toEqual([
+        {
+          name: "review",
+          description: "Code review",
+          instructions: "Review target: src/index.ts",
         },
       ]);
     });
