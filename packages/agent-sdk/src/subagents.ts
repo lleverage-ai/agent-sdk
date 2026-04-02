@@ -5,10 +5,7 @@
  */
 
 import { createAgent } from "./agent.js";
-import {
-  applyMiddleware,
-  mergeHooks as mergeHookRegistrations,
-} from "./middleware/apply.js";
+import { applyMiddleware, mergeHooks as mergeHookRegistrations } from "./middleware/apply.js";
 import type {
   Agent,
   HookCallback,
@@ -227,6 +224,14 @@ function isInheritableHookEvent(event: string): event is InheritableHookEvent {
   return (INHERITABLE_HOOK_EVENTS as readonly string[]).includes(event);
 }
 
+function assignHookEvent<K extends InheritableHookEvent>(
+  target: HookRegistration,
+  event: K,
+  value: HookRegistration[K],
+): void {
+  target[event] = value;
+}
+
 /**
  * Filters parent hooks to only include specific events.
  * @internal
@@ -246,7 +251,7 @@ function filterHookEvents(
 
     const value = parentHooks[event];
     if (value !== undefined) {
-      filtered[event] = value;
+      assignHookEvent(filtered, event, value);
     }
   }
 

@@ -473,7 +473,7 @@ describe("generation-helpers", () => {
 
       expect(result.shouldRetry).toBe(false);
       expect(result.requestClass).toBe("background");
-      expect(result.updatedOptions?.requestClass).toBe("background");
+      expect(result.updatedOptions).toBeUndefined();
     });
 
     it("retries after authentication recovery updates options", async () => {

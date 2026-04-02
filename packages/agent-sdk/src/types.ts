@@ -1692,11 +1692,7 @@ export interface GenerationRetryPolicy {
    * Return a high-level failure type string to override the built-in taxonomy,
    * or return a full classification object to set both `type` and `subtype`.
    */
-  classifyFailure?: (
-    error: Error,
-  ) =>
-    | GenerationFailureType
-    | GenerationFailureClassification;
+  classifyFailure?: (error: Error) => GenerationFailureType | GenerationFailureClassification;
 
   /**
    * Optional recovery handler for authentication failures.

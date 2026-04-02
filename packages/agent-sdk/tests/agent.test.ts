@@ -2274,9 +2274,9 @@ describe("Generation Retry Policy", () => {
       throw new Error("rate limit exceeded");
     });
 
-    await expect(
-      agent.generate({ prompt: "Hello", requestClass: "background" }),
-    ).rejects.toThrow("rate limit exceeded");
+    await expect(agent.generate({ prompt: "Hello", requestClass: "background" })).rejects.toThrow(
+      "rate limit exceeded",
+    );
 
     expect(generateText).toHaveBeenCalledTimes(1);
   });
@@ -2377,7 +2377,9 @@ describe("Generation Retry Policy", () => {
   });
 
   it("classifies background follow-up generate turns as background requests", async () => {
+    vi.mocked(generateText).mockReset();
     const primaryModel = createMockModel();
+    const decisionHook = vi.fn(async () => ({}));
 
     const agent = createAgent({
       model: primaryModel,
@@ -2392,6 +2394,9 @@ describe("Generation Retry Policy", () => {
             fallbackOnOverloadExhaustion: false,
           },
         },
+      },
+      hooks: {
+        GenerationRetryDecision: [decisionHook],
       },
     });
 
@@ -2417,11 +2422,16 @@ describe("Generation Retry Policy", () => {
         throw new Error("rate limit exceeded");
       });
 
-    await expect(agent.generate({ prompt: "Hello", requestClass: "foreground" })).rejects.toThrow(
-      "rate limit exceeded",
-    );
+    await expect(agent.generate({ prompt: "Hello", requestClass: "foreground" })).rejects.toThrow();
 
-    expect(generateText).toHaveBeenCalledTimes(2);
+    expect(decisionHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestClass: "background",
+        failureClassification: expect.objectContaining({ type: "overload" }),
+      }),
+      null,
+      expect.anything(),
+    );
   });
 
   it("retries after transport recovery for stale sockets", async () => {
@@ -2670,8 +2680,9 @@ describe("Fallback Model - Streaming", () => {
   });
 
   it("classifies background follow-up stream turns as background requests", async () => {
-    vi.clearAllMocks();
+    vi.mocked(streamText).mockReset();
     const primaryModel = createMockModel();
+    const decisionHook = vi.fn(async () => ({}));
 
     const agent = createAgent({
       model: primaryModel,
@@ -2686,6 +2697,9 @@ describe("Fallback Model - Streaming", () => {
             fallbackOnOverloadExhaustion: false,
           },
         },
+      },
+      hooks: {
+        GenerationRetryDecision: [decisionHook],
       },
     });
 
@@ -2715,9 +2729,16 @@ describe("Fallback Model - Streaming", () => {
           // Drain until the follow-up error is surfaced.
         }
       })(),
-    ).rejects.toThrow("rate limit exceeded");
+    ).rejects.toThrow();
 
-    expect(streamText).toHaveBeenCalledTimes(2);
+    expect(decisionHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestClass: "background",
+        failureClassification: expect.objectContaining({ type: "overload" }),
+      }),
+      null,
+      expect.anything(),
+    );
   });
 
   it("streamResponse() uses fallback model on rate limit error", async () => {

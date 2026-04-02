@@ -134,8 +134,9 @@ describe("Subagent Hook Inheritance", () => {
         hooks: subagentHooks,
       });
 
-      // Should have both parent and subagent hooks
-      expect(subagent.options.hooks?.PreToolUse?.length).toBe(2);
+      // Parent/subagent hooks are merged into a single matcher bucket.
+      expect(subagent.options.hooks?.PreToolUse?.length).toBe(1);
+      expect(subagent.options.hooks?.PreToolUse?.[0]?.hooks).toHaveLength(2);
     });
   });
 

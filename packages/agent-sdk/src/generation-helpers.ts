@@ -24,9 +24,9 @@ import type {
   GenerationFailureClassification,
   GenerationRecoveryContext,
   GenerationRecoveryResult,
+  GenerationRequestClass,
   GenerationRetryDecisionInput,
   GenerationRetryPolicy,
-  GenerationRequestClass,
   HookCallback,
   PostGenerateFailureInput,
   PreGenerateInput,
@@ -440,10 +440,7 @@ function resolveContextOverflowOptions(
     return undefined;
   }
 
-  const reducedMaxTokens = Math.max(
-    minMaxTokens,
-    Math.floor(currentMaxTokens * reductionFactor),
-  );
+  const reducedMaxTokens = Math.max(minMaxTokens, Math.floor(currentMaxTokens * reductionFactor));
 
   if (reducedMaxTokens >= currentMaxTokens) {
     return undefined;
