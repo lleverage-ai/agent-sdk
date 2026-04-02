@@ -595,8 +595,11 @@ export interface AgentOptions {
    *   model,
    *   contextManager: createContextManager({
    *     maxTokens: 100000,
-   *     summarization: {
+   *     policy: {
    *       tokenThreshold: 0.75, // Compact at 75% capacity
+   *       outputReserveTokens: 4000, // Reserve room for the next response
+   *     },
+   *     summarization: {
    *       keepMessageCount: 10, // Keep last 10 messages
    *     },
    *     onCompact: (result) => {

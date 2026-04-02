@@ -277,6 +277,10 @@ contextManager.unpinMessage(index: number): void;
 contextManager.isPinned(index: number): boolean;
 ```
 
+`TokenBudget` includes `effectiveMaxTokens`, `outputReserveTokens`, and `state` so hosts can
+surface context pressure before hard failures. `CompactionPolicy` also supports
+`outputReserveTokens`, `maxConsecutiveFailures`, and `failureCooldownMs`.
+
 ## Observability
 
 | Function | Description |

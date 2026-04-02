@@ -15,6 +15,7 @@ const contextManager = createContextManager({
     hardCapThreshold: 0.95, // Force compact at 95% (safety)
     enableGrowthRatePrediction: false,
     enableErrorFallback: true, // Auto-compact on context length errors
+    outputReserveTokens: 4000, // Reserve room for the model's next reply
   },
   summarization: {
     keepMessageCount: 10, // Always keep last 10 messages
@@ -29,6 +30,22 @@ const agent = createAgent({
 });
 ```
 
+## Generic Summarization vs Protocol-Aware Compaction
+
+The context manager now treats compaction as more than "summarize old messages".
+
+- Generic summarization reduces old context into a summary message.
+- Protocol-aware compaction keeps transcript structure valid while doing that reduction.
+
+In practice, protocol-aware compaction:
+
+- reserves explicit output headroom before deciding usable prompt budget
+- preserves assistant `tool-call` messages with their matching `tool-result` messages
+- keeps multipart assistant messages intact instead of trimming through a protocol block
+- stops repeated autocompaction attempts after bounded failures and retries after cooldown
+
+Use this mode whenever the transcript includes tools, streamed assistant parts, or checkpointed sessions that will be sent back to a provider.
+
 ## Compaction Triggers
 
 The SDK supports multiple compaction triggers:
@@ -39,6 +56,7 @@ The SDK supports multiple compaction triggers:
 | Hard Cap | Safety limit — forces compaction to prevent errors | 95% |
 | Growth Rate | Predicts if next message will exceed limits | Disabled |
 | Error Fallback | Emergency compaction on context length errors | Enabled |
+| Output Reserve | Reserved prompt headroom for the next response | 0 tokens |
 
 ```typescript
 const contextManager = createContextManager({
@@ -49,9 +67,14 @@ const contextManager = createContextManager({
     hardCapThreshold: 0.9, // Force at 90%
     enableGrowthRatePrediction: true, // Enable predictive compaction
     enableErrorFallback: true, // Auto-recover from context errors
+    outputReserveTokens: 4000, // Shrink usable prompt budget by 4k tokens
   },
 });
 ```
+
+`contextManager.getBudget(messages)` now reports both the raw `maxTokens` and the effective
+prompt budget after reservation via `effectiveMaxTokens`, along with a `state` of
+`"normal" | "warning" | "blocking"`.
 
 ## Custom Compaction Policy
 
@@ -66,6 +89,9 @@ const contextManager = createContextManager({
     hardCapThreshold: 0.95,
     enableGrowthRatePrediction: false,
     enableErrorFallback: true,
+    outputReserveTokens: 4000,
+    maxConsecutiveFailures: 3,
+    failureCooldownMs: 60000,
     // Custom compaction logic
     shouldCompact: (budget, messages) => {
       // Trigger if more than 50 messages
@@ -81,6 +107,9 @@ const contextManager = createContextManager({
   },
 });
 ```
+
+The default compaction flow is transcript-aware, so retained history will expand as needed to
+keep tool-call/tool-result blocks coherent even when `keepMessageCount` would otherwise split them.
 
 ## Compaction Strategies
 

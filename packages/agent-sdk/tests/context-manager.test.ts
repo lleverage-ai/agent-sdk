@@ -287,11 +287,11 @@ describe("createContextManager", () => {
     it("should merge custom config with defaults", () => {
       const manager = createContextManager({
         maxTokens: 1000,
-        summarization: {
+        policy: {
           tokenThreshold: 0.9,
         },
       });
-      expect(manager.summarizationConfig.tokenThreshold).toBe(0.9);
+      expect(manager.policy.tokenThreshold).toBe(0.9);
       expect(manager.summarizationConfig.keepMessageCount).toBe(10); // Default
     });
   });
@@ -320,6 +320,27 @@ describe("createContextManager", () => {
 
       expect(onBudgetUpdate).toHaveBeenCalled();
       expect(onBudgetUpdate.mock.calls[0][0]).toHaveProperty("maxTokens");
+    });
+
+    it("should reserve output headroom when calculating the effective budget", () => {
+      const manager = createContextManager({
+        maxTokens: 100,
+        tokenCounter: createCustomTokenCounter({
+          countFn: () => 30,
+        }),
+        policy: {
+          outputReserveTokens: 20,
+        },
+      });
+
+      const budget = manager.getBudget([{ role: "user", content: "hello world" }]);
+
+      expect(budget.maxTokens).toBe(100);
+      expect(budget.effectiveMaxTokens).toBe(80);
+      expect(budget.outputReserveTokens).toBe(20);
+      expect(budget.currentTokens).toBe(34);
+      expect(budget.remaining).toBe(46);
+      expect(budget.state).toBe("normal");
     });
   });
 
@@ -353,6 +374,36 @@ describe("createContextManager", () => {
       });
       const messages = createTestMessages(5);
       expect(manager.shouldCompact(messages).trigger).toBe(true);
+    });
+
+    it("should trigger compaction against the effective budget after output reservation", () => {
+      const manager = createContextManager({
+        maxTokens: 100,
+        tokenCounter: createCustomTokenCounter({
+          countFn: () => 25,
+        }),
+        policy: {
+          outputReserveTokens: 30,
+          tokenThreshold: 0.8,
+        },
+      });
+
+      const messages: ModelMessage[] = [{ role: "user", content: "headroom test" }];
+      const budget = manager.getBudget(messages);
+      const result = manager.shouldCompact(messages);
+
+      expect(budget.effectiveMaxTokens).toBe(70);
+      expect(budget.usage).toBeCloseTo(29 / 70);
+      expect(result).toEqual({ trigger: false });
+
+      const largerMessages: ModelMessage[] = [
+        { role: "user", content: "headroom test" },
+        { role: "assistant", content: "second message" },
+      ];
+      const largerResult = manager.shouldCompact(largerMessages);
+
+      expect(largerResult.trigger).toBe(true);
+      expect(largerResult.reason).toBe("token_threshold");
     });
   });
 
@@ -424,6 +475,94 @@ describe("createContextManager", () => {
       await manager.compact(messages, mockAgent);
 
       expect(onCompact).toHaveBeenCalled();
+    });
+
+    it("should preserve tool-call and tool-result blocks when retaining recent history", async () => {
+      const manager = createContextManager({
+        maxTokens: 1000,
+        summarization: {
+          keepMessageCount: 2,
+          keepToolResultCount: 0,
+        },
+      });
+
+      const assistantToolMessage: ModelMessage = {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Checking that now." },
+          {
+            type: "tool-call",
+            toolCallId: "call-1",
+            toolName: "search",
+            input: { query: "agent sdk issue 101" },
+          },
+        ],
+      };
+      const toolResultMessage: ModelMessage = {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "call-1",
+            toolName: "search",
+            output: { result: "Found issue details" },
+          },
+        ],
+      };
+      const messages: ModelMessage[] = [
+        { role: "user", content: "Earlier context" },
+        assistantToolMessage,
+        toolResultMessage,
+        { role: "user", content: "Continue from there" },
+      ];
+
+      const result = await manager.compact(messages, mockAgent);
+      const retainedAssistant = result.newMessages.find((message) => message === assistantToolMessage);
+      const retainedToolResult = result.newMessages.find((message) => message === toolResultMessage);
+
+      expect(retainedAssistant).toBeDefined();
+      expect(retainedToolResult).toBeDefined();
+      expect(Array.isArray(retainedAssistant?.content)).toBe(true);
+      expect(
+        Array.isArray(retainedAssistant?.content) ? retainedAssistant.content : [],
+      ).toHaveLength(2);
+    });
+
+    it("should stop retrying compaction after repeated failures until cooldown expires", async () => {
+      vi.useFakeTimers();
+
+      try {
+        const failingAgent = createMockAgent({
+          generate: vi.fn().mockRejectedValue(new Error("summary failed")),
+        });
+        const manager = createContextManager({
+          maxTokens: 100,
+          policy: {
+            tokenThreshold: 0.1,
+            maxConsecutiveFailures: 2,
+            failureCooldownMs: 1000,
+          },
+          summarization: {
+            keepMessageCount: 1,
+          },
+        });
+        const messages = createTestMessages(8);
+
+        await expect(manager.compact(messages, failingAgent)).rejects.toThrow("summary failed");
+        await expect(manager.compact(messages, failingAgent)).rejects.toThrow("summary failed");
+        await expect(manager.compact(messages, failingAgent)).rejects.toThrow(
+          "Context compaction circuit is open after repeated failures",
+        );
+        expect(failingAgent.generate).toHaveBeenCalledTimes(2);
+        expect(manager.shouldCompact(messages)).toEqual({ trigger: false });
+
+        vi.advanceTimersByTime(1000);
+
+        await expect(manager.compact(messages, failingAgent)).rejects.toThrow("summary failed");
+        expect(failingAgent.generate).toHaveBeenCalledTimes(3);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

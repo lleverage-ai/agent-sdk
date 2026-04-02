@@ -2347,6 +2347,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Note: Only attempt this ONCE to avoid infinite loops
           if (
             options.contextManager?.policy.enableErrorFallback &&
+            !effectiveGenOptions._skipCompaction &&
             retryState.retryAttempt === 0 && // Only on first error, not on retry
             isContextLengthError(normalizedError)
           ) {
