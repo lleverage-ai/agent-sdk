@@ -154,6 +154,7 @@ export type {
   CompactionTrigger,
   ContextManager,
   ContextManagerOptions,
+  CreateTokenBudgetOptions,
   CustomTokenCounterOptions,
   PinnedMessageMetadata,
   StructuredSummary,

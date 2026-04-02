@@ -305,9 +305,12 @@ const contextManager = createContextManager({
 | Property | Description |
 |----------|-------------|
 | `currentTokens` | Current token count (actual or estimated) |
-| `maxTokens` | Maximum allowed tokens |
+| `maxTokens` | Raw maximum allowed tokens before any reservation |
+| `effectiveMaxTokens` | Prompt budget after subtracting reserved output headroom |
 | `usage` | Usage percentage (0-1) |
-| `remaining` | Tokens remaining |
+| `remaining` | Tokens remaining within the effective prompt budget |
+| `outputReserveTokens` | Tokens reserved for model output that reduce `effectiveMaxTokens` |
+| `state` | Context pressure state: `normal`, `warning`, or `blocking` |
 | `isActual` | `true` if based on model usage, `false` if estimated |
 
 ```typescript

@@ -664,6 +664,81 @@ describe("createContextManager", () => {
         }),
       );
     });
+
+    it("should keep tier promotion local to the current transcript", async () => {
+      const tieredAgent = createMockAgent({
+        generate: vi.fn().mockResolvedValue({
+          status: "complete",
+          text: "## Tiered Summary\nPromoted summary",
+          usage: { inputTokens: 100, outputTokens: 50 },
+          finishReason: "stop",
+          steps: [],
+        }),
+      });
+      const manager = createContextManager({
+        maxTokens: 1000,
+        summarization: {
+          keepMessageCount: 1,
+          strategy: "tiered",
+          enableTieredSummaries: true,
+          messagesPerTier: 2,
+        },
+      });
+
+      const transcriptA: ModelMessage[] = [
+        { role: "assistant", content: "[Previous conversation summary - Tier 0]\n\nSummary A1" },
+        { role: "assistant", content: "[Previous conversation summary - Tier 0]\n\nSummary A2" },
+        { role: "assistant", content: "Newest A" },
+      ];
+      const transcriptB: ModelMessage[] = [
+        { role: "assistant", content: "[Previous conversation summary - Tier 0]\n\nSummary B1" },
+        { role: "assistant", content: "[Previous conversation summary - Tier 0]\n\nSummary B2" },
+        { role: "assistant", content: "Newest B" },
+      ];
+
+      const resultA = await manager.compact(transcriptA, tieredAgent);
+      const resultB = await manager.compact(transcriptB, tieredAgent);
+
+      expect(resultA.summaryTier).toBe(1);
+      expect(resultB.summaryTier).toBe(1);
+    });
+
+    it("should fail when pressure-triggered compaction cannot remove any messages", async () => {
+      const manager = createContextManager({
+        maxTokens: 100,
+        tokenCounter: createCustomTokenCounter({
+          countFn: () => 80,
+        }),
+        policy: {
+          tokenThreshold: 0.5,
+        },
+        summarization: {
+          keepMessageCount: 5,
+        },
+      });
+      const messages: ModelMessage[] = [{ role: "user", content: "only message" }];
+
+      await expect(manager.compact(messages, mockAgent, "token_threshold")).rejects.toThrow(
+        "Context compaction could not reduce the transcript",
+      );
+    });
+
+    it("should ignore onCompact callback errors for breaker accounting", async () => {
+      const manager = createContextManager({
+        maxTokens: 1000,
+        summarization: { keepMessageCount: 1 },
+        onCompact: () => {
+          throw new Error("observer failed");
+        },
+      });
+      const messages = createTestMessages(8);
+
+      const result = await manager.compact(messages, mockAgent);
+      const secondResult = await manager.compact(messages, mockAgent);
+
+      expect(result.summary).toContain("Summary");
+      expect(secondResult.summary).toContain("Summary");
+    });
   });
 
   describe("process", () => {

@@ -335,12 +335,31 @@ export interface TokenBudget {
 export type CompactionPressureState = "normal" | "warning" | "blocking";
 
 /**
+ * Options for creating a token budget.
+ *
+ * @category Context
+ */
+export interface CreateTokenBudgetOptions {
+  /** Tokens reserved for model output. */
+  outputReserveTokens?: number;
+
+  /** Usage threshold for the warning state. */
+  warningThreshold?: number;
+
+  /** Usage threshold for the blocking state. */
+  blockingThreshold?: number;
+}
+
+/**
  * Creates a token budget from current usage.
  *
  * @param maxTokens - Maximum tokens allowed
  * @param currentTokens - Current token count
  * @param isActual - Whether this is based on actual model usage (default: false)
  * @param options - Effective budget options
+ * @param options.outputReserveTokens - Tokens reserved for model output
+ * @param options.warningThreshold - Usage threshold for the warning state
+ * @param options.blockingThreshold - Usage threshold for the blocking state
  * @returns A token budget object
  *
  * @category Context
@@ -349,11 +368,7 @@ export function createTokenBudget(
   maxTokens: number,
   currentTokens: number,
   isActual = false,
-  options: {
-    outputReserveTokens?: number;
-    warningThreshold?: number;
-    blockingThreshold?: number;
-  } = {},
+  options: CreateTokenBudgetOptions = {},
 ): TokenBudget {
   const outputReserveTokens = Math.max(0, options.outputReserveTokens ?? 0);
   const effectiveMaxTokens = Math.max(1, maxTokens - outputReserveTokens);
@@ -1317,8 +1332,6 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
   // Track pinned messages
   const pinnedMessages: PinnedMessageMetadata[] = [];
 
-  // Track summary tiers for tiered strategy
-  let currentSummaryTier = 0;
   let consecutiveCompactionFailures = 0;
   let compactionCircuitOpenUntil: number | undefined;
 
@@ -1468,6 +1481,10 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
       // If nothing to compact, return unchanged
       if (oldMessages.length === 0) {
+        if (trigger === "error_fallback" || shouldCompact(messages).trigger) {
+          throw new Error("Context compaction could not reduce the transcript");
+        }
+
         recordCompactionSuccess();
         return {
           messagesBefore,
@@ -1498,9 +1515,9 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
         if (existingSummaries.length >= (summarizationConfig.messagesPerTier ?? 5)) {
           // Create a higher-tier summary
-          currentSummaryTier = getNextSummaryTier(existingSummaries, currentSummaryTier);
+          const nextSummaryTier = getNextSummaryTier(existingSummaries);
           const summariesContent = formatMessagesForSummary(oldMessages);
-          const tierPrompt = TIERED_SUMMARY_PROMPT.replace("{tier}", String(currentSummaryTier));
+          const tierPrompt = TIERED_SUMMARY_PROMPT.replace("{tier}", String(nextSummaryTier));
 
           const summaryResult = await agent.generate({
             messages: [
@@ -1515,7 +1532,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
           });
 
           summary = getCompletedSummaryText(summaryResult);
-          summaryTier = currentSummaryTier;
+          summaryTier = nextSummaryTier;
         } else {
           // Create a first-tier summary
           const contentToSummarize = formatMessagesForSummary(oldMessages);
@@ -1622,8 +1639,13 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         summaryTier,
       };
 
-      onCompact?.(result);
       recordCompactionSuccess();
+
+      try {
+        onCompact?.(result);
+      } catch {
+        // Callback failures should not poison the compaction circuit.
+      }
 
       return result;
     } catch (error) {
@@ -1778,7 +1800,7 @@ function getSummaryTierFromContent(content: string): number {
   return match[1] ? Number.parseInt(match[1], 10) : 0;
 }
 
-function getNextSummaryTier(existingSummaries: ModelMessage[], currentSummaryTier: number): number {
+function getNextSummaryTier(existingSummaries: ModelMessage[]): number {
   const highestTier = existingSummaries.reduce((maxTier, message) => {
     if (typeof message.content !== "string") {
       return maxTier;
@@ -1787,7 +1809,7 @@ function getNextSummaryTier(existingSummaries: ModelMessage[], currentSummaryTie
     return Math.max(maxTier, getSummaryTierFromContent(message.content));
   }, 0);
 
-  return Math.max(currentSummaryTier + 1, highestTier + 1);
+  return highestTier + 1;
 }
 
 function getCompletedSummaryText(result: { status: string; text?: string }): string {
