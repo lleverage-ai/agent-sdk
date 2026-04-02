@@ -6,7 +6,14 @@
 
 import { createAgent } from "./agent.js";
 import { mergeHooks as mergeHookRegistrations } from "./middleware/apply.js";
-import type { Agent, HookEvent, HookRegistration, SubagentOptions } from "./types.js";
+import type {
+  Agent,
+  HookCallback,
+  HookMatcher,
+  HookRegistration,
+  InheritableHookEvent,
+  SubagentOptions,
+} from "./types.js";
 
 /**
  * Creates a subagent that inherits configuration from a parent agent.
@@ -76,17 +83,19 @@ import type { Agent, HookEvent, HookRegistration, SubagentOptions } from "./type
 export function createSubagent(parentAgent: Agent, options: SubagentOptions): Agent {
   // Determine hook inheritance
   const inheritHooks = options.inheritHooks ?? true; // Default to inheriting
-  let mergedHooks: HookRegistration | undefined = options.hooks;
+  const parentHooks = normalizeHookRegistration(parentAgent.options.hooks);
+  const subagentHooks = normalizeHookRegistration(options.hooks);
+  let mergedHooks: HookRegistration | undefined = subagentHooks;
 
-  if (inheritHooks && parentAgent.options.hooks) {
+  if (inheritHooks && parentHooks) {
     // Inherit hooks from parent
     if (inheritHooks === true) {
       // Inherit all hooks
-      mergedHooks = mergeHooks(parentAgent.options.hooks, options.hooks);
+      mergedHooks = mergeHookRegistrations(parentHooks, subagentHooks);
     } else if (Array.isArray(inheritHooks)) {
       // Inherit only specific hook events
-      const filteredParentHooks = filterHookEvents(parentAgent.options.hooks, inheritHooks);
-      mergedHooks = mergeHooks(filteredParentHooks, options.hooks);
+      const filteredParentHooks = filterHookEvents(parentHooks, inheritHooks);
+      mergedHooks = mergeHookRegistrations(filteredParentHooks, subagentHooks);
     }
   }
 
@@ -128,33 +137,103 @@ const DANGEROUS_TOOLS = new Set([
   "execute",
 ]);
 
+const INHERITABLE_HOOK_EVENTS = [
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PreGenerate",
+  "PostGenerate",
+  "PostGenerateFailure",
+  "GenerationRetryDecision",
+  "SessionStart",
+  "SessionEnd",
+  "SubagentStart",
+  "SubagentStop",
+  "MCPConnectionFailed",
+  "MCPConnectionRestored",
+  "ToolRegistered",
+  "ToolLoadError",
+  "PreCompact",
+  "PostCompact",
+  "InterruptRequested",
+  "InterruptResolved",
+  "Custom",
+] as const satisfies InheritableHookEvent[];
+
+type RawToolHookMatcher =
+  | HookMatcher
+  | {
+      callback: HookCallback;
+      matcher?: string;
+      timeout?: number;
+    };
+
 /**
- * Merges parent and subagent hooks.
- * Subagent hooks are added after parent hooks (subagent hooks fire last).
+ * Normalizes public/raw tool hook entries into the internal HookMatcher shape.
  * @internal
  */
-function mergeHooks(
-  parentHooks: HookRegistration,
-  subagentHooks: HookRegistration | undefined,
-): HookRegistration {
-  return mergeHookRegistrations(parentHooks, subagentHooks);
+function normalizeToolHooks(
+  matchers: HookRegistration["PreToolUse"] | undefined,
+): HookMatcher[] | undefined {
+  if (!matchers) {
+    return undefined;
+  }
+
+  return (matchers as RawToolHookMatcher[]).map((matcher) =>
+    "hooks" in matcher
+      ? matcher
+      : {
+          matcher: matcher.matcher,
+          hooks: [matcher.callback],
+          timeout: matcher.timeout,
+        },
+  );
+}
+
+/**
+ * Normalizes hook registrations so canonical merge utilities receive the
+ * internal tool-hook representation.
+ * @internal
+ */
+function normalizeHookRegistration(
+  hooks: HookRegistration | undefined,
+): HookRegistration | undefined {
+  if (!hooks) {
+    return undefined;
+  }
+
+  return {
+    ...hooks,
+    PreToolUse: normalizeToolHooks(hooks.PreToolUse),
+    PostToolUse: normalizeToolHooks(hooks.PostToolUse),
+    PostToolUseFailure: normalizeToolHooks(hooks.PostToolUseFailure),
+  };
+}
+
+function isInheritableHookEvent(event: string): event is InheritableHookEvent {
+  return (INHERITABLE_HOOK_EVENTS as readonly string[]).includes(event);
 }
 
 /**
  * Filters parent hooks to only include specific events.
  * @internal
  */
-function filterHookEvents(parentHooks: HookRegistration, events: HookEvent[]): HookRegistration {
+function filterHookEvents(
+  parentHooks: HookRegistration,
+  events: InheritableHookEvent[],
+): HookRegistration {
   const filtered: HookRegistration = {};
 
   const requestedEvents = new Set(events);
-  const source = parentHooks as Record<string, unknown>;
-  const target = filtered as Record<string, unknown>;
 
   for (const event of requestedEvents) {
-    const value = source[event];
+    if (!isInheritableHookEvent(event)) {
+      continue;
+    }
+
+    const value = parentHooks[event];
     if (value !== undefined) {
-      target[event] = value;
+      filtered[event] = value;
     }
   }
 

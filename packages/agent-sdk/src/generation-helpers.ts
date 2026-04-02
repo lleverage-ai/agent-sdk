@@ -405,7 +405,9 @@ function normalizeRecoveryResult(
 }
 
 async function runRecoveryHandler(
-  handler: GenerationRetryPolicy["onAuthenticationFailure"] | GenerationRetryPolicy["onTransportFailure"],
+  handler:
+    | GenerationRetryPolicy["onAuthenticationFailure"]
+    | GenerationRetryPolicy["onTransportFailure"],
   context: GenerationRecoveryContext,
 ): Promise<GenerationRecoveryResult | undefined> {
   if (!handler) {
@@ -702,7 +704,6 @@ export async function handleGenerationError({
     );
   }
 
-  updatedOptions = decision.updatedOptions ?? updatedOptions;
   await emitRetryDecisionHooks(
     decisionHooks,
     agent,
@@ -727,7 +728,8 @@ export function updateRetryLoopState(
   state: RetryLoopState,
   decision: ErrorHandlingDecision,
 ): RetryLoopState {
-  const switchedModel = decision.updatedModel !== undefined && decision.updatedModel !== state.currentModel;
+  const switchedModel =
+    decision.updatedModel !== undefined && decision.updatedModel !== state.currentModel;
 
   return {
     ...state,

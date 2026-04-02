@@ -1670,7 +1670,9 @@ export interface GenerationRetryPolicy {
    */
   classifyFailure?: (
     error: Error,
-  ) => GenerationFailureType | GenerationFailureClassification;
+  ) =>
+    | GenerationFailureType
+    | GenerationFailureClassification;
 
   /**
    * Optional recovery handler for authentication failures.
@@ -3027,6 +3029,13 @@ export interface HookRegistration {
   Custom?: Record<string, HookCallback[]>;
 }
 
+/**
+ * Hook registration keys that can be inherited by subagents.
+ *
+ * @category Hooks
+ */
+export type InheritableHookEvent = keyof HookRegistration;
+
 // =============================================================================
 // Subagents
 // =============================================================================
@@ -3080,7 +3089,7 @@ export interface SubagentOptions extends Omit<AgentOptions, "model" | "allowedTo
    *
    * @defaultValue true
    */
-  inheritHooks?: boolean | HookEvent[];
+  inheritHooks?: boolean | InheritableHookEvent[];
 
   /**
    * Restrict which tools this subagent can use.

@@ -8,6 +8,7 @@ import {
   ToolExecutionError,
 } from "../src/errors/index.js";
 import { createAgent, definePlugin } from "../src/index.js";
+import { createBackgroundTask } from "../src/task-store/types.js";
 import { createMockModel, resetMocks } from "./setup.js";
 
 // Mock the AI SDK functions
@@ -2319,6 +2320,62 @@ describe("Generation Retry Policy", () => {
     });
   });
 
+  it("carries recovered options into background follow-up generate calls", async () => {
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    const completedTask = createBackgroundTask({
+      id: "task-1",
+      subagentType: "researcher",
+      description: "Summarize findings",
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      result: "Task complete",
+      metadata: { command: "subagent task" },
+    });
+    agent.taskManager.registerTask(completedTask);
+
+    vi.mocked(generateText)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockResolvedValueOnce({
+        text: "Recovered response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never)
+      .mockResolvedValueOnce({
+        text: "Follow-up response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never);
+
+    const result = await agent.generate({ prompt: "Hello" });
+
+    expect(result.text).toBe("Follow-up response");
+    expect(generateText).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(generateText).mock.calls[2][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
+  });
+
   it("retries after transport recovery for stale sockets", async () => {
     const primaryModel = createMockModel();
 
@@ -2508,6 +2565,60 @@ describe("Fallback Model - Streaming", () => {
 
     // Check that second call used fallback model
     expect(vi.mocked(streamText).mock.calls[1][0].model).toBe(fallbackModel);
+  });
+
+  it("stream() carries recovered options into background follow-up calls", async () => {
+    vi.clearAllMocks();
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    const completedTask = createBackgroundTask({
+      id: "task-2",
+      subagentType: "researcher",
+      description: "Summarize findings",
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      result: "Task complete",
+      metadata: { command: "subagent task" },
+    });
+    agent.taskManager.registerTask(completedTask);
+
+    vi.mocked(streamText)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockReturnValueOnce(createMockStreamResult("Recovered response") as never)
+      .mockReturnValueOnce(createMockStreamResult("Follow-up response") as never);
+
+    const parts: string[] = [];
+    for await (const part of agent.stream({
+      messages: [{ role: "user", content: "Hello" }],
+    })) {
+      if (part.type === "text-delta") {
+        parts.push(part.text);
+      }
+    }
+
+    expect(parts.join("")).toBe("Recovered responseFollow-up response");
+    expect(streamText).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(streamText).mock.calls[2][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
   });
 
   it("streamResponse() uses fallback model on rate limit error", async () => {

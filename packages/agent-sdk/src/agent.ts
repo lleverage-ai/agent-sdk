@@ -2230,7 +2230,7 @@ export function createAgent(options: AgentOptions): Agent {
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
             lastResult = await agent.generate({
-              ...genOptions,
+              ...effectiveGenOptions,
               prompt: followUpPrompt,
               messages: hasCheckpointing ? undefined : runningMessages,
             });
@@ -2688,7 +2688,7 @@ export function createAgent(options: AgentOptions): Agent {
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
             const followUpGen = agent.stream({
-              ...genOptions,
+              ...effectiveGenOptions,
               prompt: followUpPrompt,
               messages: hasCheckpointing ? undefined : currentMessages,
             });

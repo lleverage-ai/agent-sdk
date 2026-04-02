@@ -165,10 +165,7 @@ export function mergeHooks(...registrations: (HookRegistration | undefined)[]): 
 
     // Merge interrupt hooks
     if (reg.InterruptRequested) {
-      result.InterruptRequested = [
-        ...(result.InterruptRequested ?? []),
-        ...reg.InterruptRequested,
-      ];
+      result.InterruptRequested = [...(result.InterruptRequested ?? []), ...reg.InterruptRequested];
     }
     if (reg.InterruptResolved) {
       result.InterruptResolved = [...(result.InterruptResolved ?? []), ...reg.InterruptResolved];
