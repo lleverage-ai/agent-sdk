@@ -2376,6 +2376,54 @@ describe("Generation Retry Policy", () => {
     });
   });
 
+  it("classifies background follow-up generate turns as background requests", async () => {
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        requestClasses: {
+          foreground: {
+            maxConsecutiveOverloadRetries: 1,
+            fallbackOnOverloadExhaustion: false,
+          },
+          background: {
+            maxConsecutiveOverloadRetries: 0,
+            fallbackOnOverloadExhaustion: false,
+          },
+        },
+      },
+    });
+
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-follow-up-overload",
+        subagentType: "researcher",
+        description: "Summarize findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    vi.mocked(generateText)
+      .mockResolvedValueOnce({
+        text: "Initial response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never)
+      .mockImplementationOnce(() => {
+        throw new Error("rate limit exceeded");
+      });
+
+    await expect(agent.generate({ prompt: "Hello", requestClass: "foreground" })).rejects.toThrow(
+      "rate limit exceeded",
+    );
+
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+
   it("retries after transport recovery for stale sockets", async () => {
     const primaryModel = createMockModel();
 
@@ -2619,6 +2667,57 @@ describe("Fallback Model - Streaming", () => {
     expect(vi.mocked(streamText).mock.calls[2][0].headers).toEqual({
       Authorization: "Bearer refreshed-token",
     });
+  });
+
+  it("classifies background follow-up stream turns as background requests", async () => {
+    vi.clearAllMocks();
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        requestClasses: {
+          foreground: {
+            maxConsecutiveOverloadRetries: 1,
+            fallbackOnOverloadExhaustion: false,
+          },
+          background: {
+            maxConsecutiveOverloadRetries: 0,
+            fallbackOnOverloadExhaustion: false,
+          },
+        },
+      },
+    });
+
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-stream-follow-up-overload",
+        subagentType: "researcher",
+        description: "Summarize findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    vi.mocked(streamText)
+      .mockReturnValueOnce(createMockStreamResult("Initial response") as never)
+      .mockImplementationOnce(() => {
+        throw new Error("rate limit exceeded");
+      });
+
+    await expect(
+      (async () => {
+        for await (const _part of agent.stream({
+          messages: [{ role: "user", content: "Hello" }],
+          requestClass: "foreground",
+        })) {
+          // Drain until the follow-up error is surfaced.
+        }
+      })(),
+    ).rejects.toThrow("rate limit exceeded");
+
+    expect(streamText).toHaveBeenCalledTimes(2);
   });
 
   it("streamResponse() uses fallback model on rate limit error", async () => {

@@ -2231,6 +2231,7 @@ export function createAgent(options: AgentOptions): Agent {
           while (followUpPrompt !== null) {
             lastResult = await agent.generate({
               ...effectiveGenOptions,
+              requestClass: "background",
               prompt: followUpPrompt,
               messages: hasCheckpointing ? undefined : runningMessages,
             });
@@ -2689,6 +2690,7 @@ export function createAgent(options: AgentOptions): Agent {
           while (followUpPrompt !== null) {
             const followUpGen = agent.stream({
               ...effectiveGenOptions,
+              requestClass: "background",
               prompt: followUpPrompt,
               messages: hasCheckpointing ? undefined : currentMessages,
             });

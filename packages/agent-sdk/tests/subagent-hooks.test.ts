@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgent, createSubagent } from "../src/index.js";
-import type { Agent, HookRegistration } from "../src/types.js";
+import type { Agent, AgentMiddleware, HookRegistration } from "../src/types.js";
 import { createMockModel } from "./setup.js";
 
 describe("Subagent Hook Inheritance", () => {
@@ -76,6 +76,28 @@ describe("Subagent Hook Inheritance", () => {
       expect(subagent.options.hooks?.PostGenerate).toBeDefined();
       expect(subagent.options.hooks?.InterruptRequested).toBeDefined();
       expect(subagent.options.hooks?.Custom?.["team:done"]).toBeDefined();
+    });
+
+    it("should inherit parent middleware hooks", () => {
+      const middlewareHook = async () => ({});
+      const middleware: AgentMiddleware = {
+        name: "test-middleware",
+        register(ctx) {
+          ctx.onGenerationRetryDecision(middlewareHook);
+        },
+      };
+
+      parentAgent = createAgent({
+        model: createMockModel(),
+        middleware: [middleware],
+      });
+
+      const subagent = createSubagent(parentAgent, {
+        name: "test-subagent",
+        description: "Test subagent",
+      });
+
+      expect(subagent.options.hooks?.GenerationRetryDecision).toEqual([middlewareHook]);
     });
 
     it("should merge parent and subagent hooks (subagent hooks fire last)", () => {

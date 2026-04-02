@@ -5,7 +5,10 @@
  */
 
 import { createAgent } from "./agent.js";
-import { mergeHooks as mergeHookRegistrations } from "./middleware/apply.js";
+import {
+  applyMiddleware,
+  mergeHooks as mergeHookRegistrations,
+} from "./middleware/apply.js";
 import type {
   Agent,
   HookCallback,
@@ -83,7 +86,7 @@ import type {
 export function createSubagent(parentAgent: Agent, options: SubagentOptions): Agent {
   // Determine hook inheritance
   const inheritHooks = options.inheritHooks ?? true; // Default to inheriting
-  const parentHooks = normalizeHookRegistration(parentAgent.options.hooks);
+  const parentHooks = normalizeHookRegistration(resolveAgentHooks(parentAgent));
   const subagentHooks = normalizeHookRegistration(options.hooks);
   let mergedHooks: HookRegistration | undefined = subagentHooks;
 
@@ -158,7 +161,7 @@ const INHERITABLE_HOOK_EVENTS = [
   "InterruptRequested",
   "InterruptResolved",
   "Custom",
-] as const satisfies InheritableHookEvent[];
+] as const satisfies readonly InheritableHookEvent[];
 
 type RawToolHookMatcher =
   | HookMatcher
@@ -208,6 +211,16 @@ function normalizeHookRegistration(
     PostToolUse: normalizeToolHooks(hooks.PostToolUse),
     PostToolUseFailure: normalizeToolHooks(hooks.PostToolUseFailure),
   };
+}
+
+function resolveAgentHooks(agent: Agent): HookRegistration | undefined {
+  const middlewareHooks = applyMiddleware(agent.options.middleware ?? []);
+  const pluginHooks = (agent.options.plugins ?? []).flatMap((plugin) =>
+    plugin.hooks ? [plugin.hooks] : [],
+  );
+
+  const mergedHooks = mergeHookRegistrations(middlewareHooks, ...pluginHooks, agent.options.hooks);
+  return Object.keys(mergedHooks).length > 0 ? mergedHooks : undefined;
 }
 
 function isInheritableHookEvent(event: string): event is InheritableHookEvent {
