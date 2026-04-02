@@ -2281,6 +2281,43 @@ describe("Generation Retry Policy", () => {
     expect(generateText).toHaveBeenCalledTimes(1);
   });
 
+  it("uses generationRetryPolicy.defaultRequestClass when requestClass is omitted", async () => {
+    const primaryModel = createMockModel();
+    const decisionHook = vi.fn(async () => ({}));
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        defaultRequestClass: "background",
+        requestClasses: {
+          background: {
+            maxConsecutiveOverloadRetries: 0,
+            fallbackOnOverloadExhaustion: false,
+          },
+        },
+      },
+      hooks: {
+        GenerationRetryDecision: [decisionHook],
+      },
+    });
+
+    vi.mocked(generateText).mockImplementationOnce(() => {
+      throw new Error("rate limit exceeded");
+    });
+
+    await expect(agent.generate({ prompt: "Hello" })).rejects.toThrow("rate limit exceeded");
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(decisionHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestClass: "background",
+        failureClassification: expect.objectContaining({ type: "overload" }),
+      }),
+      null,
+      expect.anything(),
+    );
+  });
+
   it("retries with refreshed auth headers after authentication recovery", async () => {
     const primaryModel = createMockModel();
 
@@ -2769,6 +2806,55 @@ describe("Fallback Model - Streaming", () => {
     expect(vi.mocked(streamText).mock.calls[1][0].model).toBe(fallbackModel);
   });
 
+  it("streamResponse() routes background follow-up turns through retry recovery", async () => {
+    vi.clearAllMocks();
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-stream-response-follow-up",
+        subagentType: "researcher",
+        description: "Summarize findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    vi.mocked(streamText)
+      .mockReturnValueOnce(createMockStreamResult("Initial response") as never)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockReturnValueOnce(createMockStreamResult("Follow-up response") as never);
+
+    const response = await agent.streamResponse({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    await response.text();
+
+    expect(streamText).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(streamText).mock.calls[2][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
+  });
+
   it("streamRaw() uses fallback model on rate limit error", async () => {
     vi.clearAllMocks();
     const primaryModel = createMockModel();
@@ -2800,6 +2886,55 @@ describe("Fallback Model - Streaming", () => {
   // Note: streamDataResponse() fallback is not tested because errors thrown inside
   // createUIMessageStream's execute callback don't propagate to the retry loop.
   // This is a known architectural limitation that would require refactoring to fix.
+
+  it("streamDataResponse() routes background follow-up turns through retry recovery", async () => {
+    vi.clearAllMocks();
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-stream-data-response-follow-up",
+        subagentType: "researcher",
+        description: "Summarize findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    vi.mocked(streamText)
+      .mockReturnValueOnce(createMockStreamResult("Initial response") as never)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockReturnValueOnce(createMockStreamResult("Follow-up response") as never);
+
+    const response = await agent.streamDataResponse({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    await response.text();
+
+    expect(streamText).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(streamText).mock.calls[2][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
+  });
 
   it("stream() uses fallback model on timeout error", async () => {
     vi.clearAllMocks();

@@ -434,6 +434,55 @@ describe("generation-helpers", () => {
       expect(result.requestClass).toBe("background");
     });
 
+    it("does not classify timeout-style errors as context overflow", async () => {
+      const agent = createMockAgent();
+      const model = createMockModel();
+      const state = createRetryLoopState(model);
+      const error = new AgentError("Request timed out because it took too long");
+      const genOptions: GenerateOptions = { prompt: "test", maxTokens: 1000 };
+
+      const result = await handleGenerationError({
+        error,
+        failureHooks: [],
+        genOptions,
+        agent,
+        state,
+        retryPolicy: {
+          contextOverflow: {
+            reductionFactor: 0.5,
+          },
+        },
+      });
+
+      expect(result.classification.type).toBe("overload");
+      expect(result.updatedOptions).toBeUndefined();
+    });
+
+    it("treats authorization markers as authorization even when the error code is authentication", async () => {
+      const agent = createMockAgent();
+      const model = createMockModel();
+      const state = createRetryLoopState(model);
+      const authRecovery = vi.fn(async () => ({ retry: true }));
+      const error = new AgentError("Authorization denied by upstream authz policy", {
+        code: "AUTHENTICATION_ERROR",
+      });
+      const genOptions: GenerateOptions = { prompt: "test" };
+
+      const result = await handleGenerationError({
+        error,
+        failureHooks: [],
+        genOptions,
+        agent,
+        state,
+        retryPolicy: {
+          onAuthenticationFailure: authRecovery,
+        },
+      });
+
+      expect(result.classification.type).toBe("authorization");
+      expect(authRecovery).not.toHaveBeenCalled();
+    });
+
     it("re-resolves requestClass after hooks update retry options", async () => {
       const agent = createMockAgent();
       const model = createMockModel();
@@ -476,6 +525,49 @@ describe("generation-helpers", () => {
       expect(result.updatedOptions).toBeUndefined();
     });
 
+    it("reports the current overload streak to failure and decision hooks", async () => {
+      const agent = createMockAgent();
+      const model = createMockModel();
+      const state = createRetryLoopState(model);
+      const failureHook = vi.fn(async () => ({}));
+      const decisionHook = vi.fn(async () => ({}));
+      const error = new ModelError("rate limit");
+      const genOptions: GenerateOptions = { prompt: "test" };
+
+      const result = await handleGenerationError({
+        error,
+        failureHooks: [failureHook],
+        decisionHooks: [decisionHook],
+        genOptions,
+        agent,
+        state,
+        retryPolicy: {
+          requestClasses: {
+            foreground: {
+              maxConsecutiveOverloadRetries: 1,
+              fallbackOnOverloadExhaustion: false,
+            },
+          },
+        },
+      });
+
+      expect(result.shouldRetry).toBe(true);
+      expect(failureHook).toHaveBeenCalledWith(
+        expect.objectContaining({
+          consecutiveOverloadCount: 1,
+        }),
+        null,
+        expect.anything(),
+      );
+      expect(decisionHook).toHaveBeenCalledWith(
+        expect.objectContaining({
+          consecutiveOverloadCount: 1,
+        }),
+        null,
+        expect.anything(),
+      );
+    });
+
     it("retries after authentication recovery updates options", async () => {
       const agent = createMockAgent();
       const model = createMockModel();
@@ -507,6 +599,37 @@ describe("generation-helpers", () => {
         Authorization: "Bearer refreshed-token",
       });
       expect(result.classification.type).toBe("authentication");
+    });
+
+    it("re-resolves requestClass after authentication recovery updates options", async () => {
+      const agent = createMockAgent();
+      const model = createMockModel();
+      const state = createRetryLoopState(model);
+      const error = new AgentError("Invalid API key", {
+        code: "AUTHENTICATION_ERROR",
+      });
+      const genOptions: GenerateOptions = { prompt: "test", requestClass: "foreground" };
+
+      const result = await handleGenerationError({
+        error,
+        failureHooks: [],
+        genOptions,
+        agent,
+        state,
+        retryPolicy: {
+          onAuthenticationFailure: async ({ options }) => ({
+            retry: true,
+            updatedOptions: {
+              ...options,
+              requestClass: "background",
+            },
+          }),
+        },
+      });
+
+      expect(result.shouldRetry).toBe(true);
+      expect(result.requestClass).toBe("background");
+      expect(result.updatedOptions?.requestClass).toBe("background");
     });
 
     it("reduces maxTokens on context overflow when configured", async () => {

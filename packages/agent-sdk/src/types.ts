@@ -1691,6 +1691,11 @@ export interface GenerationRetryPolicy {
    *
    * Return a high-level failure type string to override the built-in taxonomy,
    * or return a full classification object to set both `type` and `subtype`.
+   *
+   * @param error - The thrown generation error to classify.
+   * @returns A failure type string to reuse the built-in retryability mapping,
+   * or a full classification object to override `type`, `subtype`, and
+   * `retryable` explicitly.
    */
   classifyFailure?: (error: Error) => GenerationFailureType | GenerationFailureClassification;
 
@@ -1745,7 +1750,10 @@ export interface GenerateOptions {
    *
    * Use `"foreground"` for interactive/user-visible work and `"background"`
    * for non-user-visible work, or define your own class names and map them in
-   * {@link AgentOptions.generationRetryPolicy}.
+   * {@link AgentOptions.generationRetryPolicy}. When this is omitted, the SDK
+   * resolves the effective request class from
+   * {@link GenerationRetryPolicy.defaultRequestClass}, then falls back to
+   * `"foreground"`.
    *
    * @defaultValue "foreground"
    */
@@ -2984,17 +2992,44 @@ export interface HookMatcher {
 }
 
 /**
+ * Shorthand tool-hook registration for a single callback.
+ * @category Hooks
+ */
+export interface ToolHookEntry {
+  /** Hook callback to run when the matcher matches. */
+  callback: HookCallback;
+
+  /**
+   * Regex pattern to match tool names (omit for all tools).
+   * Uses the same semantics as {@link HookMatcher.matcher}.
+   */
+  matcher?: string;
+
+  /**
+   * Timeout in milliseconds for hook execution.
+   * @defaultValue 60000 (60 seconds)
+   */
+  timeout?: number;
+}
+
+/**
+ * Public tool-hook registration entry.
+ * @category Hooks
+ */
+export type ToolHookRegistration = HookMatcher | ToolHookEntry;
+
+/**
  * Configuration for registering hooks with matchers.
  * @category Hooks
  */
 export interface HookRegistration {
   /**
    * Tool lifecycle hooks with matchers.
-   * Array of matchers, each with optional regex pattern and hook callbacks.
+   * Array of matcher objects or shorthand callback entries.
    */
-  PreToolUse?: HookMatcher[];
-  PostToolUse?: HookMatcher[];
-  PostToolUseFailure?: HookMatcher[];
+  PreToolUse?: ToolHookRegistration[];
+  PostToolUse?: ToolHookRegistration[];
+  PostToolUseFailure?: ToolHookRegistration[];
 
   /**
    * Generation lifecycle hooks (no matchers - not tool-specific).

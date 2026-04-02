@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { HookMatcher, HookRegistration } from "../types.js";
+import type { HookMatcher, HookRegistration, ToolHookRegistration } from "../types.js";
 import { createMiddlewareContext } from "./context.js";
 import type { AgentMiddleware } from "./types.js";
 
@@ -234,16 +234,14 @@ export function mergeHooks(...registrations: (HookRegistration | undefined)[]): 
  * @internal
  */
 function mergeToolHooks(
-  existing: HookMatcher[] | undefined,
-  incoming: HookMatcher[],
+  existing: ToolHookRegistration[] | undefined,
+  incoming: ToolHookRegistration[],
 ): HookMatcher[] {
-  if (!existing) {
-    return [...incoming];
-  }
+  const normalizedExisting = normalizeToolHooks(existing);
+  const normalizedIncoming = normalizeToolHooks(incoming);
+  const result = [...normalizedExisting];
 
-  const result = [...existing];
-
-  for (const incomingMatcher of incoming) {
+  for (const incomingMatcher of normalizedIncoming) {
     // Look for existing matcher with same pattern
     const existingIndex = result.findIndex((m) => m.matcher === incomingMatcher.matcher);
 
@@ -261,4 +259,20 @@ function mergeToolHooks(
   }
 
   return result;
+}
+
+function normalizeToolHooks(matchers: ToolHookRegistration[] | undefined): HookMatcher[] {
+  if (!matchers) {
+    return [];
+  }
+
+  return matchers.map((matcher) =>
+    "hooks" in matcher
+      ? matcher
+      : {
+          matcher: matcher.matcher,
+          hooks: [matcher.callback],
+          timeout: matcher.timeout,
+        },
+  );
 }

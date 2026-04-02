@@ -265,7 +265,9 @@ function classifyGenerationFailure(
       "max tokens",
       "context size",
       "context window",
-      "too long",
+      "prompt too long",
+      "input too long",
+      "request too large",
     ])
   ) {
     return {
@@ -275,8 +277,17 @@ function classifyGenerationFailure(
     };
   }
 
+  const looksLikeAuthorization = includesAny(messages, [
+    "403",
+    "forbidden",
+    "permission denied",
+    "authorization",
+    "authorisation",
+    "authz",
+  ]);
+
   if (
-    error.code === "AUTHENTICATION_ERROR" ||
+    (error.code === "AUTHENTICATION_ERROR" && !looksLikeAuthorization) ||
     includesAny(messages, [
       "401",
       "unauthorized",
@@ -292,17 +303,7 @@ function classifyGenerationFailure(
     };
   }
 
-  if (
-    error.code === "AUTHORIZATION_ERROR" ||
-    includesAny(messages, [
-      "403",
-      "forbidden",
-      "permission denied",
-      "authorization",
-      "authorisation",
-      "authz",
-    ])
-  ) {
+  if (error.code === "AUTHORIZATION_ERROR" || looksLikeAuthorization) {
     return {
       type: "authorization",
       subtype: "forbidden",
@@ -566,6 +567,8 @@ export async function handleGenerationError({
 }: HandleGenerationErrorParams): Promise<ErrorHandlingDecision> {
   let requestClass = resolveRequestClass(genOptions, retryPolicy);
   const classification = classifyGenerationFailure(error, retryPolicy);
+  const currentConsecutiveOverloadCount =
+    classification.type === "overload" ? state.consecutiveOverloadCount + 1 : 0;
 
   let updatedOptions = genOptions;
   let decision: ErrorHandlingDecision = {
@@ -586,7 +589,7 @@ export async function handleGenerationError({
       error,
       requestClass,
       failureClassification: classification,
-      consecutiveOverloadCount: state.consecutiveOverloadCount,
+      consecutiveOverloadCount: currentConsecutiveOverloadCount,
     };
 
     const hookOutputs = await invokeHooksWithTimeout(
@@ -632,14 +635,15 @@ export async function handleGenerationError({
         requestClass,
         failureClassification: classification,
         retryAttempt: state.retryAttempt,
-        consecutiveOverloadCount: state.consecutiveOverloadCount,
+        consecutiveOverloadCount: currentConsecutiveOverloadCount,
       });
       if (recovery?.retry && state.retryAttempt < state.maxRetries) {
+        const nextOptions = recovery.updatedOptions ?? updatedOptions;
         decision = {
           shouldRetry: true,
           retryDelayMs: recovery.retryDelayMs ?? 0,
-          updatedOptions: recovery.updatedOptions ?? updatedOptions,
-          requestClass,
+          updatedOptions: nextOptions,
+          requestClass: resolveRequestClass(nextOptions, retryPolicy),
           classification,
           outcome: "retry",
           source: "policy",
@@ -652,14 +656,15 @@ export async function handleGenerationError({
         requestClass,
         failureClassification: classification,
         retryAttempt: state.retryAttempt,
-        consecutiveOverloadCount: state.consecutiveOverloadCount,
+        consecutiveOverloadCount: currentConsecutiveOverloadCount,
       });
       if (recovery?.retry && state.retryAttempt < state.maxRetries) {
+        const nextOptions = recovery.updatedOptions ?? updatedOptions;
         decision = {
           shouldRetry: true,
           retryDelayMs: recovery.retryDelayMs ?? 0,
-          updatedOptions: recovery.updatedOptions ?? updatedOptions,
-          requestClass,
+          updatedOptions: nextOptions,
+          requestClass: resolveRequestClass(nextOptions, retryPolicy),
           classification,
           outcome: "retry",
           source: "policy",

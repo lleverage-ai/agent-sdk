@@ -459,8 +459,15 @@ describe("Subagent Hook Inheritance", () => {
     });
 
     it("should preserve other agent options", () => {
+      const fallbackModel = createMockModel();
+      const generationRetryPolicy = {
+        defaultRequestClass: "background" as const,
+      };
+
       parentAgent = createAgent({
         model: createMockModel(),
+        fallbackModel,
+        generationRetryPolicy,
       });
 
       const subagent = createSubagent(parentAgent, {
@@ -474,6 +481,8 @@ describe("Subagent Hook Inheritance", () => {
       expect(subagent.options.maxSteps).toBe(5);
       expect(subagent.options.permissionMode).toBe("plan");
       expect(subagent.options.disallowedTools).toEqual(["bash"]);
+      expect(subagent.options.fallbackModel).toBe(fallbackModel);
+      expect(subagent.options.generationRetryPolicy).toBe(generationRetryPolicy);
     });
   });
 

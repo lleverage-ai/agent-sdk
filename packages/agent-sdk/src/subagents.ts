@@ -6,14 +6,7 @@
 
 import { createAgent } from "./agent.js";
 import { applyMiddleware, mergeHooks as mergeHookRegistrations } from "./middleware/apply.js";
-import type {
-  Agent,
-  HookCallback,
-  HookMatcher,
-  HookRegistration,
-  InheritableHookEvent,
-  SubagentOptions,
-} from "./types.js";
+import type { Agent, HookRegistration, InheritableHookEvent, SubagentOptions } from "./types.js";
 
 /**
  * Creates a subagent that inherits configuration from a parent agent.
@@ -83,8 +76,8 @@ import type {
 export function createSubagent(parentAgent: Agent, options: SubagentOptions): Agent {
   // Determine hook inheritance
   const inheritHooks = options.inheritHooks ?? true; // Default to inheriting
-  const parentHooks = normalizeHookRegistration(resolveAgentHooks(parentAgent));
-  const subagentHooks = normalizeHookRegistration(options.hooks);
+  const parentHooks = resolveAgentHooks(parentAgent);
+  const subagentHooks = options.hooks;
   let mergedHooks: HookRegistration | undefined = subagentHooks;
 
   if (inheritHooks && parentHooks) {
@@ -106,12 +99,15 @@ export function createSubagent(parentAgent: Agent, options: SubagentOptions): Ag
 
   return createAgent({
     model: options.model ?? parentAgent.options.model,
+    fallbackModel: options.fallbackModel ?? parentAgent.options.fallbackModel,
     systemPrompt: options.systemPrompt,
     maxSteps: options.maxSteps,
     plugins: options.plugins,
     tools: options.tools,
     skills: options.skills,
     hooks: mergedHooks,
+    generationRetryPolicy:
+      options.generationRetryPolicy ?? parentAgent.options.generationRetryPolicy,
     allowedTools: options.allowedTools,
     disabledCoreTools: options.disabledCoreTools,
     permissionMode: options.permissionMode,
@@ -159,56 +155,6 @@ const INHERITABLE_HOOK_EVENTS = [
   "InterruptResolved",
   "Custom",
 ] as const satisfies readonly InheritableHookEvent[];
-
-type RawToolHookMatcher =
-  | HookMatcher
-  | {
-      callback: HookCallback;
-      matcher?: string;
-      timeout?: number;
-    };
-
-/**
- * Normalizes public/raw tool hook entries into the internal HookMatcher shape.
- * @internal
- */
-function normalizeToolHooks(
-  matchers: HookRegistration["PreToolUse"] | undefined,
-): HookMatcher[] | undefined {
-  if (!matchers) {
-    return undefined;
-  }
-
-  return (matchers as RawToolHookMatcher[]).map((matcher) =>
-    "hooks" in matcher
-      ? matcher
-      : {
-          matcher: matcher.matcher,
-          hooks: [matcher.callback],
-          timeout: matcher.timeout,
-        },
-  );
-}
-
-/**
- * Normalizes hook registrations so canonical merge utilities receive the
- * internal tool-hook representation.
- * @internal
- */
-function normalizeHookRegistration(
-  hooks: HookRegistration | undefined,
-): HookRegistration | undefined {
-  if (!hooks) {
-    return undefined;
-  }
-
-  return {
-    ...hooks,
-    PreToolUse: normalizeToolHooks(hooks.PreToolUse),
-    PostToolUse: normalizeToolHooks(hooks.PostToolUse),
-    PostToolUseFailure: normalizeToolHooks(hooks.PostToolUseFailure),
-  };
-}
 
 function resolveAgentHooks(agent: Agent): HookRegistration | undefined {
   const middlewareHooks = applyMiddleware(agent.options.middleware ?? []);
