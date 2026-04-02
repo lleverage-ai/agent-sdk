@@ -1546,15 +1546,21 @@ export interface GenerationRecoveryResult {
  * Return `true` to retry immediately, or return a
  * {@link GenerationRecoveryResult} to control delay and updated options.
  *
+ * @param context - The {@link GenerationRecoveryContext} describing the failed
+ * request, normalized error, request class, classification, and current retry state.
+ * @returns `true` to retry immediately, `void`/`undefined` to do nothing, or a
+ * {@link GenerationRecoveryResult} to control delay and updated options. A
+ * `Promise` resolving to any of these values is also allowed.
+ *
  * @category Agent
  */
 export type GenerationRecoveryHandler = (
   context: GenerationRecoveryContext,
 ) =>
   | boolean
-  | void
+  | undefined
   | GenerationRecoveryResult
-  | Promise<boolean | void | GenerationRecoveryResult>;
+  | Promise<boolean | undefined | GenerationRecoveryResult>;
 
 /**
  * Request-class-specific overload retry policy.
@@ -2586,7 +2592,11 @@ export interface PostGenerateFailureInput extends BaseHookInput {
  */
 export interface GenerationRetryDecisionInput extends BaseHookInput {
   hook_event_name: "GenerationRetryDecision";
-  /** Generation options used for the failed request. */
+  /**
+   * Generation options that will be used for the next attempt.
+   *
+   * These may have been updated from the options used for the failed request.
+   */
   options: GenerateOptions;
   /** Error that triggered the retry evaluation. */
   error: Error;

@@ -41,6 +41,9 @@ export interface MiddlewareContext {
   /**
    * Register a GenerationRetryDecision hook.
    * Called after generation retry policy decides to retry, fallback, or fail.
+   *
+   * @param callback - The {@link HookCallback} to invoke after the generation
+   * retry policy decides to retry, fallback, or fail.
    */
   onGenerationRetryDecision(callback: HookCallback): void;
 

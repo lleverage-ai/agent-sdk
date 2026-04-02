@@ -206,6 +206,27 @@ describe("Middleware System", () => {
         { matcher: "Edit", hooks: [hook2] },
       ]);
     });
+
+    it("should merge interrupt and custom hooks without dropping them", () => {
+      const interruptHook: HookCallback = async () => ({});
+      const customHook: HookCallback = async () => ({});
+
+      const reg1: HookRegistration = {
+        InterruptRequested: [interruptHook],
+      };
+      const reg2: HookRegistration = {
+        Custom: {
+          "team:done": [customHook],
+        },
+      };
+
+      const result = mergeHooks(reg1, reg2);
+
+      expect(result.InterruptRequested).toEqual([interruptHook]);
+      expect(result.Custom).toEqual({
+        "team:done": [customHook],
+      });
+    });
   });
 
   describe("setupMiddleware", () => {

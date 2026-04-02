@@ -434,6 +434,48 @@ describe("generation-helpers", () => {
       expect(result.requestClass).toBe("background");
     });
 
+    it("re-resolves requestClass after hooks update retry options", async () => {
+      const agent = createMockAgent();
+      const model = createMockModel();
+      const fallbackModel = createMockModel();
+      const state = createRetryLoopState(model);
+      const error = new ModelError("rate limit");
+      const genOptions: GenerateOptions = { prompt: "test", requestClass: "foreground" };
+
+      const hook: HookCallback = async () => ({
+        hookSpecificOutput: {
+          updatedInput: {
+            ...genOptions,
+            requestClass: "background",
+          },
+        },
+      });
+
+      const result = await handleGenerationError({
+        error,
+        failureHooks: [hook],
+        genOptions,
+        agent,
+        state,
+        fallbackModel,
+        retryPolicy: {
+          requestClasses: {
+            foreground: {
+              maxConsecutiveOverloadRetries: 2,
+            },
+            background: {
+              maxConsecutiveOverloadRetries: 0,
+              fallbackOnOverloadExhaustion: false,
+            },
+          },
+        },
+      });
+
+      expect(result.shouldRetry).toBe(false);
+      expect(result.requestClass).toBe("background");
+      expect(result.updatedOptions?.requestClass).toBe("background");
+    });
+
     it("retries after authentication recovery updates options", async () => {
       const agent = createMockAgent();
       const model = createMockModel();

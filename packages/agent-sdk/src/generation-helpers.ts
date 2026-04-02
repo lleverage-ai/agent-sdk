@@ -46,6 +46,10 @@ const DEFAULT_FAILURE_CLASSIFICATION: GenerationFailureClassification = {
   retryable: false,
 };
 
+function isRetryableFailureType(type: GenerationFailureClassification["type"]): boolean {
+  return type === "overload" || type === "transport" || type === "context_overflow";
+}
+
 /**
  * State for the retry loop used by generation methods.
  * @internal
@@ -244,7 +248,7 @@ function classifyGenerationFailure(
       return {
         type: override,
         subtype: "unknown",
-        retryable: override === "overload" || override === "transport",
+        retryable: isRetryableFailureType(override),
       };
     }
     return override;
@@ -273,7 +277,13 @@ function classifyGenerationFailure(
 
   if (
     error.code === "AUTHENTICATION_ERROR" ||
-    includesAny(messages, ["401", "unauthorized", "invalid api key", "invalid auth", "auth"])
+    includesAny(messages, [
+      "401",
+      "unauthorized",
+      "invalid api key",
+      "invalid auth",
+      "authentication",
+    ])
   ) {
     return {
       type: "authentication",
@@ -284,7 +294,14 @@ function classifyGenerationFailure(
 
   if (
     error.code === "AUTHORIZATION_ERROR" ||
-    includesAny(messages, ["403", "forbidden", "permission denied"])
+    includesAny(messages, [
+      "403",
+      "forbidden",
+      "permission denied",
+      "authorization",
+      "authorisation",
+      "authz",
+    ])
   ) {
     return {
       type: "authorization",
@@ -376,7 +393,7 @@ function resolveRequestClass(
 }
 
 function normalizeRecoveryResult(
-  value: boolean | void | GenerationRecoveryResult,
+  value: boolean | undefined | GenerationRecoveryResult,
 ): GenerationRecoveryResult | undefined {
   if (value === true) {
     return { retry: true };
@@ -548,7 +565,7 @@ export async function handleGenerationError({
   fallbackModel,
   retryPolicy,
 }: HandleGenerationErrorParams): Promise<ErrorHandlingDecision> {
-  const requestClass = resolveRequestClass(genOptions, retryPolicy);
+  let requestClass = resolveRequestClass(genOptions, retryPolicy);
   const classification = classifyGenerationFailure(error, retryPolicy);
 
   let updatedOptions = genOptions;
@@ -583,6 +600,7 @@ export async function handleGenerationError({
     );
 
     updatedOptions = extractUpdatedInput<GenerateOptions>(hookOutputs) ?? genOptions;
+    requestClass = resolveRequestClass(updatedOptions, retryPolicy);
 
     const retryDecision = extractRetryDecision(hookOutputs);
     if (retryDecision && state.retryAttempt < state.maxRetries) {
@@ -595,7 +613,14 @@ export async function handleGenerationError({
         outcome: "retry",
         source: "hooks",
       };
-      await emitRetryDecisionHooks(decisionHooks, agent, updatedOptions, error, state, decision);
+      await emitRetryDecisionHooks(
+        decisionHooks,
+        agent,
+        decision.updatedOptions ?? genOptions,
+        error,
+        state,
+        decision,
+      );
       return decision;
     }
   }
@@ -677,7 +702,15 @@ export async function handleGenerationError({
     );
   }
 
-  await emitRetryDecisionHooks(decisionHooks, agent, updatedOptions, error, state, decision);
+  updatedOptions = decision.updatedOptions ?? updatedOptions;
+  await emitRetryDecisionHooks(
+    decisionHooks,
+    agent,
+    decision.updatedOptions ?? genOptions,
+    error,
+    state,
+    decision,
+  );
   return decision;
 }
 

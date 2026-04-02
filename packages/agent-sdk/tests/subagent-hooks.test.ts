@@ -54,6 +54,10 @@ describe("Subagent Hook Inheritance", () => {
         PostToolUse: [{ callback: async () => ({}) }],
         PreGenerate: [async () => ({})],
         PostGenerate: [async () => ({})],
+        InterruptRequested: [async () => ({})],
+        Custom: {
+          "team:done": [async () => ({})],
+        },
       };
 
       parentAgent = createAgent({
@@ -70,6 +74,8 @@ describe("Subagent Hook Inheritance", () => {
       expect(subagent.options.hooks?.PostToolUse).toBeDefined();
       expect(subagent.options.hooks?.PreGenerate).toBeDefined();
       expect(subagent.options.hooks?.PostGenerate).toBeDefined();
+      expect(subagent.options.hooks?.InterruptRequested).toBeDefined();
+      expect(subagent.options.hooks?.Custom?.["team:done"]).toBeDefined();
     });
 
     it("should merge parent and subagent hooks (subagent hooks fire last)", () => {
@@ -174,6 +180,7 @@ describe("Subagent Hook Inheritance", () => {
         PostToolUse: [{ callback: async () => ({}) }],
         PreGenerate: [async () => ({})],
         PostGenerate: [async () => ({})],
+        InterruptRequested: [async () => ({})],
       };
 
       parentAgent = createAgent({
@@ -192,6 +199,7 @@ describe("Subagent Hook Inheritance", () => {
       expect(subagent.options.hooks?.PostToolUse).toBeDefined();
       expect(subagent.options.hooks?.PreGenerate).toBeUndefined();
       expect(subagent.options.hooks?.PostGenerate).toBeUndefined();
+      expect(subagent.options.hooks?.InterruptRequested).toBeUndefined();
     });
 
     it("should merge selective parent hooks with subagent hooks", () => {
@@ -403,6 +411,28 @@ describe("Subagent Hook Inheritance", () => {
 
       // Should not crash, just ignore non-existent events
       expect(subagent.options.hooks).toEqual({});
+    });
+
+    it("should selectively inherit interrupt hooks when requested", () => {
+      const interruptHook = async () => ({});
+      const parentHooks: HookRegistration = {
+        InterruptRequested: [interruptHook],
+        PreGenerate: [async () => ({})],
+      };
+
+      parentAgent = createAgent({
+        model: createMockModel(),
+        hooks: parentHooks,
+      });
+
+      const subagent = createSubagent(parentAgent, {
+        name: "interrupt-subagent",
+        description: "Only inherits interrupts",
+        inheritHooks: ["InterruptRequested"],
+      });
+
+      expect(subagent.options.hooks?.InterruptRequested).toEqual([interruptHook]);
+      expect(subagent.options.hooks?.PreGenerate).toBeUndefined();
     });
 
     it("should preserve other agent options", () => {

@@ -2470,7 +2470,7 @@ export function createAgent(options: AgentOptions): Agent {
         return;
       }
 
-      const effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(
@@ -2778,7 +2778,7 @@ export function createAgent(options: AgentOptions): Agent {
         });
       }
 
-      const effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(
@@ -3093,7 +3093,7 @@ export function createAgent(options: AgentOptions): Agent {
       );
 
       // Input transformation is applied even though respondWith is not supported
-      const effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(
@@ -3300,7 +3300,7 @@ export function createAgent(options: AgentOptions): Agent {
         });
       }
 
-      const effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(

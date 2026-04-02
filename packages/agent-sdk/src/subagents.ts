@@ -5,7 +5,8 @@
  */
 
 import { createAgent } from "./agent.js";
-import type { Agent, HookRegistration, SubagentOptions } from "./types.js";
+import { mergeHooks as mergeHookRegistrations } from "./middleware/apply.js";
+import type { Agent, HookEvent, HookRegistration, SubagentOptions } from "./types.js";
 
 /**
  * Creates a subagent that inherits configuration from a parent agent.
@@ -136,81 +137,24 @@ function mergeHooks(
   parentHooks: HookRegistration,
   subagentHooks: HookRegistration | undefined,
 ): HookRegistration {
-  if (!subagentHooks) {
-    return parentHooks;
-  }
-
-  const merged: HookRegistration = {};
-
-  // Merge tool lifecycle hooks (HookMatcher[])
-  const toolEvents = ["PreToolUse", "PostToolUse", "PostToolUseFailure"] as const;
-  for (const eventType of toolEvents) {
-    const parentMatchers = parentHooks[eventType];
-    const subagentMatchers = subagentHooks[eventType];
-    if (parentMatchers || subagentMatchers) {
-      merged[eventType] = [...(parentMatchers ?? []), ...(subagentMatchers ?? [])];
-    }
-  }
-
-  // Merge generation lifecycle hooks (HookCallback[])
-  const genEvents = [
-    "PreGenerate",
-    "PostGenerate",
-    "PostGenerateFailure",
-    "GenerationRetryDecision",
-  ] as const;
-  for (const eventType of genEvents) {
-    const parentCallbacks = parentHooks[eventType];
-    const subagentCallbacks = subagentHooks[eventType];
-    if (parentCallbacks || subagentCallbacks) {
-      merged[eventType] = [...(parentCallbacks ?? []), ...(subagentCallbacks ?? [])];
-    }
-  }
-
-  return merged;
+  return mergeHookRegistrations(parentHooks, subagentHooks);
 }
 
 /**
  * Filters parent hooks to only include specific events.
  * @internal
  */
-function filterHookEvents(parentHooks: HookRegistration, events: string[]): HookRegistration {
+function filterHookEvents(parentHooks: HookRegistration, events: HookEvent[]): HookRegistration {
   const filtered: HookRegistration = {};
 
-  // Filter tool lifecycle hooks (HookMatcher[])
-  const toolEvents = ["PreToolUse", "PostToolUse", "PostToolUseFailure"] as const;
-  for (const event of toolEvents) {
-    if (events.includes(event) && parentHooks[event]) {
-      filtered[event] = parentHooks[event];
-    }
-  }
+  const requestedEvents = new Set(events);
+  const source = parentHooks as Record<string, unknown>;
+  const target = filtered as Record<string, unknown>;
 
-  // Filter generation lifecycle hooks (HookCallback[])
-  const genEvents = [
-    "PreGenerate",
-    "PostGenerate",
-    "PostGenerateFailure",
-    "GenerationRetryDecision",
-  ] as const;
-  for (const event of genEvents) {
-    if (events.includes(event) && parentHooks[event]) {
-      filtered[event] = parentHooks[event];
-    }
-  }
-
-  // Filter session lifecycle hooks (HookCallback[])
-  const sessionEvents = ["SessionStart", "SessionEnd"] as const;
-  for (const event of sessionEvents) {
-    if (events.includes(event) && parentHooks[event]) {
-      filtered[event] = parentHooks[event];
-    }
-  }
-
-  // Filter subagent lifecycle hooks (HookCallback[])
-  const subagentEvents = ["SubagentStart", "SubagentStop"] as const;
-  for (const event of subagentEvents) {
-    if (events.includes(event) && parentHooks[event]) {
-      filtered[event] = parentHooks[event];
+  for (const event of requestedEvents) {
+    const value = source[event];
+    if (value !== undefined) {
+      target[event] = value;
     }
   }
 
