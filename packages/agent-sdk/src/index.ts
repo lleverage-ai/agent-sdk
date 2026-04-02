@@ -143,6 +143,7 @@ export {
 } from "./checkpointer/index.js";
 // Context Manager types
 export type {
+  CompactionPressureState,
   CompactionPolicy,
   CompactionResult,
   CompactionScheduler,
@@ -153,6 +154,7 @@ export type {
   CompactionTrigger,
   ContextManager,
   ContextManagerOptions,
+  CreateTokenBudgetOptions,
   CustomTokenCounterOptions,
   PinnedMessageMetadata,
   StructuredSummary,
