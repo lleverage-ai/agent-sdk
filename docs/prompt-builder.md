@@ -16,9 +16,11 @@ That means the default builder emphasizes:
 
 - identity and interaction contract
 - action and verification policy
+- explicit instruction layers with precedence
 - compact capability summaries
 - skill-loading guidance
 - delegation guidance
+- compact recalled memory separate from standing instructions
 - memory guidance when durable memory is actually available
 - permission mode
 
@@ -57,6 +59,9 @@ You are an interactive agent. Your job is to help the user achieve their goal us
 ...
 
 # Action Policy
+...
+
+# Instruction Layers
 ...
 
 # Capability Summary
@@ -117,9 +122,11 @@ The default builder registers these components:
 - `identity`
 - `interaction-contract`
 - `action-policy`
+- `instruction-layers`
 - `capability-summary`
 - `skill-loading-policy`
 - `delegation-instructions` when subagents are available
+- `recalled-memory` when `PromptContext.memory?.recall` contains non-empty entries
 - `memory-policy` unless `PromptContext.memoryAvailable` is explicitly `false`
 - `permission-mode` when a permission mode is set
 
@@ -165,6 +172,9 @@ interface PromptContext {
   tools?: Array<{ name: string; description: string }>;
   skills?: Array<{ name: string; description: string }>;
   plugins?: Array<{ name: string; description: string }>;
+  instructionLayers?: PromptInstructionLayer[];
+  memory?: PromptMemoryContext;
+  loadedSkills?: PromptLoadedSkill[];
   backend?: {
     type: string;
     hasExecuteCapability: boolean;
@@ -181,9 +191,47 @@ interface PromptContext {
 }
 ```
 
+Related prompt-builder types:
+
+```typescript
+interface PromptInstructionLayer {
+  label: string;
+  instructions: string;
+  precedence?: number; // higher value = higher priority
+  source?: string;
+}
+
+interface PromptMemoryContext {
+  standingInstructions?: PromptMemoryEntry[];
+  recall?: PromptMemoryEntry[];
+}
+
+interface PromptMemoryEntry {
+  label: string;
+  content: string;
+  source?: string;
+}
+
+interface PromptLoadedSkill {
+  name: string;
+  summary?: string;
+  instructions?: string;
+}
+```
+
 When using `createAgent()`, `memoryAvailable` is controlled by `AgentOptions.memoryAvailable`. It defaults to `false` because the SDK does not wire durable memory into the agent automatically.
 
 When using `PromptBuilder` directly, `memoryAvailable` remains opt-out for backward compatibility. The default memory component renders unless `memoryAvailable` is explicitly set to `false`.
+
+Supplying structured `memory` through `createAgent()` or `generate()` populates `PromptContext.memory`, but it does not implicitly enable `memoryAvailable`. That means the default builder can render instruction layers and recalled memory from structured inputs while still keeping the general persistent-memory policy opt-in.
+
+When using `createAgent()`, the prompt context is populated from three sources:
+
+- agent configuration such as `instructionLayers`, `memory`, tools, plugins, and permissions
+- generation-time overrides passed to `generate()` / `stream()` via `instructionLayers` and `memory`
+- activated skill state retained by the skill registry and exposed as `loadedSkills`
+
+The default builder renders instruction layers in descending `precedence` order. Activated skills are injected as a high-priority layer with precedence `80`, while `memory.standingInstructions` is treated as a lower-priority layer with precedence `40`. `memory.recall` is rendered separately under `# Recalled Memory` rather than being merged into the instruction-layer stack.
 
 ### PromptComponent
 
@@ -271,6 +319,36 @@ const agent = createAgent({
 });
 ```
 
+### Pass Structured Memory and Instruction Layers
+
+```typescript
+import { createAgent } from "@lleverage-ai/agent-sdk";
+import { anthropic } from "@ai-sdk/anthropic";
+
+const agent = createAgent({
+  model: anthropic("claude-sonnet-4-20250514"),
+  instructionLayers: [
+    {
+      label: "App Policy",
+      instructions: "Prefer short status updates.",
+      precedence: 70,
+    },
+  ],
+});
+
+await agent.generate({
+  prompt: "Continue the task",
+  memory: {
+    standingInstructions: [
+      { label: "Project Memory", content: "Use Bun workspace commands." },
+    ],
+    recall: [
+      { label: "Recent Recall", content: "The user is editing the prompt builder." },
+    ],
+  },
+});
+```
+
 ## Migration Notes
 
 If you relied on the previous default builder behavior, the main change is that default prompts no longer include:
@@ -280,6 +358,8 @@ If you relied on the previous default builder behavior, the main change is that 
 - `# Loaded Plugins`
 
 To restore those sections, register the verbose inventory components explicitly.
+
+`buildMemorySection()` and `buildPathMemoryContext()` remain available for compatibility helpers, but the preferred default path is now structured memory via `PromptContext.memory`.
 
 If you only used the default builder as-is, no API migration is required.
 

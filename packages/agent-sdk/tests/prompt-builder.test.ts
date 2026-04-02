@@ -10,10 +10,12 @@ import {
   contextComponent,
   createDefaultPromptBuilder,
   identityComponent,
+  instructionLayersComponent,
   interactionContractComponent,
   memoryPolicyComponent,
   permissionModeComponent,
   pluginsComponent,
+  recalledMemoryComponent,
   skillLoadingPolicyComponent,
   skillsComponent,
   toolsComponent,
@@ -230,6 +232,57 @@ describe("Default Components", () => {
     });
   });
 
+  describe("instructionLayersComponent", () => {
+    it("should not render when no instruction layers are available", () => {
+      const condition = instructionLayersComponent.condition?.(context);
+      expect(condition).toBe(false);
+    });
+
+    it("should render caller, loaded-skill, and memory-backed layers by precedence", () => {
+      const ctx: PromptContext = {
+        instructionLayers: [
+          {
+            label: "Runtime Policy",
+            instructions: "Prefer terse answers.",
+            precedence: 90,
+          },
+        ],
+        loadedSkills: [
+          {
+            name: "git",
+            summary: "Git workflow",
+            instructions: "Use git commands for repository operations.",
+          },
+        ],
+        memory: {
+          standingInstructions: [
+            {
+              label: "Project Memory",
+              content: "Follow the repository coding standards.",
+              source: "project-memory.md",
+            },
+          ],
+        },
+      };
+
+      const result = instructionLayersComponent.render(ctx);
+
+      expect(result).toContain("# Instruction Layers");
+      expect(result).toContain("Runtime Policy (precedence 90)");
+      expect(result).toContain("Skill: git (precedence 80)");
+      expect(result).toContain("Project Memory (precedence 40)");
+      expect(result).toContain("Source: Git workflow");
+      expect(result).toContain("Source: project-memory.md");
+
+      const runtimeIndex = result.indexOf("Runtime Policy (precedence 90)");
+      const skillIndex = result.indexOf("Skill: git (precedence 80)");
+      const memoryIndex = result.indexOf("Project Memory (precedence 40)");
+
+      expect(runtimeIndex).toBeLessThan(skillIndex);
+      expect(skillIndex).toBeLessThan(memoryIndex);
+    });
+  });
+
   describe("capabilitySummaryComponent", () => {
     it("should render empty string when no capabilities are available", () => {
       const result = capabilitySummaryComponent.render(context);
@@ -355,6 +408,33 @@ describe("Default Components", () => {
     it("should not render when memory is explicitly unavailable", () => {
       const condition = memoryPolicyComponent.condition?.({ memoryAvailable: false });
       expect(condition).toBe(false);
+    });
+  });
+
+  describe("recalledMemoryComponent", () => {
+    it("should not render when no recall is available", () => {
+      const condition = recalledMemoryComponent.condition?.(context);
+      expect(condition).toBe(false);
+    });
+
+    it("should render recalled memory separately from standing instructions", () => {
+      const ctx: PromptContext = {
+        memory: {
+          recall: [
+            {
+              label: "User Preference",
+              content: "The user prefers bullet points for status updates.",
+              source: "user-memory.md",
+            },
+          ],
+        },
+      };
+
+      const result = recalledMemoryComponent.render(ctx);
+      expect(result).toContain("# Recalled Memory");
+      expect(result).toContain("## User Preference");
+      expect(result).toContain("Source: user-memory.md");
+      expect(result).toContain("prefers bullet points");
     });
   });
 
@@ -546,8 +626,10 @@ describe("createDefaultPromptBuilder", () => {
     expect(names).toContain("identity");
     expect(names).toContain("interaction-contract");
     expect(names).toContain("action-policy");
+    expect(names).toContain("instruction-layers");
     expect(names).toContain("capability-summary");
     expect(names).toContain("skill-loading-policy");
+    expect(names).toContain("recalled-memory");
     expect(names).toContain("memory-policy");
     expect(names).toContain("permission-mode");
     expect(names).not.toContain("tools-listing");
@@ -567,6 +649,16 @@ describe("createDefaultPromptBuilder", () => {
       ],
       skills: [{ name: "git", description: "Git operations" }],
       plugins: [{ name: "test-plugin", description: "Test plugin" }],
+      instructionLayers: [
+        {
+          label: "Runtime Policy",
+          instructions: "Be concise.",
+          precedence: 90,
+        },
+      ],
+      memory: {
+        recall: [{ label: "Recent Note", content: "User asked about prompt layering." }],
+      },
       backend: {
         type: "filesystem",
         hasExecuteCapability: true,
@@ -583,8 +675,10 @@ describe("createDefaultPromptBuilder", () => {
     expect(prompt).toContain("help the user achieve their goal");
     expect(prompt).toContain("# Interaction Contract");
     expect(prompt).toContain("# Action Policy");
+    expect(prompt).toContain("# Instruction Layers");
     expect(prompt).toContain("# Capability Summary");
     expect(prompt).toContain("# Skill Loading");
+    expect(prompt).toContain("# Recalled Memory");
     expect(prompt).toContain("# Memory");
     expect(prompt).toContain("# Permission Mode");
     expect(prompt).not.toContain("# Available Tools");
