@@ -798,7 +798,10 @@ describe("delegationComponent", () => {
     const result = delegationComponent.render({ custom: { hasSubagents: true } });
     expect(result).toContain("# Task Delegation");
     expect(result).toContain("When to delegate");
+    expect(result).toContain("Foreground vs background");
     expect(result).toContain("How to delegate");
+    expect(result).toContain("self-contained");
+    expect(result).toContain("task_output");
     expect(result).toBe(DEFAULT_DELEGATION_INSTRUCTIONS);
   });
 

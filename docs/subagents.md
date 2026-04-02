@@ -33,7 +33,7 @@ const agent = createAgent({
 The parent agent receives a `task` tool to delegate work:
 
 ```typescript
-// Agent can call: task({ subagent: "researcher", prompt: "Research AI trends" })
+// Agent can call: task({ description: "Research AI trends and summarize the main findings", subagent_type: "researcher" })
 ```
 
 ## Advanced Subagent Execution
@@ -73,6 +73,12 @@ const results = await executeSubagentsParallel({
 ## Background Tasks
 
 Background tasks allow subagents to run asynchronously without blocking the parent agent. When persistence is configured, tasks survive process restarts and can be recovered.
+
+Use them selectively:
+
+- Prefer foreground tasks when the result is needed before the agent can take the next important step.
+- Use `run_in_background` only for genuinely independent work you can let finish later.
+- For parallel work where you still need all results before continuing, call the `task` tool multiple times in the same step without `run_in_background`.
 
 ### Task Store Configuration
 
@@ -222,7 +228,7 @@ async function initializeAgent() {
 
 ## Automatic Task Completion Handling
 
-By default, `agent.generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` automatically wait for background tasks to complete and trigger follow-up generations. No manual polling or AgentSession required.
+By default, `agent.generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` automatically wait for background tasks to complete and trigger follow-up generations. No manual polling or AgentSession is required for the normal path.
 
 ```typescript
 const agent = createAgent({
@@ -238,6 +244,8 @@ const agent = createAgent({
 // 4. Repeat until no active tasks remain
 const result = await agent.generate({ prompt: "Research AI trends in the background" });
 ```
+
+Use `task_output` only when you specifically need manual status inspection or output retrieval, or when you have disabled automatic waiting.
 
 ### Configuring Background Task Behavior
 

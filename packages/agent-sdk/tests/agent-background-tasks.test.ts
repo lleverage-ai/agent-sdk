@@ -3,6 +3,10 @@
  */
 
 import { beforeEach, describe, expect, it } from "vitest";
+import {
+  formatDefaultTaskCompletionPrompt,
+  formatDefaultTaskFailurePrompt,
+} from "../src/background-task-formatting.js";
 import { TaskManager } from "../src/task-manager.js";
 import type { BackgroundTask } from "../src/task-store/types.js";
 
@@ -254,8 +258,7 @@ describe("Agent background task integration", () => {
 // =============================================================================
 
 describe("default task formatters", () => {
-  it("should format completed task with metadata command", () => {
-    // These match the default formatters used in agent.ts
+  it("should format completed shell task with metadata command", () => {
     const task: BackgroundTask = {
       id: "t1",
       subagentType: "bash",
@@ -268,16 +271,14 @@ describe("default task formatters", () => {
       completedAt: new Date().toISOString(),
     };
 
-    // Replicate default formatter
-    const command = task.metadata?.command ?? "unknown command";
-    const formatted = `[Background task completed: ${task.id}]\nCommand: ${command}\nOutput:\n${task.result ?? "(no output)"}`;
+    const formatted = formatDefaultTaskCompletionPrompt(task);
 
     expect(formatted).toContain("t1");
     expect(formatted).toContain("echo hello");
     expect(formatted).toContain("Hello world");
   });
 
-  it("should format failed task with error", () => {
+  it("should format failed shell task with error", () => {
     const task: BackgroundTask = {
       id: "t2",
       subagentType: "bash",
@@ -290,27 +291,30 @@ describe("default task formatters", () => {
       completedAt: new Date().toISOString(),
     };
 
-    const command = task.metadata?.command ?? "unknown command";
-    const formatted = `[Background task failed: ${task.id}]\nCommand: ${command}\nError: ${task.error ?? "Unknown error"}`;
+    const formatted = formatDefaultTaskFailurePrompt(task);
 
     expect(formatted).toContain("t2");
     expect(formatted).toContain("rm -rf /");
     expect(formatted).toContain("Permission denied");
   });
 
-  it("should use 'unknown command' when no metadata", () => {
+  it("should format subagent completions with subagent type and task description", () => {
     const task: BackgroundTask = {
       id: "t3",
-      subagentType: "bash",
-      description: "Test task",
+      subagentType: "researcher",
+      description: "Investigate API retries",
       status: "completed",
-      result: "output",
+      result: "Found three retry paths",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       completedAt: new Date().toISOString(),
     };
 
-    const command = task.metadata?.command ?? "unknown command";
-    expect(command).toBe("unknown command");
+    const formatted = formatDefaultTaskCompletionPrompt(task);
+
+    expect(formatted).toContain("Subagent type: researcher");
+    expect(formatted).toContain("Task: Investigate API retries");
+    expect(formatted).toContain("Found three retry paths");
+    expect(formatted).not.toContain("unknown command");
   });
 });

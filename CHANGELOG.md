@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Workspace scripts (`build`, `type-check`, `test`, `clean`) now use the simplified two-package build order (`agent-threads` → `agent-sdk`)
 - `createDefaultPromptBuilder()` now uses a goal-directed, behavior-first default prompt shape with compact capability summaries; verbose tool, skill, and plugin listings remain available as opt-in components
 - The default prompt builder now renders precedence-ordered instruction layers, surfaces activated skill instructions as a high-priority layer, and renders structured recalled memory separately from standing instructions
+- Subagent coordination defaults now better distinguish foreground versus background delegation, encourage self-contained task prompts, and make default background task follow-ups describe subagent work instead of falling back to `Command: unknown command`
 - `RecoverResult` typing is now status-narrowed to active-to-terminal transitions (`created|streaming` → `failed|cancelled`)
 - `TypedEmitter` now accepts interface-based event maps, allowing `WsClientEvents` to follow the repository `interface` convention without requiring index-signature workarounds
 - Fork finalization in both ledger stores is now non-destructive: committing a run at a fork point preserves previously committed branch messages while still superseding older runs at that fork
