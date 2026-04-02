@@ -17,6 +17,10 @@ import { hasExecuteCapability } from "./backend.js";
 import { CommandBlockedError } from "./backends/filesystem.js";
 import type { AgentState } from "./backends/state.js";
 import { createAgentState, StateBackend } from "./backends/state.js";
+import {
+  formatDefaultTaskCompletionPrompt,
+  formatDefaultTaskFailurePrompt,
+} from "./background-task-formatting.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
 import {
   createCheckpoint,
@@ -48,7 +52,11 @@ import {
 import { MCPManager } from "./mcp/manager.js";
 import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index.js";
 import { createDefaultPromptBuilder } from "./prompt-builder/components.js";
-import type { PromptContext } from "./prompt-builder/index.js";
+import type {
+  PromptContext,
+  PromptInstructionLayer,
+  PromptMemoryContext,
+} from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { createSubagent } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
@@ -866,16 +874,10 @@ export function createAgent(options: AgentOptions): Agent {
   const waitForBackgroundTasks = options.waitForBackgroundTasks ?? true;
   const formatTaskCompletion =
     options.formatTaskCompletion ??
-    ((task: BackgroundTask): string => {
-      const command = task.metadata?.command ?? "unknown command";
-      return `[Background task completed: ${task.id}]\nCommand: ${command}\nOutput:\n${task.result ?? "(no output)"}`;
-    });
+    ((task: BackgroundTask): string => formatDefaultTaskCompletionPrompt(task));
   const formatTaskFailure =
     options.formatTaskFailure ??
-    ((task: BackgroundTask): string => {
-      const command = task.metadata?.command ?? "unknown command";
-      return `[Background task failed: ${task.id}]\nCommand: ${command}\nError: ${task.error ?? "Unknown error"}`;
-    });
+    ((task: BackgroundTask): string => formatDefaultTaskFailurePrompt(task));
 
   // Determine plugin loading mode
   const pluginLoadingMode = options.pluginLoading ?? "eager";
@@ -1129,8 +1131,43 @@ export function createAgent(options: AgentOptions): Agent {
     return filtered;
   };
 
+  const mergeInstructionLayers = (
+    ...layerSets: Array<PromptInstructionLayer[] | undefined>
+  ): PromptInstructionLayer[] | undefined => {
+    const merged = layerSets.flatMap((layers) => (layers ?? []).map((layer) => ({ ...layer })));
+    return merged.length > 0 ? merged : undefined;
+  };
+
+  const mergePromptMemory = (
+    base?: PromptMemoryContext,
+    override?: PromptMemoryContext,
+  ): PromptMemoryContext | undefined => {
+    const standingInstructions = [
+      ...(base?.standingInstructions ?? []),
+      ...(override?.standingInstructions ?? []),
+    ]
+      .filter((entry) => entry.content.trim().length > 0)
+      .map((entry) => ({ ...entry }));
+    const recall = [...(base?.recall ?? []), ...(override?.recall ?? [])]
+      .filter((entry) => entry.content.trim().length > 0)
+      .map((entry) => ({ ...entry }));
+
+    if (standingInstructions.length === 0 && recall.length === 0) {
+      return undefined;
+    }
+
+    return {
+      standingInstructions: standingInstructions.length > 0 ? standingInstructions : undefined,
+      recall: recall.length > 0 ? recall : undefined,
+    };
+  };
+
   // Helper to build prompt context from current agent state
-  const buildPromptContext = (messages?: ModelMessage[], threadId?: string): PromptContext => {
+  const buildPromptContext = (
+    genOptions: Pick<GenerateOptions, "instructionLayers" | "memory"> | undefined,
+    messages?: ModelMessage[],
+    threadId?: string,
+  ): PromptContext => {
     // Get filtered tools (respecting allowedTools/disallowedTools) so the prompt
     // only advertises tools the agent will actually expose
     const filteredTools = filterToolsByAllowed(
@@ -1157,6 +1194,12 @@ export function createAgent(options: AgentOptions): Agent {
       description: skill.description,
     }));
 
+    const loadedSkillsMetadata = createdSkillRegistry?.listLoadedDetails().map((skill) => ({
+      name: skill.name,
+      summary: skill.description,
+      instructions: skill.instructions,
+    }));
+
     // Extract plugins metadata
     const pluginsMetadata = (options.plugins ?? []).map((plugin) => ({
       name: plugin.name,
@@ -1170,10 +1213,19 @@ export function createAgent(options: AgentOptions): Agent {
       rootDir: "rootDir" in backend ? (backend.rootDir as string | undefined) : undefined,
     };
 
+    const memoryContext = mergePromptMemory(options.memory, genOptions?.memory);
+
     return {
       tools: toolsMetadata.length > 0 ? toolsMetadata : undefined,
       skills: skillsMetadata.length > 0 ? skillsMetadata : undefined,
       plugins: pluginsMetadata.length > 0 ? pluginsMetadata : undefined,
+      instructionLayers: mergeInstructionLayers(
+        options.instructionLayers,
+        genOptions?.instructionLayers,
+      ),
+      memory: memoryContext,
+      loadedSkills:
+        loadedSkillsMetadata && loadedSkillsMetadata.length > 0 ? loadedSkillsMetadata : undefined,
       backend: backendInfo,
       state,
       // Model ID extraction is not reliable across all LanguageModel types
@@ -2078,7 +2130,11 @@ export function createAgent(options: AgentOptions): Agent {
           const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
           // Build prompt context and generate system prompt
-          const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+          const promptContext = buildPromptContext(
+            effectiveGenOptions,
+            messages,
+            effectiveGenOptions.threadId,
+          );
           const systemPrompt = getSystemPrompt(promptContext);
 
           const initialParams = {
@@ -2524,7 +2580,11 @@ export function createAgent(options: AgentOptions): Agent {
           const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
           // Build prompt context and generate system prompt
-          const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+          const promptContext = buildPromptContext(
+            effectiveGenOptions,
+            messages,
+            effectiveGenOptions.threadId,
+          );
           const systemPrompt = getSystemPrompt(promptContext);
 
           const initialParams = {
@@ -2822,7 +2882,11 @@ export function createAgent(options: AgentOptions): Agent {
           const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
           // Build prompt context and generate system prompt
-          const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+          const promptContext = buildPromptContext(
+            effectiveGenOptions,
+            messages,
+            effectiveGenOptions.threadId,
+          );
           const systemPrompt = getSystemPrompt(promptContext);
 
           const initialParams = {
@@ -3129,7 +3193,11 @@ export function createAgent(options: AgentOptions): Agent {
           const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
           // Build prompt context and generate system prompt
-          const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+          const promptContext = buildPromptContext(
+            effectiveGenOptions,
+            messages,
+            effectiveGenOptions.threadId,
+          );
           const systemPrompt = getSystemPrompt(promptContext);
 
           const initialParams = {
@@ -3352,7 +3420,11 @@ export function createAgent(options: AgentOptions): Agent {
               );
 
               // Build prompt context and generate system prompt
-              const promptContext = buildPromptContext(messages, effectiveGenOptions.threadId);
+              const promptContext = buildPromptContext(
+                effectiveGenOptions,
+                messages,
+                effectiveGenOptions.threadId,
+              );
               const systemPrompt = getSystemPrompt(promptContext);
 
               // Build initial params with streaming-aware tools

@@ -165,6 +165,8 @@ describe("AgentSession", () => {
       expect(agent.generate).toHaveBeenCalled();
       const call = (agent.generate as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(call[0].prompt).toContain("task-1");
+      expect(call[0].prompt).toContain("Subagent type: worker");
+      expect(call[0].prompt).toContain("Task: Task task-1");
       expect(outputs.some((o) => o.type === "generation_complete")).toBe(true);
     });
 
@@ -187,6 +189,8 @@ describe("AgentSession", () => {
       const call = (agent.generate as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(call[0].prompt).toContain("task-2");
       expect(call[0].prompt).toContain("failed");
+      expect(call[0].prompt).toContain("Subagent type: worker");
+      expect(call[0].prompt).toContain("Task: Task task-2");
     });
   });
 

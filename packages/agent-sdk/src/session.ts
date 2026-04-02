@@ -12,6 +12,10 @@
  */
 
 import type { ModelMessage } from "ai";
+import {
+  formatDefaultTaskCompletionPrompt,
+  formatDefaultTaskFailurePrompt,
+} from "./background-task-formatting.js";
 import type { Interrupt } from "./checkpointer/types.js";
 import type { BackgroundTask } from "./task-store/types.js";
 import type { Agent, GenerateOptions } from "./types.js";
@@ -93,13 +97,11 @@ export interface AgentSessionOptions {
 // =============================================================================
 
 const defaultFormatTaskCompletion = (task: BackgroundTask): string => {
-  const command = task.metadata?.command ?? "unknown command";
-  return `[Background task completed: ${task.id}]\nCommand: ${command}\nOutput:\n${task.result ?? "(no output)"}`;
+  return formatDefaultTaskCompletionPrompt(task);
 };
 
 const defaultFormatTaskFailure = (task: BackgroundTask): string => {
-  const command = task.metadata?.command ?? "unknown command";
-  return `[Background task failed: ${task.id}]\nCommand: ${command}\nError: ${task.error ?? "Unknown error"}`;
+  return formatDefaultTaskFailurePrompt(task);
 };
 
 // =============================================================================
