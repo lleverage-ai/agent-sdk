@@ -1477,7 +1477,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
       // If nothing to compact, return unchanged
       if (oldMessages.length === 0) {
-        if (trigger === "error_fallback" || shouldCompact(messages).trigger) {
+        if (trigger === "error_fallback") {
           throw new Error("Context compaction could not reduce the transcript");
         }
 

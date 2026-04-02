@@ -707,7 +707,7 @@ describe("createContextManager", () => {
       expect(resultB.summaryTier).toBe(1);
     });
 
-    it("should fail when pressure-triggered compaction cannot remove any messages", async () => {
+    it("should fail when error-fallback compaction cannot remove any messages", async () => {
       const manager = createContextManager({
         maxTokens: 100,
         tokenCounter: createCustomTokenCounter({
@@ -722,7 +722,7 @@ describe("createContextManager", () => {
       });
       const messages: ModelMessage[] = [{ role: "user", content: "only message" }];
 
-      await expect(manager.compact(messages, mockAgent, "token_threshold")).rejects.toThrow(
+      await expect(manager.compact(messages, mockAgent, "error_fallback")).rejects.toThrow(
         "Context compaction could not reduce the transcript",
       );
     });
