@@ -364,7 +364,7 @@ describe("Error-Triggered Compaction Fallback", () => {
       });
 
       const messages: ModelMessage[] = Array.from({ length: 10 }, (_, index) => ({
-        role: "user",
+        role: "user" as const,
         content: `Message ${index} with enough content to trigger fallback`,
       }));
 

@@ -294,6 +294,23 @@ describe("createContextManager", () => {
       expect(manager.policy.tokenThreshold).toBe(0.9);
       expect(manager.summarizationConfig.keepMessageCount).toBe(10); // Default
     });
+
+    it("should honor deprecated policy keys passed via summarization config", () => {
+      const manager = createContextManager({
+        maxTokens: 1000,
+        summarization: {
+          tokenThreshold: 0.7,
+          hardCapThreshold: 0.9,
+          enableErrorFallback: false,
+          keepMessageCount: 4,
+        },
+      });
+
+      expect(manager.policy.tokenThreshold).toBe(0.7);
+      expect(manager.policy.hardCapThreshold).toBe(0.9);
+      expect(manager.policy.enableErrorFallback).toBe(false);
+      expect(manager.summarizationConfig.keepMessageCount).toBe(4);
+    });
   });
 
   describe("getBudget", () => {
@@ -563,6 +580,89 @@ describe("createContextManager", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    it("should throw when summary generation does not complete", async () => {
+      const interruptedAgent = createMockAgent({
+        generate: vi.fn().mockResolvedValue({
+          status: "interrupted",
+          interrupt: {
+            id: "interrupt-1",
+            type: "approval",
+            toolCallId: "call-1",
+            toolName: "search",
+            request: { toolName: "search", args: {} },
+          },
+          partial: {
+            text: "",
+            steps: [],
+            usage: undefined,
+          },
+        }),
+      });
+      const manager = createContextManager({
+        maxTokens: 1000,
+        summarization: { keepMessageCount: 1 },
+      });
+
+      await expect(manager.compact(createTestMessages(8), interruptedAgent)).rejects.toThrow(
+        "Summary generation did not complete",
+      );
+    });
+
+    it("should include raw history when promoting tiered summaries", async () => {
+      const tieredAgent = createMockAgent({
+        generate: vi.fn().mockResolvedValue({
+          status: "complete",
+          text: "## Tiered Summary (Level 1)\nPromoted summary",
+          usage: { inputTokens: 100, outputTokens: 50 },
+          finishReason: "stop",
+          steps: [],
+        }),
+      });
+      const manager = createContextManager({
+        maxTokens: 1000,
+        summarization: {
+          keepMessageCount: 1,
+          strategy: "tiered",
+          enableTieredSummaries: true,
+          messagesPerTier: 2,
+        },
+      });
+      const messages: ModelMessage[] = [
+        {
+          role: "assistant",
+          content: "[Previous conversation summary - Tier 0]\n\nSummary 1",
+        },
+        {
+          role: "assistant",
+          content: "[Previous conversation summary - Tier 0]\n\nSummary 2",
+        },
+        { role: "user", content: "Raw unsummarized detail" },
+        { role: "assistant", content: "Newest message" },
+      ];
+
+      const result = await manager.compact(messages, tieredAgent);
+
+      expect(result.summaryTier).toBe(1);
+      expect(tieredAgent.generate).toHaveBeenCalledTimes(1);
+      expect(tieredAgent.generate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messages: expect.arrayContaining([
+            expect.objectContaining({ role: "system" }),
+            expect.objectContaining({
+              role: "user",
+              content: expect.stringContaining("Raw unsummarized detail"),
+            }),
+          ]),
+        }),
+      );
+      expect(result.newMessages[0]).toEqual(
+        expect.objectContaining({
+          role: "assistant",
+          content: expect.stringContaining("Tier 1"),
+        }),
+      );
     });
   });
 

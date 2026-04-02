@@ -548,6 +548,36 @@ export interface PinnedMessageMetadata {
  */
 export interface SummarizationConfig {
   /**
+   * @deprecated Use `policy.enabled` instead.
+   */
+  enabled?: boolean;
+
+  /**
+   * @deprecated Use `policy.tokenThreshold` instead.
+   */
+  tokenThreshold?: number;
+
+  /**
+   * @deprecated Use `policy.hardCapThreshold` instead.
+   */
+  hardCapThreshold?: number;
+
+  /**
+   * @deprecated Use `policy.enableGrowthRatePrediction` instead.
+   */
+  enableGrowthRatePrediction?: boolean;
+
+  /**
+   * @deprecated Use `policy.enableErrorFallback` instead.
+   */
+  enableErrorFallback?: boolean;
+
+  /**
+   * @deprecated Use `policy.outputReserveTokens` instead.
+   */
+  outputReserveTokens?: number;
+
+  /**
    * Number of recent messages to always keep uncompacted.
    * These messages are preserved to maintain recent context.
    * @defaultValue 10
@@ -1268,8 +1298,10 @@ Format:
  */
 export function createContextManager(options: ContextManagerOptions): ContextManager {
   const tokenCounter = options.tokenCounter ?? createApproximateTokenCounter();
+  const legacyPolicy = getLegacyPolicyOverrides(options.summarization);
   const policy: CompactionPolicy = {
     ...DEFAULT_COMPACTION_POLICY,
+    ...legacyPolicy,
     ...options.policy,
   };
   const summarizationConfig: SummarizationConfig = {
@@ -1287,7 +1319,6 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
   // Track summary tiers for tiered strategy
   let currentSummaryTier = 0;
-  let activeCompactions = 0;
   let consecutiveCompactionFailures = 0;
   let compactionCircuitOpenUntil: number | undefined;
 
@@ -1407,12 +1438,6 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       throw new Error("Context compaction circuit is open after repeated failures");
     }
 
-    if (activeCompactions > 0) {
-      throw new Error("Recursive context compaction is not allowed");
-    }
-
-    activeCompactions++;
-
     try {
       const tokensBefore = tokenCounter.countMessages(messages);
       const messagesBefore = messages.length;
@@ -1464,17 +1489,17 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
       if (strategy === "tiered" && enableTieredSummaries) {
         // Tiered strategy: check if we have existing summaries to tier
-        const existingSummaries = messages.filter(
+        const existingSummaries = oldMessages.filter(
           (m) =>
             m.role === "assistant" &&
             typeof m.content === "string" &&
-            m.content.includes("[Previous conversation summary]"),
+            isSummaryMessageContent(m.content),
         );
 
         if (existingSummaries.length >= (summarizationConfig.messagesPerTier ?? 5)) {
           // Create a higher-tier summary
-          currentSummaryTier++;
-          const summariesContent = existingSummaries.map((m) => m.content).join("\n\n");
+          currentSummaryTier = getNextSummaryTier(existingSummaries, currentSummaryTier);
+          const summariesContent = formatMessagesForSummary(oldMessages);
           const tierPrompt = TIERED_SUMMARY_PROMPT.replace("{tier}", String(currentSummaryTier));
 
           const summaryResult = await agent.generate({
@@ -1489,7 +1514,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
             _skipCompaction: true, // Prevent recursive compaction during summary generation
           });
 
-          summary = summaryResult.status === "complete" ? summaryResult.text : "";
+          summary = getCompletedSummaryText(summaryResult);
           summaryTier = currentSummaryTier;
         } else {
           // Create a first-tier summary
@@ -1510,7 +1535,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
             _skipCompaction: true, // Prevent recursive compaction during summary generation
           });
 
-          summary = summaryResult.status === "complete" ? summaryResult.text : "";
+          summary = getCompletedSummaryText(summaryResult);
           summaryTier = 0;
 
           // Try to parse structured summary if enabled
@@ -1538,7 +1563,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
           _skipCompaction: true, // Prevent recursive compaction during summary generation
         });
 
-        summary = summaryResult.status === "complete" ? summaryResult.text : "";
+        summary = getCompletedSummaryText(summaryResult);
 
         // Try to parse structured summary
         try {
@@ -1563,7 +1588,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
           _skipCompaction: true, // Prevent recursive compaction during summary generation
         });
 
-        summary = summaryResult.status === "complete" ? summaryResult.text : "";
+        summary = getCompletedSummaryText(summaryResult);
       }
 
       // Build new message history
@@ -1604,8 +1629,6 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     } catch (error) {
       recordCompactionFailure();
       throw error;
-    } finally {
-      activeCompactions--;
     }
   };
 
@@ -1708,6 +1731,72 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+const SUMMARY_PREFIX_PATTERN = /^\[Previous conversation summary(?: - Tier (\d+))?\]/;
+
+function getLegacyPolicyOverrides(
+  summarization: Partial<SummarizationConfig> | undefined,
+): Partial<CompactionPolicy> {
+  if (!summarization) {
+    return {};
+  }
+
+  const legacyPolicy: Partial<CompactionPolicy> = {};
+
+  if (summarization.enabled !== undefined) {
+    legacyPolicy.enabled = summarization.enabled;
+  }
+  if (summarization.tokenThreshold !== undefined) {
+    legacyPolicy.tokenThreshold = summarization.tokenThreshold;
+  }
+  if (summarization.hardCapThreshold !== undefined) {
+    legacyPolicy.hardCapThreshold = summarization.hardCapThreshold;
+  }
+  if (summarization.enableGrowthRatePrediction !== undefined) {
+    legacyPolicy.enableGrowthRatePrediction = summarization.enableGrowthRatePrediction;
+  }
+  if (summarization.enableErrorFallback !== undefined) {
+    legacyPolicy.enableErrorFallback = summarization.enableErrorFallback;
+  }
+  if (summarization.outputReserveTokens !== undefined) {
+    legacyPolicy.outputReserveTokens = summarization.outputReserveTokens;
+  }
+
+  return legacyPolicy;
+}
+
+function isSummaryMessageContent(content: string): boolean {
+  return SUMMARY_PREFIX_PATTERN.test(content);
+}
+
+function getSummaryTierFromContent(content: string): number {
+  const match = content.match(SUMMARY_PREFIX_PATTERN);
+  if (!match) {
+    return 0;
+  }
+
+  return match[1] ? Number.parseInt(match[1], 10) : 0;
+}
+
+function getNextSummaryTier(existingSummaries: ModelMessage[], currentSummaryTier: number): number {
+  const highestTier = existingSummaries.reduce((maxTier, message) => {
+    if (typeof message.content !== "string") {
+      return maxTier;
+    }
+
+    return Math.max(maxTier, getSummaryTierFromContent(message.content));
+  }, 0);
+
+  return Math.max(currentSummaryTier + 1, highestTier + 1);
+}
+
+function getCompletedSummaryText(result: { status: string; text?: string }): string {
+  if (result.status !== "complete") {
+    throw new Error("Summary generation did not complete");
+  }
+
+  return result.text ?? "";
+}
 
 function getIndexedConversationMessages(messages: ModelMessage[]): IndexedMessage[] {
   return messages

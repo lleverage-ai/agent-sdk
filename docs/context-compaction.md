@@ -56,7 +56,7 @@ The SDK supports multiple compaction triggers:
 | Hard Cap | Safety limit — forces compaction to prevent errors | 95% |
 | Growth Rate | Predicts if next message will exceed limits | Disabled |
 | Error Fallback | Emergency compaction on context length errors | Enabled |
-| Output Reserve | Reserved prompt headroom for the next response | 0 tokens |
+| Output Reserve (budget adjustment) | Reduces usable prompt budget to reserve headroom for the next response | 0 tokens |
 
 ```typescript
 const contextManager = createContextManager({
@@ -75,6 +75,9 @@ const contextManager = createContextManager({
 `contextManager.getBudget(messages)` now reports both the raw `maxTokens` and the effective
 prompt budget after reservation via `effectiveMaxTokens`, along with a `state` of
 `"normal" | "warning" | "blocking"`.
+
+`outputReserveTokens` is not an independent compaction trigger. It reduces `effectiveMaxTokens`,
+which changes when the threshold and hard-cap triggers fire.
 
 ## Custom Compaction Policy
 
