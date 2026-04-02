@@ -534,8 +534,12 @@ describe("createContextManager", () => {
       ];
 
       const result = await manager.compact(messages, mockAgent);
-      const retainedAssistant = result.newMessages.find((message) => message === assistantToolMessage);
-      const retainedToolResult = result.newMessages.find((message) => message === toolResultMessage);
+      const retainedAssistant = result.newMessages.find(
+        (message) => message === assistantToolMessage,
+      );
+      const retainedToolResult = result.newMessages.find(
+        (message) => message === toolResultMessage,
+      );
 
       expect(retainedAssistant).toBeDefined();
       expect(retainedToolResult).toBeDefined();

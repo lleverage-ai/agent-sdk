@@ -374,8 +374,7 @@ export function createTokenBudget(
   const effectiveMaxTokens = Math.max(1, maxTokens - outputReserveTokens);
   const usage = currentTokens / effectiveMaxTokens;
   const warningThreshold = options.warningThreshold ?? DEFAULT_COMPACTION_POLICY.tokenThreshold;
-  const blockingThreshold =
-    options.blockingThreshold ?? DEFAULT_COMPACTION_POLICY.hardCapThreshold;
+  const blockingThreshold = options.blockingThreshold ?? DEFAULT_COMPACTION_POLICY.hardCapThreshold;
 
   let state: CompactionPressureState = "normal";
   if (usage >= blockingThreshold) {
@@ -1366,10 +1365,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
   };
 
   const isCompactionCircuitOpen = (): boolean => {
-    if (
-      compactionCircuitOpenUntil !== undefined &&
-      Date.now() >= compactionCircuitOpenUntil
-    ) {
+    if (compactionCircuitOpenUntil !== undefined && Date.now() >= compactionCircuitOpenUntil) {
       compactionCircuitOpenUntil = undefined;
       consecutiveCompactionFailures = 0;
     }
