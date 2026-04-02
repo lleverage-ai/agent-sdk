@@ -190,7 +190,7 @@ See [Skills Documentation](./docs/skills.md) for complete details on the skills 
 
 ### Prompt Builder
 
-Create dynamic, context-aware system prompts from composable components. Instead of static strings, prompts automatically include tools, skills, backend capabilities, and more.
+Create dynamic, context-aware system prompts from composable components. Instead of static strings, prompts can combine behavior rules, capability summaries, explicit instruction layers, and structured memory inputs.
 
 The default prompt builder is cache-friendly: it avoids per-turn dynamic context sections by default so repeated generations in the same thread can reuse provider prompt caches more effectively.
 
@@ -202,16 +202,14 @@ const agent = createAgent({
   tools: { read, write, bash },
 });
 // Automatically generates:
-// "You are a helpful AI assistant.
+// "You are an interactive agent. Your job is to help the user achieve their goal...
 //
-// # Available Tools
-// - **read**: Read files
-// - **write**: Write files
-// - **bash**: Execute commands
+// # Action Policy
+// ...
 //
-// # Capabilities
-// - Execute shell commands (bash)
-// - Read and write files to the filesystem"
+// # Capability Summary
+// - You can work with files in the configured workspace.
+// - You can run shell commands when that helps achieve the user's goal."
 ```
 
 **Customizing the prompt:**
@@ -231,6 +229,36 @@ const agent = createAgent({
   tools,
 });
 ```
+
+**Passing explicit instruction layers and memory:**
+
+```typescript
+const agent = createAgent({
+  model,
+  memoryAvailable: true,
+  instructionLayers: [
+    {
+      label: "App Policy",
+      instructions: "Prefer terse answers unless the user asks for detail.",
+      precedence: 70,
+    },
+  ],
+});
+
+await agent.generate({
+  prompt: "Continue",
+  memory: {
+    standingInstructions: [
+      { label: "Project Memory", content: "Use Bun workspace commands." },
+    ],
+    recall: [
+      { label: "Recent Recall", content: "The user is working on prompt composition." },
+    ],
+  },
+});
+```
+
+Set `memoryAvailable: true` when you want the default builder to advertise the general `# Memory` policy. Passing `memory` to `agent.generate()` still populates `PromptContext.memory` either way, so instruction layers and recalled memory can render without opting into persistent-memory guidance.
 
 **Static prompts still work:**
 ```typescript
@@ -427,7 +455,7 @@ export async function POST(req: Request) {
 - [Middleware](./docs/middleware.md) — Logging, caching, retry, and guardrails
 - [Observability](./docs/observability.md) — Logging, metrics, and tracing
 - [Persistence](./docs/persistence.md) — Memory and checkpointing
-- [Context Compaction](./docs/context-compaction.md) — Automatic context management
+- [Context Compaction](./docs/context-compaction.md) — Automatic, protocol-aware context management
 - [Error Handling](./docs/errors.md) — Typed errors and recovery
 - [API Reference](./docs/api-reference.md) — Complete API documentation
 

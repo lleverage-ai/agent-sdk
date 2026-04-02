@@ -218,6 +218,21 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
       promptBuilder: createDefaultPromptBuilder(),
       backend,
       memoryAvailable: true,
+      instructionLayers: [
+        {
+          label: "Runtime Policy",
+          instructions: "Prefer concise answers unless the user asks for depth.",
+          precedence: 90,
+        },
+      ],
+      memory: {
+        recall: [
+          {
+            label: "Recent Recall",
+            content: "The user is updating the prompt builder.",
+          },
+        ],
+      },
       tools: {
         read: tool({
           description: "Read files",
@@ -238,7 +253,9 @@ describe("Prompt Builder Integration - System Prompt Verification", () => {
     // Verify all sections are present
     expect(systemPrompt).toContain("help the user achieve their goal");
     expect(systemPrompt).toContain("# Interaction Contract");
+    expect(systemPrompt).toContain("# Instruction Layers");
     expect(systemPrompt).toContain("# Capability Summary");
+    expect(systemPrompt).toContain("# Recalled Memory");
     expect(systemPrompt).toContain("# Memory");
     expect(systemPrompt).toContain("# Permission Mode");
     expect(systemPrompt).not.toContain("# Loaded Plugins");
@@ -401,6 +418,34 @@ describe("Prompt Builder Integration with Real Agents", () => {
       // (they're accessible via the skill tool instead)
       expect(skillsInContext).toBeUndefined();
     });
+
+    it("should surface loaded skill instructions in the default prompt on later generations", async () => {
+      const gitSkill = defineSkill({
+        name: "git",
+        description: "Git version control operations",
+        instructions: "Use git commands to inspect and modify repository history.",
+      });
+
+      const agent = createAgent({
+        model: mockModel,
+        promptBuilder: createDefaultPromptBuilder(),
+        skills: [gitSkill],
+      });
+
+      const skillTool = agent.getActiveTools().skill as {
+        execute: (input: { skill_name: string }) => Promise<unknown>;
+      };
+      await skillTool.execute({ skill_name: "git" });
+
+      await agent.generate({ prompt: "Test prompt" });
+
+      const callArgs = (generateText as any).mock.calls.at(-1)?.[0];
+      const systemPrompt = callArgs.system;
+
+      expect(systemPrompt).toContain("# Instruction Layers");
+      expect(systemPrompt).toContain("Skill: git (precedence 80)");
+      expect(systemPrompt).toContain("Use git commands to inspect and modify repository history.");
+    });
   });
 
   describe("with plugins", () => {
@@ -521,6 +566,127 @@ describe("Prompt Builder Integration with Real Agents", () => {
           promptBuilder: createDefaultPromptBuilder(),
         });
       }).toThrow("Cannot specify both systemPrompt and promptBuilder");
+    });
+  });
+
+  describe("structured prompt inputs", () => {
+    it("should merge agent-level and generation-level instruction layers and memory into PromptContext", async () => {
+      let capturedContext: any;
+
+      const builder = createDefaultPromptBuilder().register({
+        name: "capture-structured-context",
+        priority: 0,
+        render: (ctx) => {
+          capturedContext = ctx;
+          return "";
+        },
+      });
+
+      const agent = createAgent({
+        model: mockModel,
+        promptBuilder: builder,
+        instructionLayers: [
+          {
+            label: "Agent Layer",
+            instructions: "Follow the shared agent policy.",
+            precedence: 60,
+          },
+          {
+            label: "Agent Tie Layer",
+            instructions: "Agent-level tie-break instructions.",
+            precedence: 80,
+          },
+        ],
+        memory: {
+          standingInstructions: [
+            {
+              label: "Project Memory",
+              content: "Use Bun for workspace commands.",
+            },
+          ],
+          recall: [
+            {
+              label: "Agent Recall",
+              content: "The agent-level recall should come first.",
+            },
+          ],
+        },
+      });
+
+      await agent.generate({
+        prompt: "Test prompt",
+        instructionLayers: [
+          {
+            label: "Run Layer",
+            instructions: "Focus on the current ticket.",
+            precedence: 90,
+          },
+          {
+            label: "Run Tie Layer",
+            instructions: "Generation-level tie-break instructions.",
+            precedence: 80,
+          },
+        ],
+        memory: {
+          standingInstructions: [
+            {
+              label: "Run Standing Memory",
+              content: "Generation standing instructions should be appended.",
+            },
+          ],
+          recall: [
+            {
+              label: "Recent Recall",
+              content: "Issue #107 is about prompt composition inputs.",
+            },
+          ],
+        },
+      });
+
+      expect(capturedContext.instructionLayers).toEqual([
+        {
+          label: "Agent Layer",
+          instructions: "Follow the shared agent policy.",
+          precedence: 60,
+        },
+        {
+          label: "Agent Tie Layer",
+          instructions: "Agent-level tie-break instructions.",
+          precedence: 80,
+        },
+        {
+          label: "Run Layer",
+          instructions: "Focus on the current ticket.",
+          precedence: 90,
+        },
+        {
+          label: "Run Tie Layer",
+          instructions: "Generation-level tie-break instructions.",
+          precedence: 80,
+        },
+      ]);
+      expect(capturedContext.memory).toEqual({
+        standingInstructions: [
+          {
+            label: "Project Memory",
+            content: "Use Bun for workspace commands.",
+          },
+          {
+            label: "Run Standing Memory",
+            content: "Generation standing instructions should be appended.",
+          },
+        ],
+        recall: [
+          {
+            label: "Agent Recall",
+            content: "The agent-level recall should come first.",
+          },
+          {
+            label: "Recent Recall",
+            content: "Issue #107 is about prompt composition inputs.",
+          },
+        ],
+      });
     });
   });
 

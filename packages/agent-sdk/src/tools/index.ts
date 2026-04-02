@@ -37,6 +37,7 @@ export type { SearchToolsOptions } from "./search.js";
 // Search tools (MCP integration)
 export { createSearchToolsTool } from "./search.js";
 export type {
+  LoadedSkillInfo,
   SkillDefinition,
   SkillLoadResult,
   SkillRegistryOptions,

@@ -143,6 +143,7 @@ export {
 } from "./checkpointer/index.js";
 // Context Manager types
 export type {
+  CompactionPressureState,
   CompactionPolicy,
   CompactionResult,
   CompactionScheduler,
@@ -153,6 +154,7 @@ export type {
   CompactionTrigger,
   ContextManager,
   ContextManagerOptions,
+  CreateTokenBudgetOptions,
   CustomTokenCounterOptions,
   PinnedMessageMetadata,
   StructuredSummary,
@@ -305,6 +307,12 @@ export {
 } from "./mcp/index.js";
 // Prompt Builder types
 export type { PromptComponent, PromptContext } from "./prompt-builder/index.js";
+export type {
+  PromptInstructionLayer,
+  PromptLoadedSkill,
+  PromptMemoryContext,
+  PromptMemoryEntry,
+} from "./prompt-builder/index.js";
 // Prompt Builder System
 export { PromptBuilder } from "./prompt-builder/index.js";
 export {
@@ -314,10 +322,12 @@ export {
   contextComponent,
   createDefaultPromptBuilder,
   identityComponent,
+  instructionLayersComponent,
   interactionContractComponent,
   memoryPolicyComponent,
   permissionModeComponent,
   pluginsComponent,
+  recalledMemoryComponent,
   skillLoadingPolicyComponent,
   skillsComponent,
   toolsComponent,
@@ -576,6 +586,7 @@ export type {
   FilesystemToolsOptions,
   // Task management tool types
   KillTaskToolOptions,
+  LoadedSkillInfo,
   ListTasksToolOptions,
   // Skill tool types
   OnTodosChanged,

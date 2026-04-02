@@ -489,6 +489,27 @@ export interface AgentOptions {
   memoryAvailable?: boolean;
 
   /**
+   * Default instruction layers to expose to the prompt builder.
+   *
+   * These layers are merged into `PromptContext.instructionLayers` on every
+   * generation. Higher `precedence` values indicate higher-priority guidance.
+   *
+   * @defaultValue undefined
+   */
+  instructionLayers?: import("./prompt-builder/index.js").PromptInstructionLayer[];
+
+  /**
+   * Default structured memory inputs to expose to the prompt builder.
+   *
+   * These values are merged into `PromptContext.memory` on every generation.
+   * Use `standingInstructions` for durable policy-like memory and `recall` for
+   * compact task-relevant context.
+   *
+   * @defaultValue undefined
+   */
+  memory?: import("./prompt-builder/index.js").PromptMemoryContext;
+
+  /**
    * Maximum number of tool call steps allowed per generation.
    * @defaultValue 10
    */
@@ -629,8 +650,11 @@ export interface AgentOptions {
    *   model,
    *   contextManager: createContextManager({
    *     maxTokens: 100000,
-   *     summarization: {
+   *     policy: {
    *       tokenThreshold: 0.75, // Compact at 75% capacity
+   *       outputReserveTokens: 4000, // Reserve room for the next response
+   *     },
+   *     summarization: {
    *       keepMessageCount: 10, // Keep last 10 messages
    *     },
    *     onCompact: (result) => {
@@ -1808,6 +1832,21 @@ export interface GenerateOptions {
    * ```
    */
   checkpointAfterToolCall?: boolean;
+
+  /**
+   * Per-generation instruction layers to expose to the prompt builder.
+   *
+   * These are appended after any agent-level `instructionLayers`, while still
+   * respecting each layer's own `precedence` value during rendering.
+   */
+  instructionLayers?: import("./prompt-builder/index.js").PromptInstructionLayer[];
+
+  /**
+   * Per-generation structured memory inputs to expose to the prompt builder.
+   *
+   * These are merged with any agent-level `memory` configuration.
+   */
+  memory?: import("./prompt-builder/index.js").PromptMemoryContext;
 
   // === AI SDK Passthrough Options ===
 

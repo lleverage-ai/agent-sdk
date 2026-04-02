@@ -201,6 +201,25 @@ export interface SkillLoadResult {
 }
 
 /**
+ * Metadata retained for a skill after it has been loaded.
+ *
+ * This preserves the resolved instruction text so later prompt-building passes
+ * can reflect the exact activated skill behavior.
+ *
+ * @category Tools
+ */
+export interface LoadedSkillInfo {
+  /** Skill name */
+  name: string;
+
+  /** Skill description */
+  description: string;
+
+  /** Resolved instruction text returned when the skill was loaded */
+  instructions: string;
+}
+
+/**
  * Options for creating a skill registry.
  *
  * @category Tools
@@ -250,7 +269,7 @@ export class SkillRegistry {
   private skills = new Map<string, SkillDefinition>();
 
   /** Currently loaded skills */
-  private loadedSkills = new Set<string>();
+  private loadedSkills = new Map<string, LoadedSkillInfo>();
 
   /** Callback for skill load events */
   private onSkillLoaded?: (skillName: string, result: SkillLoadResult) => void;
@@ -335,6 +354,17 @@ export class SkillRegistry {
   }
 
   /**
+   * Get metadata for a loaded skill.
+   *
+   * @param name - The name of the skill
+   * @returns The retained loaded skill metadata, or undefined if not loaded
+   */
+  getLoaded(name: string): LoadedSkillInfo | undefined {
+    const loaded = this.loadedSkills.get(name);
+    return loaded ? { ...loaded } : undefined;
+  }
+
+  /**
    * Load a skill, making its tools and instructions available.
    *
    * This method handles dependencies, loading them first if specified.
@@ -377,15 +407,18 @@ export class SkillRegistry {
       };
     }
 
-    // Mark as loaded
-    this.loadedSkills.add(name);
-
     // Get the instructions (may be undefined for file-based skills)
     const instructions = skill.instructions
       ? typeof skill.instructions === "function"
         ? skill.instructions(args)
         : skill.instructions
       : "";
+
+    this.loadedSkills.set(name, {
+      name,
+      description: skill.description,
+      instructions,
+    });
 
     // Build result
     const result: SkillLoadResult = {
@@ -428,7 +461,16 @@ export class SkillRegistry {
    * @returns Array of loaded skill names
    */
   listLoaded(): string[] {
-    return Array.from(this.loadedSkills);
+    return Array.from(this.loadedSkills.keys());
+  }
+
+  /**
+   * List all loaded skills with retained instruction text.
+   *
+   * @returns Array of loaded skill metadata
+   */
+  listLoadedDetails(): LoadedSkillInfo[] {
+    return Array.from(this.loadedSkills.values(), (loaded) => ({ ...loaded }));
   }
 
   /**

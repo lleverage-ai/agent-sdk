@@ -333,5 +333,49 @@ describe("Error-Triggered Compaction Fallback", () => {
       // Should attempt: initial + 3 retries = 4 total
       expect(generateCallCount).toBeLessThanOrEqual(4);
     });
+
+    it("should not recursively retry compaction while generating a summary", async () => {
+      let generateCallCount = 0;
+
+      const mockModel = createMockModelWithBehavior(async () => {
+        generateCallCount++;
+        throw new Error("Context length exceeded");
+      });
+
+      const contextManager = createContextManager({
+        maxTokens: 1000,
+        policy: {
+          enabled: true,
+          tokenThreshold: 0.8,
+          hardCapThreshold: 0.95,
+          enableGrowthRatePrediction: false,
+          enableErrorFallback: true,
+        },
+        summarization: {
+          keepMessageCount: 2,
+          keepToolResultCount: 0,
+        },
+      });
+
+      const agent = createAgent({
+        name: "test-agent",
+        model: mockModel,
+        contextManager,
+      });
+
+      const messages: ModelMessage[] = Array.from({ length: 10 }, (_, index) => ({
+        role: "user" as const,
+        content: `Message ${index} with enough content to trigger fallback`,
+      }));
+
+      await expect(
+        agent.generate({
+          messages,
+          maxRetries: 0,
+        }),
+      ).rejects.toThrow("Context length exceeded");
+
+      expect(generateCallCount).toBe(2);
+    });
   });
 });

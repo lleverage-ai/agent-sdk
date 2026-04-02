@@ -296,6 +296,11 @@ export interface TokenBudget {
   /** Maximum tokens allowed in context */
   maxTokens: number;
 
+  /**
+   * Maximum prompt tokens available after reserving output headroom.
+   */
+  effectiveMaxTokens: number;
+
   /** Current token count in context */
   currentTokens: number;
 
@@ -306,10 +311,43 @@ export interface TokenBudget {
   remaining: number;
 
   /**
+   * Tokens explicitly reserved for model output.
+   */
+  outputReserveTokens: number;
+
+  /**
+   * Current context pressure relative to warning and blocking thresholds.
+   */
+  state: CompactionPressureState;
+
+  /**
    * Whether this budget is based on actual usage from the model.
    * True if updated with real usage data, false if estimated.
    */
   isActual?: boolean;
+}
+
+/**
+ * Context pressure state derived from the effective token budget.
+ *
+ * @category Context
+ */
+export type CompactionPressureState = "normal" | "warning" | "blocking";
+
+/**
+ * Options for creating a token budget.
+ *
+ * @category Context
+ */
+export interface CreateTokenBudgetOptions {
+  /** Tokens reserved for model output. */
+  outputReserveTokens?: number;
+
+  /** Usage threshold for the warning state. */
+  warningThreshold?: number;
+
+  /** Usage threshold for the blocking state. */
+  blockingThreshold?: number;
 }
 
 /**
@@ -318,6 +356,10 @@ export interface TokenBudget {
  * @param maxTokens - Maximum tokens allowed
  * @param currentTokens - Current token count
  * @param isActual - Whether this is based on actual model usage (default: false)
+ * @param options - Effective budget options
+ * @param options.outputReserveTokens - Tokens reserved for model output
+ * @param options.warningThreshold - Usage threshold for the warning state
+ * @param options.blockingThreshold - Usage threshold for the blocking state
  * @returns A token budget object
  *
  * @category Context
@@ -326,12 +368,29 @@ export function createTokenBudget(
   maxTokens: number,
   currentTokens: number,
   isActual = false,
+  options: CreateTokenBudgetOptions = {},
 ): TokenBudget {
+  const outputReserveTokens = Math.max(0, options.outputReserveTokens ?? 0);
+  const effectiveMaxTokens = Math.max(1, maxTokens - outputReserveTokens);
+  const usage = currentTokens / effectiveMaxTokens;
+  const warningThreshold = options.warningThreshold ?? DEFAULT_COMPACTION_POLICY.tokenThreshold;
+  const blockingThreshold = options.blockingThreshold ?? DEFAULT_COMPACTION_POLICY.hardCapThreshold;
+
+  let state: CompactionPressureState = "normal";
+  if (usage >= blockingThreshold) {
+    state = "blocking";
+  } else if (usage >= warningThreshold) {
+    state = "warning";
+  }
+
   return {
     maxTokens,
+    effectiveMaxTokens,
     currentTokens,
-    usage: currentTokens / maxTokens,
-    remaining: Math.max(0, maxTokens - currentTokens),
+    usage,
+    remaining: Math.max(0, effectiveMaxTokens - currentTokens),
+    outputReserveTokens,
+    state,
     isActual,
   };
 }
@@ -395,6 +454,25 @@ export interface CompactionPolicy {
   enableErrorFallback: boolean;
 
   /**
+   * Prompt tokens to reserve for the model's output before evaluating compaction.
+   * @defaultValue 0
+   */
+  outputReserveTokens: number;
+
+  /**
+   * Maximum consecutive compaction failures before opening the circuit.
+   * While the circuit is open, automatic compaction is skipped.
+   * @defaultValue 3
+   */
+  maxConsecutiveFailures: number;
+
+  /**
+   * Cooldown period, in milliseconds, after the compaction circuit opens.
+   * @defaultValue 60000
+   */
+  failureCooldownMs: number;
+
+  /**
    * Custom function to decide if compaction is needed.
    * If provided, overrides default policy logic.
    * @param budget - Current token budget
@@ -418,6 +496,9 @@ export const DEFAULT_COMPACTION_POLICY: CompactionPolicy = {
   hardCapThreshold: 0.95,
   enableGrowthRatePrediction: false,
   enableErrorFallback: true,
+  outputReserveTokens: 0,
+  maxConsecutiveFailures: 3,
+  failureCooldownMs: 60000,
 };
 
 // =============================================================================
@@ -480,6 +561,36 @@ export interface PinnedMessageMetadata {
  * @category Context
  */
 export interface SummarizationConfig {
+  /**
+   * @deprecated Use `policy.enabled` instead.
+   */
+  enabled?: boolean;
+
+  /**
+   * @deprecated Use `policy.tokenThreshold` instead.
+   */
+  tokenThreshold?: number;
+
+  /**
+   * @deprecated Use `policy.hardCapThreshold` instead.
+   */
+  hardCapThreshold?: number;
+
+  /**
+   * @deprecated Use `policy.enableGrowthRatePrediction` instead.
+   */
+  enableGrowthRatePrediction?: boolean;
+
+  /**
+   * @deprecated Use `policy.enableErrorFallback` instead.
+   */
+  enableErrorFallback?: boolean;
+
+  /**
+   * @deprecated Use `policy.outputReserveTokens` instead.
+   */
+  outputReserveTokens?: number;
+
   /**
    * Number of recent messages to always keep uncompacted.
    * These messages are preserved to maintain recent context.
@@ -1100,6 +1211,11 @@ export interface ContextManager {
   isPinned(messageIndex: number): boolean;
 }
 
+interface IndexedMessage {
+  message: ModelMessage;
+  originalIndex: number;
+}
+
 /**
  * Default prompt for generating conversation summaries.
  */
@@ -1173,8 +1289,11 @@ Format:
  * ```typescript
  * const contextManager = createContextManager({
  *   maxTokens: 100000,
- *   summarization: {
+ *   policy: {
  *     tokenThreshold: 0.75,
+ *     outputReserveTokens: 4000,
+ *   },
+ *   summarization: {
  *     keepMessageCount: 15,
  *   },
  *   onBudgetUpdate: (budget) => {
@@ -1193,8 +1312,10 @@ Format:
  */
 export function createContextManager(options: ContextManagerOptions): ContextManager {
   const tokenCounter = options.tokenCounter ?? createApproximateTokenCounter();
+  const legacyPolicy = getLegacyPolicyOverrides(options.summarization);
   const policy: CompactionPolicy = {
     ...DEFAULT_COMPACTION_POLICY,
+    ...legacyPolicy,
     ...options.policy,
   };
   const summarizationConfig: SummarizationConfig = {
@@ -1210,8 +1331,8 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
   // Track pinned messages
   const pinnedMessages: PinnedMessageMetadata[] = [];
 
-  // Track summary tiers for tiered strategy
-  let currentSummaryTier = 0;
+  let consecutiveCompactionFailures = 0;
+  let compactionCircuitOpenUntil: number | undefined;
 
   // Create scheduler if background compaction is enabled
   let scheduler: CompactionScheduler | undefined;
@@ -1234,15 +1355,46 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       currentTokens = tokenCounter.countMessages(messages);
     }
 
-    const budget = createTokenBudget(maxTokens, currentTokens, isActual);
+    const budget = createTokenBudget(maxTokens, currentTokens, isActual, {
+      outputReserveTokens: policy.outputReserveTokens,
+      warningThreshold: policy.tokenThreshold,
+      blockingThreshold: policy.hardCapThreshold,
+    });
     onBudgetUpdate?.(budget);
     return budget;
+  };
+
+  const isCompactionCircuitOpen = (): boolean => {
+    if (compactionCircuitOpenUntil !== undefined && Date.now() >= compactionCircuitOpenUntil) {
+      compactionCircuitOpenUntil = undefined;
+      consecutiveCompactionFailures = 0;
+    }
+
+    return compactionCircuitOpenUntil !== undefined;
+  };
+
+  const recordCompactionSuccess = (): void => {
+    consecutiveCompactionFailures = 0;
+    compactionCircuitOpenUntil = undefined;
+  };
+
+  const recordCompactionFailure = (): void => {
+    consecutiveCompactionFailures++;
+
+    if (consecutiveCompactionFailures >= policy.maxConsecutiveFailures) {
+      const cooldownMs = Math.max(0, policy.failureCooldownMs);
+      compactionCircuitOpenUntil = Date.now() + cooldownMs;
+    }
   };
 
   const shouldCompact = (
     messages: ModelMessage[],
   ): { trigger: boolean; reason?: CompactionTrigger } => {
     if (!policy.enabled) {
+      return { trigger: false };
+    }
+
+    if (isCompactionCircuitOpen()) {
       return { trigger: false };
     }
 
@@ -1274,7 +1426,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         // If last message is significantly larger than average, predict growth
         if (lastMessageTokens > avgMessageTokens * 2) {
           const predictedNext = budget.currentTokens + lastMessageTokens;
-          const predictedUsage = predictedNext / maxTokens;
+          const predictedUsage = predictedNext / budget.effectiveMaxTokens;
 
           if (predictedUsage >= policy.tokenThreshold) {
             return { trigger: true, reason: "growth_rate" };
@@ -1291,99 +1443,151 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     agent: Agent,
     trigger: CompactionTrigger = "token_threshold",
   ): Promise<CompactionResult> => {
-    const tokensBefore = tokenCounter.countMessages(messages);
-    const messagesBefore = messages.length;
-
-    const {
-      keepMessageCount,
-      strategy = "rollup",
-      enableStructuredSummary,
-      enableTieredSummaries,
-    } = summarizationConfig;
-
-    // Always keep system messages
-    const systemMessages = messages.filter((m) => m.role === "system");
-    const _nonSystemMessages = messages.filter((m) => m.role !== "system");
-
-    // Filter out pinned messages (keep them separate)
-    // pinnedMessages indices refer to the original messages array
-    const pinnedIndices = new Set(pinnedMessages.map((p) => p.messageIndex));
-    const pinnedMessagesArray: ModelMessage[] = [];
-    const unpinnedMessages: ModelMessage[] = [];
-
-    messages.forEach((msg, idx) => {
-      // Skip system messages (already handled)
-      if (msg.role === "system") return;
-
-      if (pinnedIndices.has(idx)) {
-        pinnedMessagesArray.push(msg);
-      } else {
-        unpinnedMessages.push(msg);
-      }
-    });
-
-    // Keep recent messages from unpinned messages
-    const recentMessages = unpinnedMessages.slice(-keepMessageCount);
-    const oldMessages = unpinnedMessages.slice(
-      0,
-      Math.max(0, unpinnedMessages.length - keepMessageCount),
-    );
-
-    // If nothing to compact, return unchanged
-    if (oldMessages.length === 0) {
-      return {
-        messagesBefore,
-        messagesAfter: messages.length,
-        tokensBefore,
-        tokensAfter: tokensBefore,
-        summary: "",
-        compactedMessages: [],
-        newMessages: messages,
-        trigger,
-        strategy,
-      };
+    if (isCompactionCircuitOpen()) {
+      throw new Error("Context compaction circuit is open after repeated failures");
     }
 
-    // Execute strategy-specific compaction
-    let summary: string;
-    let structuredSummary: StructuredSummary | undefined;
-    let summaryTier: number | undefined;
+    try {
+      const tokensBefore = tokenCounter.countMessages(messages);
+      const messagesBefore = messages.length;
 
-    if (strategy === "tiered" && enableTieredSummaries) {
-      // Tiered strategy: check if we have existing summaries to tier
-      const existingSummaries = messages.filter(
-        (m) =>
-          m.role === "assistant" &&
-          typeof m.content === "string" &&
-          m.content.includes("[Previous conversation summary]"),
+      const {
+        keepMessageCount,
+        keepToolResultCount,
+        strategy = "rollup",
+        enableStructuredSummary,
+        enableTieredSummaries,
+      } = summarizationConfig;
+
+      // Always keep system messages
+      const systemMessages = messages.filter((m) => m.role === "system");
+
+      const pinnedIndices = new Set(pinnedMessages.map((p) => p.messageIndex));
+      const retainedIndices = collectRetainedConversationIndices(messages, {
+        pinnedIndices,
+        keepMessageCount,
+        keepToolResultCount,
+      });
+      const retainedMessages = messages.filter(
+        (message, index) => message.role !== "system" && retainedIndices.has(index),
+      );
+      const oldMessages = messages.filter(
+        (message, index) => message.role !== "system" && !retainedIndices.has(index),
       );
 
-      if (existingSummaries.length >= (summarizationConfig.messagesPerTier ?? 5)) {
-        // Create a higher-tier summary
-        currentSummaryTier++;
-        const summariesContent = existingSummaries.map((m) => m.content).join("\n\n");
-        const tierPrompt = TIERED_SUMMARY_PROMPT.replace("{tier}", String(currentSummaryTier));
+      // If nothing to compact, return unchanged
+      if (oldMessages.length === 0) {
+        if (trigger === "error_fallback") {
+          throw new Error("Context compaction could not reduce the transcript");
+        }
+
+        recordCompactionSuccess();
+        return {
+          messagesBefore,
+          messagesAfter: messages.length,
+          tokensBefore,
+          tokensAfter: tokensBefore,
+          summary: "",
+          compactedMessages: [],
+          newMessages: messages,
+          trigger,
+          strategy,
+        };
+      }
+
+      // Execute strategy-specific compaction
+      let summary: string;
+      let structuredSummary: StructuredSummary | undefined;
+      let summaryTier: number | undefined;
+
+      if (strategy === "tiered" && enableTieredSummaries) {
+        // Tiered strategy: check if we have existing summaries to tier
+        const existingSummaries = oldMessages.filter(
+          (m) =>
+            m.role === "assistant" &&
+            typeof m.content === "string" &&
+            isSummaryMessageContent(m.content),
+        );
+
+        if (existingSummaries.length >= (summarizationConfig.messagesPerTier ?? 5)) {
+          // Create a higher-tier summary
+          const nextSummaryTier = getNextSummaryTier(existingSummaries);
+          const summariesContent = formatMessagesForSummary(oldMessages);
+          const tierPrompt = TIERED_SUMMARY_PROMPT.replace("{tier}", String(nextSummaryTier));
+
+          const summaryResult = await agent.generate({
+            messages: [
+              { role: "system" as const, content: tierPrompt },
+              {
+                role: "user" as const,
+                content: `Consolidate these summaries:\n\n${summariesContent}`,
+              },
+            ],
+            maxTokens: 1000,
+            _skipCompaction: true, // Prevent recursive compaction during summary generation
+          });
+
+          summary = getCompletedSummaryText(summaryResult);
+          summaryTier = nextSummaryTier;
+        } else {
+          // Create a first-tier summary
+          const contentToSummarize = formatMessagesForSummary(oldMessages);
+          const summaryPrompt = enableStructuredSummary
+            ? STRUCTURED_SUMMARY_PROMPT
+            : (summarizationConfig.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT);
+
+          const summaryResult = await agent.generate({
+            messages: [
+              { role: "system" as const, content: summaryPrompt },
+              {
+                role: "user" as const,
+                content: `Please summarize this conversation history:\n\n${contentToSummarize}`,
+              },
+            ],
+            maxTokens: 1000,
+            _skipCompaction: true, // Prevent recursive compaction during summary generation
+          });
+
+          summary = getCompletedSummaryText(summaryResult);
+          summaryTier = 0;
+
+          // Try to parse structured summary if enabled
+          if (enableStructuredSummary) {
+            try {
+              structuredSummary = JSON.parse(summary) as StructuredSummary;
+            } catch {
+              // If parsing fails, keep as plain text
+            }
+          }
+        }
+      } else if (strategy === "structured" || enableStructuredSummary) {
+        // Structured strategy: generate JSON with sections
+        const contentToSummarize = formatMessagesForSummary(oldMessages);
 
         const summaryResult = await agent.generate({
           messages: [
-            { role: "system" as const, content: tierPrompt },
+            { role: "system" as const, content: STRUCTURED_SUMMARY_PROMPT },
             {
               role: "user" as const,
-              content: `Consolidate these summaries:\n\n${summariesContent}`,
+              content: `Please summarize this conversation history:\n\n${contentToSummarize}`,
             },
           ],
           maxTokens: 1000,
           _skipCompaction: true, // Prevent recursive compaction during summary generation
         });
 
-        summary = summaryResult.status === "complete" ? summaryResult.text : "";
-        summaryTier = currentSummaryTier;
+        summary = getCompletedSummaryText(summaryResult);
+
+        // Try to parse structured summary
+        try {
+          structuredSummary = JSON.parse(summary) as StructuredSummary;
+        } catch {
+          // If parsing fails, keep as plain text
+        }
       } else {
-        // Create a first-tier summary
+        // Rollup strategy (default): single summary of old messages
         const contentToSummarize = formatMessagesForSummary(oldMessages);
-        const summaryPrompt = enableStructuredSummary
-          ? STRUCTURED_SUMMARY_PROMPT
-          : (summarizationConfig.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT);
+        const summaryPrompt = summarizationConfig.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT;
 
         const summaryResult = await agent.generate({
           messages: [
@@ -1397,101 +1601,53 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
           _skipCompaction: true, // Prevent recursive compaction during summary generation
         });
 
-        summary = summaryResult.status === "complete" ? summaryResult.text : "";
-        summaryTier = 0;
-
-        // Try to parse structured summary if enabled
-        if (enableStructuredSummary) {
-          try {
-            structuredSummary = JSON.parse(summary) as StructuredSummary;
-          } catch {
-            // If parsing fails, keep as plain text
-          }
-        }
+        summary = getCompletedSummaryText(summaryResult);
       }
-    } else if (strategy === "structured" || enableStructuredSummary) {
-      // Structured strategy: generate JSON with sections
-      const contentToSummarize = formatMessagesForSummary(oldMessages);
 
-      const summaryResult = await agent.generate({
-        messages: [
-          { role: "system" as const, content: STRUCTURED_SUMMARY_PROMPT },
-          {
-            role: "user" as const,
-            content: `Please summarize this conversation history:\n\n${contentToSummarize}`,
-          },
-        ],
-        maxTokens: 1000,
-        _skipCompaction: true, // Prevent recursive compaction during summary generation
-      });
+      // Build new message history
+      const summaryPrefix =
+        summaryTier !== undefined
+          ? `[Previous conversation summary - Tier ${summaryTier}]`
+          : "[Previous conversation summary]";
 
-      summary = summaryResult.status === "complete" ? summaryResult.text : "";
+      const summaryMessage: ModelMessage = {
+        role: "assistant" as const,
+        content: structuredSummary
+          ? `${summaryPrefix}\n\n${formatStructuredSummary(structuredSummary)}`
+          : `${summaryPrefix}\n\n${summary}`,
+      };
 
-      // Try to parse structured summary
+      const newMessages: ModelMessage[] = [...systemMessages, summaryMessage, ...retainedMessages];
+
+      const tokensAfter = tokenCounter.countMessages(newMessages);
+
+      const result: CompactionResult = {
+        messagesBefore,
+        messagesAfter: newMessages.length,
+        tokensBefore,
+        tokensAfter,
+        summary,
+        compactedMessages: oldMessages,
+        newMessages,
+        trigger,
+        strategy,
+        structuredSummary,
+        summaryTier,
+      };
+
+      recordCompactionSuccess();
+
       try {
-        structuredSummary = JSON.parse(summary) as StructuredSummary;
+        onCompact?.(result);
       } catch {
-        // If parsing fails, keep as plain text
+        // Callback failures should not poison the compaction circuit.
       }
-    } else {
-      // Rollup strategy (default): single summary of old messages
-      const contentToSummarize = formatMessagesForSummary(oldMessages);
-      const summaryPrompt = summarizationConfig.summaryPrompt ?? DEFAULT_SUMMARY_PROMPT;
 
-      const summaryResult = await agent.generate({
-        messages: [
-          { role: "system" as const, content: summaryPrompt },
-          {
-            role: "user" as const,
-            content: `Please summarize this conversation history:\n\n${contentToSummarize}`,
-          },
-        ],
-        maxTokens: 1000,
-        _skipCompaction: true, // Prevent recursive compaction during summary generation
-      });
-
-      summary = summaryResult.status === "complete" ? summaryResult.text : "";
+      return result;
+    } catch (error) {
+      recordCompactionFailure();
+      throw error;
     }
-
-    // Build new message history
-    const summaryPrefix =
-      summaryTier !== undefined
-        ? `[Previous conversation summary - Tier ${summaryTier}]`
-        : "[Previous conversation summary]";
-
-    const summaryMessage: ModelMessage = {
-      role: "assistant" as const,
-      content: structuredSummary
-        ? `${summaryPrefix}\n\n${formatStructuredSummary(structuredSummary)}`
-        : `${summaryPrefix}\n\n${summary}`,
-    };
-
-    const newMessages: ModelMessage[] = [
-      ...systemMessages,
-      summaryMessage,
-      ...pinnedMessagesArray, // Include pinned messages
-      ...recentMessages,
-    ];
-
-    const tokensAfter = tokenCounter.countMessages(newMessages);
-
-    const result: CompactionResult = {
-      messagesBefore,
-      messagesAfter: newMessages.length,
-      tokensBefore,
-      tokensAfter,
-      summary,
-      compactedMessages: oldMessages,
-      newMessages,
-      trigger,
-      strategy,
-      structuredSummary,
-      summaryTier,
-    };
-
-    onCompact?.(result);
-
-    return result;
   };
 
   const process = async (messages: ModelMessage[], agent: Agent): Promise<ModelMessage[]> => {
@@ -1593,6 +1749,231 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+const SUMMARY_PREFIX_PATTERN = /^\[Previous conversation summary(?: - Tier (\d+))?\]/;
+
+function getLegacyPolicyOverrides(
+  summarization: Partial<SummarizationConfig> | undefined,
+): Partial<CompactionPolicy> {
+  if (!summarization) {
+    return {};
+  }
+
+  const legacyPolicy: Partial<CompactionPolicy> = {};
+
+  if (summarization.enabled !== undefined) {
+    legacyPolicy.enabled = summarization.enabled;
+  }
+  if (summarization.tokenThreshold !== undefined) {
+    legacyPolicy.tokenThreshold = summarization.tokenThreshold;
+  }
+  if (summarization.hardCapThreshold !== undefined) {
+    legacyPolicy.hardCapThreshold = summarization.hardCapThreshold;
+  }
+  if (summarization.enableGrowthRatePrediction !== undefined) {
+    legacyPolicy.enableGrowthRatePrediction = summarization.enableGrowthRatePrediction;
+  }
+  if (summarization.enableErrorFallback !== undefined) {
+    legacyPolicy.enableErrorFallback = summarization.enableErrorFallback;
+  }
+  if (summarization.outputReserveTokens !== undefined) {
+    legacyPolicy.outputReserveTokens = summarization.outputReserveTokens;
+  }
+
+  return legacyPolicy;
+}
+
+function isSummaryMessageContent(content: string): boolean {
+  return SUMMARY_PREFIX_PATTERN.test(content);
+}
+
+function getSummaryTierFromContent(content: string): number {
+  const match = content.match(SUMMARY_PREFIX_PATTERN);
+  if (!match) {
+    return 0;
+  }
+
+  return match[1] ? Number.parseInt(match[1], 10) : 0;
+}
+
+function getNextSummaryTier(existingSummaries: ModelMessage[]): number {
+  const highestTier = existingSummaries.reduce((maxTier, message) => {
+    if (typeof message.content !== "string") {
+      return maxTier;
+    }
+
+    return Math.max(maxTier, getSummaryTierFromContent(message.content));
+  }, 0);
+
+  return highestTier + 1;
+}
+
+function getCompletedSummaryText(result: { status: string; text?: string }): string {
+  if (result.status !== "complete") {
+    throw new Error("Summary generation did not complete");
+  }
+
+  return result.text ?? "";
+}
+
+function getIndexedConversationMessages(messages: ModelMessage[]): IndexedMessage[] {
+  return messages
+    .map((message, originalIndex) => ({ message, originalIndex }))
+    .filter(({ message }) => message.role !== "system");
+}
+
+function getToolCallIds(message: ModelMessage): string[] {
+  if (!Array.isArray(message.content)) {
+    return [];
+  }
+
+  return message.content.flatMap((part) =>
+    part.type === "tool-call" && typeof part.toolCallId === "string" ? [part.toolCallId] : [],
+  );
+}
+
+function getToolResultIds(message: ModelMessage): string[] {
+  if (!Array.isArray(message.content)) {
+    return [];
+  }
+
+  return message.content.flatMap((part) =>
+    part.type === "tool-result" && typeof part.toolCallId === "string" ? [part.toolCallId] : [],
+  );
+}
+
+function findToolProtocolBlock(
+  messages: IndexedMessage[],
+  messagePosition: number,
+): { start: number; end: number } | undefined {
+  const current = messages[messagePosition];
+  if (!current) {
+    return undefined;
+  }
+
+  const currentToolCalls = getToolCallIds(current.message);
+  if (currentToolCalls.length > 0) {
+    return expandToolProtocolBlock(messages, messagePosition, new Set(currentToolCalls));
+  }
+
+  const currentToolResults = new Set(getToolResultIds(current.message));
+  if (currentToolResults.size === 0) {
+    return undefined;
+  }
+
+  for (let position = messagePosition - 1; position >= 0; position--) {
+    const candidate = messages[position];
+    if (!candidate) {
+      continue;
+    }
+
+    const candidateToolCalls = getToolCallIds(candidate.message);
+    if (candidateToolCalls.length === 0) {
+      continue;
+    }
+
+    if (candidateToolCalls.some((toolCallId) => currentToolResults.has(toolCallId))) {
+      return expandToolProtocolBlock(messages, position, new Set(candidateToolCalls));
+    }
+  }
+
+  return undefined;
+}
+
+function expandToolProtocolBlock(
+  messages: IndexedMessage[],
+  assistantPosition: number,
+  toolCallIds: Set<string>,
+): { start: number; end: number } {
+  let end = assistantPosition;
+
+  for (let position = assistantPosition + 1; position < messages.length; position++) {
+    const candidate = messages[position];
+    if (!candidate) {
+      break;
+    }
+
+    const toolResultIds = getToolResultIds(candidate.message);
+    if (toolResultIds.length === 0) {
+      break;
+    }
+
+    if (toolResultIds.some((toolCallId) => toolCallIds.has(toolCallId))) {
+      end = position;
+      continue;
+    }
+
+    break;
+  }
+
+  return { start: assistantPosition, end };
+}
+
+function collectRetainedConversationIndices(
+  messages: ModelMessage[],
+  options: {
+    pinnedIndices: Set<number>;
+    keepMessageCount: number;
+    keepToolResultCount: number;
+  },
+): Set<number> {
+  const { pinnedIndices, keepMessageCount, keepToolResultCount } = options;
+  const conversationMessages = getIndexedConversationMessages(messages);
+  const retainedIndices = new Set<number>();
+
+  for (const { originalIndex } of conversationMessages) {
+    if (pinnedIndices.has(originalIndex)) {
+      retainedIndices.add(originalIndex);
+    }
+  }
+
+  const unpinnedConversationMessages = conversationMessages.filter(
+    ({ originalIndex }) => !pinnedIndices.has(originalIndex),
+  );
+  if (keepMessageCount > 0) {
+    for (const { originalIndex } of unpinnedConversationMessages.slice(-keepMessageCount)) {
+      retainedIndices.add(originalIndex);
+    }
+  }
+
+  const toolResultMessages = conversationMessages.filter(
+    ({ message }) => getToolResultIds(message).length > 0,
+  );
+  if (keepToolResultCount > 0) {
+    for (const { originalIndex } of toolResultMessages.slice(-keepToolResultCount)) {
+      retainedIndices.add(originalIndex);
+    }
+  }
+
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+
+    for (let position = 0; position < conversationMessages.length; position++) {
+      const indexedMessage = conversationMessages[position];
+      if (!indexedMessage || !retainedIndices.has(indexedMessage.originalIndex)) {
+        continue;
+      }
+
+      const block = findToolProtocolBlock(conversationMessages, position);
+      if (!block) {
+        continue;
+      }
+
+      for (let blockPosition = block.start; blockPosition <= block.end; blockPosition++) {
+        const originalIndex = conversationMessages[blockPosition]?.originalIndex;
+        if (originalIndex === undefined || retainedIndices.has(originalIndex)) {
+          continue;
+        }
+
+        retainedIndices.add(originalIndex);
+        expanded = true;
+      }
+    }
+  }
+
+  return retainedIndices;
+}
 
 /**
  * Formats messages into a string suitable for summarization.
