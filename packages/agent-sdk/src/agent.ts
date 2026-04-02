@@ -1136,7 +1136,7 @@ export function createAgent(options: AgentOptions): Agent {
   const mergeInstructionLayers = (
     ...layerSets: Array<PromptInstructionLayer[] | undefined>
   ): PromptInstructionLayer[] | undefined => {
-    const merged = layerSets.flatMap((layers) => layers ?? []);
+    const merged = layerSets.flatMap((layers) => (layers ?? []).map((layer) => ({ ...layer })));
     return merged.length > 0 ? merged : undefined;
   };
 
@@ -1147,10 +1147,12 @@ export function createAgent(options: AgentOptions): Agent {
     const standingInstructions = [
       ...(base?.standingInstructions ?? []),
       ...(override?.standingInstructions ?? []),
-    ].filter((entry) => entry.content.trim().length > 0);
-    const recall = [...(base?.recall ?? []), ...(override?.recall ?? [])].filter(
-      (entry) => entry.content.trim().length > 0,
-    );
+    ]
+      .filter((entry) => entry.content.trim().length > 0)
+      .map((entry) => ({ ...entry }));
+    const recall = [...(base?.recall ?? []), ...(override?.recall ?? [])]
+      .filter((entry) => entry.content.trim().length > 0)
+      .map((entry) => ({ ...entry }));
 
     if (standingInstructions.length === 0 && recall.length === 0) {
       return undefined;

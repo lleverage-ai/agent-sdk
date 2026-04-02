@@ -231,6 +231,7 @@ const agent = createAgent({
 ```
 
 **Passing explicit instruction layers and memory:**
+
 ```typescript
 const agent = createAgent({
   model,

@@ -126,7 +126,7 @@ The default builder registers these components:
 - `capability-summary`
 - `skill-loading-policy`
 - `delegation-instructions` when subagents are available
-- `recalled-memory` when compact recall is available
+- `recalled-memory` when `PromptContext.memory?.recall` contains non-empty entries
 - `memory-policy` unless `PromptContext.memoryAvailable` is explicitly `false`
 - `permission-mode` when a permission mode is set
 
@@ -231,7 +231,7 @@ When using `createAgent()`, the prompt context is populated from three sources:
 - generation-time overrides passed to `generate()` / `stream()` via `instructionLayers` and `memory`
 - activated skill state retained by the skill registry and exposed as `loadedSkills`
 
-The default builder renders instruction layers in descending `precedence` order. Activated skills are injected as a high-priority layer, and `memory.standingInstructions` is treated as a lower-priority layer. `memory.recall` is rendered separately under `# Recalled Memory`.
+The default builder renders instruction layers in descending `precedence` order. Activated skills are injected as a high-priority layer with precedence `80`, while `memory.standingInstructions` is treated as a lower-priority layer with precedence `40`. `memory.recall` is rendered separately under `# Recalled Memory` rather than being merged into the instruction-layer stack.
 
 ### PromptComponent
 

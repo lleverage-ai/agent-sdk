@@ -134,7 +134,7 @@ function renderStructuredEntries(
  * const builder = new PromptBuilder().register(identityComponent);
  * ```
  *
- * @category Prompt Builder
+ * @category Context
  */
 export const identityComponent: PromptComponent = {
   name: "identity",
@@ -148,7 +148,7 @@ export const identityComponent: PromptComponent = {
  *
  * Priority: 95
  *
- * @category Prompt Builder
+ * @category Context
  */
 export const interactionContractComponent: PromptComponent = {
   name: "interaction-contract",
