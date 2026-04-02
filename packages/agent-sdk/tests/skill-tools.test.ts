@@ -148,6 +148,25 @@ describe("SkillRegistry", () => {
     });
   });
 
+  describe("getLoaded", () => {
+    it("should return retained loaded-skill metadata", () => {
+      const skill = createTestSkill("git", "Git operations");
+      registry.register(skill);
+      registry.load("git");
+
+      expect(registry.getLoaded("git")).toEqual({
+        name: "git",
+        description: "Git operations",
+        instructions: "You have loaded the git skill.",
+      });
+    });
+
+    it("should return undefined when the skill has not been loaded", () => {
+      registry.register(createTestSkill("git", "Git operations"));
+      expect(registry.getLoaded("git")).toBeUndefined();
+    });
+  });
+
   describe("load", () => {
     it("should load a skill successfully", () => {
       const skill = createTestSkill("git", "Git operations");
@@ -262,6 +281,21 @@ describe("SkillRegistry", () => {
       registry.register(createTestSkill("git", "Git operations"));
 
       expect(registry.listLoaded()).toHaveLength(0);
+    });
+  });
+
+  describe("listLoadedDetails", () => {
+    it("should list loaded skills with retained instructions", () => {
+      registry.register(createTestSkill("git", "Git operations"));
+      registry.load("git");
+
+      expect(registry.listLoadedDetails()).toEqual([
+        {
+          name: "git",
+          description: "Git operations",
+          instructions: "You have loaded the git skill.",
+        },
+      ]);
     });
   });
 

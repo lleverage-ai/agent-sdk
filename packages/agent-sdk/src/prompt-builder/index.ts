@@ -9,6 +9,103 @@ import type { AgentState } from "../backends/state.js";
 import type { PermissionMode } from "../types.js";
 
 /**
+ * A labeled instruction layer with explicit precedence.
+ *
+ * Higher `precedence` values win when instructions conflict. Layers with the
+ * same precedence preserve their original array order.
+ *
+ * @category Prompt Builder
+ */
+export interface PromptInstructionLayer {
+  /**
+   * Human-readable label for the instruction layer.
+   */
+  label: string;
+
+  /**
+   * Instructions contained in this layer.
+   */
+  instructions: string;
+
+  /**
+   * Relative precedence for conflict resolution.
+   * Higher values indicate higher-priority instructions.
+   * @defaultValue 50
+   */
+  precedence?: number;
+
+  /**
+   * Optional source identifier for debugging or custom rendering.
+   */
+  source?: string;
+}
+
+/**
+ * A single structured memory item used for standing instructions or recall.
+ *
+ * @category Prompt Builder
+ */
+export interface PromptMemoryEntry {
+  /**
+   * Human-readable label for the memory item.
+   */
+  label: string;
+
+  /**
+   * The memory content to inject into the prompt.
+   */
+  content: string;
+
+  /**
+   * Optional source identifier for debugging or attribution.
+   */
+  source?: string;
+}
+
+/**
+ * Structured memory inputs for prompt composition.
+ *
+ * `standingInstructions` are durable guidance that should behave like a lower-
+ * precedence instruction layer. `recall` is volatile, task-relevant context
+ * that should be rendered separately from standing policy.
+ *
+ * @category Prompt Builder
+ */
+export interface PromptMemoryContext {
+  /**
+   * Durable instructions recalled from memory.
+   */
+  standingInstructions?: PromptMemoryEntry[];
+
+  /**
+   * Compact task-relevant recall that should not be treated as standing policy.
+   */
+  recall?: PromptMemoryEntry[];
+}
+
+/**
+ * Metadata about a skill that has already been activated.
+ *
+ * @category Prompt Builder
+ */
+export interface PromptLoadedSkill {
+  /**
+   * Skill name.
+   */
+  name: string;
+
+  /**
+   * Short summary or description of the loaded skill.
+   */
+  summary?: string;
+
+  /**
+   * Resolved instructions from the loaded skill, if any.
+   */
+  instructions?: string;
+}
+
+/**
  * Context available to prompt components when building prompts.
  * Contains all relevant agent state and configuration.
  *
@@ -32,6 +129,24 @@ export interface PromptContext {
    * Each entry includes the plugin name and description.
    */
   plugins?: Array<{ name: string; description: string }>;
+
+  /**
+   * Explicit instruction layers with stable precedence semantics.
+   *
+   * Higher `precedence` values win when instructions conflict. Layers with the
+   * same precedence preserve the caller-provided array order.
+   */
+  instructionLayers?: PromptInstructionLayer[];
+
+  /**
+   * Structured memory inputs for standing instructions and compact recall.
+   */
+  memory?: PromptMemoryContext;
+
+  /**
+   * Skills that have already been activated and whose instructions are in play.
+   */
+  loadedSkills?: PromptLoadedSkill[];
 
   /**
    * Information about the backend being used.
