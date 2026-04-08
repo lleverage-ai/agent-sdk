@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-03-12
+
+Initial public `0.1.x` baseline for `@lleverage-ai/agent-sdk` and `@lleverage-ai/agent-threads`.
+
 ### Added
 
 - `@lleverage-ai/agent-threads` — new unified package merging `@lleverage-ai/agent-stream` (event transport/replay) and `@lleverage-ai/agent-ledger` (durable transcripts/run lifecycle) into a single package with subpath exports (`./stream`, `./ledger`, `./server`, `./client`, `./stores/*`)
@@ -17,7 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `@lleverage-ai/agent-stream` and `@lleverage-ai/agent-ledger` have been merged into `@lleverage-ai/agent-threads` with subpath exports (`./stream`, `./ledger`, `./server`, `./client`, `./stores/*`)
 - Workspace scripts (`build`, `type-check`, `test`, `clean`) now use the simplified two-package build order (`agent-threads` → `agent-sdk`)
 - `createDefaultPromptBuilder()` now uses a goal-directed, behavior-first default prompt shape with compact capability summaries; verbose tool, skill, and plugin listings remain available as opt-in components
 - Context compaction is now protocol-aware: token budgets can reserve output headroom, retained history preserves tool-call/tool-result blocks, and repeated compaction failures open a bounded cooldown circuit instead of retrying indefinitely
@@ -268,7 +271,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.13...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0...HEAD
+[0.1.0]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.0.14...agent-sdk@0.1.0
+[0.0.14]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.13...agent-sdk@0.0.14
 [0.0.13]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.12...v0.0.13
 [0.0.12]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.11...v0.0.12
 [0.0.11]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.10...v0.0.11
