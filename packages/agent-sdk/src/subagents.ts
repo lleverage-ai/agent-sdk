@@ -5,7 +5,8 @@
  */
 
 import { createAgent } from "./agent.js";
-import type { Agent, HookRegistration, SubagentOptions } from "./types.js";
+import { applyMiddleware, mergeHooks as mergeHookRegistrations } from "./middleware/apply.js";
+import type { Agent, HookRegistration, InheritableHookEvent, SubagentOptions } from "./types.js";
 
 /**
  * Creates a subagent that inherits configuration from a parent agent.
@@ -75,17 +76,19 @@ import type { Agent, HookRegistration, SubagentOptions } from "./types.js";
 export function createSubagent(parentAgent: Agent, options: SubagentOptions): Agent {
   // Determine hook inheritance
   const inheritHooks = options.inheritHooks ?? true; // Default to inheriting
-  let mergedHooks: HookRegistration | undefined = options.hooks;
+  const parentHooks = resolveAgentHooks(parentAgent);
+  const subagentHooks = options.hooks;
+  let mergedHooks: HookRegistration | undefined = subagentHooks;
 
-  if (inheritHooks && parentAgent.options.hooks) {
+  if (inheritHooks && parentHooks) {
     // Inherit hooks from parent
     if (inheritHooks === true) {
       // Inherit all hooks
-      mergedHooks = mergeHooks(parentAgent.options.hooks, options.hooks);
+      mergedHooks = mergeHookRegistrations(parentHooks, subagentHooks);
     } else if (Array.isArray(inheritHooks)) {
       // Inherit only specific hook events
-      const filteredParentHooks = filterHookEvents(parentAgent.options.hooks, inheritHooks);
-      mergedHooks = mergeHooks(filteredParentHooks, options.hooks);
+      const filteredParentHooks = filterHookEvents(parentHooks, inheritHooks);
+      mergedHooks = mergeHookRegistrations(filteredParentHooks, subagentHooks);
     }
   }
 
@@ -96,12 +99,15 @@ export function createSubagent(parentAgent: Agent, options: SubagentOptions): Ag
 
   return createAgent({
     model: options.model ?? parentAgent.options.model,
+    fallbackModel: options.fallbackModel ?? parentAgent.options.fallbackModel,
     systemPrompt: options.systemPrompt,
     maxSteps: options.maxSteps,
     plugins: options.plugins,
     tools: options.tools,
     skills: options.skills,
     hooks: mergedHooks,
+    generationRetryPolicy:
+      options.generationRetryPolicy ?? parentAgent.options.generationRetryPolicy,
     allowedTools: options.allowedTools,
     disabledCoreTools: options.disabledCoreTools,
     permissionMode: options.permissionMode,
@@ -127,80 +133,71 @@ const DANGEROUS_TOOLS = new Set([
   "execute",
 ]);
 
-/**
- * Merges parent and subagent hooks.
- * Subagent hooks are added after parent hooks (subagent hooks fire last).
- * @internal
- */
-function mergeHooks(
-  parentHooks: HookRegistration,
-  subagentHooks: HookRegistration | undefined,
-): HookRegistration {
-  if (!subagentHooks) {
-    return parentHooks;
-  }
+const INHERITABLE_HOOK_EVENTS = [
+  "PreToolUse",
+  "PostToolUse",
+  "PostToolUseFailure",
+  "PreGenerate",
+  "PostGenerate",
+  "PostGenerateFailure",
+  "GenerationRetryDecision",
+  "SessionStart",
+  "SessionEnd",
+  "SubagentStart",
+  "SubagentStop",
+  "MCPConnectionFailed",
+  "MCPConnectionRestored",
+  "ToolRegistered",
+  "ToolLoadError",
+  "PreCompact",
+  "PostCompact",
+  "InterruptRequested",
+  "InterruptResolved",
+  "Custom",
+] as const satisfies readonly InheritableHookEvent[];
 
-  const merged: HookRegistration = {};
+function resolveAgentHooks(agent: Agent): HookRegistration | undefined {
+  const middlewareHooks = applyMiddleware(agent.options.middleware ?? []);
+  const pluginHooks = (agent.options.plugins ?? []).flatMap((plugin) =>
+    plugin.hooks ? [plugin.hooks] : [],
+  );
 
-  // Merge tool lifecycle hooks (HookMatcher[])
-  const toolEvents = ["PreToolUse", "PostToolUse", "PostToolUseFailure"] as const;
-  for (const eventType of toolEvents) {
-    const parentMatchers = parentHooks[eventType];
-    const subagentMatchers = subagentHooks[eventType];
-    if (parentMatchers || subagentMatchers) {
-      merged[eventType] = [...(parentMatchers ?? []), ...(subagentMatchers ?? [])];
-    }
-  }
+  const mergedHooks = mergeHookRegistrations(middlewareHooks, ...pluginHooks, agent.options.hooks);
+  return Object.keys(mergedHooks).length > 0 ? mergedHooks : undefined;
+}
 
-  // Merge generation lifecycle hooks (HookCallback[])
-  const genEvents = ["PreGenerate", "PostGenerate", "PostGenerateFailure"] as const;
-  for (const eventType of genEvents) {
-    const parentCallbacks = parentHooks[eventType];
-    const subagentCallbacks = subagentHooks[eventType];
-    if (parentCallbacks || subagentCallbacks) {
-      merged[eventType] = [...(parentCallbacks ?? []), ...(subagentCallbacks ?? [])];
-    }
-  }
+function isInheritableHookEvent(event: string): event is InheritableHookEvent {
+  return (INHERITABLE_HOOK_EVENTS as readonly string[]).includes(event);
+}
 
-  return merged;
+function assignHookEvent<K extends InheritableHookEvent>(
+  target: HookRegistration,
+  event: K,
+  value: HookRegistration[K],
+): void {
+  target[event] = value;
 }
 
 /**
  * Filters parent hooks to only include specific events.
  * @internal
  */
-function filterHookEvents(parentHooks: HookRegistration, events: string[]): HookRegistration {
+function filterHookEvents(
+  parentHooks: HookRegistration,
+  events: InheritableHookEvent[],
+): HookRegistration {
   const filtered: HookRegistration = {};
 
-  // Filter tool lifecycle hooks (HookMatcher[])
-  const toolEvents = ["PreToolUse", "PostToolUse", "PostToolUseFailure"] as const;
-  for (const event of toolEvents) {
-    if (events.includes(event) && parentHooks[event]) {
-      filtered[event] = parentHooks[event];
-    }
-  }
+  const requestedEvents = new Set(events);
 
-  // Filter generation lifecycle hooks (HookCallback[])
-  const genEvents = ["PreGenerate", "PostGenerate", "PostGenerateFailure"] as const;
-  for (const event of genEvents) {
-    if (events.includes(event) && parentHooks[event]) {
-      filtered[event] = parentHooks[event];
+  for (const event of requestedEvents) {
+    if (!isInheritableHookEvent(event)) {
+      continue;
     }
-  }
 
-  // Filter session lifecycle hooks (HookCallback[])
-  const sessionEvents = ["SessionStart", "SessionEnd"] as const;
-  for (const event of sessionEvents) {
-    if (events.includes(event) && parentHooks[event]) {
-      filtered[event] = parentHooks[event];
-    }
-  }
-
-  // Filter subagent lifecycle hooks (HookCallback[])
-  const subagentEvents = ["SubagentStart", "SubagentStop"] as const;
-  for (const event of subagentEvents) {
-    if (events.includes(event) && parentHooks[event]) {
-      filtered[event] = parentHooks[event];
+    const value = parentHooks[event];
+    if (value !== undefined) {
+      assignHookEvent(filtered, event, value);
     }
   }
 

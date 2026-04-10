@@ -8,6 +8,7 @@ import {
   ToolExecutionError,
 } from "../src/errors/index.js";
 import { createAgent, definePlugin } from "../src/index.js";
+import { createBackgroundTask } from "../src/task-store/types.js";
 import { createMockModel, resetMocks } from "./setup.js";
 
 // Mock the AI SDK functions
@@ -2246,6 +2247,337 @@ describe("Fallback Model", () => {
   });
 });
 
+describe("Generation Retry Policy", () => {
+  beforeEach(() => {
+    resetMocks();
+    vi.clearAllMocks();
+  });
+
+  it("fails fast for configured background overload requests", async () => {
+    const primaryModel = createMockModel();
+    const fallbackModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      fallbackModel,
+      generationRetryPolicy: {
+        requestClasses: {
+          background: {
+            maxConsecutiveOverloadRetries: 0,
+            fallbackOnOverloadExhaustion: false,
+          },
+        },
+      },
+    });
+
+    vi.mocked(generateText).mockImplementationOnce(() => {
+      throw new Error("rate limit exceeded");
+    });
+
+    await expect(agent.generate({ prompt: "Hello", requestClass: "background" })).rejects.toThrow(
+      "rate limit exceeded",
+    );
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses generationRetryPolicy.defaultRequestClass when requestClass is omitted", async () => {
+    const primaryModel = createMockModel();
+    const decisionHook = vi.fn(async () => ({}));
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        defaultRequestClass: "background",
+        requestClasses: {
+          background: {
+            maxConsecutiveOverloadRetries: 0,
+            fallbackOnOverloadExhaustion: false,
+          },
+        },
+      },
+      hooks: {
+        GenerationRetryDecision: [decisionHook],
+      },
+    });
+
+    vi.mocked(generateText).mockImplementationOnce(() => {
+      throw new Error("rate limit exceeded");
+    });
+
+    await expect(agent.generate({ prompt: "Hello" })).rejects.toThrow("rate limit exceeded");
+
+    expect(generateText).toHaveBeenCalledTimes(1);
+    expect(decisionHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestClass: "background",
+        failureClassification: expect.objectContaining({ type: "overload" }),
+      }),
+      null,
+      expect.anything(),
+    );
+  });
+
+  it("retries with refreshed auth headers after authentication recovery", async () => {
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    vi.mocked(generateText)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockResolvedValueOnce({
+        text: "Recovered response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never);
+
+    const result = await agent.generate({ prompt: "Hello" });
+
+    expect(result.text).toBe("Recovered response");
+    expect(generateText).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(generateText).mock.calls[1][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
+  });
+
+  it("carries recovered options into background follow-up generate calls", async () => {
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    const completedTask = createBackgroundTask({
+      id: "task-1",
+      subagentType: "researcher",
+      description: "Summarize findings",
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      result: "Task complete",
+      metadata: { command: "subagent task" },
+    });
+    agent.taskManager.registerTask(completedTask);
+
+    vi.mocked(generateText)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockResolvedValueOnce({
+        text: "Recovered response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never)
+      .mockResolvedValueOnce({
+        text: "Follow-up response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never);
+
+    const result = await agent.generate({ prompt: "Hello" });
+
+    expect(result.text).toBe("Follow-up response");
+    expect(generateText).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(generateText).mock.calls[2][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
+  });
+
+  it("classifies background follow-up generate turns as background requests", async () => {
+    vi.mocked(generateText).mockReset();
+    const primaryModel = createMockModel();
+    const decisionHook = vi.fn(async () => ({}));
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        requestClasses: {
+          foreground: {
+            maxConsecutiveOverloadRetries: 1,
+            fallbackOnOverloadExhaustion: false,
+          },
+          background: {
+            maxConsecutiveOverloadRetries: 0,
+            fallbackOnOverloadExhaustion: false,
+          },
+        },
+      },
+      hooks: {
+        GenerationRetryDecision: [decisionHook],
+      },
+    });
+
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-follow-up-overload",
+        subagentType: "researcher",
+        description: "Summarize findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    vi.mocked(generateText)
+      .mockResolvedValueOnce({
+        text: "Initial response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never)
+      .mockImplementationOnce(() => {
+        throw new Error("rate limit exceeded");
+      });
+
+    await expect(agent.generate({ prompt: "Hello", requestClass: "foreground" })).rejects.toThrow();
+
+    expect(decisionHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestClass: "background",
+        failureClassification: expect.objectContaining({ type: "overload" }),
+      }),
+      null,
+      expect.anything(),
+    );
+  });
+
+  it("retries after transport recovery for stale sockets", async () => {
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onTransportFailure: async () => ({
+          retry: true,
+          retryDelayMs: 0,
+        }),
+      },
+    });
+
+    vi.mocked(generateText)
+      .mockImplementationOnce(() => {
+        throw new Error("socket hang up ECONNRESET");
+      })
+      .mockResolvedValueOnce({
+        text: "Recovered transport response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never);
+
+    const result = await agent.generate({ prompt: "Hello" });
+
+    expect(result.text).toBe("Recovered transport response");
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+
+  it("reduces max output tokens after context overflow when configured", async () => {
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        contextOverflow: {
+          reductionFactor: 0.5,
+          minMaxTokens: 100,
+        },
+      },
+    });
+
+    vi.mocked(generateText)
+      .mockImplementationOnce(() => {
+        throw new Error("maximum context length exceeded");
+      })
+      .mockResolvedValueOnce({
+        text: "Recovered context response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never);
+
+    const result = await agent.generate({ prompt: "Hello", maxTokens: 1000 });
+
+    expect(result.text).toBe("Recovered context response");
+    expect(generateText).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(generateText).mock.calls[1][0].maxOutputTokens).toBe(500);
+  });
+
+  it("emits GenerationRetryDecision hooks with classified outcomes", async () => {
+    const primaryModel = createMockModel();
+    const decisionHook = vi.fn(async () => ({}));
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onTransportFailure: async () => ({
+          retry: true,
+        }),
+      },
+      hooks: {
+        GenerationRetryDecision: [decisionHook],
+      },
+    });
+
+    vi.mocked(generateText)
+      .mockImplementationOnce(() => {
+        throw new Error("socket hang up ECONNRESET");
+      })
+      .mockResolvedValueOnce({
+        text: "Recovered transport response",
+        usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        finishReason: "stop",
+        steps: [],
+      } as never);
+
+    await agent.generate({ prompt: "Hello" });
+
+    expect(decisionHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hook_event_name: "GenerationRetryDecision",
+        decision: "retry",
+        decisionSource: "policy",
+        requestClass: "foreground",
+        failureClassification: expect.objectContaining({
+          type: "transport",
+          subtype: "stale_socket",
+        }),
+      }),
+      null,
+      expect.objectContaining({ agent: expect.anything() }),
+    );
+  });
+});
+
 describe("Fallback Model - Streaming", () => {
   beforeEach(() => {
     resetMocks();
@@ -2330,6 +2662,122 @@ describe("Fallback Model - Streaming", () => {
     expect(vi.mocked(streamText).mock.calls[1][0].model).toBe(fallbackModel);
   });
 
+  it("stream() carries recovered options into background follow-up calls", async () => {
+    vi.clearAllMocks();
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    const completedTask = createBackgroundTask({
+      id: "task-2",
+      subagentType: "researcher",
+      description: "Summarize findings",
+      status: "completed",
+      completedAt: new Date().toISOString(),
+      result: "Task complete",
+      metadata: { command: "subagent task" },
+    });
+    agent.taskManager.registerTask(completedTask);
+
+    vi.mocked(streamText)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockReturnValueOnce(createMockStreamResult("Recovered response") as never)
+      .mockReturnValueOnce(createMockStreamResult("Follow-up response") as never);
+
+    const parts: string[] = [];
+    for await (const part of agent.stream({
+      messages: [{ role: "user", content: "Hello" }],
+    })) {
+      if (part.type === "text-delta") {
+        parts.push(part.text);
+      }
+    }
+
+    expect(parts.join("")).toBe("Recovered responseFollow-up response");
+    expect(streamText).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(streamText).mock.calls[2][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
+  });
+
+  it("classifies background follow-up stream turns as background requests", async () => {
+    vi.mocked(streamText).mockReset();
+    const primaryModel = createMockModel();
+    const decisionHook = vi.fn(async () => ({}));
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        requestClasses: {
+          foreground: {
+            maxConsecutiveOverloadRetries: 1,
+            fallbackOnOverloadExhaustion: false,
+          },
+          background: {
+            maxConsecutiveOverloadRetries: 0,
+            fallbackOnOverloadExhaustion: false,
+          },
+        },
+      },
+      hooks: {
+        GenerationRetryDecision: [decisionHook],
+      },
+    });
+
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-stream-follow-up-overload",
+        subagentType: "researcher",
+        description: "Summarize findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    vi.mocked(streamText)
+      .mockReturnValueOnce(createMockStreamResult("Initial response") as never)
+      .mockImplementationOnce(() => {
+        throw new Error("rate limit exceeded");
+      });
+
+    await expect(
+      (async () => {
+        for await (const _part of agent.stream({
+          messages: [{ role: "user", content: "Hello" }],
+          requestClass: "foreground",
+        })) {
+          // Drain until the follow-up error is surfaced.
+        }
+      })(),
+    ).rejects.toThrow();
+
+    expect(decisionHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestClass: "background",
+        failureClassification: expect.objectContaining({ type: "overload" }),
+      }),
+      null,
+      expect.anything(),
+    );
+  });
+
   it("streamResponse() uses fallback model on rate limit error", async () => {
     vi.clearAllMocks();
     const primaryModel = createMockModel();
@@ -2356,6 +2804,55 @@ describe("Fallback Model - Streaming", () => {
 
     // Check that second call used fallback model
     expect(vi.mocked(streamText).mock.calls[1][0].model).toBe(fallbackModel);
+  });
+
+  it("streamResponse() routes background follow-up turns through retry recovery", async () => {
+    vi.clearAllMocks();
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-stream-response-follow-up",
+        subagentType: "researcher",
+        description: "Summarize findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    vi.mocked(streamText)
+      .mockReturnValueOnce(createMockStreamResult("Initial response") as never)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockReturnValueOnce(createMockStreamResult("Follow-up response") as never);
+
+    const response = await agent.streamResponse({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    await response.text();
+
+    expect(streamText).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(streamText).mock.calls[2][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
   });
 
   it("streamRaw() uses fallback model on rate limit error", async () => {
@@ -2389,6 +2886,55 @@ describe("Fallback Model - Streaming", () => {
   // Note: streamDataResponse() fallback is not tested because errors thrown inside
   // createUIMessageStream's execute callback don't propagate to the retry loop.
   // This is a known architectural limitation that would require refactoring to fix.
+
+  it("streamDataResponse() routes background follow-up turns through retry recovery", async () => {
+    vi.clearAllMocks();
+    const primaryModel = createMockModel();
+
+    const agent = createAgent({
+      model: primaryModel,
+      generationRetryPolicy: {
+        onAuthenticationFailure: async ({ options }) => ({
+          retry: true,
+          updatedOptions: {
+            ...options,
+            headers: {
+              ...options.headers,
+              Authorization: "Bearer refreshed-token",
+            },
+          },
+        }),
+      },
+    });
+
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-stream-data-response-follow-up",
+        subagentType: "researcher",
+        description: "Summarize findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    vi.mocked(streamText)
+      .mockReturnValueOnce(createMockStreamResult("Initial response") as never)
+      .mockImplementationOnce(() => {
+        throw new Error("Invalid API key");
+      })
+      .mockReturnValueOnce(createMockStreamResult("Follow-up response") as never);
+
+    const response = await agent.streamDataResponse({
+      messages: [{ role: "user", content: "Hello" }],
+    });
+    await response.text();
+
+    expect(streamText).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(streamText).mock.calls[2][0].headers).toEqual({
+      Authorization: "Bearer refreshed-token",
+    });
+  });
 
   it("stream() uses fallback model on timeout error", async () => {
     vi.clearAllMocks();

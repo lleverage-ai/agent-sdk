@@ -4,7 +4,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgent, createSubagent } from "../src/index.js";
-import type { Agent, HookRegistration } from "../src/types.js";
+import type { Agent, AgentMiddleware, HookRegistration } from "../src/types.js";
 import { createMockModel } from "./setup.js";
 
 describe("Subagent Hook Inheritance", () => {
@@ -54,6 +54,10 @@ describe("Subagent Hook Inheritance", () => {
         PostToolUse: [{ callback: async () => ({}) }],
         PreGenerate: [async () => ({})],
         PostGenerate: [async () => ({})],
+        InterruptRequested: [async () => ({})],
+        Custom: {
+          "team:done": [async () => ({})],
+        },
       };
 
       parentAgent = createAgent({
@@ -70,6 +74,30 @@ describe("Subagent Hook Inheritance", () => {
       expect(subagent.options.hooks?.PostToolUse).toBeDefined();
       expect(subagent.options.hooks?.PreGenerate).toBeDefined();
       expect(subagent.options.hooks?.PostGenerate).toBeDefined();
+      expect(subagent.options.hooks?.InterruptRequested).toBeDefined();
+      expect(subagent.options.hooks?.Custom?.["team:done"]).toBeDefined();
+    });
+
+    it("should inherit parent middleware hooks", () => {
+      const middlewareHook = async () => ({});
+      const middleware: AgentMiddleware = {
+        name: "test-middleware",
+        register(ctx) {
+          ctx.onGenerationRetryDecision(middlewareHook);
+        },
+      };
+
+      parentAgent = createAgent({
+        model: createMockModel(),
+        middleware: [middleware],
+      });
+
+      const subagent = createSubagent(parentAgent, {
+        name: "test-subagent",
+        description: "Test subagent",
+      });
+
+      expect(subagent.options.hooks?.GenerationRetryDecision).toEqual([middlewareHook]);
     });
 
     it("should merge parent and subagent hooks (subagent hooks fire last)", () => {
@@ -106,8 +134,9 @@ describe("Subagent Hook Inheritance", () => {
         hooks: subagentHooks,
       });
 
-      // Should have both parent and subagent hooks
-      expect(subagent.options.hooks?.PreToolUse?.length).toBe(2);
+      // Parent/subagent hooks are merged into a single matcher bucket.
+      expect(subagent.options.hooks?.PreToolUse?.length).toBe(1);
+      expect(subagent.options.hooks?.PreToolUse?.[0]?.hooks).toHaveLength(2);
     });
   });
 
@@ -174,6 +203,7 @@ describe("Subagent Hook Inheritance", () => {
         PostToolUse: [{ callback: async () => ({}) }],
         PreGenerate: [async () => ({})],
         PostGenerate: [async () => ({})],
+        InterruptRequested: [async () => ({})],
       };
 
       parentAgent = createAgent({
@@ -192,6 +222,7 @@ describe("Subagent Hook Inheritance", () => {
       expect(subagent.options.hooks?.PostToolUse).toBeDefined();
       expect(subagent.options.hooks?.PreGenerate).toBeUndefined();
       expect(subagent.options.hooks?.PostGenerate).toBeUndefined();
+      expect(subagent.options.hooks?.InterruptRequested).toBeUndefined();
     });
 
     it("should merge selective parent hooks with subagent hooks", () => {
@@ -405,9 +436,38 @@ describe("Subagent Hook Inheritance", () => {
       expect(subagent.options.hooks).toEqual({});
     });
 
-    it("should preserve other agent options", () => {
+    it("should selectively inherit interrupt hooks when requested", () => {
+      const interruptHook = async () => ({});
+      const parentHooks: HookRegistration = {
+        InterruptRequested: [interruptHook],
+        PreGenerate: [async () => ({})],
+      };
+
       parentAgent = createAgent({
         model: createMockModel(),
+        hooks: parentHooks,
+      });
+
+      const subagent = createSubagent(parentAgent, {
+        name: "interrupt-subagent",
+        description: "Only inherits interrupts",
+        inheritHooks: ["InterruptRequested"],
+      });
+
+      expect(subagent.options.hooks?.InterruptRequested).toEqual([interruptHook]);
+      expect(subagent.options.hooks?.PreGenerate).toBeUndefined();
+    });
+
+    it("should preserve other agent options", () => {
+      const fallbackModel = createMockModel();
+      const generationRetryPolicy = {
+        defaultRequestClass: "background" as const,
+      };
+
+      parentAgent = createAgent({
+        model: createMockModel(),
+        fallbackModel,
+        generationRetryPolicy,
       });
 
       const subagent = createSubagent(parentAgent, {
@@ -421,6 +481,8 @@ describe("Subagent Hook Inheritance", () => {
       expect(subagent.options.maxSteps).toBe(5);
       expect(subagent.options.permissionMode).toBe("plan");
       expect(subagent.options.disallowedTools).toEqual(["bash"]);
+      expect(subagent.options.fallbackModel).toBe(fallbackModel);
+      expect(subagent.options.generationRetryPolicy).toBe(generationRetryPolicy);
     });
   });
 

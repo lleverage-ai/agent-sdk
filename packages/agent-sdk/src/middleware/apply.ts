@@ -6,7 +6,7 @@
  * @packageDocumentation
  */
 
-import type { HookMatcher, HookRegistration } from "../types.js";
+import type { HookMatcher, HookRegistration, ToolHookRegistration } from "../types.js";
 import { createMiddlewareContext } from "./context.js";
 import type { AgentMiddleware } from "./types.js";
 
@@ -137,6 +137,12 @@ export function mergeHooks(...registrations: (HookRegistration | undefined)[]): 
         ...reg.PostGenerateFailure,
       ];
     }
+    if (reg.GenerationRetryDecision) {
+      result.GenerationRetryDecision = [
+        ...(result.GenerationRetryDecision ?? []),
+        ...reg.GenerationRetryDecision,
+      ];
+    }
 
     // Merge tool hooks (arrays of HookMatcher)
     if (reg.PreToolUse) {
@@ -155,6 +161,14 @@ export function mergeHooks(...registrations: (HookRegistration | undefined)[]): 
     }
     if (reg.PostCompact) {
       result.PostCompact = [...(result.PostCompact ?? []), ...reg.PostCompact];
+    }
+
+    // Merge interrupt hooks
+    if (reg.InterruptRequested) {
+      result.InterruptRequested = [...(result.InterruptRequested ?? []), ...reg.InterruptRequested];
+    }
+    if (reg.InterruptResolved) {
+      result.InterruptResolved = [...(result.InterruptResolved ?? []), ...reg.InterruptResolved];
     }
 
     // Merge session hooks
@@ -220,16 +234,14 @@ export function mergeHooks(...registrations: (HookRegistration | undefined)[]): 
  * @internal
  */
 function mergeToolHooks(
-  existing: HookMatcher[] | undefined,
-  incoming: HookMatcher[],
+  existing: ToolHookRegistration[] | undefined,
+  incoming: ToolHookRegistration[],
 ): HookMatcher[] {
-  if (!existing) {
-    return [...incoming];
-  }
+  const normalizedExisting = normalizeToolHooks(existing);
+  const normalizedIncoming = normalizeToolHooks(incoming);
+  const result = [...normalizedExisting];
 
-  const result = [...existing];
-
-  for (const incomingMatcher of incoming) {
+  for (const incomingMatcher of normalizedIncoming) {
     // Look for existing matcher with same pattern
     const existingIndex = result.findIndex((m) => m.matcher === incomingMatcher.matcher);
 
@@ -247,4 +259,20 @@ function mergeToolHooks(
   }
 
   return result;
+}
+
+function normalizeToolHooks(matchers: ToolHookRegistration[] | undefined): HookMatcher[] {
+  if (!matchers) {
+    return [];
+  }
+
+  return matchers.map((matcher) =>
+    "hooks" in matcher
+      ? matcher
+      : {
+          matcher: matcher.matcher,
+          hooks: [matcher.callback],
+          timeout: matcher.timeout,
+        },
+  );
 }

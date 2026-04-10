@@ -362,6 +362,40 @@ export interface AgentOptions {
   fallbackModel?: LanguageModel;
 
   /**
+   * Policy for request-class-aware generation retries and failure-specific recovery.
+   *
+   * This augments the existing `PostGenerateFailure` hook flow with built-in
+   * request classification, failure taxonomy, and optional recovery handlers
+   * for overload, authentication, transport, and context-overflow failures.
+   *
+   * The default request class is `"foreground"`. Set
+   * {@link GenerateOptions.requestClass} per request to opt into alternate
+   * policies such as `"background"`.
+   *
+   * @example
+   * ```typescript
+   * const agent = createAgent({
+   *   model,
+   *   fallbackModel,
+   *   generationRetryPolicy: {
+   *     requestClasses: {
+   *       foreground: {
+   *         maxConsecutiveOverloadRetries: 2,
+   *       },
+   *       background: {
+   *         maxConsecutiveOverloadRetries: 0,
+   *         fallbackOnOverloadExhaustion: false,
+   *       },
+   *     },
+   *   },
+   * });
+   * ```
+   *
+   * @defaultValue undefined
+   */
+  generationRetryPolicy?: GenerationRetryPolicy;
+
+  /**
    * System prompt that defines the agent's behavior and personality.
    *
    * Mutually exclusive with {@link promptBuilder}. If neither is provided,
@@ -1426,6 +1460,271 @@ export interface Agent {
 // =============================================================================
 
 /**
+ * Host-defined class for a generation request.
+ *
+ * The SDK treats `"foreground"` as the default interactive/user-visible class
+ * and `"background"` as a common non-user-visible class, but hosts may use
+ * any string identifier that maps to {@link GenerationRetryPolicy.requestClasses}.
+ *
+ * @category Agent
+ */
+export type GenerationRequestClass = "foreground" | "background" | (string & {});
+
+/**
+ * High-level failure category used by generation retry policy.
+ *
+ * @category Agent
+ */
+export type GenerationFailureType =
+  | "overload"
+  | "authentication"
+  | "authorization"
+  | "transport"
+  | "context_overflow"
+  | "unknown";
+
+/**
+ * More specific subtype for generation failures.
+ *
+ * @category Agent
+ */
+export type GenerationFailureSubtype =
+  | "rate_limit"
+  | "timeout"
+  | "model_unavailable"
+  | "stale_socket"
+  | "network"
+  | "invalid_auth"
+  | "forbidden"
+  | "context_length"
+  | "unknown";
+
+/**
+ * Classified generation failure details exposed to retry hooks and observability.
+ *
+ * @category Agent
+ */
+export interface GenerationFailureClassification {
+  /** High-level failure category. */
+  type: GenerationFailureType;
+
+  /** More specific subtype when the SDK can infer one. */
+  subtype: GenerationFailureSubtype;
+
+  /** Whether the classified failure is considered retryable by default. */
+  retryable: boolean;
+}
+
+/**
+ * Recovery context passed to authentication and transport recovery handlers.
+ *
+ * @category Agent
+ */
+export interface GenerationRecoveryContext {
+  /** Current generation options for the failed request. */
+  options: GenerateOptions;
+
+  /** The normalized error that occurred. */
+  error: Error;
+
+  /** Request class for the failed operation. */
+  requestClass: GenerationRequestClass;
+
+  /** Classified failure metadata. */
+  failureClassification: GenerationFailureClassification;
+
+  /** Current retry attempt (0 = first attempt, before any retry). */
+  retryAttempt: number;
+
+  /** Consecutive overload count before the current decision is applied. */
+  consecutiveOverloadCount: number;
+}
+
+/**
+ * Result returned from authentication and transport recovery handlers.
+ *
+ * @category Agent
+ */
+export interface GenerationRecoveryResult {
+  /**
+   * Whether to retry after the recovery action completes.
+   * @defaultValue false
+   */
+  retry?: boolean;
+
+  /**
+   * Delay before retrying in milliseconds.
+   * @defaultValue 0
+   */
+  retryDelayMs?: number;
+
+  /**
+   * Updated generation options to use for the retry attempt.
+   */
+  updatedOptions?: GenerateOptions;
+}
+
+/**
+ * Recovery handler for failure-specific generation retries.
+ *
+ * Return `true` to retry immediately, or return a
+ * {@link GenerationRecoveryResult} to control delay and updated options.
+ *
+ * @param context - The {@link GenerationRecoveryContext} describing the failed
+ * request, normalized error, request class, classification, and current retry state.
+ * @returns `true` to retry immediately, `void`/`undefined` to do nothing, or a
+ * {@link GenerationRecoveryResult} to control delay and updated options. A
+ * `Promise` resolving to any of these values is also allowed.
+ *
+ * @category Agent
+ */
+export type GenerationRecoveryHandler = (
+  context: GenerationRecoveryContext,
+) =>
+  | boolean
+  | undefined
+  | GenerationRecoveryResult
+  | Promise<boolean | undefined | GenerationRecoveryResult>;
+
+/**
+ * Request-class-specific overload retry policy.
+ *
+ * @category Agent
+ */
+export interface GenerationRequestClassRetryPolicy {
+  /**
+   * Number of consecutive overload retries to allow before fallback or failure.
+   *
+   * `0` means "do not retry overloads before fallback/failure".
+   *
+   * @defaultValue 0
+   */
+  maxConsecutiveOverloadRetries?: number;
+
+  /**
+   * Delay to apply to overload retries for this request class.
+   *
+   * When omitted, the SDK prefers `error.retryAfterMs` when available.
+   *
+   * @defaultValue undefined
+   */
+  retryDelayMs?: number;
+
+  /**
+   * Whether to switch to `fallbackModel` after overload retries are exhausted.
+   *
+   * @defaultValue true
+   */
+  fallbackOnOverloadExhaustion?: boolean;
+}
+
+/**
+ * Policy for automatic max-token reduction after context-overflow failures.
+ *
+ * @category Agent
+ */
+export interface GenerationContextOverflowRetryPolicy {
+  /**
+   * Multiply the current `maxTokens` by this factor on each retry.
+   *
+   * @defaultValue 0.5
+   */
+  reductionFactor?: number;
+
+  /**
+   * Minimum `maxTokens` value to keep when reducing output budget.
+   *
+   * @defaultValue 256
+   */
+  minMaxTokens?: number;
+
+  /**
+   * Fallback max token budget to use when the request did not set `maxTokens`.
+   *
+   * When omitted, automatic reduction only applies to requests that already
+   * have an explicit `maxTokens` budget.
+   *
+   * @defaultValue undefined
+   */
+  fallbackMaxTokens?: number;
+
+  /**
+   * Maximum number of context-overflow retries that may reduce output tokens.
+   *
+   * @defaultValue 1
+   */
+  maxAttempts?: number;
+}
+
+/**
+ * Policy for request-class-aware generation retries and failure-specific recovery.
+ *
+ * @category Agent
+ */
+export interface GenerationRetryPolicy {
+  /**
+   * Maximum total retry attempts across all failure types.
+   *
+   * This caps hook-driven retries and built-in policy retries alike.
+   *
+   * @defaultValue 10
+   */
+  maxRetries?: number;
+
+  /**
+   * Default request class when `GenerateOptions.requestClass` is not provided.
+   *
+   * @defaultValue "foreground"
+   */
+  defaultRequestClass?: GenerationRequestClass;
+
+  /**
+   * Request-class-specific overload behavior.
+   *
+   * Unknown request classes fall back to the `"foreground"` policy when present,
+   * otherwise the SDK defaults to immediate fallback-or-fail on overload.
+   */
+  requestClasses?: Record<string, GenerationRequestClassRetryPolicy | undefined>;
+
+  /**
+   * Optional custom failure classifier for provider-specific errors.
+   *
+   * Return a high-level failure type string to override the built-in taxonomy,
+   * or return a full classification object to set both `type` and `subtype`.
+   *
+   * @param error - The thrown generation error to classify.
+   * @returns A failure type string to reuse the built-in retryability mapping,
+   * or a full classification object to override `type`, `subtype`, and
+   * `retryable` explicitly.
+   */
+  classifyFailure?: (error: Error) => GenerationFailureType | GenerationFailureClassification;
+
+  /**
+   * Optional recovery handler for authentication failures.
+   *
+   * Typical use: refresh tokens, rotate credentials, or update headers.
+   */
+  onAuthenticationFailure?: GenerationRecoveryHandler;
+
+  /**
+   * Optional recovery handler for transport failures.
+   *
+   * Typical use: re-establish stale keep-alive connections or refresh a client.
+   */
+  onTransportFailure?: GenerationRecoveryHandler;
+
+  /**
+   * Optional policy for retrying context-overflow failures by reducing
+   * requested output tokens.
+   *
+   * Set to `false` to disable token-budget reduction explicitly.
+   *
+   * @defaultValue undefined
+   */
+  contextOverflow?: GenerationContextOverflowRetryPolicy | false;
+}
+
+/**
  * Options for generating a response.
  *
  * @example
@@ -1445,6 +1744,20 @@ export interface GenerateOptions {
 
   /** Conversation history - accepts AI SDK message types */
   messages?: ModelMessage[];
+
+  /**
+   * Host-defined request class used by generation retry policy.
+   *
+   * Use `"foreground"` for interactive/user-visible work and `"background"`
+   * for non-user-visible work, or define your own class names and map them in
+   * {@link AgentOptions.generationRetryPolicy}. When this is omitted, the SDK
+   * resolves the effective request class from
+   * {@link GenerationRetryPolicy.defaultRequestClass}, then falls back to
+   * `"foreground"`.
+   *
+   * @defaultValue "foreground"
+   */
+  requestClass?: GenerationRequestClass;
 
   /**
    * Thread identifier for session persistence.
@@ -2178,6 +2491,7 @@ export type HookEvent =
   | "PreGenerate"
   | "PostGenerate"
   | "PostGenerateFailure"
+  | "GenerationRetryDecision"
 
   // Tool lifecycle
   | "PreToolUse"
@@ -2309,6 +2623,42 @@ export interface PostGenerateFailureInput extends BaseHookInput {
   options: GenerateOptions;
   /** Error that occurred */
   error: Error;
+  /** Request class associated with the failed request. */
+  requestClass?: GenerationRequestClass;
+  /** Classified failure metadata when available. */
+  failureClassification?: GenerationFailureClassification;
+  /** Consecutive overload count before the retry decision is applied. */
+  consecutiveOverloadCount?: number;
+}
+
+/**
+ * Input for GenerationRetryDecision hooks.
+ * @category Hooks
+ */
+export interface GenerationRetryDecisionInput extends BaseHookInput {
+  hook_event_name: "GenerationRetryDecision";
+  /**
+   * Generation options that will be used for the next attempt.
+   *
+   * These may have been updated from the options used for the failed request.
+   */
+  options: GenerateOptions;
+  /** Error that triggered the retry evaluation. */
+  error: Error;
+  /** Request class associated with the failed request. */
+  requestClass: GenerationRequestClass;
+  /** Classified failure metadata. */
+  failureClassification: GenerationFailureClassification;
+  /** Retry attempt at the time the decision was made. */
+  retryAttempt: number;
+  /** Consecutive overload count including the current failure when applicable. */
+  consecutiveOverloadCount: number;
+  /** Final retry outcome. */
+  decision: "retry" | "fallback" | "fail";
+  /** Source that produced the decision. */
+  decisionSource: "hooks" | "policy" | "none";
+  /** Delay before retrying in milliseconds. */
+  retryDelayMs: number;
 }
 
 /**
@@ -2494,6 +2844,7 @@ export type HookInput =
   | PreGenerateInput
   | PostGenerateInput
   | PostGenerateFailureInput
+  | GenerationRetryDecisionInput
   | SubagentStartInput
   | SubagentStopInput
   | MCPConnectionFailedInput
@@ -2544,7 +2895,13 @@ export interface HookSpecificOutput {
   /** Message IDs that caused the block (for client-side cleanup) */
   blockedMessageIds?: string[];
 
-  /** Modified input (PreToolUse: tool input, PreGenerate: options) */
+  /**
+   * Modified input.
+   *
+   * - `PreToolUse`: tool input
+   * - `PreGenerate`: generation options before the first attempt
+   * - `PostGenerateFailure`: generation options to use for the next retry
+   */
   updatedInput?: unknown;
 
   /** Short-circuit with cached/mock result (skips actual execution) */
@@ -2635,17 +2992,44 @@ export interface HookMatcher {
 }
 
 /**
+ * Shorthand tool-hook registration for a single callback.
+ * @category Hooks
+ */
+export interface ToolHookEntry {
+  /** Hook callback to run when the matcher matches. */
+  callback: HookCallback;
+
+  /**
+   * Regex pattern to match tool names (omit for all tools).
+   * Uses the same semantics as {@link HookMatcher.matcher}.
+   */
+  matcher?: string;
+
+  /**
+   * Timeout in milliseconds for hook execution.
+   * @defaultValue 60000 (60 seconds)
+   */
+  timeout?: number;
+}
+
+/**
+ * Public tool-hook registration entry.
+ * @category Hooks
+ */
+export type ToolHookRegistration = HookMatcher | ToolHookEntry;
+
+/**
  * Configuration for registering hooks with matchers.
  * @category Hooks
  */
 export interface HookRegistration {
   /**
    * Tool lifecycle hooks with matchers.
-   * Array of matchers, each with optional regex pattern and hook callbacks.
+   * Array of matcher objects or shorthand callback entries.
    */
-  PreToolUse?: HookMatcher[];
-  PostToolUse?: HookMatcher[];
-  PostToolUseFailure?: HookMatcher[];
+  PreToolUse?: ToolHookRegistration[];
+  PostToolUse?: ToolHookRegistration[];
+  PostToolUseFailure?: ToolHookRegistration[];
 
   /**
    * Generation lifecycle hooks (no matchers - not tool-specific).
@@ -2654,6 +3038,7 @@ export interface HookRegistration {
   PreGenerate?: HookCallback[];
   PostGenerate?: HookCallback[];
   PostGenerateFailure?: HookCallback[];
+  GenerationRetryDecision?: HookCallback[];
 
   /**
    * Session lifecycle hooks.
@@ -2714,6 +3099,13 @@ export interface HookRegistration {
   Custom?: Record<string, HookCallback[]>;
 }
 
+/**
+ * Hook registration keys that can be inherited by subagents.
+ *
+ * @category Hooks
+ */
+export type InheritableHookEvent = keyof HookRegistration;
+
 // =============================================================================
 // Subagents
 // =============================================================================
@@ -2767,7 +3159,7 @@ export interface SubagentOptions extends Omit<AgentOptions, "model" | "allowedTo
    *
    * @defaultValue true
    */
-  inheritHooks?: boolean | HookEvent[];
+  inheritHooks?: boolean | InheritableHookEvent[];
 
   /**
    * Restrict which tools this subagent can use.
