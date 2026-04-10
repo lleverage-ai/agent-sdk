@@ -2,7 +2,12 @@ import { Projector } from "../stream/projector.js";
 import type { StreamEvent } from "../stream/stream-event.js";
 import type { ProjectorConfig, StoredEvent } from "../stream/types.js";
 
-import type { CanonicalMessage, CanonicalMessageMetadata, CanonicalPart } from "./types.js";
+import type {
+  CanonicalMessage,
+  CanonicalMessageMetadata,
+  CanonicalPart,
+  ToolCallPart,
+} from "./types.js";
 import type { IdGenerator } from "./ulid.js";
 import { ulid } from "./ulid.js";
 
@@ -139,17 +144,46 @@ function createReducer(
       case "tool-call": {
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
-        const p = payload as { toolCallId: string; toolName: string; input: unknown };
-        state.currentMessage!.parts.push({
-          type: "tool-call",
-          toolCallId: p.toolCallId,
-          toolName: p.toolName,
-          input: p.input,
-        });
-        state.pendingToolCalls.set(p.toolCallId, {
-          toolName: p.toolName,
-          input: p.input,
-        });
+        const p = payload as {
+          toolCallId: string;
+          toolName: string;
+          input: unknown;
+          toolLabel?: string;
+          skillName?: string;
+          skillIcon?: string;
+        };
+
+        const optionalMeta = {
+          ...(typeof p.toolLabel === "string" ? { toolLabel: p.toolLabel } : {}),
+          ...(typeof p.skillName === "string" ? { skillName: p.skillName } : {}),
+          ...(typeof p.skillIcon === "string" ? { skillIcon: p.skillIcon } : {}),
+        };
+
+        // Duplicate tool-call events (e.g. async label updates) update the
+        // existing part rather than appending a new one.
+        const existingPartIndex = state.currentMessage!.parts.findIndex(
+          (part) => part.type === "tool-call" && part.toolCallId === p.toolCallId,
+        );
+
+        if (existingPartIndex >= 0) {
+          const existing = state.currentMessage!.parts[existingPartIndex] as ToolCallPart;
+          state.currentMessage!.parts[existingPartIndex] = {
+            ...existing,
+            ...optionalMeta,
+          };
+        } else {
+          state.currentMessage!.parts.push({
+            type: "tool-call",
+            toolCallId: p.toolCallId,
+            toolName: p.toolName,
+            input: p.input,
+            ...optionalMeta,
+          });
+          state.pendingToolCalls.set(p.toolCallId, {
+            toolName: p.toolName,
+            input: p.input,
+          });
+        }
         break;
       }
 
@@ -162,10 +196,19 @@ function createReducer(
           toolName: string;
           output: unknown;
           isError?: boolean;
+          toolLabel?: string;
+          skillName?: string;
+          skillIcon?: string;
         };
         const pending = state.pendingToolCalls.get(p.toolCallId);
         const toolName = p.toolName ?? pending?.toolName ?? "unknown";
         state.pendingToolCalls.delete(p.toolCallId);
+
+        const optionalMeta = {
+          ...(typeof p.toolLabel === "string" ? { toolLabel: p.toolLabel } : {}),
+          ...(typeof p.skillName === "string" ? { skillName: p.skillName } : {}),
+          ...(typeof p.skillIcon === "string" ? { skillIcon: p.skillIcon } : {}),
+        };
 
         const toolMsg: CanonicalMessage = {
           id: idGen(),
@@ -178,6 +221,7 @@ function createReducer(
               toolName,
               output: p.output,
               isError: p.isError ?? false,
+              ...optionalMeta,
             },
           ],
           createdAt: new Date().toISOString(),
