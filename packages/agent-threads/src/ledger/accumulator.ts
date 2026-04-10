@@ -12,6 +12,37 @@ import type { IdGenerator } from "./ulid.js";
 import { ulid } from "./ulid.js";
 
 // ---------------------------------------------------------------------------
+// Event payload shapes
+// ---------------------------------------------------------------------------
+
+interface OptionalToolMeta {
+  toolLabel?: string;
+  skillName?: string;
+  skillIcon?: string;
+}
+
+interface ToolCallEventPayload extends OptionalToolMeta {
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+}
+
+interface ToolResultEventPayload extends OptionalToolMeta {
+  toolCallId: string;
+  toolName: string;
+  output: unknown;
+  isError?: boolean;
+}
+
+function extractOptionalToolMeta(payload: OptionalToolMeta): OptionalToolMeta {
+  return {
+    ...(typeof payload.toolLabel === "string" ? { toolLabel: payload.toolLabel } : {}),
+    ...(typeof payload.skillName === "string" ? { skillName: payload.skillName } : {}),
+    ...(typeof payload.skillIcon === "string" ? { skillIcon: payload.skillIcon } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Accumulator State
 // ---------------------------------------------------------------------------
 
@@ -144,20 +175,8 @@ function createReducer(
       case "tool-call": {
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
-        const p = payload as {
-          toolCallId: string;
-          toolName: string;
-          input: unknown;
-          toolLabel?: string;
-          skillName?: string;
-          skillIcon?: string;
-        };
-
-        const optionalMeta = {
-          ...(typeof p.toolLabel === "string" ? { toolLabel: p.toolLabel } : {}),
-          ...(typeof p.skillName === "string" ? { skillName: p.skillName } : {}),
-          ...(typeof p.skillIcon === "string" ? { skillIcon: p.skillIcon } : {}),
-        };
+        const p = payload as ToolCallEventPayload;
+        const optionalMeta = extractOptionalToolMeta(p);
 
         // Duplicate tool-call events (e.g. async label updates) update the
         // existing part rather than appending a new one.
@@ -191,24 +210,12 @@ function createReducer(
         // Commit the current assistant message first
         commitCurrentMessage(state);
 
-        const p = payload as {
-          toolCallId: string;
-          toolName: string;
-          output: unknown;
-          isError?: boolean;
-          toolLabel?: string;
-          skillName?: string;
-          skillIcon?: string;
-        };
+        const p = payload as ToolResultEventPayload;
         const pending = state.pendingToolCalls.get(p.toolCallId);
         const toolName = p.toolName ?? pending?.toolName ?? "unknown";
         state.pendingToolCalls.delete(p.toolCallId);
 
-        const optionalMeta = {
-          ...(typeof p.toolLabel === "string" ? { toolLabel: p.toolLabel } : {}),
-          ...(typeof p.skillName === "string" ? { skillName: p.skillName } : {}),
-          ...(typeof p.skillIcon === "string" ? { skillIcon: p.skillIcon } : {}),
-        };
+        const optionalMeta = extractOptionalToolMeta(p);
 
         const toolMsg: CanonicalMessage = {
           id: idGen(),
