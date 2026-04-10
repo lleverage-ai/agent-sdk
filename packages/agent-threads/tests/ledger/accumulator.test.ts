@@ -477,5 +477,89 @@ describe("Accumulator", () => {
         skillName: "Shell",
       });
     });
+
+    it("preserves metadata from earlier event when later duplicate omits fields", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            toolLabel: "Searching your inbox",
+            skillName: "Email",
+            skillIcon: "mail",
+          },
+        },
+        // Later duplicate carries only an updated label; skillName/skillIcon
+        // must survive rather than being erased by the spread.
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            toolLabel: "Found 3 invoices",
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      expect(messages[0]!.parts).toHaveLength(1);
+      expect(messages[0]!.parts[0]).toEqual({
+        type: "tool-call",
+        toolCallId: "tc-1",
+        toolName: "search_emails",
+        input: { query: "invoice" },
+        toolLabel: "Found 3 invoices",
+        skillName: "Email",
+        skillIcon: "mail",
+      });
+    });
+
+    it("preserves metadata on tool-result parts when isError is true", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "read_file",
+            input: { path: "missing.ts" },
+            toolLabel: "Read file: missing.ts",
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "read_file",
+            output: "ENOENT: no such file",
+            isError: true,
+            toolLabel: "Failed to read file: missing.ts",
+            skillName: "Filesystem",
+            skillIcon: "folder",
+          },
+        },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const resultPart = messages[1]!.parts[0]!;
+      expect(resultPart).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "read_file",
+        output: "ENOENT: no such file",
+        isError: true,
+        toolLabel: "Failed to read file: missing.ts",
+        skillName: "Filesystem",
+        skillIcon: "folder",
+      });
+    });
   });
 });
