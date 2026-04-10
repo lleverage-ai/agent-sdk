@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Active/terminal run status helpers (`ACTIVE_RUN_STATUSES`, `TERMINAL_RUN_STATUSES`, `isActiveRunStatus()`, `isTerminalRunStatus()`) and the narrowed `ActiveRunStatus` / `TerminalRunStatus` types for safer lifecycle logic reuse
 - Protocol decoding now includes explicit `decodeClientMessage()` and `decodeServerMessage()` validators, enabling directional wire-message validation at transport boundaries
 - Branch navigation metadata via `ILedgerStore.getThreadTree(threadId)`, including message nodes and fork-point active-child resolution across both in-memory and SQLite ledger stores
+- Request-class-aware generation retry policy via `AgentOptions.generationRetryPolicy`, `GenerateOptions.requestClass`, failure classification metadata on `PostGenerateFailure`, and the new `GenerationRetryDecision` observability hook
 - Prompt-builder V2 inputs: `PromptContext.instructionLayers`, `PromptContext.memory`, and `PromptContext.loadedSkills`, plus agent-level / per-generation `instructionLayers` and `memory` options for structured prompt composition
 
 ### Changed
@@ -29,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GetTranscriptOptions.branch` now supports explicit branch selections via `{ selections: Record<string, string> }`, and ledger stores now resolve `"active"` transcripts by walking parent-child message links with committed-branch preference
 - Removed the `simple-git-hooks` workspace dependency so `bun install` no longer depends on a failing Bun postinstall path
 - Refreshed contributor-facing docs to cover workspace commands, changelog expectations, and current deferred/proxy tool-loading behavior
+- Generation retry handling now classifies overload, authentication, authorization, transport, and context-overflow failures; hosts can recover auth/transport failures explicitly, bound consecutive overload retries per request class, and optionally reduce `maxTokens` automatically on context-overflow retries
 - **BREAKING**: Inline plugin tools now use the `<plugin>__<tool>` namespace instead of `mcp__<plugin>__<tool>`. This also changes helper outputs such as `toolsFromPlugin()` to return inline plugin names in the new qualified form. External MCP servers keep the `mcp__<server>__<tool>` namespace, and DX helpers now distinguish the two with `pluginTools()` / `pluginToolsFor()` vs `mcpTools()` / `mcpToolsFor()`
 
 ### Removed

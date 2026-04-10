@@ -37,6 +37,7 @@ export function createMiddlewareContext(): MiddlewareContextResult {
   const preGenerate: HookCallback[] = [];
   const postGenerate: HookCallback[] = [];
   const postGenerateFailure: HookCallback[] = [];
+  const generationRetryDecision: HookCallback[] = [];
   const preToolUse: HookMatcher[] = [];
   const postToolUse: HookMatcher[] = [];
   const postToolUseFailure: HookMatcher[] = [];
@@ -79,6 +80,10 @@ export function createMiddlewareContext(): MiddlewareContextResult {
 
     onPostGenerateFailure(callback: HookCallback): void {
       postGenerateFailure.push(callback);
+    },
+
+    onGenerationRetryDecision(callback: HookCallback): void {
+      generationRetryDecision.push(callback);
     },
 
     onPreToolUse(callback: HookCallback, matcher?: string): void {
@@ -153,6 +158,9 @@ export function createMiddlewareContext(): MiddlewareContextResult {
     }
     if (postGenerateFailure.length > 0) {
       hooks.PostGenerateFailure = postGenerateFailure;
+    }
+    if (generationRetryDecision.length > 0) {
+      hooks.GenerationRetryDecision = generationRetryDecision;
     }
 
     // Add tool hooks if any were registered

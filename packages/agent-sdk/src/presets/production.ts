@@ -10,6 +10,7 @@
 import type { LanguageModel } from "ai";
 import { createAgent } from "../agent.js";
 import { createGuardrailsHooks, createSecretsFilterHooks } from "../hooks/index.js";
+import { mergeHooks as mergeHookRegistrations } from "../middleware/apply.js";
 import {
   createObservabilityPreset,
   type ObservabilityPreset,
@@ -21,40 +22,6 @@ import {
   type SecurityPolicyPreset,
 } from "../security/index.js";
 import type { Agent, AgentOptions, HookRegistration } from "../types.js";
-
-/**
- * Type-safe helper to merge hook registrations.
- * Handles both HookMatcher[] (tool hooks) and HookCallback[] (other hooks).
- */
-function mergeHooks(target: HookRegistration, source: Partial<HookRegistration>): void {
-  const hookEvents: (keyof HookRegistration)[] = [
-    "PreToolUse",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PreGenerate",
-    "PostGenerate",
-    "PostGenerateFailure",
-    "SessionStart",
-    "SessionEnd",
-    "SubagentStart",
-    "SubagentStop",
-  ];
-
-  // Cast to Record for dynamic key assignment — all HookRegistration values are arrays
-  const t = target as Record<string, unknown[]>;
-  const s = source as Record<string, unknown[] | undefined>;
-
-  for (const event of hookEvents) {
-    const sourceCallbacks = s[event];
-    if (sourceCallbacks) {
-      if (!t[event]) {
-        t[event] = sourceCallbacks;
-      } else {
-        t[event] = [...t[event], ...sourceCallbacks];
-      }
-    }
-  }
-}
 
 /**
  * Options for creating a production agent.
@@ -220,16 +187,16 @@ export function createProductionAgent(options: ProductionAgentOptions): Producti
   }
 
   // Collect hooks from various sources in HookRegistration format
-  const hooksRegistration: HookRegistration = {};
+  let hooksRegistration: HookRegistration = {};
 
   // Add observability hooks
   if (observability?.hooks) {
-    mergeHooks(hooksRegistration, observability.hooks);
+    hooksRegistration = mergeHookRegistrations(hooksRegistration, observability.hooks);
   }
 
   // Add security hooks from policy (already in HookRegistration format)
   if (securityConfig.hooks) {
-    mergeHooks(hooksRegistration, securityConfig.hooks);
+    hooksRegistration = mergeHookRegistrations(hooksRegistration, securityConfig.hooks);
   }
 
   // Add secrets filter hooks (PreGenerate and PostGenerate)

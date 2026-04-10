@@ -12,6 +12,7 @@ import type {
   HookMatcher,
   HookOutput,
   HookRegistration,
+  ToolHookRegistration,
 } from "./types.js";
 
 // =============================================================================
@@ -178,7 +179,7 @@ export async function invokeHooksWithTimeout(
  * @category Hooks
  */
 export async function invokeMatchingHooks(
-  matchers: HookMatcher[],
+  matchers: ToolHookRegistration[],
   toolName: string,
   input: HookInput,
   toolUseId: string,
@@ -186,7 +187,7 @@ export async function invokeMatchingHooks(
 ): Promise<HookOutput[]> {
   const allOutputs: HookOutput[] = [];
 
-  for (const matcher of matchers) {
+  for (const matcher of normalizeToolHookRegistrations(matchers)) {
     if (matchesToolName(toolName, matcher.matcher)) {
       const timeout = matcher.timeout ?? 60000;
       const outputs = await invokeHooksWithTimeout(matcher.hooks, input, toolUseId, agent, timeout);
@@ -195,6 +196,18 @@ export async function invokeMatchingHooks(
   }
 
   return allOutputs;
+}
+
+function normalizeToolHookRegistrations(matchers: ToolHookRegistration[]): HookMatcher[] {
+  return matchers.map((matcher) =>
+    "hooks" in matcher
+      ? matcher
+      : {
+          matcher: matcher.matcher,
+          hooks: [matcher.callback],
+          timeout: matcher.timeout,
+        },
+  );
 }
 
 /**

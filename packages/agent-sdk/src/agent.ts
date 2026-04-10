@@ -119,6 +119,25 @@ class InterruptSignal extends Error {
 }
 
 /**
+ * Internal marker for errors thrown by nested background follow-up turns.
+ *
+ * Nested follow-up requests run their own retry pipeline. If they fail
+ * terminally, the parent request must surface that failure directly instead of
+ * re-entering the parent's retry handler under the wrong request class.
+ *
+ * @internal
+ */
+class NestedBackgroundGenerationError extends Error {
+  readonly originalError: Error;
+
+  constructor(originalError: Error) {
+    super(originalError.message);
+    this.name = "NestedBackgroundGenerationError";
+    this.originalError = originalError;
+  }
+}
+
+/**
  * Check if an error is an InterruptSignal.
  * @internal
  */
@@ -228,41 +247,6 @@ function wrapBackendWithBlockedPatterns<T extends ExecutableBackend>(
       return Reflect.get(target, prop, receiver);
     },
   });
-}
-
-/**
- * Determines if an error should trigger fallback to an alternative model.
- * @internal
- */
-function shouldUseFallback(error: AgentError): boolean {
-  // Check error code for known fallback-triggering conditions
-  if (error.code === "RATE_LIMIT_ERROR" || error.code === "TIMEOUT_ERROR") {
-    return true;
-  }
-
-  // Check for model unavailability or service errors
-  const message = error.message.toLowerCase();
-  const causeMessage = error.cause?.message?.toLowerCase() ?? "";
-
-  if (
-    error.code === "MODEL_ERROR" ||
-    error.code === "UNKNOWN_ERROR" ||
-    error.code === "AGENT_ERROR"
-  ) {
-    // Check both the AgentError message and the original error message
-    if (
-      message.includes("unavailable") ||
-      message.includes("503") ||
-      message.includes("service unavailable") ||
-      causeMessage.includes("unavailable") ||
-      causeMessage.includes("503") ||
-      causeMessage.includes("service unavailable")
-    ) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 /**
@@ -1771,6 +1755,71 @@ export function createAgent(options: AgentOptions): Agent {
   }
 
   /**
+   * Starts a `streamText()` request with the same retry pipeline used by the
+   * top-level streaming entrypoints.
+   *
+   * This only retries failures thrown while creating the stream, matching the
+   * outer streaming methods' current retry behavior.
+   */
+  async function startRetriedStreamText(
+    initialGenOptions: GenerateOptions,
+    createRequest: (
+      requestOptions: GenerateOptions,
+      currentModel: AgentOptions["model"],
+    ) => ReturnType<typeof streamText>,
+  ): Promise<{
+    result: ReturnType<typeof streamText>;
+    effectiveOptions: GenerateOptions;
+  }> {
+    let requestOptions = initialGenOptions;
+    const retryState = createRetryLoopState(
+      options.model,
+      options.generationRetryPolicy?.maxRetries,
+    );
+
+    while (retryState.retryAttempt <= retryState.maxRetries) {
+      try {
+        return {
+          result: createRequest(requestOptions, retryState.currentModel),
+          effectiveOptions: requestOptions,
+        };
+      } catch (error) {
+        const normalizedError = normalizeError(
+          error,
+          "Stream generation failed",
+          requestOptions.threadId,
+        );
+
+        const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
+        const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+        const errorDecision = await handleGenerationError({
+          error: normalizedError,
+          failureHooks: postGenerateFailureHooks,
+          decisionHooks: retryDecisionHooks,
+          genOptions: requestOptions,
+          agent,
+          state: retryState,
+          fallbackModel: options.fallbackModel,
+          retryPolicy: options.generationRetryPolicy,
+        });
+
+        if (errorDecision.shouldRetry) {
+          if (errorDecision.updatedOptions) {
+            requestOptions = errorDecision.updatedOptions;
+          }
+          Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
+          await waitForRetryDelay(errorDecision.retryDelayMs);
+          continue;
+        }
+
+        throw normalizedError;
+      }
+    }
+
+    throw new Error("Unexpected: retry loop exited without return or throw");
+  }
+
+  /**
    * Collect all tools (core + static plugin tools + MCP tools) for
    * deterministic tool execution during resume. This is the unwrapped set
    * — no permission mode, hooks, or signal-catching wrappers applied.
@@ -2100,7 +2149,10 @@ export function createAgent(options: AgentOptions): Agent {
       let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
       // Track messages for emergency compaction (accessible in catch block)
       let lastBuiltMessages: ModelMessage[] = [];
 
@@ -2317,11 +2369,23 @@ export function createAgent(options: AgentOptions): Agent {
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
-            lastResult = await agent.generate({
-              ...genOptions,
+            const followUpOptions: GenerateOptions = {
+              ...effectiveGenOptions,
+              requestClass: "background",
               prompt: followUpPrompt,
               messages: hasCheckpointing ? undefined : runningMessages,
-            });
+            };
+            try {
+              lastResult = await agent.generate(followUpOptions);
+            } catch (error) {
+              throw new NestedBackgroundGenerationError(
+                normalizeError(
+                  error,
+                  "Background follow-up generation failed",
+                  followUpOptions.threadId,
+                ),
+              );
+            }
 
             if (lastResult.status === "interrupted") {
               return lastResult;
@@ -2342,6 +2406,10 @@ export function createAgent(options: AgentOptions): Agent {
 
           return lastResult;
         } catch (error) {
+          if (error instanceof NestedBackgroundGenerationError) {
+            throw error.originalError;
+          }
+
           // Check if this is an InterruptSignal (new interrupt system)
           if (isInterruptSignal(error)) {
             const interrupt = error.interrupt;
@@ -2477,17 +2545,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying
@@ -2554,10 +2627,13 @@ export function createAgent(options: AgentOptions): Agent {
         return;
       }
 
-      const effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
@@ -2772,16 +2848,28 @@ export function createAgent(options: AgentOptions): Agent {
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
-            const followUpGen = agent.stream({
-              ...genOptions,
+            const followUpOptions: GenerateOptions = {
+              ...effectiveGenOptions,
+              requestClass: "background",
               prompt: followUpPrompt,
               messages: hasCheckpointing ? undefined : currentMessages,
-            });
+            };
 
             let followUpText = "";
-            for await (const part of followUpGen) {
-              yield part;
-              if (part.type === "text-delta") followUpText += part.text;
+            try {
+              const followUpGen = agent.stream(followUpOptions);
+              for await (const part of followUpGen) {
+                yield part;
+                if (part.type === "text-delta") followUpText += part.text;
+              }
+            } catch (error) {
+              throw new NestedBackgroundGenerationError(
+                normalizeError(
+                  error,
+                  "Background follow-up generation failed",
+                  followUpOptions.threadId,
+                ),
+              );
             }
 
             if (!hasCheckpointing) {
@@ -2797,6 +2885,10 @@ export function createAgent(options: AgentOptions): Agent {
 
           return;
         } catch (error) {
+          if (error instanceof NestedBackgroundGenerationError) {
+            throw error.originalError;
+          }
+
           // Normalize error to AgentError
           const normalizedError = normalizeError(
             error,
@@ -2806,17 +2898,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying
@@ -2858,10 +2955,13 @@ export function createAgent(options: AgentOptions): Agent {
         });
       }
 
-      const effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
@@ -3018,6 +3118,7 @@ export function createAgent(options: AgentOptions): Agent {
                 // Track accumulated steps for checkpoint saves
                 const initialSteps = await result.steps;
                 let accumulatedStepCount = initialSteps.length;
+                let followUpBaseOptions = effectiveGenOptions;
 
                 let currentMessages: ModelMessage[] = [
                   ...messages,
@@ -3026,24 +3127,52 @@ export function createAgent(options: AgentOptions): Agent {
 
                 let followUpPrompt = await getNextTaskPrompt();
                 while (followUpPrompt !== null) {
-                  // Stream follow-up generation into the same writer
-                  const followUpResult = streamText({
-                    model: modelToUse,
-                    system: initialParams.system,
+                  const followUpRequestOptions: GenerateOptions = {
+                    ...followUpBaseOptions,
+                    requestClass: "background",
+                    prompt: followUpPrompt,
                     messages: [
                       ...currentMessages,
                       { role: "user" as const, content: followUpPrompt },
                     ],
-                    tools: initialParams.tools as ToolSet,
-                    maxOutputTokens: initialParams.maxTokens,
-                    temperature: initialParams.temperature,
-                    stopSequences: initialParams.stopSequences,
-                    abortSignal: initialParams.abortSignal,
-                    stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
-                    // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                    providerOptions: initialParams.providerOptions as any,
-                    headers: initialParams.headers,
-                  });
+                  };
+                  const { result: followUpResult, effectiveOptions: followUpEffectiveOptions } =
+                    await startRetriedStreamText(
+                      followUpRequestOptions,
+                      (requestOptions, currentModel) => {
+                        const followUpMessages = requestOptions.messages ?? [];
+                        const followUpTools = applyToolHooks(
+                          addTaskToolIfConfigured(getActiveToolSet(requestOptions.threadId)),
+                          requestOptions.threadId,
+                        );
+                        const activeFollowUpTools = wrapToolsWithSignalCatching(
+                          followUpTools,
+                          signalState,
+                        );
+                        const followUpPromptContext = buildPromptContext(
+                          requestOptions,
+                          followUpMessages,
+                          requestOptions.threadId,
+                        );
+
+                        return streamText({
+                          model: currentModel,
+                          system: getSystemPrompt(followUpPromptContext),
+                          messages: followUpMessages,
+                          tools: activeFollowUpTools as ToolSet,
+                          maxOutputTokens: requestOptions.maxTokens,
+                          temperature: requestOptions.temperature,
+                          stopSequences: requestOptions.stopSequences,
+                          abortSignal: requestOptions.signal,
+                          stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                          output: requestOptions.output,
+                          // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                          providerOptions: requestOptions.providerOptions as any,
+                          headers: requestOptions.headers,
+                        });
+                      },
+                    );
+                  followUpBaseOptions = followUpEffectiveOptions;
 
                   writer.merge(followUpResult.toUIMessageStream());
                   const followUpText = await followUpResult.text;
@@ -3065,9 +3194,9 @@ export function createAgent(options: AgentOptions): Agent {
                   accumulatedStepCount += followUpSteps.length;
 
                   // Checkpoint save
-                  if (effectiveGenOptions.threadId && options.checkpointer) {
+                  if (followUpEffectiveOptions.threadId && options.checkpointer) {
                     await saveCheckpoint(
-                      effectiveGenOptions.threadId,
+                      followUpEffectiveOptions.threadId,
                       currentMessages,
                       startStep + accumulatedStepCount,
                     );
@@ -3097,9 +3226,9 @@ export function createAgent(options: AgentOptions): Agent {
                     };
                     const followUpPostGenerateInput: PostGenerateInput = {
                       hook_event_name: "PostGenerate",
-                      session_id: effectiveGenOptions.threadId ?? "default",
+                      session_id: followUpEffectiveOptions.threadId ?? "default",
                       cwd: process.cwd(),
-                      options: effectiveGenOptions,
+                      options: followUpEffectiveOptions,
                       result: followUpHookResult,
                     };
                     await invokeHooksWithTimeout(
@@ -3128,17 +3257,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying
@@ -3169,10 +3303,13 @@ export function createAgent(options: AgentOptions): Agent {
       );
 
       // Input transformation is applied even though respondWith is not supported
-      const effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
@@ -3320,17 +3457,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying
@@ -3372,10 +3514,13 @@ export function createAgent(options: AgentOptions): Agent {
         });
       }
 
-      const effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = preGenResult.effectiveOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(options.model);
+      const retryState = createRetryLoopState(
+        options.model,
+        options.generationRetryPolicy?.maxRetries,
+      );
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
@@ -3579,6 +3724,7 @@ export function createAgent(options: AgentOptions): Agent {
                 // Track accumulated steps for checkpoint saves
                 const initialSteps = await result.steps;
                 let accumulatedStepCount = initialSteps.length;
+                let followUpBaseOptions = effectiveGenOptions;
 
                 let currentMessages: ModelMessage[] = [
                   ...messages,
@@ -3587,24 +3733,62 @@ export function createAgent(options: AgentOptions): Agent {
 
                 let followUpPrompt = await getNextTaskPrompt();
                 while (followUpPrompt !== null) {
-                  // Stream follow-up generation into the same writer
-                  const followUpResult = streamText({
-                    model: modelToUse,
-                    system: initialParams.system,
+                  const followUpRequestOptions: GenerateOptions = {
+                    ...followUpBaseOptions,
+                    requestClass: "background",
+                    prompt: followUpPrompt,
                     messages: [
                       ...currentMessages,
                       { role: "user" as const, content: followUpPrompt },
                     ],
-                    tools: initialParams.tools as ToolSet,
-                    maxOutputTokens: initialParams.maxTokens,
-                    temperature: initialParams.temperature,
-                    stopSequences: initialParams.stopSequences,
-                    abortSignal: initialParams.abortSignal,
-                    stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
-                    // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                    providerOptions: initialParams.providerOptions as any,
-                    headers: initialParams.headers,
-                  });
+                  };
+                  const { result: followUpResult, effectiveOptions: followUpEffectiveOptions } =
+                    await startRetriedStreamText(
+                      followUpRequestOptions,
+                      (requestOptions, currentModel) => {
+                        const followUpMessages = requestOptions.messages ?? [];
+                        const hookedFollowUpTools = applyToolHooks(
+                          addTaskToolIfConfigured(
+                            getActiveToolSetWithStreaming(
+                              streamingContext,
+                              requestOptions.threadId,
+                            ),
+                            streamingContext,
+                          ),
+                          requestOptions.threadId,
+                        );
+                        const requestScopedFollowUpTools = wrapToolsWithStreamingContext(
+                          hookedFollowUpTools,
+                          streamingContext,
+                        );
+                        const activeFollowUpTools = wrapToolsWithSignalCatching(
+                          requestScopedFollowUpTools,
+                          signalState,
+                        );
+                        const followUpPromptContext = buildPromptContext(
+                          requestOptions,
+                          followUpMessages,
+                          requestOptions.threadId,
+                        );
+
+                        return streamText({
+                          model: currentModel,
+                          system: getSystemPrompt(followUpPromptContext),
+                          messages: followUpMessages,
+                          tools: activeFollowUpTools as ToolSet,
+                          maxOutputTokens: requestOptions.maxTokens,
+                          temperature: requestOptions.temperature,
+                          stopSequences: requestOptions.stopSequences,
+                          abortSignal: requestOptions.signal,
+                          stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                          output: requestOptions.output,
+                          // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                          providerOptions: requestOptions.providerOptions as any,
+                          headers: requestOptions.headers,
+                        });
+                      },
+                    );
+                  followUpBaseOptions = followUpEffectiveOptions;
 
                   writer.merge(followUpResult.toUIMessageStream());
                   const followUpText = await followUpResult.text;
@@ -3626,9 +3810,9 @@ export function createAgent(options: AgentOptions): Agent {
                   accumulatedStepCount += followUpSteps.length;
 
                   // Checkpoint save
-                  if (effectiveGenOptions.threadId && options.checkpointer) {
+                  if (followUpEffectiveOptions.threadId && options.checkpointer) {
                     await saveCheckpoint(
-                      effectiveGenOptions.threadId,
+                      followUpEffectiveOptions.threadId,
                       currentMessages,
                       startStep + accumulatedStepCount,
                     );
@@ -3658,9 +3842,9 @@ export function createAgent(options: AgentOptions): Agent {
                     };
                     const followUpPostGenerateInput: PostGenerateInput = {
                       hook_event_name: "PostGenerate",
-                      session_id: effectiveGenOptions.threadId ?? "default",
+                      session_id: followUpEffectiveOptions.threadId ?? "default",
                       cwd: process.cwd(),
-                      options: effectiveGenOptions,
+                      options: followUpEffectiveOptions,
                       result: followUpHookResult,
                     };
                     await invokeHooksWithTimeout(
@@ -3689,17 +3873,22 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Handle error with PostGenerateFailure hooks and fallback logic
           const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const errorDecision = await handleGenerationError(
-            normalizedError,
-            postGenerateFailureHooks,
-            effectiveGenOptions,
+          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+          const errorDecision = await handleGenerationError({
+            error: normalizedError,
+            failureHooks: postGenerateFailureHooks,
+            decisionHooks: retryDecisionHooks,
+            genOptions: effectiveGenOptions,
             agent,
-            retryState,
-            options.fallbackModel,
-            shouldUseFallback,
-          );
+            state: retryState,
+            fallbackModel: options.fallbackModel,
+            retryPolicy: options.generationRetryPolicy,
+          });
 
           if (errorDecision.shouldRetry) {
+            if (errorDecision.updatedOptions) {
+              effectiveGenOptions = errorDecision.updatedOptions;
+            }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
             // Wait for the specified delay before retrying

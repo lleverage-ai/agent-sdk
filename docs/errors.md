@@ -308,6 +308,74 @@ const agent = createAgent({
 });
 ```
 
+`PostGenerateFailure` hooks now receive optional retry metadata:
+- `requestClass` for the current request (`"foreground"`, `"background"`, or a host-defined class)
+- `failureClassification.type` for the high-level taxonomy (`overload`, `authentication`, `authorization`, `transport`, `context_overflow`, `unknown`)
+- `failureClassification.subtype` for more specific cases such as `rate_limit`, `timeout`, `model_unavailable`, or `stale_socket`
+- `consecutiveOverloadCount` so hosts can inspect bounded overload behavior
+
+## Generation Retry Policy
+
+Use `generationRetryPolicy` when retry behavior should depend on request class and failure type rather than a single global retry path.
+
+```typescript
+const agent = createAgent({
+  model,
+  fallbackModel,
+  generationRetryPolicy: {
+    requestClasses: {
+      foreground: {
+        maxConsecutiveOverloadRetries: 2,
+      },
+      background: {
+        maxConsecutiveOverloadRetries: 0,
+        fallbackOnOverloadExhaustion: false,
+      },
+    },
+    onAuthenticationFailure: async ({ options }) => ({
+      retry: true,
+      updatedOptions: {
+        ...options,
+        headers: {
+          ...options.headers,
+          Authorization: `Bearer ${await refreshToken()}`,
+        },
+      },
+    }),
+    onTransportFailure: async ({ options }) => ({
+      retry: true,
+      updatedOptions: {
+        ...options,
+        headers: {
+          ...options.headers,
+          Connection: "close",
+        },
+      },
+    }),
+    contextOverflow: {
+      reductionFactor: 0.5,
+      minMaxTokens: 256,
+    },
+  },
+});
+```
+
+The built-in taxonomy is:
+- `overload` for rate limits, timeouts, and temporary model/service unavailability
+- `authentication` for token or API-key failures
+- `authorization` for permission-denied failures
+- `transport` for network and stale-socket failures such as `ECONNRESET` and `EPIPE`
+- `context_overflow` for context-window or max-token overflow failures
+- `unknown` for anything the SDK cannot classify
+
+Extension points for hosts:
+- Set `GenerateOptions.requestClass` per request to vary overload behavior for foreground vs background work.
+- Use `requestClasses` to bound consecutive overload retries before fallback or termination.
+- Use `onAuthenticationFailure` to refresh credentials and return updated headers/provider options.
+- Use `onTransportFailure` to re-establish clients or force a fresh connection after stale socket failures.
+- Use `contextOverflow` to automatically reduce `maxTokens` on retry when overflow errors are recoverable.
+- Use `GenerationRetryDecision` hooks for observability of the final retry/fallback/fail decision.
+
 ## Error Codes
 
 Common error codes for programmatic handling:
