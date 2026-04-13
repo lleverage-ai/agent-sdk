@@ -7,9 +7,13 @@ import type { MemoryEntry, MemoryScope } from "./types.js";
 // Types
 // ---------------------------------------------------------------------------
 
+/** A single entry in the `MEMORY.md` index file. */
 export interface IndexItem {
+  /** Human-readable name of the memory. */
   name: string;
+  /** Bare filename (e.g. `user_foo.md`), not a full path. */
   filename: string;
+  /** One-line description. */
   description: string;
 }
 
@@ -89,6 +93,7 @@ function scopeFromEntry(entry: MemoryEntry): {
 export class MemoryIndex {
   constructor(private store: MemoryStore) {}
 
+  /** Loads index items from the `MEMORY.md` file for the given scope. */
   async load(scope: MemoryScope, projectSlug?: string, agentId?: string): Promise<IndexItem[]> {
     const path = indexPath(scope, projectSlug, agentId);
     const data = await this.store.read(path);
@@ -112,6 +117,7 @@ export class MemoryIndex {
     return items;
   }
 
+  /** Rebuilds the `MEMORY.md` index by scanning all memory files in the scope. */
   async rebuild(scope: MemoryScope, projectSlug?: string, agentId?: string): Promise<void> {
     const dir = scopeDirectory(scope, projectSlug, agentId);
     const dirPath = createMemoryPath(dir);
@@ -154,6 +160,7 @@ export class MemoryIndex {
     await this.store.write(path, encoder.encode(serialiseIndex(items)));
   }
 
+  /** Adds or updates a single entry in the scope's `MEMORY.md` index. */
   async upsert(entry: MemoryEntry): Promise<void> {
     const { scope, projectSlug, agentId } = scopeFromEntry(entry);
     const items = await this.load(scope, projectSlug, agentId);
@@ -180,6 +187,7 @@ export class MemoryIndex {
     await this.store.write(path, encoder.encode(serialiseIndex(items)));
   }
 
+  /** Removes an entry from the scope's `MEMORY.md` index by file path. */
   async remove(path: string): Promise<void> {
     const segments = path.split("/");
     const filename = segments[segments.length - 1]!;

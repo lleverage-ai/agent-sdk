@@ -13,6 +13,7 @@ import type {
 // Public types
 // ---------------------------------------------------------------------------
 
+/** Configuration for creating a hybrid BM25 + vector search. */
 export interface HybridSearchOptions {
   bm25: SearchIndex;
   vector?: VectorIndex;
@@ -20,6 +21,7 @@ export interface HybridSearchOptions {
   reranker?: MemoryLLMProvider;
 }
 
+/** Combined search interface returned by {@link createHybridSearch}. */
 export interface HybridSearch {
   search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
   searchWithTrace(

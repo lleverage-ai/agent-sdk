@@ -31,6 +31,15 @@ const OPERATORS = new Set(["AND", "OR"]);
 // parseQuery
 // ---------------------------------------------------------------------------
 
+/**
+ * Parses a raw search query string into structured terms.
+ *
+ * Supports quoted phrases, prefix wildcards (`term*`), negation (`-term`),
+ * and stop word removal with Porter stemming.
+ *
+ * @param raw - The raw query string
+ * @returns A {@link ParsedQuery} with structured terms and the original input
+ */
 export function parseQuery(raw: string): ParsedQuery {
   const terms: QueryTerm[] = [];
   const trimmed = raw.trim();
@@ -139,6 +148,15 @@ export function parseQuery(raw: string): ParsedQuery {
 // buildSearchTerms
 // ---------------------------------------------------------------------------
 
+/**
+ * Extracts positive search terms from a parsed query for index lookup.
+ *
+ * Excludes negated terms and returns stemmed values for word/prefix terms,
+ * raw values for phrase terms.
+ *
+ * @param parsed - The parsed query from {@link parseQuery}
+ * @returns An array of search terms suitable for index queries
+ */
 export function buildSearchTerms(parsed: ParsedQuery): string[] {
   const result: string[] = [];
 

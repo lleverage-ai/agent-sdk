@@ -1,4 +1,4 @@
-import { serialiseFrontmatter } from "../frontmatter.js";
+import { parseFrontmatter, serialiseFrontmatter } from "../frontmatter.js";
 import { MemoryIndex } from "../memory-index.js";
 import { createMemoryPath, sanitiseFilename, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
@@ -352,9 +352,9 @@ export function createExtractor(provider: MemoryLLMProvider): Extractor {
               const existingData = await store.read(path);
               if (existingData !== null) {
                 const existingText = decoder.decode(existingData);
-                const createdMatch = /^created:\s*(.+)$/m.exec(existingText);
-                if (createdMatch?.[1]) {
-                  frontmatter.created = createdMatch[1].trim();
+                const parsed = parseFrontmatter(existingText);
+                if (parsed !== null) {
+                  frontmatter.created = parsed.frontmatter.created;
                 }
               }
             }

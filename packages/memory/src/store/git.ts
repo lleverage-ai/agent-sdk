@@ -60,6 +60,12 @@ async function git(cwd: string, args: string[]): Promise<GitResult> {
 // Detection helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Returns whether a `.git` directory exists at the given root path.
+ *
+ * @param root - Absolute path to the directory to check
+ * @returns `true` if `.git` is present, `false` otherwise
+ */
 export async function hasGitDir(root: string): Promise<boolean> {
   try {
     await access(join(root, ".git"));
