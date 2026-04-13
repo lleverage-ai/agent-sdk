@@ -4,7 +4,11 @@ This file provides guidance for AI assistants working on this codebase.
 
 ## Project Overview
 
-This is the Agent SDK (`@lleverage-ai/agent-sdk`) - a framework for building AI agents using the Vercel AI SDK.
+This is the Agent SDK monorepo - a framework for building AI agents using the Vercel AI SDK. It contains three packages:
+
+- `@lleverage-ai/agent-sdk` - core agent framework (tools, plugins, hooks, prompt builder)
+- `@lleverage-ai/agent-threads` - event transport, replay, and durable transcripts
+- `@lleverage-ai/memory` - persistent memory system with extraction, recall, retrieval, and consolidation
 
 ## Tech Stack
 
@@ -44,6 +48,7 @@ bun run clean
 # Run commands for a single package
 bun run --filter '@lleverage-ai/agent-sdk' test
 bun run --filter '@lleverage-ai/agent-threads' test
+bun run --filter '@lleverage-ai/memory' test
 ```
 
 ## Changelog
@@ -94,6 +99,43 @@ agent-sdk/                          # Workspace root
 │   │   │   ├── task-store/         # Background task persistence
 │   │   │   ├── testing/            # Comprehensive test utilities
 │   │   │   └── tools/              # Core tool implementations
+│   │   └── tests/
+│   │
+│   ├── memory/                     # @lleverage-ai/memory
+│   │   ├── src/
+│   │   │   ├── index.ts            # Public exports
+│   │   │   ├── types.ts            # Core types (MemoryType, MemoryScope, MemoryEntry)
+│   │   │   ├── path.ts             # MemoryPath validation and utilities
+│   │   │   ├── frontmatter.ts      # YAML frontmatter parser/serialiser
+│   │   │   ├── wikilink.ts         # [[wikilink]] extraction and resolution
+│   │   │   ├── memory-index.ts     # MEMORY.md index management
+│   │   │   ├── slug.ts             # Project slug derivation from git remote
+│   │   │   ├── store/              # Storage backends
+│   │   │   │   ├── types.ts        # MemoryStore, MemoryBatch, EventSink
+│   │   │   │   ├── filesystem.ts   # FilesystemStore (atomic writes)
+│   │   │   │   ├── git.ts          # GitStore (commit/push/pull on mutations)
+│   │   │   │   ├── in-memory.ts    # InMemoryStore (testing)
+│   │   │   │   ├── autodetect.ts   # Backend autodetection (.git check)
+│   │   │   │   └── atomic.ts       # Atomic write utilities
+│   │   │   ├── pipeline/           # Memory lifecycle
+│   │   │   │   ├── types.ts        # Provider interfaces, pipeline types
+│   │   │   │   ├── extractor.ts    # Post-turn memory extraction
+│   │   │   │   ├── recaller.ts     # Pre-turn memory recall
+│   │   │   │   ├── reflector.ts    # Post-session heuristic extraction
+│   │   │   │   └── consolidator.ts # Maintenance (dedup, staleness, reinforcement)
+│   │   │   ├── search/             # Retrieval stack
+│   │   │   │   ├── bm25.ts         # In-process BM25 with Porter stemming
+│   │   │   │   ├── vector.ts       # Cosine similarity vector search
+│   │   │   │   ├── hybrid.ts       # RRF fusion with reranking
+│   │   │   │   ├── query-parser.ts # Query parsing (phrases, negation, prefixes)
+│   │   │   │   └── trigram.ts      # Fuzzy trigram fallback
+│   │   │   ├── plugin/             # Agent SDK integration
+│   │   │   │   ├── index.ts        # createMemoryPlugin() factory
+│   │   │   │   ├── prompt-components.ts # System prompt formatting
+│   │   │   │   └── tools.ts        # Memory tools (remember, recall, forget, update)
+│   │   │   └── testing/            # Test utilities
+│   │   │       ├── contract.ts     # Portable store contract test suite
+│   │   │       └── mock-providers.ts # Mock LLM and embedding providers
 │   │   └── tests/
 │   │
 │   └── agent-threads/              # @lleverage-ai/agent-threads
@@ -868,6 +910,126 @@ const approval = await permissionStore.getApproval(memoryId, contentHash);
 if (!approval || approval.status !== "approved") {
   // Request user approval
 }
+```
+
+## @lleverage-ai/memory Package
+
+The `@lleverage-ai/memory` package provides a full persistent memory lifecycle for AI agents. It's standalone (no dependency on `@lleverage-ai/agent-sdk`) but integrates via the plugin system.
+
+### Core Concepts
+
+- **Memory types**: `user` (who the user is), `feedback` (corrections/confirmations), `project` (ongoing work context), `reference` (external resource pointers)
+- **Memory scopes**: `global` (cross-project), `project` (per-project), `agent` (per-agent isolation)
+- **Store abstraction**: `MemoryStore` interface with filesystem, git-backed, and in-memory backends
+- **Pipeline**: extraction (post-turn), recall (pre-turn), reflection (post-session), consolidation (maintenance)
+- **Retrieval**: hybrid BM25 + vector search with RRF fusion and optional LLM reranking
+
+### Quick Start
+
+```typescript
+import {
+  createInMemoryStore,
+  createMemoryPlugin,
+  createExtractor,
+  createRecaller,
+  createFilesystemStore,
+  createGitStore,
+  createAutodetectedStore,
+} from "@lleverage-ai/memory";
+
+// 1. Choose a store backend
+const store = createFilesystemStore({ root: "~/.my-agent/memory" });
+// or: const store = await createGitStore({ root: "~/.my-agent/memory" });
+// or: const store = await createAutodetectedStore({ root: "~/.my-agent/memory" });
+
+// 2. Create the plugin (wires into agent lifecycle)
+const memoryPlugin = createMemoryPlugin({
+  store,
+  llmProvider: myLLMAdapter,      // optional, enables LLM-scored recall
+  embeddingProvider: myEmbedder,  // optional, enables vector search
+  extraction: { enabled: true },
+  recall: { enabled: true, maxResults: 5 },
+  scope: "project",
+  projectSlug: "my-app",
+});
+
+// 3. Use the plugin hooks
+const recalled = await memoryPlugin.onBeforeGenerate({
+  messages: conversation,
+  scope: "project",
+  projectSlug: "my-app",
+});
+// recalled.systemPromptSection contains formatted memories for the prompt
+// recalled.memories contains the raw SurfacedMemory objects
+
+await memoryPlugin.onAfterGenerate({
+  messages: conversation,
+  scope: "project",
+  projectSlug: "my-app",
+});
+// Memories are now extracted and persisted
+```
+
+### Provider Interfaces
+
+The package uses minimal provider interfaces so consumers bring their own LLM and embedding backends:
+
+```typescript
+import type { MemoryLLMProvider, MemoryEmbeddingProvider } from "@lleverage-ai/memory";
+
+// Adapt any LLM to this interface
+const llmProvider: MemoryLLMProvider = {
+  generate: (prompt, options) => generateText({ model, prompt, ...options }),
+  generateStructured: (prompt, schema, options) => generateObject({ model, prompt, schema }),
+};
+
+// Adapt any embedding model
+const embeddingProvider: MemoryEmbeddingProvider = {
+  embed: (texts) => embedMany({ model: embeddingModel, values: texts }),
+  dimensions: 1024,
+  model: "bge-m3",
+};
+```
+
+### Search (subpath export)
+
+The search module is available via `@lleverage-ai/memory/search`:
+
+```typescript
+import {
+  createBM25Index,
+  createInMemoryVectorIndex,
+  createHybridSearch,
+  createTrigramIndex,
+  parseQuery,
+} from "@lleverage-ai/memory/search";
+
+const bm25 = createBM25Index();
+await bm25.index(entries);
+const results = await bm25.search("deployment kubernetes");
+
+// Hybrid search with both BM25 and vector
+const hybrid = createHybridSearch({
+  bm25,
+  vector: createInMemoryVectorIndex(),
+  embedder: myEmbeddingProvider,
+});
+const { results, trace } = await hybrid.searchWithTrace("deployment config");
+```
+
+### Testing (subpath export)
+
+Test utilities available via `@lleverage-ai/memory/testing`:
+
+```typescript
+import {
+  runStoreContract,
+  createMockLLMProvider,
+  createMockEmbeddingProvider,
+} from "@lleverage-ai/memory/testing";
+
+// Run the full contract test suite against any MemoryStore implementation
+runStoreContract("MyCustomStore", () => createMyCustomStore());
 ```
 
 ## Context Manager
