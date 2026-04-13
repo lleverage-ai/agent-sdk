@@ -29,21 +29,33 @@ function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(isString);
 }
 
+/**
+ * Parses YAML frontmatter from a raw memory file string.
+ *
+ * @param raw - The raw file content including `---` delimiters
+ * @returns Parsed frontmatter and body content, or `null` if parsing fails
+ */
 export function parseFrontmatter(
   raw: string,
 ): { frontmatter: MemoryFrontmatter; content: string } | null {
-  if (!raw.startsWith(FRONTMATTER_DELIMITER)) {
+  // Normalise CRLF to LF for consistent parsing
+  const normalised = raw.includes("\r\n") ? raw.replace(/\r\n/g, "\n") : raw;
+
+  if (!normalised.startsWith(FRONTMATTER_DELIMITER)) {
     return null;
   }
 
-  const secondDelimiter = raw.indexOf(`\n${FRONTMATTER_DELIMITER}`, FRONTMATTER_DELIMITER.length);
+  const secondDelimiter = normalised.indexOf(
+    `\n${FRONTMATTER_DELIMITER}`,
+    FRONTMATTER_DELIMITER.length,
+  );
 
   if (secondDelimiter === -1) {
     return null;
   }
 
-  const yamlBlock = raw.slice(FRONTMATTER_DELIMITER.length + 1, secondDelimiter);
-  const content = raw.slice(secondDelimiter + 1 + FRONTMATTER_DELIMITER.length + 1);
+  const yamlBlock = normalised.slice(FRONTMATTER_DELIMITER.length + 1, secondDelimiter);
+  const content = normalised.slice(secondDelimiter + 1 + FRONTMATTER_DELIMITER.length + 1);
 
   let parsed: Record<string, unknown>;
   try {
@@ -112,6 +124,13 @@ export function parseFrontmatter(
   return { frontmatter, content: content.trim() };
 }
 
+/**
+ * Serialises a frontmatter object and body content into a markdown string.
+ *
+ * @param frontmatter - The memory metadata
+ * @param content - The body content
+ * @returns A complete markdown string with YAML frontmatter
+ */
 export function serialiseFrontmatter(frontmatter: MemoryFrontmatter, content: string): string {
   const data: Record<string, unknown> = {
     name: frontmatter.name,
@@ -134,6 +153,13 @@ export function serialiseFrontmatter(frontmatter: MemoryFrontmatter, content: st
   return `${FRONTMATTER_DELIMITER}\n${yaml}\n${FRONTMATTER_DELIMITER}\n\n${content.trim()}\n`;
 }
 
+/**
+ * Parses a memory file from its path and raw content, returning a full {@link MemoryEntry}.
+ *
+ * @param path - The file path (used for the entry's `path` and `indexEntry` fields)
+ * @param raw - The raw file content
+ * @returns A complete MemoryEntry, or `null` if the file cannot be parsed
+ */
 export function parseMemoryFile(path: string, raw: string): MemoryEntry | null {
   const result = parseFrontmatter(raw);
   if (result === null) {

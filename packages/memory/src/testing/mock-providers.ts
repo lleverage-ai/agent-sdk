@@ -4,10 +4,10 @@ import type {
   MemoryLLMProvider,
 } from "../pipeline/types.js";
 
-export type MockLLMResponse = {
+export interface MockLLMResponse {
   text?: string;
   structured?: unknown;
-};
+}
 
 /**
  * Create a mock LLM provider that returns responses from a queue.

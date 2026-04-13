@@ -19,6 +19,11 @@ function decode(bytes: Uint8Array): string {
  *
  * Inspired by Jeff's `braintest` pattern. Call this from any test file and
  * pass a factory that creates a fresh store instance for each test.
+ *
+ * @param name - Display name for the test suite
+ * @param factory - Factory function that creates a fresh store for each test
+ *
+ * @category Testing
  */
 export function runStoreContract(
   name: string,

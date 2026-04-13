@@ -38,9 +38,13 @@ function computeNorm(v: Float32Array): number {
 }
 
 function dotProduct(a: Float32Array, b: Float32Array): number {
+  if (a.length !== b.length) {
+    throw new Error(
+      `Embedding dimension mismatch: ${a.length} vs ${b.length}. All embeddings must use the same model.`,
+    );
+  }
   let sum = 0;
-  const len = Math.min(a.length, b.length);
-  for (let i = 0; i < len; i++) {
+  for (let i = 0; i < a.length; i++) {
     sum += a[i]! * b[i]!;
   }
   return sum;
@@ -50,6 +54,11 @@ function dotProduct(a: Float32Array, b: Float32Array): number {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates an in-memory vector search index using cosine similarity.
+ *
+ * @returns A configured {@link VectorIndex}
+ */
 export function createInMemoryVectorIndex(): VectorIndex {
   const entries = new Map<string, VectorEntry>();
 

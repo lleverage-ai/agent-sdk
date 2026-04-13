@@ -12,7 +12,7 @@ import type { MemoryScope, MemoryType } from "../types.js";
 // ---------------------------------------------------------------------------
 
 /** An entry to be indexed for search. */
-export type IndexEntry = {
+export interface IndexEntry {
   path: MemoryPath;
   title: string;
   description: string;
@@ -21,10 +21,10 @@ export type IndexEntry = {
   scope: MemoryScope;
   projectSlug?: string;
   agentId?: string;
-};
+}
 
 /** Options for search queries. */
-export type SearchOptions = {
+export interface SearchOptions {
   /** Search mode. Default: "hybrid" if embedder available, "bm25" otherwise. */
   mode?: "bm25" | "vector" | "hybrid";
   /** Maximum results. Default: 20. */
@@ -37,16 +37,16 @@ export type SearchOptions = {
   agentId?: string;
   /** Filter by memory types. */
   types?: MemoryType[];
-};
+}
 
 /** A single search result. */
-export type SearchResult = {
+export interface SearchResult {
   path: MemoryPath;
   score: number;
   title: string;
   description: string;
   highlights?: string[];
-};
+}
 
 /**
  * Full-text search index over memory entries.
@@ -54,7 +54,7 @@ export type SearchResult = {
  * The default implementation uses in-process BM25. Production deployments
  * can swap in PostgreSQL full-text search or other backends.
  */
-export type SearchIndex = {
+export interface SearchIndex {
   /** Index a batch of entries. Replaces existing entries at the same paths. */
   index(entries: IndexEntry[]): Promise<void>;
   /** Remove entries by path. */
@@ -63,14 +63,14 @@ export type SearchIndex = {
   search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
   /** Rebuild the entire index from scratch. */
   rebuild(): Promise<void>;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Vector index
 // ---------------------------------------------------------------------------
 
 /** Options for vector similarity search. */
-export type VectorSearchOptions = {
+export interface VectorSearchOptions {
   /** Maximum results. Default: 20. */
   limit?: number;
   /** Minimum similarity threshold (0-1). Default: 0. */
@@ -81,15 +81,15 @@ export type VectorSearchOptions = {
   projectSlug?: string;
   /** Filter by agent. */
   agentId?: string;
-};
+}
 
 /** A single vector search result. */
-export type VectorSearchResult = {
+export interface VectorSearchResult {
   path: MemoryPath;
   score: number;
   title: string;
   description: string;
-};
+}
 
 /**
  * Vector similarity index over memory embeddings.
@@ -97,7 +97,7 @@ export type VectorSearchResult = {
  * The default implementation uses in-memory float32 cosine similarity.
  * Production deployments can use pgvector, Milvus, or other backends.
  */
-export type VectorIndex = {
+export interface VectorIndex {
   /** Insert or update an embedding. */
   upsert(
     path: MemoryPath,
@@ -114,14 +114,14 @@ export type VectorIndex = {
   remove(paths: MemoryPath[]): Promise<void>;
   /** Search for similar entries. */
   search(queryEmbedding: number[], options?: VectorSearchOptions): Promise<VectorSearchResult[]>;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Hybrid search
 // ---------------------------------------------------------------------------
 
 /** Trace of a hybrid search for debugging and observability. */
-export type HybridSearchTrace = {
+export interface HybridSearchTrace {
   bm25Results: SearchResult[];
   vectorResults: VectorSearchResult[];
   fusedResults: SearchResult[];
@@ -132,4 +132,4 @@ export type HybridSearchTrace = {
   rerankDurationMs?: number;
   rerankSkipped: boolean;
   totalDurationMs: number;
-};
+}

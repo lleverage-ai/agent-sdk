@@ -7,11 +7,11 @@ import type { MemoryEntry, MemoryScope } from "./types.js";
 // Types
 // ---------------------------------------------------------------------------
 
-export type IndexItem = {
+export interface IndexItem {
   name: string;
   filename: string;
   description: string;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -79,6 +79,13 @@ function scopeFromEntry(entry: MemoryEntry): {
 // MemoryIndex
 // ---------------------------------------------------------------------------
 
+/**
+ * Manages the `MEMORY.md` index file for each memory scope directory.
+ *
+ * The index provides a human-readable summary of all memories in a scope,
+ * formatted as markdown links. It is rebuilt from the store contents and
+ * updated incrementally on upsert/remove.
+ */
 export class MemoryIndex {
   constructor(private store: MemoryStore) {}
 

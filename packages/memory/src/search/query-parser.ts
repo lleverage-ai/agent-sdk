@@ -13,16 +13,16 @@ import { porterStem, STOP_WORDS } from "./stemmer.js";
 // Types
 // ---------------------------------------------------------------------------
 
-export type QueryTerm = {
+export interface QueryTerm {
   value: string;
   type: "word" | "phrase" | "prefix";
   negated: boolean;
-};
+}
 
-export type ParsedQuery = {
+export interface ParsedQuery {
   terms: QueryTerm[];
   original: string;
-};
+}
 
 // Structural operators stripped from the term list
 const OPERATORS = new Set(["AND", "OR"]);

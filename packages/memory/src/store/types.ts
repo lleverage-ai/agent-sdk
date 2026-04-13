@@ -25,39 +25,39 @@ export type MemoryPath = string & { readonly __brand: unique symbol };
 // ---------------------------------------------------------------------------
 
 /** Metadata about a single entry in the store. */
-export type FileInfo = {
+export interface FileInfo {
   path: MemoryPath;
   size: number;
   modifiedAt: Date;
   isDirectory: boolean;
-};
+}
 
 // ---------------------------------------------------------------------------
 // List options
 // ---------------------------------------------------------------------------
 
-export type ListOptions = {
+export interface ListOptions {
   /** Recurse into subdirectories. Default: false. */
   recursive?: boolean;
   /** Glob pattern to filter results. */
   glob?: string;
   /** Include generated files (prefixed with `_`). Default: false. */
   includeGenerated?: boolean;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Batch
 // ---------------------------------------------------------------------------
 
 /** Controls commit metadata when batching mutations. */
-export type BatchOptions = {
+export interface BatchOptions {
   /** Semantic tag for the batch, e.g. "extract", "reflect", "consolidate". */
   reason: string;
   /** Human-readable commit/log message. */
   message: string;
   /** Author name for audit trail. */
   author?: string;
-};
+}
 
 /**
  * Transactional batch of store mutations.
@@ -65,13 +65,13 @@ export type BatchOptions = {
  * Reads inside a batch see pending writes. Mutations are only flushed on
  * successful completion of the batch callback.
  */
-export type MemoryBatch = {
+export interface MemoryBatch {
   read(path: MemoryPath): Promise<Uint8Array | null>;
   write(path: MemoryPath, content: Uint8Array): Promise<void>;
   append(path: MemoryPath, content: Uint8Array): Promise<void>;
   delete(path: MemoryPath): Promise<void>;
   rename(src: MemoryPath, dst: MemoryPath): Promise<void>;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Events
@@ -81,13 +81,13 @@ export type MemoryBatch = {
 export type EventType = "write" | "append" | "delete" | "rename";
 
 /** A mutation event emitted after a store operation completes. */
-export type StoreEvent = {
+export interface StoreEvent {
   type: EventType;
   path: MemoryPath;
   /** Present only for rename events - the original path. */
   oldPath?: MemoryPath;
   timestamp: Date;
-};
+}
 
 /** Callback for receiving store mutation events. */
 export type EventSink = (event: StoreEvent) => void;
@@ -102,7 +102,7 @@ export type EventSink = (event: StoreEvent) => void;
  * All memory operations flow through this interface. Implementations include
  * filesystem, git-backed, in-memory (testing), and database backends.
  */
-export type MemoryStore = {
+export interface MemoryStore {
   /** Read a file. Returns null if the path does not exist. */
   read(path: MemoryPath): Promise<Uint8Array | null>;
 
@@ -146,7 +146,7 @@ export type MemoryStore = {
 
   /** Release resources held by this store. */
   close(): Promise<void>;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Sentinel errors

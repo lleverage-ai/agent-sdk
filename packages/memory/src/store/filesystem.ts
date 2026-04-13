@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { atomicWrite } from "./atomic.js";
+import { globToRegex } from "./glob.js";
 import type {
   BatchOptions,
   EventSink,
@@ -17,36 +18,9 @@ import { InvalidPathError, MemoryNotFoundError } from "./types.js";
 // Options
 // ---------------------------------------------------------------------------
 
-export type FilesystemStoreOptions = {
+export interface FilesystemStoreOptions {
   /** Root directory for memory storage. */
   root: string;
-};
-
-// ---------------------------------------------------------------------------
-// Glob matcher
-// ---------------------------------------------------------------------------
-
-function globToRegex(pattern: string): RegExp {
-  let re = "";
-  let i = 0;
-  while (i < pattern.length) {
-    const ch = pattern[i]!;
-    if (ch === "*" && pattern[i + 1] === "*") {
-      re += ".*";
-      i += 2;
-      if (pattern[i] === "/") i++;
-    } else if (ch === "*") {
-      re += "[^/]*";
-      i++;
-    } else if (ch === "?") {
-      re += "[^/]";
-      i++;
-    } else {
-      re += ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      i++;
-    }
-  }
-  return new RegExp(`^${re}$`);
 }
 
 // ---------------------------------------------------------------------------
@@ -156,6 +130,15 @@ function computeNetEffects(journal: JournalEntry[]): Map<MemoryPath, NetEffect> 
 // Store factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates a filesystem-backed {@link MemoryStore}.
+ *
+ * Supports atomic writes, batched mutations with journalling, file watching
+ * via subscribers, and glob-based listing.
+ *
+ * @param options - Configuration including the root directory
+ * @returns A configured MemoryStore backed by the local filesystem
+ */
 export function createFilesystemStore(options: FilesystemStoreOptions): MemoryStore {
   const { root } = options;
   const subscribers = new Set<EventSink>();
@@ -309,7 +292,16 @@ export function createFilesystemStore(options: FilesystemStoreOptions): MemorySt
             } else if (entry.op === "rename" && entry.path === path) {
               content = null;
             } else if (entry.op === "rename" && entry.dst === path) {
-              content = await store.read(entry.path);
+              // Check earlier journal entries for pending writes at the source
+              // before falling back to disk, so write+rename chains resolve correctly.
+              let sourceContent: Uint8Array | null = null;
+              for (const earlier of journal) {
+                if (earlier === entry) break;
+                if (earlier.op === "write" && earlier.path === entry.path) {
+                  sourceContent = earlier.content;
+                }
+              }
+              content = sourceContent ?? (await store.read(entry.path));
             }
           }
           return content;

@@ -16,7 +16,7 @@ import { MemoryConflictError } from "./types.js";
 // Options
 // ---------------------------------------------------------------------------
 
-export type GitStoreOptions = {
+export interface GitStoreOptions {
   /** Root directory (must be a git repo or will be initialised). */
   root: string;
   /** Whether to auto-push after each batch commit. Default: true. */
@@ -25,7 +25,7 @@ export type GitStoreOptions = {
   author?: string;
   /** Author email for commits. */
   email?: string;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Git helper
@@ -60,7 +60,7 @@ async function git(cwd: string, args: string[]): Promise<GitResult> {
 // Detection helpers
 // ---------------------------------------------------------------------------
 
-async function hasGitDir(root: string): Promise<boolean> {
+export async function hasGitDir(root: string): Promise<boolean> {
   try {
     await access(join(root, ".git"));
     return true;
@@ -153,6 +153,16 @@ async function pushWithRetry(root: string, branch: string): Promise<void> {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates a git-backed {@link MemoryStore}.
+ *
+ * Wraps a filesystem store with automatic git commit and push on each
+ * batch mutation. Handles fetch, rebase, and push-with-retry for
+ * concurrent access.
+ *
+ * @param options - Configuration including root directory, author, and push behaviour
+ * @returns A configured MemoryStore that commits changes to git
+ */
 export async function createGitStore(options: GitStoreOptions): Promise<MemoryStore> {
   const { root, autoPush = true, author = "memory", email = "memory@localhost" } = options;
 
@@ -186,8 +196,10 @@ export async function createGitStore(options: GitStoreOptions): Promise<MemorySt
     // Stage all changes
     await git(root, ["add", "-A"]);
 
-    // Build commit message
-    const subject = `[${opts.reason}] ${opts.message}`;
+    // Build commit message — strip newlines from reason/message to prevent multi-line subjects
+    const safeReason = opts.reason.replace(/[\r\n]/g, " ").trim() || "batch";
+    const safeMessage = opts.message.replace(/[\r\n]/g, " ").trim() || "update";
+    const subject = `[${safeReason}] ${safeMessage}`;
     const safeAuthor =
       (opts.author ?? author ?? "memory").replace(/[<>\r\n]/g, "").trim() || "memory";
     const safeEmail = email.replace(/[<>\r\n]/g, "").trim() || "memory@localhost";

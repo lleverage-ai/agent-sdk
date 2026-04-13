@@ -1,7 +1,13 @@
 /**
  * Derive a kebab-case project slug from a git remote URL.
  *
- * Handles SSH (`git@host:org/repo.git`) and HTTPS (`https://host/org/repo.git`) formats.
+ * Handles SCP-style SSH (`git@host:org/repo.git`), URL-form SSH
+ * (`ssh://git@host/org/repo.git`), and HTTPS (`https://host/org/repo.git`) formats.
+ *
+ * @param gitRemoteUrl - The git remote URL to derive a slug from
+ * @returns A kebab-case slug suitable for use as a directory name
+ *
+ * @category Utilities
  */
 export function deriveProjectSlug(gitRemoteUrl: string): string {
   const cleaned = gitRemoteUrl
@@ -9,10 +15,16 @@ export function deriveProjectSlug(gitRemoteUrl: string): string {
     .replace(/\.git$/, "")
     .replace(/\/+$/, "");
 
-  // SSH format: git@github.com:org/repo
+  // SCP-style SSH format: git@github.com:org/repo
   const sshMatch = cleaned.match(/^[^@]+@[^:]+:(.+)$/);
   if (sshMatch?.[1]) {
     return slugify(sshMatch[1]);
+  }
+
+  // URL-form SSH format: ssh://git@github.com/org/repo
+  const sshUrlMatch = cleaned.match(/^ssh:\/\/[^/]+\/(.+)$/);
+  if (sshUrlMatch?.[1]) {
+    return slugify(sshUrlMatch[1]);
   }
 
   // HTTPS format: https://github.com/org/repo

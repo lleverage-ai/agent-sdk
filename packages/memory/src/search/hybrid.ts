@@ -13,20 +13,20 @@ import type {
 // Public types
 // ---------------------------------------------------------------------------
 
-export type HybridSearchOptions = {
+export interface HybridSearchOptions {
   bm25: SearchIndex;
   vector?: VectorIndex;
   embedder?: MemoryEmbeddingProvider;
   reranker?: MemoryLLMProvider;
-};
+}
 
-export type HybridSearch = {
+export interface HybridSearch {
   search(query: string, options?: SearchOptions): Promise<SearchResult[]>;
   searchWithTrace(
     query: string,
     options?: SearchOptions,
   ): Promise<{ results: SearchResult[]; trace: HybridSearchTrace }>;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -243,6 +243,15 @@ function nowMs(): number {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates a hybrid search combining BM25 keyword search with optional vector similarity.
+ *
+ * Uses Reciprocal Rank Fusion (RRF) to merge results when both BM25 and vector
+ * indices are available, with optional LLM-based reranking.
+ *
+ * @param options - Configuration including search indices and optional reranker
+ * @returns A configured {@link HybridSearch}
+ */
 export function createHybridSearch(options: HybridSearchOptions): HybridSearch {
   const { bm25, vector, embedder, reranker: rerankerProvider } = options;
   const isHybridCapable = vector !== undefined && embedder !== undefined;
@@ -266,8 +275,7 @@ export function createHybridSearch(options: HybridSearchOptions): HybridSearch {
     let rerankSkipped = true;
 
     if (mode === "hybrid" && isHybridCapable) {
-      const bm25Start = nowMs();
-      const vectorStart = nowMs();
+      const parallelStart = nowMs();
 
       const [bm25Batch, queryEmbedding] = await Promise.all([
         bm25.search(query, searchOptions),
@@ -275,15 +283,18 @@ export function createHybridSearch(options: HybridSearchOptions): HybridSearch {
       ]);
 
       bm25Results = bm25Batch;
-      bm25DurationMs = nowMs() - bm25Start;
+      // Both ran in parallel, so individual timings aren't meaningful.
+      // Record the parallel phase duration as bm25DurationMs for observability.
+      bm25DurationMs = nowMs() - parallelStart;
 
+      const vectorSearchStart = nowMs();
       vectorResults = await vector!.search(queryEmbedding[0]!, {
         limit: searchOptions?.limit,
         scope: searchOptions?.scope,
         projectSlug: searchOptions?.projectSlug,
         agentId: searchOptions?.agentId,
       });
-      vectorDurationMs = nowMs() - vectorStart;
+      vectorDurationMs = nowMs() - vectorSearchStart;
 
       const fusionStart = nowMs();
       fusedResults = fuseResults(bm25Results, vectorResults);

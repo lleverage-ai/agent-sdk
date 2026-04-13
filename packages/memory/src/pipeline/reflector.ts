@@ -3,6 +3,7 @@ import { MemoryIndex } from "../memory-index.js";
 import { basename, createMemoryPath, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryFrontmatter, MemoryScope } from "../types.js";
+import { confidenceFromObservations, countSections } from "./heuristics.js";
 import type {
   Heuristic,
   MemoryLLMProvider,
@@ -155,7 +156,11 @@ function buildReflectionPrompt(context: ReflectionContext): string {
 // Validation
 // ---------------------------------------------------------------------------
 
-function validateHeuristic(raw: Record<string, unknown>): Heuristic | null {
+function validateHeuristic(
+  raw: Record<string, unknown>,
+  projectSlug?: string,
+  agentId?: string,
+): Heuristic | null {
   const rule = typeof raw.rule === "string" ? raw.rule.trim() : "";
   if (rule.length === 0) {
     return null;
@@ -176,10 +181,18 @@ function validateHeuristic(raw: Record<string, unknown>): Heuristic | null {
       ? raw.category
       : "approach";
 
-  const scope =
+  let scope =
     typeof raw.scope === "string" && VALID_SCOPES.has(raw.scope)
       ? (raw.scope as MemoryScope)
       : "global";
+
+  // Downgrade scope when the required identifier is missing
+  if (scope === "agent" && !agentId) {
+    scope = projectSlug ? "project" : "global";
+  }
+  if (scope === "project" && !projectSlug) {
+    scope = "global";
+  }
 
   const antiPattern =
     typeof raw.antiPattern === "string" && raw.antiPattern.trim().length > 0
@@ -271,6 +284,15 @@ function jaccardSimilarity(a: string[], b: string[]): number {
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates a {@link Reflector} that extracts behavioural heuristics from conversation patterns.
+ *
+ * Analyses message history post-session to identify recurring preferences,
+ * corrections, and workflow patterns worth preserving.
+ *
+ * @param provider - The LLM provider for heuristic extraction
+ * @returns A configured Reflector instance
+ */
 export function createReflector(provider: MemoryLLMProvider): Reflector {
   return {
     async reflect(context: ReflectionContext): Promise<ReflectionResult> {
@@ -284,7 +306,7 @@ export function createReflector(provider: MemoryLLMProvider): Reflector {
 
       if (Array.isArray(raw.heuristics)) {
         for (const entry of raw.heuristics) {
-          const validated = validateHeuristic(entry);
+          const validated = validateHeuristic(entry, context.projectSlug, context.agentId);
           if (validated !== null) {
             heuristics.push(validated);
           }
@@ -438,22 +460,6 @@ type MergedHeuristic = {
   body: string;
   markdown: string;
 };
-
-function countSections(body: string): number {
-  let count = 0;
-  for (const line of body.split("\n")) {
-    if (line.trimStart().startsWith("## ")) {
-      count++;
-    }
-  }
-  return count;
-}
-
-function confidenceFromObservations(count: number): Heuristic["confidence"] {
-  if (count >= 5) return "high";
-  if (count >= 3) return "medium";
-  return "low";
-}
 
 function mergeHeuristic(
   existingContent: string,

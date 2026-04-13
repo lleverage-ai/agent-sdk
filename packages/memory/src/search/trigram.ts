@@ -4,16 +4,20 @@ import type { MemoryPath } from "../store/types.js";
 // Public types
 // ---------------------------------------------------------------------------
 
-export type TrigramResult = {
+/** A single result from a trigram fuzzy search. */
+export interface TrigramResult {
   path: MemoryPath;
   title: string;
   score: number;
-};
+}
 
-export type TrigramIndex = {
+/** Trigram-based fuzzy search index using Jaccard similarity. */
+export interface TrigramIndex {
+  /** Index a batch of entries for subsequent searches. */
   index(entries: { path: MemoryPath; title: string }[]): void;
+  /** Search for entries matching a query string. */
   search(query: string, options?: { limit?: number; minScore?: number }): TrigramResult[];
-};
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -27,6 +31,14 @@ const BOUNDARY = "$";
 // Trigram computation
 // ---------------------------------------------------------------------------
 
+/**
+ * Computes the set of character trigrams for a text string.
+ *
+ * Pads with boundary characters and lowercases for consistent matching.
+ *
+ * @param text - The input text
+ * @returns A set of trigram strings
+ */
 export function computeTrigrams(text: string): Set<string> {
   const padded = `${BOUNDARY}${BOUNDARY}${text.toLowerCase()}${BOUNDARY}`;
   const trigrams = new Set<string>();
@@ -80,6 +92,13 @@ type IndexedEntry = {
   trigrams: Set<string>;
 };
 
+/**
+ * Creates a trigram-based fuzzy search index using Jaccard similarity.
+ *
+ * Useful as a fallback when BM25/vector search returns no results.
+ *
+ * @returns A configured {@link TrigramIndex}
+ */
 export function createTrigramIndex(): TrigramIndex {
   let entries: IndexedEntry[] = [];
 

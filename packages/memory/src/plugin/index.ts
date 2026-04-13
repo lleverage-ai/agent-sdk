@@ -8,13 +8,12 @@
  */
 
 import { parseMemoryFile } from "../frontmatter.js";
-import { createMemoryPath } from "../path.js";
+import { createMemoryPath, scopeDirectory } from "../path.js";
 import { createExtractor } from "../pipeline/extractor.js";
 import { createRecaller } from "../pipeline/recaller.js";
 import { createReflector } from "../pipeline/reflector.js";
 import type {
   Extractor,
-  MemoryEmbeddingProvider,
   MemoryLLMProvider,
   Recaller,
   SurfacedMemory,
@@ -22,52 +21,50 @@ import type {
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryEntry, MemoryScope, Message } from "../types.js";
 import { formatMemorySection } from "./prompt-components.js";
-import { createMemoryTools, type MemoryTool } from "./tools.js";
+import { createMemoryTools, type MemoryTool, type ToolScopeState } from "./tools.js";
 
 // ---------------------------------------------------------------------------
 // Context types (standalone - no agent-sdk imports)
 // ---------------------------------------------------------------------------
 
-export type BeforeGenerateContext = {
+export interface BeforeGenerateContext {
   messages: Message[];
   scope?: MemoryScope;
   projectSlug?: string;
   agentId?: string;
   mode?: "assistant" | "coding";
-};
+}
 
-export type AfterGenerateContext = {
+export interface AfterGenerateContext {
   messages: Message[];
   scope?: MemoryScope;
   projectSlug?: string;
   agentId?: string;
-};
+}
 
-export type SessionEndContext = {
+export interface SessionEndContext {
   messages: Message[];
   scope?: MemoryScope;
   projectSlug?: string;
   agentId?: string;
-};
+}
 
-export type MemoryPromptContext = {
+export interface MemoryPromptContext {
   /** Recalled memories formatted for system prompt injection. */
   systemPromptSection: string;
   /** The raw surfaced memories for programmatic access. */
   memories: SurfacedMemory[];
-};
+}
 
 // ---------------------------------------------------------------------------
 // Plugin options
 // ---------------------------------------------------------------------------
 
-export type MemoryPluginOptions = {
+export interface MemoryPluginOptions {
   /** Store backend for memory persistence. */
   store: MemoryStore;
   /** LLM provider for extraction and recall. Optional - falls back to heuristic recall. */
   llmProvider?: MemoryLLMProvider;
-  /** Embedding provider for vector search. Optional. */
-  embeddingProvider?: MemoryEmbeddingProvider;
   /** Extraction configuration. */
   extraction?: {
     enabled?: boolean;
@@ -87,13 +84,13 @@ export type MemoryPluginOptions = {
   projectSlug?: string;
   /** Agent ID for agent-scoped memory. */
   agentId?: string;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Plugin type
 // ---------------------------------------------------------------------------
 
-export type MemoryPlugin = {
+export interface MemoryPlugin {
   /** Name for SDK plugin registration. */
   name: string;
   /** Pre-generate hook: recall relevant memories and format for prompt injection. */
@@ -108,7 +105,7 @@ export type MemoryPlugin = {
   extractor: Extractor;
   /** Memory tools that can be registered with the agent. */
   tools: MemoryTool[];
-};
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -123,17 +120,6 @@ function lastUserMessage(messages: Message[]): string {
     }
   }
   return "";
-}
-
-function scopeDirectory(scope: MemoryScope, projectSlug?: string, agentId?: string): string {
-  switch (scope) {
-    case "global":
-      return "memory/global";
-    case "project":
-      return `memory/project/${projectSlug}`;
-    case "agent":
-      return `memory/agent/${agentId}`;
-  }
 }
 
 async function loadExistingMemories(
@@ -206,13 +192,25 @@ export function createMemoryPlugin(options: MemoryPluginOptions): MemoryPlugin {
   const recaller = createRecaller(store, llmProvider);
   const extractor = llmProvider !== undefined ? createExtractor(llmProvider) : null;
 
-  // Build tools
-  const tools = createMemoryTools(store, defaultScope, defaultProjectSlug, defaultAgentId);
+  // Mutable scope state shared with tools — updated per-request in hooks
+  const toolScopeState: ToolScopeState = {
+    scope: defaultScope,
+    projectSlug: defaultProjectSlug,
+    agentId: defaultAgentId,
+  };
+
+  // Build tools (close over mutable scopeState)
+  const tools = createMemoryTools(store, toolScopeState);
 
   return {
     name: "memory",
 
     async onBeforeGenerate(context: BeforeGenerateContext): Promise<MemoryPromptContext> {
+      // Update shared scope state so tools see per-request overrides
+      toolScopeState.scope = context.scope ?? defaultScope;
+      toolScopeState.projectSlug = context.projectSlug ?? defaultProjectSlug;
+      toolScopeState.agentId = context.agentId ?? defaultAgentId;
+
       if (!recallEnabled) {
         return { systemPromptSection: "", memories: [] };
       }
@@ -222,9 +220,9 @@ export function createMemoryPlugin(options: MemoryPluginOptions): MemoryPlugin {
         return { systemPromptSection: "", memories: [] };
       }
 
-      const scope = context.scope ?? defaultScope;
-      const projectSlug = context.projectSlug ?? defaultProjectSlug;
-      const agentId = context.agentId ?? defaultAgentId;
+      const scope = toolScopeState.scope;
+      const projectSlug = toolScopeState.projectSlug;
+      const agentId = toolScopeState.agentId;
 
       const memories = await recaller.recall({
         query,

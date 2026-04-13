@@ -6,7 +6,7 @@
 
 import { parseMemoryFile, serialiseFrontmatter } from "../frontmatter.js";
 import { MemoryIndex } from "../memory-index.js";
-import { createMemoryPath, scopeDirectory } from "../path.js";
+import { createMemoryPath, sanitiseFilename, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryFrontmatter, MemoryScope, MemoryType } from "../types.js";
 
@@ -14,12 +14,31 @@ import type { MemoryFrontmatter, MemoryScope, MemoryType } from "../types.js";
 // Tool type
 // ---------------------------------------------------------------------------
 
-export type MemoryTool = {
+/**
+ * A framework-agnostic memory tool definition.
+ *
+ * Uses raw JSON Schema for parameters and untyped args to avoid coupling
+ * to any specific AI SDK. To integrate with `@lleverage-ai/agent-sdk`,
+ * wrap each tool using the `ai` SDK's `tool()` helper:
+ *
+ * @example
+ * ```typescript
+ * import { tool } from "ai";
+ * import { z } from "zod";
+ *
+ * const aiTool = tool({
+ *   description: memoryTool.description,
+ *   inputSchema: z.object({ ... }),
+ *   execute: async (args) => memoryTool.execute(args),
+ * });
+ * ```
+ */
+export interface MemoryTool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
   execute: (args: Record<string, unknown>) => Promise<string>;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,24 +49,34 @@ const decoder = new TextDecoder();
 
 const VALID_TYPES = new Set<MemoryType>(["user", "feedback", "project", "reference"]);
 
-function sanitiseFilename(raw: string): string {
-  const lastSlash = Math.max(raw.lastIndexOf("/"), raw.lastIndexOf("\\"));
-  const cleaned = lastSlash >= 0 ? raw.slice(lastSlash + 1) : raw;
-  if (!cleaned.endsWith(".md")) {
-    return `${cleaned}.md`;
-  }
-  return cleaned;
-}
-
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Mutable scope state that tools close over, allowing per-request overrides.
+ *
+ * @category Plugin
+ */
+export interface ToolScopeState {
+  scope: MemoryScope;
+  projectSlug?: string;
+  agentId?: string;
+}
+
+/**
+ * Creates the four core memory tools: remember, recall, forget, and update_memory.
+ *
+ * Tools close over the provided `scopeState` object so that per-request scope
+ * overrides in the plugin hooks are reflected in tool executions.
+ *
+ * @param store - The memory store backend
+ * @param scopeState - Mutable scope state that tools read at execution time
+ * @returns An array of {@link MemoryTool} definitions
+ */
 export function createMemoryTools(
   store: MemoryStore,
-  scope: MemoryScope,
-  projectSlug?: string,
-  agentId?: string,
+  scopeState: ToolScopeState,
 ): MemoryTool[] {
   const index = new MemoryIndex(store);
 
@@ -102,7 +131,7 @@ export function createMemoryTools(
           .replace(/\s+/g, "-")
           .replace(/[^a-z0-9-]/g, "")}`,
       );
-      const dir = scopeDirectory(scope, projectSlug, agentId);
+      const dir = scopeDirectory(scopeState.scope, scopeState.projectSlug, scopeState.agentId);
       const path = createMemoryPath(`${dir}/${filename}`);
 
       const exists = await store.exists(path);
@@ -115,7 +144,7 @@ export function createMemoryTools(
         name,
         description,
         type: memoryType as MemoryType,
-        scope,
+        scope: scopeState.scope,
         tags,
         confidence: "high",
         source: "manual",
@@ -157,7 +186,11 @@ export function createMemoryTools(
     },
     execute: async (args) => {
       const query = args.query as string;
-      const maxResults = typeof args.maxResults === "number" ? args.maxResults : 5;
+      const MAX_RECALL_RESULTS = 50;
+      const maxResults = Math.min(
+        typeof args.maxResults === "number" ? Math.max(1, Math.floor(args.maxResults)) : 5,
+        MAX_RECALL_RESULTS,
+      );
 
       if (!query) {
         return "Error: query is required.";
@@ -170,7 +203,7 @@ export function createMemoryTools(
           .filter((w) => w.length > 2),
       );
 
-      const dir = scopeDirectory(scope, projectSlug, agentId);
+      const dir = scopeDirectory(scopeState.scope, scopeState.projectSlug, scopeState.agentId);
       let dirPath: MemoryPath;
       try {
         dirPath = createMemoryPath(dir);
@@ -258,7 +291,7 @@ export function createMemoryTools(
         return "Error: name is required.";
       }
 
-      const dir = scopeDirectory(scope, projectSlug, agentId);
+      const dir = scopeDirectory(scopeState.scope, scopeState.projectSlug, scopeState.agentId);
       let dirPath: MemoryPath;
       try {
         dirPath = createMemoryPath(dir);
@@ -339,7 +372,7 @@ export function createMemoryTools(
         return "Error: at least one of content or description must be provided.";
       }
 
-      const dir = scopeDirectory(scope, projectSlug, agentId);
+      const dir = scopeDirectory(scopeState.scope, scopeState.projectSlug, scopeState.agentId);
       let dirPath: MemoryPath;
       try {
         dirPath = createMemoryPath(dir);

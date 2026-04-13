@@ -25,7 +25,7 @@ export type MemorySource = "extraction" | "reflection" | "manual" | "promotion" 
 // ---------------------------------------------------------------------------
 
 /** YAML frontmatter stored at the top of every memory markdown file. */
-export type MemoryFrontmatter = {
+export interface MemoryFrontmatter {
   name: string;
   description: string;
   type: MemoryType;
@@ -37,16 +37,16 @@ export type MemoryFrontmatter = {
   modified: string;
   /** Path to the memory this entry replaced, if any. */
   supersedes?: string;
-};
+}
 
 /** A fully-parsed memory entry ready for use. */
-export type MemoryEntry = {
+export interface MemoryEntry {
   path: string;
   frontmatter: MemoryFrontmatter;
   content: string;
   /** One-line summary for the MEMORY.md index file. */
   indexEntry: string;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Minimal message type for pipeline context
@@ -56,7 +56,7 @@ export type MemoryEntry = {
 export type MessageRole = "user" | "assistant" | "system";
 
 /** Lightweight message representation consumed by the pipeline. */
-export type Message = {
+export interface Message {
   role: MessageRole;
   content: string;
-};
+}

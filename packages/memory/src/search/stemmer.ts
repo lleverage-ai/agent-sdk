@@ -326,7 +326,14 @@ function step5b(word: string): string {
   return word;
 }
 
-/** Apply the Porter stemming algorithm to a single word. */
+/**
+ * Apply the Porter stemming algorithm to a single word.
+ *
+ * @param word - The word to stem
+ * @returns The stemmed form of the word
+ *
+ * @category Search
+ */
 export function porterStem(word: string): string {
   if (word.length <= 2) return word;
   let result = step1a(word);
