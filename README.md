@@ -4,12 +4,13 @@ A TypeScript framework for building AI agents using the Vercel AI SDK v6.
 
 ## Packages
 
-This monorepo contains two packages:
+This monorepo contains three packages:
 
 | Package | Description | Version |
 |---------|-------------|---------|
-| [`@lleverage-ai/agent-sdk`](./packages/agent-sdk) | Core agent framework — tools, plugins, hooks, teams | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-sdk)](https://www.npmjs.com/package/@lleverage-ai/agent-sdk) |
+| [`@lleverage-ai/agent-sdk`](./packages/agent-sdk) | Core agent framework - tools, plugins, hooks, teams | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-sdk)](https://www.npmjs.com/package/@lleverage-ai/agent-sdk) |
 | [`@lleverage-ai/agent-threads`](./packages/agent-threads) | Event transport, replay, and durable transcripts | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-threads)](https://www.npmjs.com/package/@lleverage-ai/agent-threads) |
+| [`@lleverage-ai/memory`](./packages/memory) | Persistent memory - extraction, recall, retrieval, consolidation | [![npm](https://img.shields.io/npm/v/@lleverage-ai/memory)](https://www.npmjs.com/package/@lleverage-ai/memory) |
 
 ## Which Package Do I Need?
 
@@ -17,12 +18,15 @@ Use `@lleverage-ai/agent-sdk` if you want to build agents with models, tools, pl
 
 Use `@lleverage-ai/agent-threads` if you need infrastructure for conversation transport and persistence: event streams, replay, WebSocket transport, run lifecycle management, and durable transcripts. You can use it by itself or alongside the SDK.
 
+Use `@lleverage-ai/memory` if you want your agents to learn from conversations: automatically extract insights, recall relevant context before each turn, reflect on sessions for generalisable heuristics, and consolidate knowledge over time. Works standalone or as an agent-sdk plugin.
+
 The simplest way to think about the split is:
 
 - `@lleverage-ai/agent-sdk` is the agent framework
 - `@lleverage-ai/agent-threads` is the conversation infrastructure layer
+- `@lleverage-ai/memory` is the persistent memory layer
 
-If you are unsure, start with `@lleverage-ai/agent-sdk` and only add `@lleverage-ai/agent-threads` when you need durable thread history, replay, or transport primitives.
+If you are unsure, start with `@lleverage-ai/agent-sdk` and add the others when you need their capabilities.
 
 ## Installation
 
@@ -40,6 +44,12 @@ If you also need durable transcript or transport primitives:
 
 ```bash
 bun add @lleverage-ai/agent-threads
+```
+
+If you want persistent memory (extraction, recall, search):
+
+```bash
+bun add @lleverage-ai/memory
 ```
 
 ## Quick Start
@@ -443,6 +453,45 @@ export async function POST(req: Request) {
 }
 ```
 
+### Memory
+
+The `@lleverage-ai/memory` package gives agents persistent memory that learns, recalls, and evolves across conversations.
+
+```typescript
+import { createMemoryPlugin, createFilesystemStore } from "@lleverage-ai/memory";
+
+const store = createFilesystemStore({ root: "~/.my-agent/memory" });
+
+const memory = createMemoryPlugin({
+  store,
+  llmProvider: myLLMAdapter,       // optional - enables smart recall
+  embeddingProvider: myEmbedder,   // optional - enables vector search
+  extraction: { enabled: true },   // auto-extract memories from conversations
+  recall: { enabled: true },       // auto-recall relevant context
+  scope: "project",
+  projectSlug: "my-app",
+});
+
+// Before each turn: recall relevant memories
+const { systemPromptSection } = await memory.onBeforeGenerate({
+  messages: conversation,
+});
+
+// After each turn: extract and persist new memories
+await memory.onAfterGenerate({ messages: conversation });
+```
+
+**What it does:**
+- **Extraction** - after each turn, analyses the conversation for memorable insights (user preferences, feedback, project context, references)
+- **Recall** - before each turn, surfaces relevant memories using hybrid BM25 + vector search with RRF fusion
+- **Reflection** - after sessions, extracts generalisable heuristics and anti-patterns
+- **Consolidation** - periodic maintenance: deduplication, staleness detection, confidence reinforcement
+- **Wikilinks** - `[[topic]]` cross-references between memories, resolved during recall
+
+**Storage backends:** filesystem (default), git-backed (commit/push/pull on every mutation), in-memory (testing). Bring-your-own database backend via the `MemoryStore` interface.
+
+See the [memory package](./packages/memory) for full documentation.
+
 ## Documentation
 
 - [Prompt Builder](./docs/prompt-builder.md) — Dynamic, context-aware system prompts
@@ -454,7 +503,8 @@ export async function POST(req: Request) {
 - [Backends](./docs/backends.md) — Filesystem and execution backends
 - [Middleware](./docs/middleware.md) — Logging, caching, retry, and guardrails
 - [Observability](./docs/observability.md) — Logging, metrics, and tracing
-- [Persistence](./docs/persistence.md) — Memory and checkpointing
+- [Persistence](./docs/persistence.md) — Checkpointing and state persistence
+- [Memory](./packages/memory) — Persistent memory with extraction, recall, search, and consolidation
 - [Context Compaction](./docs/context-compaction.md) — Automatic, protocol-aware context management
 - [Error Handling](./docs/errors.md) — Typed errors and recovery
 - [API Reference](./docs/api-reference.md) — Complete API documentation
