@@ -74,10 +74,7 @@ export interface ToolScopeState {
  * @param scopeState - Mutable scope state that tools read at execution time
  * @returns An array of {@link MemoryTool} definitions
  */
-export function createMemoryTools(
-  store: MemoryStore,
-  scopeState: ToolScopeState,
-): MemoryTool[] {
+export function createMemoryTools(store: MemoryStore, scopeState: ToolScopeState): MemoryTool[] {
   const index = new MemoryIndex(store);
 
   // -------------------------------------------------------------------------
