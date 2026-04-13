@@ -7,11 +7,12 @@
   "author": "Lleverage AI",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lleverage-ai/memory.git"
+    "url": "git+https://github.com/lleverage-ai/agent-sdk.git",
+    "directory": "packages/memory"
   },
-  "homepage": "https://github.com/lleverage-ai/memory#readme",
+  "homepage": "https://github.com/lleverage-ai/agent-sdk#readme",
   "bugs": {
-    "url": "https://github.com/lleverage-ai/memory/issues"
+    "url": "https://github.com/lleverage-ai/agent-sdk/issues"
   },
   "keywords": [
     "ai",

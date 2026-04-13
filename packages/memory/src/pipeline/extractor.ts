@@ -1,6 +1,6 @@
 import { serialiseFrontmatter } from "../frontmatter.js";
 import { MemoryIndex } from "../memory-index.js";
-import { createMemoryPath, scopeDirectory } from "../path.js";
+import { createMemoryPath, sanitiseFilename, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryConfidence, MemoryFrontmatter, MemoryScope, MemoryType } from "../types.js";
 import type {
@@ -154,16 +154,6 @@ If nothing is worth saving, return: {"candidates": []}
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
-
-function sanitiseFilename(filename: string): string {
-  const lastSlash = Math.max(filename.lastIndexOf("/"), filename.lastIndexOf("\\"));
-  const cleaned = lastSlash >= 0 ? filename.slice(lastSlash + 1) : filename;
-
-  if (!cleaned.endsWith(".md")) {
-    return `${cleaned}.md`;
-  }
-  return cleaned;
-}
 
 function validateCandidate(raw: Record<string, unknown>): ExtractionCandidate | null {
   const action = typeof raw.action === "string" ? raw.action : "";

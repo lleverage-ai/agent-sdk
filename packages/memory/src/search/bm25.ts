@@ -53,6 +53,14 @@ type DocMeta = {
 // BM25 index
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates an in-process BM25 search index with Porter stemming and field weighting.
+ *
+ * Supports indexing across title, description, tags, and content fields with
+ * configurable scope/project filtering.
+ *
+ * @returns A configured {@link SearchIndex}
+ */
 export function createBM25Index(): SearchIndex {
   const docs = new Map<string, DocMeta>();
   const invertedIndex = new Map<string, Map<string, PostingEntry>>();

@@ -2,7 +2,8 @@ import { parseMemoryFile, serialiseFrontmatter } from "../frontmatter.js";
 import { MemoryIndex } from "../memory-index.js";
 import { basename, createMemoryPath, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
-import type { MemoryConfidence, MemoryEntry, MemoryFrontmatter, MemoryScope } from "../types.js";
+import type { MemoryEntry, MemoryFrontmatter, MemoryScope } from "../types.js";
+import { confidenceFromObservations, countSections } from "./heuristics.js";
 import type {
   ConsolidationOptions,
   ConsolidationReport,
@@ -16,6 +17,7 @@ import type {
 
 const DEFAULT_STALENESS_THRESHOLD_DAYS = 90;
 const TRIGRAM_SIMILARITY_THRESHOLD = 0.6;
+const MAX_DEDUP_PAIRS_PER_SCOPE = 20;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -233,29 +235,18 @@ async function resolveDuplicate(
 }
 
 // ---------------------------------------------------------------------------
-// Heuristic reinforcement
-// ---------------------------------------------------------------------------
-
-function confidenceFromObservations(count: number): MemoryConfidence {
-  if (count >= 5) return "high";
-  if (count >= 3) return "medium";
-  return "low";
-}
-
-function countSections(body: string): number {
-  let count = 0;
-  for (const line of body.split("\n")) {
-    if (line.trimStart().startsWith("## ")) {
-      count++;
-    }
-  }
-  return count;
-}
-
-// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates a {@link Consolidator} for memory maintenance operations.
+ *
+ * Performs index rebuilds, staleness detection, deduplication (with optional
+ * LLM resolution), and heuristic confidence reinforcement.
+ *
+ * @param provider - Optional LLM provider for deduplication verdict resolution
+ * @returns A configured Consolidator instance
+ */
 export function createConsolidator(provider?: MemoryLLMProvider): Consolidator {
   return {
     async consolidate(
@@ -275,20 +266,24 @@ export function createConsolidator(provider?: MemoryLLMProvider): Consolidator {
       };
 
       const scopes = await discoverScopes(store);
-
-      // 1. Index rebuild
       const index = new MemoryIndex(store);
+      const modifiedScopes = new Set<number>();
+
+      // 1. Initial index rebuild
       for (const desc of scopes) {
         await index.rebuild(desc.scope, desc.projectSlug, desc.agentId);
       }
       report.indexRebuilt = scopes.length > 0;
 
-      // 2. Staleness detection
-      const staleThreshold = new Date();
-      staleThreshold.setDate(staleThreshold.getDate() - stalenessThresholdDays);
+      for (let scopeIdx = 0; scopeIdx < scopes.length; scopeIdx++) {
+        const desc = scopes[scopeIdx]!;
 
-      for (const desc of scopes) {
-        const entries = await loadAllMemories(store, desc.dir);
+        // Load memories once per scope — reused for staleness and dedup
+        let entries = await loadAllMemories(store, desc.dir);
+
+        // 2. Staleness detection
+        const staleThreshold = new Date();
+        staleThreshold.setDate(staleThreshold.getDate() - stalenessThresholdDays);
 
         for (const entry of entries) {
           const modified = entry.frontmatter.modified;
@@ -301,117 +296,106 @@ export function createConsolidator(provider?: MemoryLLMProvider): Consolidator {
             report.staleMemories.push(entry.path);
           }
         }
-      }
 
-      // 3. Deduplication
-      for (const desc of scopes) {
-        const entries = await loadAllMemories(store, desc.dir);
-        if (entries.length < 2) continue;
+        // 3. Deduplication
+        if (entries.length >= 2) {
+          const pairs: Array<[number, number]> = [];
+          for (let i = 0; i < entries.length && pairs.length < MAX_DEDUP_PAIRS_PER_SCOPE; i++) {
+            for (
+              let j = i + 1;
+              j < entries.length && pairs.length < MAX_DEDUP_PAIRS_PER_SCOPE;
+              j++
+            ) {
+              const filenameA = basename(createMemoryPath(entries[i]!.path));
+              const filenameB = basename(createMemoryPath(entries[j]!.path));
 
-        // Find candidate pairs using trigram similarity on filenames
-        const pairs: Array<[number, number]> = [];
-        for (let i = 0; i < entries.length; i++) {
-          for (let j = i + 1; j < entries.length; j++) {
-            const filenameA = basename(createMemoryPath(entries[i]!.path));
-            const filenameB = basename(createMemoryPath(entries[j]!.path));
+              if (trigramJaccard(filenameA, filenameB) > TRIGRAM_SIMILARITY_THRESHOLD) {
+                pairs.push([i, j]);
+              }
+            }
+          }
 
-            if (trigramJaccard(filenameA, filenameB) > TRIGRAM_SIMILARITY_THRESHOLD) {
-              pairs.push([i, j]);
+          if (pairs.length > 0 && llmDedup && provider !== undefined) {
+            const deletedPaths = new Set<string>();
+
+            await store.batch(
+              {
+                reason: "consolidate",
+                message: `Consolidate: resolve ${pairs.length} duplicate ${pairs.length === 1 ? "pair" : "pairs"} in ${desc.dir}`,
+              },
+              async (batch) => {
+                for (const [idxA, idxB] of pairs) {
+                  const entryA = entries[idxA]!;
+                  const entryB = entries[idxB]!;
+
+                  if (deletedPaths.has(entryA.path) || deletedPaths.has(entryB.path)) {
+                    continue;
+                  }
+
+                  const verdict = await resolveDuplicate(provider, entryA, entryB);
+
+                  switch (verdict.verdict) {
+                    case "keep_first": {
+                      const pathB = createMemoryPath(entryB.path);
+                      await batch.delete(pathB);
+                      deletedPaths.add(entryB.path);
+                      report.duplicatesResolved++;
+                      break;
+                    }
+
+                    case "keep_second": {
+                      const pathA = createMemoryPath(entryA.path);
+                      await batch.delete(pathA);
+                      deletedPaths.add(entryA.path);
+                      report.duplicatesResolved++;
+                      break;
+                    }
+
+                    case "merge": {
+                      const modA = new Date(entryA.frontmatter.modified);
+                      const modB = new Date(entryB.frontmatter.modified);
+                      const keeper = modA >= modB ? entryA : entryB;
+                      const donor = modA >= modB ? entryB : entryA;
+
+                      const mergedContent =
+                        verdict.mergedContent ?? `${keeper.content}\n\n---\n\n${donor.content}`;
+
+                      const now = new Date().toISOString();
+                      const frontmatter: MemoryFrontmatter = {
+                        ...keeper.frontmatter,
+                        modified: now,
+                        supersedes: basename(createMemoryPath(donor.path)),
+                      };
+
+                      const markdown = serialiseFrontmatter(frontmatter, mergedContent);
+                      const keeperPath = createMemoryPath(keeper.path);
+                      const donorPath = createMemoryPath(donor.path);
+
+                      await batch.write(keeperPath, encoder.encode(markdown));
+                      await batch.delete(donorPath);
+                      deletedPaths.add(donor.path);
+                      report.duplicatesResolved++;
+                      break;
+                    }
+
+                    case "distinct":
+                      break;
+                  }
+                }
+              },
+            );
+
+            if (deletedPaths.size > 0) {
+              modifiedScopes.add(scopeIdx);
             }
           }
         }
 
-        if (pairs.length === 0) continue;
-
-        if (!llmDedup || provider === undefined) {
-          // Without LLM, just report candidates without resolving
-          continue;
+        // 4. Heuristic reinforcement — reload if dedup modified this scope
+        if (modifiedScopes.has(scopeIdx)) {
+          entries = await loadAllMemories(store, desc.dir);
         }
 
-        // Resolve with LLM inside a batch
-        const deletedPaths = new Set<string>();
-
-        await store.batch(
-          {
-            reason: "consolidate",
-            message: `Consolidate: resolve ${pairs.length} duplicate ${pairs.length === 1 ? "pair" : "pairs"} in ${desc.dir}`,
-          },
-          async (batch) => {
-            for (const [idxA, idxB] of pairs) {
-              const entryA = entries[idxA]!;
-              const entryB = entries[idxB]!;
-
-              // Skip if either was already deleted in this batch
-              if (deletedPaths.has(entryA.path) || deletedPaths.has(entryB.path)) {
-                continue;
-              }
-
-              const verdict = await resolveDuplicate(provider, entryA, entryB);
-
-              switch (verdict.verdict) {
-                case "keep_first": {
-                  const pathB = createMemoryPath(entryB.path);
-                  await batch.delete(pathB);
-                  deletedPaths.add(entryB.path);
-                  report.duplicatesResolved++;
-                  break;
-                }
-
-                case "keep_second": {
-                  const pathA = createMemoryPath(entryA.path);
-                  await batch.delete(pathA);
-                  deletedPaths.add(entryA.path);
-                  report.duplicatesResolved++;
-                  break;
-                }
-
-                case "merge": {
-                  // Keep the more recently modified entry, merge content
-                  const modA = new Date(entryA.frontmatter.modified);
-                  const modB = new Date(entryB.frontmatter.modified);
-                  const keeper = modA >= modB ? entryA : entryB;
-                  const donor = modA >= modB ? entryB : entryA;
-
-                  const mergedContent =
-                    verdict.mergedContent ?? `${keeper.content}\n\n---\n\n${donor.content}`;
-
-                  const now = new Date().toISOString();
-                  const frontmatter: MemoryFrontmatter = {
-                    ...keeper.frontmatter,
-                    modified: now,
-                    supersedes: basename(createMemoryPath(donor.path)),
-                  };
-
-                  const markdown = serialiseFrontmatter(frontmatter, mergedContent);
-                  const keeperPath = createMemoryPath(keeper.path);
-                  const donorPath = createMemoryPath(donor.path);
-
-                  await batch.write(keeperPath, encoder.encode(markdown));
-                  await batch.delete(donorPath);
-                  deletedPaths.add(donor.path);
-                  report.duplicatesResolved++;
-                  break;
-                }
-
-                case "distinct":
-                  // No action needed
-                  break;
-              }
-            }
-          },
-        );
-
-        // Rebuild index after deduplication if changes were made
-        if (deletedPaths.size > 0) {
-          await index.rebuild(desc.scope, desc.projectSlug, desc.agentId);
-        }
-      }
-
-      // 4. Heuristic reinforcement
-      for (const desc of scopes) {
-        const entries = await loadAllMemories(store, desc.dir);
-
-        // Find reflection-sourced feedback memories
         const heuristics = entries.filter(
           (e) =>
             e.frontmatter.type === "feedback" &&
@@ -419,43 +403,44 @@ export function createConsolidator(provider?: MemoryLLMProvider): Consolidator {
             e.frontmatter.tags.includes("heuristic"),
         );
 
-        // Check each heuristic's observation count and reinforce confidence
-        let scopeUpdated = false;
+        if (heuristics.length > 0) {
+          await store.batch(
+            {
+              reason: "consolidate",
+              message: `Consolidate: reinforce heuristics in ${desc.dir}`,
+            },
+            async (batch) => {
+              for (const h of heuristics) {
+                const observations = countSections(h.content);
+                const expectedConfidence = confidenceFromObservations(observations);
 
-        await store.batch(
-          {
-            reason: "consolidate",
-            message: `Consolidate: reinforce heuristics in ${desc.dir}`,
-          },
-          async (batch) => {
-            for (const h of heuristics) {
-              const observations = countSections(h.content);
-              const expectedConfidence = confidenceFromObservations(observations);
+                if (expectedConfidence === h.frontmatter.confidence) {
+                  continue;
+                }
 
-              if (expectedConfidence === h.frontmatter.confidence) {
-                continue;
+                const now = new Date().toISOString();
+                const updatedFrontmatter: MemoryFrontmatter = {
+                  ...h.frontmatter,
+                  confidence: expectedConfidence,
+                  modified: now,
+                };
+
+                const markdown = serialiseFrontmatter(updatedFrontmatter, h.content);
+                const path = createMemoryPath(h.path);
+                await batch.write(path, encoder.encode(markdown));
+
+                report.heuristicsReinforced++;
+                modifiedScopes.add(scopeIdx);
               }
-
-              const now = new Date().toISOString();
-              const updatedFrontmatter: MemoryFrontmatter = {
-                ...h.frontmatter,
-                confidence: expectedConfidence,
-                modified: now,
-              };
-
-              const markdown = serialiseFrontmatter(updatedFrontmatter, h.content);
-              const path = createMemoryPath(h.path);
-              await batch.write(path, encoder.encode(markdown));
-
-              report.heuristicsReinforced++;
-              scopeUpdated = true;
-            }
-          },
-        );
-
-        if (scopeUpdated) {
-          await index.rebuild(desc.scope, desc.projectSlug, desc.agentId);
+            },
+          );
         }
+      }
+
+      // 5. Final index rebuild for all modified scopes (single pass)
+      for (const scopeIdx of modifiedScopes) {
+        const desc = scopes[scopeIdx]!;
+        await index.rebuild(desc.scope, desc.projectSlug, desc.agentId);
       }
 
       return report;

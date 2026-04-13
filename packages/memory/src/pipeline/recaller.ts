@@ -323,6 +323,15 @@ async function followWikilinks(
 // Factory
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates a {@link Recaller} that gathers and ranks candidate memories for a query.
+ *
+ * Uses heuristic scoring by default, or LLM-based scoring when a provider is given.
+ *
+ * @param store - The memory store to search
+ * @param provider - Optional LLM provider for relevance scoring
+ * @returns A configured Recaller instance
+ */
 export function createRecaller(store: MemoryStore, provider?: MemoryLLMProvider): Recaller {
   return {
     async recall(context: RecallContext): Promise<SurfacedMemory[]> {

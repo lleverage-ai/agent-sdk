@@ -1,3 +1,4 @@
+import { globToRegex } from "./glob.js";
 import type {
   BatchOptions,
   EventSink,
@@ -40,33 +41,6 @@ function isGenerated(path: string): boolean {
   return filename?.startsWith("_") ?? false;
 }
 
-function globToRegExp(pattern: string): RegExp {
-  let regex = "";
-  let i = 0;
-  while (i < pattern.length) {
-    if (pattern[i] === "*" && pattern[i + 1] === "*") {
-      regex += ".*";
-      i += 2;
-      if (pattern[i] === "/") {
-        i++;
-      }
-    } else if (pattern[i] === "*") {
-      regex += "[^/]*";
-      i++;
-    } else if (pattern[i] === "?") {
-      regex += "[^/]";
-      i++;
-    } else if (".+^${}()|[]\\".includes(pattern[i]!)) {
-      regex += `\\${pattern[i]}`;
-      i++;
-    } else {
-      regex += pattern[i];
-      i++;
-    }
-  }
-  return new RegExp(`^${regex}$`);
-}
-
 function buildFileInfo(path: string, entry: Entry, allKeys: Iterable<string>): FileInfo {
   const prefix = path.endsWith("/") ? path : `${path}/`;
   let isDirectory = false;
@@ -84,6 +58,14 @@ function buildFileInfo(path: string, entry: Entry, allKeys: Iterable<string>): F
   };
 }
 
+/**
+ * Creates an in-memory {@link MemoryStore} for testing.
+ *
+ * All data is held in a `Map` and lost when the store is garbage collected.
+ * Batches are applied atomically via snapshot-and-swap.
+ *
+ * @returns A configured in-memory MemoryStore
+ */
 export function createInMemoryStore(): MemoryStore {
   let data = new Map<string, Entry>();
   const subscribers = new Set<EventSink>();
@@ -162,7 +144,13 @@ export function createInMemoryStore(): MemoryStore {
     },
 
     async exists(path: MemoryPath): Promise<boolean> {
-      return data.has(path);
+      if (data.has(path)) return true;
+      // Check if path is a directory (any key starts with path/)
+      const prefix = `${path}/`;
+      for (const key of data.keys()) {
+        if (key.startsWith(prefix)) return true;
+      }
+      return false;
     },
 
     async stat(path: MemoryPath): Promise<FileInfo | null> {
@@ -177,7 +165,7 @@ export function createInMemoryStore(): MemoryStore {
       const prefix = path === ("" as MemoryPath) ? "" : path.endsWith("/") ? path : `${path}/`;
       const recursive = options?.recursive ?? false;
       const includeGenerated = options?.includeGenerated ?? false;
-      const globPattern = options?.glob ? globToRegExp(options.glob) : null;
+      const globPattern = options?.glob ? globToRegex(options.glob) : null;
 
       const results: FileInfo[] = [];
 
