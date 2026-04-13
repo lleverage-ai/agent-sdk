@@ -1,6 +1,6 @@
 import { serialiseFrontmatter } from "../frontmatter.js";
 import { MemoryIndex } from "../memory-index.js";
-import { createMemoryPath } from "../path.js";
+import { createMemoryPath, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryConfidence, MemoryFrontmatter, MemoryScope, MemoryType } from "../types.js";
 import type {
@@ -228,17 +228,6 @@ function validateCandidate(raw: Record<string, unknown>): ExtractionCandidate | 
 // Path helpers
 // ---------------------------------------------------------------------------
 
-function scopeDirectory(scope: MemoryScope, projectSlug?: string, agentId?: string): string {
-  switch (scope) {
-    case "global":
-      return "memory/global";
-    case "project":
-      return `memory/project/${projectSlug}`;
-    case "agent":
-      return `memory/agent/${agentId}`;
-  }
-}
-
 function buildCandidatePath(
   candidate: ExtractionCandidate,
   projectSlug?: string,
@@ -294,20 +283,13 @@ const extractionSchema = {
 /**
  * Create an {@link Extractor} backed by the given LLM provider.
  *
- * The extractor captures the project/agent context from the most recent
- * `extract` call so that `apply` can build correct store paths without
- * requiring the caller to thread the context through separately.
+ * The extractor threads project/agent context through the
+ * {@link ExtractionResult} so that `apply` can build correct store paths
+ * without shared mutable state.
  */
 export function createExtractor(provider: MemoryLLMProvider): Extractor {
-  // Captured from the most recent extract() call so apply() can build paths.
-  let lastProjectSlug: string | undefined;
-  let lastAgentId: string | undefined;
-
   return {
     async extract(context: ExtractionContext): Promise<ExtractionResult> {
-      lastProjectSlug = context.projectSlug;
-      lastAgentId = context.agentId;
-
       const prompt = buildExtractionPrompt(context);
 
       const raw = await provider.generateStructured<{ candidates: Record<string, unknown>[] }>(
@@ -332,7 +314,7 @@ export function createExtractor(provider: MemoryLLMProvider): Extractor {
         }
       }
 
-      return { candidates };
+      return { candidates, projectSlug: context.projectSlug, agentId: context.agentId };
     },
 
     async apply(result: ExtractionResult, store: MemoryStore): Promise<void> {
@@ -340,8 +322,8 @@ export function createExtractor(provider: MemoryLLMProvider): Extractor {
         return;
       }
 
-      const projectSlug = lastProjectSlug;
-      const agentId = lastAgentId;
+      const projectSlug = result.projectSlug;
+      const agentId = result.agentId;
 
       await store.batch(
         {

@@ -1,5 +1,5 @@
 import { parseMemoryFile } from "./frontmatter.js";
-import { basename, createMemoryPath } from "./path.js";
+import { basename, createMemoryPath, scopeDirectory } from "./path.js";
 import type { MemoryPath, MemoryStore } from "./store/types.js";
 import type { MemoryEntry, MemoryScope } from "./types.js";
 
@@ -26,17 +26,6 @@ const INDEX_LINE_REGEX = /^- \[([^\]]+)\]\(([^)]+)\) - (.+)$/;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-function scopeDirectory(scope: MemoryScope, projectSlug?: string, agentId?: string): string {
-  switch (scope) {
-    case "global":
-      return "memory/global";
-    case "project":
-      return `memory/project/${projectSlug}`;
-    case "agent":
-      return `memory/agent/${agentId}`;
-  }
-}
 
 function indexPath(scope: MemoryScope, projectSlug?: string, agentId?: string): MemoryPath {
   const dir = scopeDirectory(scope, projectSlug, agentId);

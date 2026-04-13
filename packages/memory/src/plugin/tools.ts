@@ -6,7 +6,7 @@
 
 import { parseMemoryFile, serialiseFrontmatter } from "../frontmatter.js";
 import { MemoryIndex } from "../memory-index.js";
-import { createMemoryPath } from "../path.js";
+import { createMemoryPath, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryFrontmatter, MemoryScope, MemoryType } from "../types.js";
 
@@ -29,17 +29,6 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 const VALID_TYPES = new Set<MemoryType>(["user", "feedback", "project", "reference"]);
-
-function scopeDirectory(scope: MemoryScope, projectSlug?: string, agentId?: string): string {
-  switch (scope) {
-    case "global":
-      return "memory/global";
-    case "project":
-      return `memory/project/${projectSlug}`;
-    case "agent":
-      return `memory/agent/${agentId}`;
-  }
-}
 
 function sanitiseFilename(raw: string): string {
   const lastSlash = Math.max(raw.lastIndexOf("/"), raw.lastIndexOf("\\"));

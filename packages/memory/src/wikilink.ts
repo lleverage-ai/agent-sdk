@@ -1,5 +1,5 @@
 import { parseMemoryFile } from "./frontmatter.js";
-import { createMemoryPath } from "./path.js";
+import { createMemoryPath, scopeDirectory } from "./path.js";
 import type { MemoryPath, MemoryStore } from "./store/types.js";
 import type { MemoryEntry, MemoryScope } from "./types.js";
 
@@ -34,17 +34,6 @@ function toKebabCase(topic: string): string {
     .replace(/\s+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
-}
-
-function scopeDirectory(scope: MemoryScope, projectSlug?: string, agentId?: string): string {
-  switch (scope) {
-    case "global":
-      return "memory/global";
-    case "project":
-      return `memory/project/${projectSlug}`;
-    case "agent":
-      return `memory/agent/${agentId}`;
-  }
 }
 
 async function tryRead(

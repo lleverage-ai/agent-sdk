@@ -1,6 +1,6 @@
 import { parseMemoryFile, serialiseFrontmatter } from "../frontmatter.js";
 import { MemoryIndex } from "../memory-index.js";
-import { basename, createMemoryPath } from "../path.js";
+import { basename, createMemoryPath, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryConfidence, MemoryEntry, MemoryFrontmatter, MemoryScope } from "../types.js";
 import type {
@@ -23,17 +23,6 @@ const decoder = new TextDecoder();
 // ---------------------------------------------------------------------------
 // Scope helpers
 // ---------------------------------------------------------------------------
-
-function scopeDirectory(scope: MemoryScope, projectSlug?: string, agentId?: string): string {
-  switch (scope) {
-    case "global":
-      return "memory/global";
-    case "project":
-      return `memory/project/${projectSlug}`;
-    case "agent":
-      return `memory/agent/${agentId}`;
-  }
-}
 
 type ScopeDescriptor = {
   scope: MemoryScope;
@@ -429,15 +418,6 @@ export function createConsolidator(provider?: MemoryLLMProvider): Consolidator {
             e.frontmatter.source === "reflection" &&
             e.frontmatter.tags.includes("heuristic"),
         );
-
-        // Group by category (second tag after "heuristic")
-        const byCategory = new Map<string, MemoryEntry[]>();
-        for (const h of heuristics) {
-          const categoryTag = h.frontmatter.tags.find((t) => t !== "heuristic") ?? "general";
-          const existing = byCategory.get(categoryTag) ?? [];
-          existing.push(h);
-          byCategory.set(categoryTag, existing);
-        }
 
         // Check each heuristic's observation count and reinforce confidence
         let scopeUpdated = false;

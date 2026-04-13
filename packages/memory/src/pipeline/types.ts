@@ -87,6 +87,10 @@ export type ExtractionCandidate = {
 /** Result of an extraction pass. */
 export type ExtractionResult = {
   candidates: ExtractionCandidate[];
+  /** Project identifier captured at extraction time for path resolution. */
+  projectSlug?: string;
+  /** Agent identifier captured at extraction time for path resolution. */
+  agentId?: string;
 };
 
 /** Extracts memories from conversation turns. */
@@ -159,6 +163,10 @@ export type Heuristic = {
 /** Result of a reflection pass. */
 export type ReflectionResult = {
   heuristics: Heuristic[];
+  /** Project identifier captured at reflection time for path resolution. */
+  projectSlug?: string;
+  /** Agent identifier captured at reflection time for path resolution. */
+  agentId?: string;
 };
 
 /** Extracts generalisable heuristics from sessions. */

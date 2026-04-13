@@ -1,5 +1,5 @@
 import * as fs from "node:fs/promises";
-import { basename, dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { atomicWrite } from "./atomic.js";
 import type {
   BatchOptions,
@@ -11,7 +11,7 @@ import type {
   MemoryStore,
   StoreEvent,
 } from "./types.js";
-import { MemoryNotFoundError } from "./types.js";
+import { InvalidPathError, MemoryNotFoundError } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -54,7 +54,13 @@ function globToRegex(pattern: string): RegExp {
 // ---------------------------------------------------------------------------
 
 function resolvePath(root: string, memoryPath: MemoryPath): string {
-  return join(root, memoryPath);
+  const full = join(root, memoryPath);
+  const resolved = resolve(full);
+  const rootResolved = resolve(root);
+  if (!resolved.startsWith(rootResolved + sep) && resolved !== rootResolved) {
+    throw new InvalidPathError(memoryPath, "path escapes store root");
+  }
+  return full;
 }
 
 function isGenerated(memoryPath: string): boolean {
@@ -252,21 +258,28 @@ export function createFilesystemStore(options: FilesystemStoreOptions): MemorySt
       }
 
       const globRe = globPattern ? globToRegex(globPattern) : null;
-      const results: FileInfo[] = [];
 
-      for (const entry of entries) {
+      const filtered = entries.filter((entry) => {
         const normalised = entry.split("\\").join("/");
-        if (!includeGenerated && isGenerated(normalised)) continue;
-        if (globRe && !globRe.test(normalised)) continue;
+        if (!includeGenerated && isGenerated(normalised)) return false;
+        if (globRe && !globRe.test(normalised)) return false;
+        return true;
+      });
 
-        const entryFull = join(full, entry);
-        try {
-          const s = await fs.stat(entryFull);
-          results.push(toFileInfo(root, entryFull, s));
-        } catch {
-          // Entry may have been removed between readdir and stat.
-        }
-      }
+      const results = (
+        await Promise.all(
+          filtered.map(async (entry) => {
+            const entryFull = join(full, entry);
+            try {
+              const s = await fs.stat(entryFull);
+              return toFileInfo(root, entryFull, s);
+            } catch {
+              // Entry may have been removed between readdir and stat.
+              return null;
+            }
+          }),
+        )
+      ).filter((info): info is FileInfo => info !== null);
 
       results.sort((a, b) => b.modifiedAt.getTime() - a.modifiedAt.getTime());
       return results;

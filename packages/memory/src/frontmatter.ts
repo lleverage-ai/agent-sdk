@@ -47,7 +47,7 @@ export function parseFrontmatter(
 
   let parsed: Record<string, unknown>;
   try {
-    parsed = parse(yamlBlock) as Record<string, unknown>;
+    parsed = parse(yamlBlock, { maxAliasCount: 0 }) as Record<string, unknown>;
   } catch {
     return null;
   }

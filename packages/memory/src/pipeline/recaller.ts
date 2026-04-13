@@ -1,5 +1,5 @@
 import { parseMemoryFile } from "../frontmatter.js";
-import { createMemoryPath } from "../path.js";
+import { createMemoryPath, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryEntry, MemoryScope } from "../types.js";
 import { extractWikilinks, resolveWikilink } from "../wikilink.js";
@@ -17,17 +17,6 @@ const CONTENT_PREVIEW_LENGTH = 200;
 // ---------------------------------------------------------------------------
 // Scope helpers
 // ---------------------------------------------------------------------------
-
-function scopeDirectory(scope: MemoryScope, projectSlug?: string, agentId?: string): string {
-  switch (scope) {
-    case "global":
-      return "memory/global";
-    case "project":
-      return `memory/project/${projectSlug}`;
-    case "agent":
-      return `memory/agent/${agentId}`;
-  }
-}
 
 function scopeSearchOrder(scope: MemoryScope): MemoryScope[] {
   switch (scope) {

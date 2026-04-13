@@ -1,6 +1,6 @@
 import { parseMemoryFile, serialiseFrontmatter } from "../frontmatter.js";
 import { MemoryIndex } from "../memory-index.js";
-import { basename, createMemoryPath } from "../path.js";
+import { basename, createMemoryPath, scopeDirectory } from "../path.js";
 import type { MemoryPath, MemoryStore } from "../store/types.js";
 import type { MemoryFrontmatter, MemoryScope } from "../types.js";
 import type {
@@ -70,53 +70,6 @@ const STOP_WORDS = new Set([
   "has",
   "have",
 ]);
-
-// ---------------------------------------------------------------------------
-// Prompt
-// ---------------------------------------------------------------------------
-
-const _REFLECTION_SYSTEM_PROMPT = `You are a reflection agent. You analyse completed coding sessions to extract lasting wisdom.
-
-Your job is NOT to summarise what happened - it is to identify GENERALISABLE PATTERNS.
-
-Good heuristic: "When working on Go projects with generated code, check for //go:generate directives before modifying generated files."
-Bad heuristic: "The file cmd/server/main.go has a bug on line 42." (Too specific.)
-
-## Output format
-
-Respond with ONLY valid JSON matching this schema. No prose, no markdown fences:
-
-{
-  "heuristics": [
-    {
-      "rule": "imperative, actionable pattern",
-      "context": "when this applies (language, framework, problem type)",
-      "confidence": "low|medium|high",
-      "category": "approach|debugging|architecture|testing|communication|tooling|workflow",
-      "scope": "global|project|agent",
-      "antiPattern": "optional: what NOT to do, if this is learned from a mistake"
-    }
-  ]
-}
-
-## When to produce heuristics
-
-- User corrected the agent: HIGH confidence (include antiPattern)
-- Multiple approaches tried before success: MEDIUM confidence
-- Non-obvious error encountered: LOW confidence
-- Routine session with no learning moments: empty array is fine
-
-## Anti-pattern signals
-
-Look for: "no", "don't", "stop", "instead", "that's wrong", "not like that", agent backtracking, multiple failed attempts.
-
-## Scope guidance
-
-- global: Cross-project wisdom (language patterns, debugging strategies, general workflow)
-- project: Project-specific conventions or architecture knowledge
-- agent: Agent-specific behavioural tuning
-
-Only extract heuristics that would be useful in FUTURE sessions, not this one.`;
 
 // ---------------------------------------------------------------------------
 // Reflection schema for structured generation
@@ -315,33 +268,12 @@ function jaccardSimilarity(a: string[], b: string[]): number {
 }
 
 // ---------------------------------------------------------------------------
-// Scope helpers
-// ---------------------------------------------------------------------------
-
-function scopeDirectory(scope: MemoryScope, projectSlug?: string, agentId?: string): string {
-  switch (scope) {
-    case "global":
-      return "memory/global";
-    case "project":
-      return `memory/project/${projectSlug}`;
-    case "agent":
-      return `memory/agent/${agentId}`;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
 export function createReflector(provider: MemoryLLMProvider): Reflector {
-  let lastProjectSlug: string | undefined;
-  let lastAgentId: string | undefined;
-
   return {
     async reflect(context: ReflectionContext): Promise<ReflectionResult> {
-      lastProjectSlug = context.projectSlug;
-      lastAgentId = context.agentId;
-
       const prompt = buildReflectionPrompt(context);
 
       const raw = await provider.generateStructured<{
@@ -359,7 +291,7 @@ export function createReflector(provider: MemoryLLMProvider): Reflector {
         }
       }
 
-      return { heuristics };
+      return { heuristics, projectSlug: context.projectSlug, agentId: context.agentId };
     },
 
     async apply(result: ReflectionResult, store: MemoryStore): Promise<void> {
@@ -367,8 +299,8 @@ export function createReflector(provider: MemoryLLMProvider): Reflector {
         return;
       }
 
-      const projectSlug = lastProjectSlug;
-      const agentId = lastAgentId;
+      const projectSlug = result.projectSlug;
+      const agentId = result.agentId;
 
       await store.batch(
         {

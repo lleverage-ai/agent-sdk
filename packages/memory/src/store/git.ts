@@ -96,9 +96,9 @@ function isNonFastForward(result: GitResult): boolean {
 // Freshen (pull)
 // ---------------------------------------------------------------------------
 
-async function freshen(root: string, branch: string): Promise<void> {
+async function freshen(root: string, branch: string): Promise<boolean> {
   const fetchResult = await git(root, ["fetch", "origin"]);
-  if (fetchResult.exitCode !== 0) return;
+  if (fetchResult.exitCode !== 0) return false;
 
   const statusResult = await git(root, ["status", "--porcelain"]);
   const isDirty = statusResult.exitCode === 0 && statusResult.stdout.trim().length > 0;
@@ -121,12 +121,14 @@ async function freshen(root: string, branch: string): Promise<void> {
     if (stashed) {
       await git(root, ["stash", "pop"]);
     }
-    return;
+    return false;
   }
 
   if (stashed) {
     await git(root, ["stash", "pop"]);
   }
+
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -186,8 +188,10 @@ export async function createGitStore(options: GitStoreOptions): Promise<MemorySt
 
     // Build commit message
     const subject = `[${opts.reason}] ${opts.message}`;
-    const commitAuthor = opts.author ?? author;
-    const commitArgs = ["commit", "-m", subject, `--author=${commitAuthor} <${email}>`];
+    const safeAuthor =
+      (opts.author ?? author ?? "memory").replace(/[<>\r\n]/g, "").trim() || "memory";
+    const safeEmail = email.replace(/[<>\r\n]/g, "").trim() || "memory@localhost";
+    const commitArgs = ["commit", "-m", subject, `--author=${safeAuthor} <${safeEmail}>`];
 
     const commitResult = await git(root, commitArgs);
 

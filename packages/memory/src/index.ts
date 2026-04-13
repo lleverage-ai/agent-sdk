@@ -38,10 +38,10 @@ export {
   InvalidPathError,
 } from "./store/types.js";
 
-export { createMemoryPath, isValidPath, joinPaths, parentPath, basename } from "./path.js";
+export { createMemoryPath, isValidPath, joinPaths, parentPath, basename, scopeDirectory } from "./path.js";
 
 // Store implementations
-export { createFilesystemStore } from "./store/filesystem.js";
+export { createFilesystemStore, type FilesystemStoreOptions } from "./store/filesystem.js";
 export { createInMemoryStore } from "./store/in-memory.js";
 export { createGitStore } from "./store/git.js";
 export type { GitStoreOptions } from "./store/git.js";
