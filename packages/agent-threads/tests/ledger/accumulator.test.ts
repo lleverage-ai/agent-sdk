@@ -256,6 +256,107 @@ describe("Accumulator", () => {
       expect(messages[0]!.metadata).toHaveProperty("schemaVersion", 1);
     });
 
+    it("carries skillId and componentId from tool-call payloads onto canonical parts", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "gmail_send",
+            input: { subject: "hi" },
+            skillId: "skl-gmail",
+            componentId: "skl-comp-gmail-cred",
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "gmail_send",
+            output: "ok",
+            isError: false,
+            skillId: "skl-gmail",
+            componentId: "skl-comp-gmail-cred",
+          },
+        },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const toolCallPart = messages[0]!.parts[0] as Extract<CanonicalPart, { type: "tool-call" }>;
+      expect(toolCallPart.skillId).toBe("skl-gmail");
+      expect(toolCallPart.componentId).toBe("skl-comp-gmail-cred");
+
+      const toolResultPart = messages[1]!.parts[0] as Extract<
+        CanonicalPart,
+        { type: "tool-result" }
+      >;
+      expect(toolResultPart.skillId).toBe("skl-gmail");
+      expect(toolResultPart.componentId).toBe("skl-comp-gmail-cred");
+    });
+
+    it("falls back to pending tool-call metadata when tool-result omits skillId/componentId", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-2",
+            toolName: "drive_read",
+            input: {},
+            skillId: "skl-drive",
+            componentId: "skl-comp-drive-wf",
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-2",
+            toolName: "drive_read",
+            output: "ok",
+            isError: false,
+          },
+        },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const toolResultPart = messages[1]!.parts[0] as Extract<
+        CanonicalPart,
+        { type: "tool-result" }
+      >;
+      expect(toolResultPart.skillId).toBe("skl-drive");
+      expect(toolResultPart.componentId).toBe("skl-comp-drive-wf");
+    });
+
+    it("omits skillId/componentId entirely when payloads do not provide them", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        { kind: "tool-call", payload: { toolCallId: "tc-3", toolName: "plain", input: {} } },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+        {
+          kind: "tool-result",
+          payload: { toolCallId: "tc-3", toolName: "plain", output: "ok", isError: false },
+        },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const toolCallPart = messages[0]!.parts[0] as Extract<CanonicalPart, { type: "tool-call" }>;
+      const toolResultPart = messages[1]!.parts[0] as Extract<
+        CanonicalPart,
+        { type: "tool-result" }
+      >;
+
+      expect(toolCallPart).not.toHaveProperty("skillId");
+      expect(toolCallPart).not.toHaveProperty("componentId");
+      expect(toolResultPart).not.toHaveProperty("skillId");
+      expect(toolResultPart).not.toHaveProperty("componentId");
+    });
+
     it("handles user-message events as canonical user messages", () => {
       const idGen = createCounterIdGenerator("msg");
       const storedEvents = wrapEvents([

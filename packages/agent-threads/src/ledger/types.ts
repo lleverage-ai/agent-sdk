@@ -38,6 +38,10 @@ export interface ToolCallPart {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly input: unknown;
+  /** Stable id of the skill that owns this tool, when the tool came from a skill component */
+  readonly skillId?: string;
+  /** Stable id of the originating skill component, when the tool came from a skill component */
+  readonly componentId?: string;
 }
 
 /**
@@ -51,6 +55,10 @@ export interface ToolResultPart {
   readonly toolName: string;
   readonly output: unknown;
   readonly isError: boolean;
+  /** Stable id of the skill that owns this tool, when the tool came from a skill component */
+  readonly skillId?: string;
+  /** Stable id of the originating skill component, when the tool came from a skill component */
+  readonly componentId?: string;
 }
 
 /**

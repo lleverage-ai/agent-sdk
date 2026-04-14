@@ -29,7 +29,10 @@ export interface AccumulatorState {
   /** Text buffer for coalescing consecutive text-deltas */
   textBuffer: string;
   /** Pending tool calls awaiting results */
-  pendingToolCalls: Map<string, { toolName: string; input: unknown }>;
+  pendingToolCalls: Map<
+    string,
+    { toolName: string; input: unknown; skillId?: string; componentId?: string }
+  >;
   /** ID of the last committed message */
   lastMessageId: string | null;
 }
@@ -139,16 +142,26 @@ function createReducer(
       case "tool-call": {
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
-        const p = payload as { toolCallId: string; toolName: string; input: unknown };
+        const p = payload as {
+          toolCallId: string;
+          toolName: string;
+          input: unknown;
+          skillId?: string;
+          componentId?: string;
+        };
         state.currentMessage!.parts.push({
           type: "tool-call",
           toolCallId: p.toolCallId,
           toolName: p.toolName,
           input: p.input,
+          ...(p.skillId !== undefined && { skillId: p.skillId }),
+          ...(p.componentId !== undefined && { componentId: p.componentId }),
         });
         state.pendingToolCalls.set(p.toolCallId, {
           toolName: p.toolName,
           input: p.input,
+          ...(p.skillId !== undefined && { skillId: p.skillId }),
+          ...(p.componentId !== undefined && { componentId: p.componentId }),
         });
         break;
       }
@@ -162,9 +175,13 @@ function createReducer(
           toolName: string;
           output: unknown;
           isError?: boolean;
+          skillId?: string;
+          componentId?: string;
         };
         const pending = state.pendingToolCalls.get(p.toolCallId);
         const toolName = p.toolName ?? pending?.toolName ?? "unknown";
+        const skillId = p.skillId ?? pending?.skillId;
+        const componentId = p.componentId ?? pending?.componentId;
         state.pendingToolCalls.delete(p.toolCallId);
 
         const toolMsg: CanonicalMessage = {
@@ -178,6 +195,8 @@ function createReducer(
               toolName,
               output: p.output,
               isError: p.isError ?? false,
+              ...(skillId !== undefined && { skillId }),
+              ...(componentId !== undefined && { componentId }),
             },
           ],
           createdAt: new Date().toISOString(),

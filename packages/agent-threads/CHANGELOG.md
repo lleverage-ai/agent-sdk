@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ToolCallPart` and `ToolResultPart` now carry optional `skillId` and `componentId` fields so consumers can attribute tool invocations back to the originating skill component. The accumulator threads both fields from `tool-call` / `tool-result` stream payloads into canonical parts, and falls back to values captured on the pending `tool-call` when a `tool-result` omits them.
+
 ## [0.1.0-alpha.3] - 2026-02-28
 
 ### Added
