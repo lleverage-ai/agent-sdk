@@ -2,9 +2,50 @@ import { Projector } from "../stream/projector.js";
 import type { StreamEvent } from "../stream/stream-event.js";
 import type { ProjectorConfig, StoredEvent } from "../stream/types.js";
 
-import type { CanonicalMessage, CanonicalMessageMetadata, CanonicalPart } from "./types.js";
+import type {
+  CanonicalMessage,
+  CanonicalMessageMetadata,
+  CanonicalPart,
+  ToolCallPart,
+} from "./types.js";
 import type { IdGenerator } from "./ulid.js";
 import { ulid } from "./ulid.js";
+
+// ---------------------------------------------------------------------------
+// Event payload shapes
+// ---------------------------------------------------------------------------
+
+interface OptionalToolMeta {
+  toolLabel?: string;
+  skillName?: string;
+  skillIcon?: string;
+}
+
+interface ToolCallEventPayload extends OptionalToolMeta {
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+}
+
+interface ToolResultEventPayload extends OptionalToolMeta {
+  toolCallId: string;
+  toolName: string;
+  output: unknown;
+  isError?: boolean;
+}
+
+interface PendingToolCall extends OptionalToolMeta {
+  toolName: string;
+  input: unknown;
+}
+
+function extractOptionalToolMeta(payload: OptionalToolMeta): OptionalToolMeta {
+  return {
+    ...(typeof payload.toolLabel === "string" ? { toolLabel: payload.toolLabel } : {}),
+    ...(typeof payload.skillName === "string" ? { skillName: payload.skillName } : {}),
+    ...(typeof payload.skillIcon === "string" ? { skillIcon: payload.skillIcon } : {}),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Accumulator State
@@ -29,7 +70,7 @@ export interface AccumulatorState {
   /** Text buffer for coalescing consecutive text-deltas */
   textBuffer: string;
   /** Pending tool calls awaiting results */
-  pendingToolCalls: Map<string, { toolName: string; input: unknown }>;
+  pendingToolCalls: Map<string, PendingToolCall>;
   /** ID of the last committed message */
   lastMessageId: string | null;
 }
@@ -139,17 +180,42 @@ function createReducer(
       case "tool-call": {
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
-        const p = payload as { toolCallId: string; toolName: string; input: unknown };
-        state.currentMessage!.parts.push({
-          type: "tool-call",
-          toolCallId: p.toolCallId,
-          toolName: p.toolName,
-          input: p.input,
-        });
-        state.pendingToolCalls.set(p.toolCallId, {
-          toolName: p.toolName,
-          input: p.input,
-        });
+        const p = payload as ToolCallEventPayload;
+        const optionalMeta = extractOptionalToolMeta(p);
+
+        // Duplicate tool-call events (e.g. async label updates) update the
+        // existing part rather than appending a new one.
+        const existingPartIndex = state.currentMessage!.parts.findIndex(
+          (part) => part.type === "tool-call" && part.toolCallId === p.toolCallId,
+        );
+
+        if (existingPartIndex >= 0) {
+          const existing = state.currentMessage!.parts[existingPartIndex] as ToolCallPart;
+          state.currentMessage!.parts[existingPartIndex] = {
+            ...existing,
+            ...optionalMeta,
+          };
+          const existingPending = state.pendingToolCalls.get(p.toolCallId);
+          if (existingPending) {
+            state.pendingToolCalls.set(p.toolCallId, {
+              ...existingPending,
+              ...optionalMeta,
+            });
+          }
+        } else {
+          state.currentMessage!.parts.push({
+            type: "tool-call",
+            toolCallId: p.toolCallId,
+            toolName: p.toolName,
+            input: p.input,
+            ...optionalMeta,
+          });
+          state.pendingToolCalls.set(p.toolCallId, {
+            toolName: p.toolName,
+            input: p.input,
+            ...optionalMeta,
+          });
+        }
         break;
       }
 
@@ -157,15 +223,15 @@ function createReducer(
         // Commit the current assistant message first
         commitCurrentMessage(state);
 
-        const p = payload as {
-          toolCallId: string;
-          toolName: string;
-          output: unknown;
-          isError?: boolean;
-        };
+        const p = payload as ToolResultEventPayload;
         const pending = state.pendingToolCalls.get(p.toolCallId);
         const toolName = p.toolName ?? pending?.toolName ?? "unknown";
         state.pendingToolCalls.delete(p.toolCallId);
+
+        const optionalMeta = {
+          ...extractOptionalToolMeta(pending ?? {}),
+          ...extractOptionalToolMeta(p),
+        };
 
         const toolMsg: CanonicalMessage = {
           id: idGen(),
@@ -178,6 +244,7 @@ function createReducer(
               toolName,
               output: p.output,
               isError: p.isError ?? false,
+              ...optionalMeta,
             },
           ],
           createdAt: new Date().toISOString(),

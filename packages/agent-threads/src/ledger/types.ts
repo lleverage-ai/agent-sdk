@@ -38,6 +38,12 @@ export interface ToolCallPart {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly input: unknown;
+  /** Human-readable label describing the tool action (e.g. "Read file: utils.ts") */
+  readonly toolLabel?: string;
+  /** Name of the skill that owns this tool */
+  readonly skillName?: string;
+  /** Icon identifier for the skill */
+  readonly skillIcon?: string;
 }
 
 /**
@@ -51,6 +57,12 @@ export interface ToolResultPart {
   readonly toolName: string;
   readonly output: unknown;
   readonly isError: boolean;
+  /** Human-readable label describing the tool result (e.g. "Read file: utils.ts") */
+  readonly toolLabel?: string;
+  /** Name of the skill that owns this tool */
+  readonly skillName?: string;
+  /** Icon identifier for the skill */
+  readonly skillIcon?: string;
 }
 
 /**

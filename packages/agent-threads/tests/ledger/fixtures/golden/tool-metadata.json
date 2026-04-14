@@ -1,0 +1,79 @@
+{
+  "description": "Tool call and result with metadata (toolLabel, skillName, skillIcon)",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "Let me search your email." } },
+    {
+      "kind": "tool-call",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "search_emails",
+        "input": { "query": "invoice" },
+        "toolLabel": "Searching emails...",
+        "skillName": "Email",
+        "skillIcon": "mail"
+      }
+    },
+    {
+      "kind": "tool-call",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "search_emails",
+        "input": { "query": "invoice" },
+        "toolLabel": "Searching your inbox for invoices"
+      }
+    },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "tool-calls" } },
+    {
+      "kind": "tool-result",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "search_emails",
+        "output": "Found 3 emails",
+        "isError": false,
+        "toolLabel": "Found 3 emails about invoices",
+        "skillName": "Email",
+        "skillIcon": "mail"
+      }
+    },
+    { "kind": "step-started", "payload": { "stepIndex": 1 } },
+    { "kind": "text-delta", "payload": { "delta": "I found 3 invoice-related emails." } },
+    { "kind": "step-finished", "payload": { "stepIndex": 1, "finishReason": "stop" } }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "text", "text": "Let me search your email." },
+        {
+          "type": "tool-call",
+          "toolCallId": "tc-1",
+          "toolName": "search_emails",
+          "input": { "query": "invoice" },
+          "toolLabel": "Searching your inbox for invoices",
+          "skillName": "Email",
+          "skillIcon": "mail"
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool-result",
+          "toolCallId": "tc-1",
+          "toolName": "search_emails",
+          "output": "Found 3 emails",
+          "isError": false,
+          "toolLabel": "Found 3 emails about invoices",
+          "skillName": "Email",
+          "skillIcon": "mail"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "I found 3 invoice-related emails." }]
+    }
+  ]
+}
