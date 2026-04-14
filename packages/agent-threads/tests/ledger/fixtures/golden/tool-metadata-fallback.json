@@ -1,0 +1,69 @@
+{
+  "description": "Tool result reuses metadata captured on earlier tool-call events when the result payload omits it",
+  "events": [
+    { "kind": "step-started", "payload": { "stepIndex": 0 } },
+    { "kind": "text-delta", "payload": { "delta": "Let me search your inbox." } },
+    {
+      "kind": "tool-call",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "search_emails",
+        "input": { "query": "invoice" },
+        "toolLabel": "Searching your inbox",
+        "skillName": "Email",
+        "skillIcon": "mail"
+      }
+    },
+    {
+      "kind": "tool-call",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "search_emails",
+        "input": { "query": "invoice" },
+        "toolLabel": "Found 3 invoices"
+      }
+    },
+    { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "tool-calls" } },
+    {
+      "kind": "tool-result",
+      "payload": {
+        "toolCallId": "tc-1",
+        "toolName": "search_emails",
+        "output": "Found 3 emails",
+        "isError": false
+      }
+    }
+  ],
+  "expectedMessages": [
+    {
+      "role": "assistant",
+      "parts": [
+        { "type": "text", "text": "Let me search your inbox." },
+        {
+          "type": "tool-call",
+          "toolCallId": "tc-1",
+          "toolName": "search_emails",
+          "input": { "query": "invoice" },
+          "toolLabel": "Found 3 invoices",
+          "skillName": "Email",
+          "skillIcon": "mail"
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "parts": [
+        {
+          "type": "tool-result",
+          "toolCallId": "tc-1",
+          "toolName": "search_emails",
+          "output": "Found 3 emails",
+          "isError": false,
+          "toolLabel": "Found 3 invoices",
+          "skillName": "Email",
+          "skillIcon": "mail"
+        }
+      ]
+    }
+  ]
+}

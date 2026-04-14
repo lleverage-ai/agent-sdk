@@ -12,6 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ToolCallPart` and `ToolResultPart` now carry optional `toolLabel`, `skillName`, and `skillIcon` metadata from stream events, so canonical transcripts preserve the same display labels shown during streaming
 - Accumulator handles duplicate `tool-call` events for the same `toolCallId` (e.g. async LLM-generated label updates) by merging metadata into the existing part instead of appending a duplicate
 
+### Fixed
+
+- `ToolResultPart` now reuses metadata captured on earlier `tool-call` events when the corresponding `tool-result` payload omits `toolLabel`, `skillName`, or `skillIcon`, keeping canonical reloads consistent with streamed tool UI
+
 ## [0.1.0-alpha.3] - 2026-02-28
 
 ### Added

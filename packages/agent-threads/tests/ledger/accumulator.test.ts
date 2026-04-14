@@ -56,6 +56,7 @@ const goldenFixtures = [
   "simple-text",
   "multi-step-tool-use",
   "tool-error",
+  "tool-metadata-fallback",
   "reasoning-with-text",
   "file-attachment",
   "multi-turn-conversation",
@@ -559,6 +560,97 @@ describe("Accumulator", () => {
         toolLabel: "Failed to read file: missing.ts",
         skillName: "Filesystem",
         skillIcon: "folder",
+      });
+    });
+
+    it("reuses tool-call metadata when the tool-result payload omits it", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "read_file",
+            input: { path: "utils.ts" },
+            toolLabel: "Read file: utils.ts",
+            skillName: "Filesystem",
+            skillIcon: "folder",
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "read_file",
+            output: "file contents",
+            isError: false,
+          },
+        },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const resultPart = messages[1]!.parts[0]!;
+      expect(resultPart).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "read_file",
+        output: "file contents",
+        isError: false,
+        toolLabel: "Read file: utils.ts",
+        skillName: "Filesystem",
+        skillIcon: "folder",
+      });
+    });
+
+    it("propagates duplicate tool-call metadata updates to the eventual tool-result", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            toolLabel: "Searching your inbox",
+            skillName: "Email",
+            skillIcon: "mail",
+          },
+        },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            toolLabel: "Found 3 invoices",
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            output: "Found 3 emails",
+            isError: false,
+          },
+        },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const resultPart = messages[1]!.parts[0]!;
+      expect(resultPart).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "search_emails",
+        output: "Found 3 emails",
+        isError: false,
+        toolLabel: "Found 3 invoices",
+        skillName: "Email",
+        skillIcon: "mail",
       });
     });
   });

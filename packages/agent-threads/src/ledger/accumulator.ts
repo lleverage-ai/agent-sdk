@@ -34,6 +34,11 @@ interface ToolResultEventPayload extends OptionalToolMeta {
   isError?: boolean;
 }
 
+interface PendingToolCall extends OptionalToolMeta {
+  toolName: string;
+  input: unknown;
+}
+
 function extractOptionalToolMeta(payload: OptionalToolMeta): OptionalToolMeta {
   return {
     ...(typeof payload.toolLabel === "string" ? { toolLabel: payload.toolLabel } : {}),
@@ -65,7 +70,7 @@ export interface AccumulatorState {
   /** Text buffer for coalescing consecutive text-deltas */
   textBuffer: string;
   /** Pending tool calls awaiting results */
-  pendingToolCalls: Map<string, { toolName: string; input: unknown }>;
+  pendingToolCalls: Map<string, PendingToolCall>;
   /** ID of the last committed message */
   lastMessageId: string | null;
 }
@@ -190,6 +195,13 @@ function createReducer(
             ...existing,
             ...optionalMeta,
           };
+          const existingPending = state.pendingToolCalls.get(p.toolCallId);
+          if (existingPending) {
+            state.pendingToolCalls.set(p.toolCallId, {
+              ...existingPending,
+              ...optionalMeta,
+            });
+          }
         } else {
           state.currentMessage!.parts.push({
             type: "tool-call",
@@ -201,6 +213,7 @@ function createReducer(
           state.pendingToolCalls.set(p.toolCallId, {
             toolName: p.toolName,
             input: p.input,
+            ...optionalMeta,
           });
         }
         break;
@@ -215,7 +228,10 @@ function createReducer(
         const toolName = p.toolName ?? pending?.toolName ?? "unknown";
         state.pendingToolCalls.delete(p.toolCallId);
 
-        const optionalMeta = extractOptionalToolMeta(p);
+        const optionalMeta = {
+          ...extractOptionalToolMeta(pending ?? {}),
+          ...extractOptionalToolMeta(p),
+        };
 
         const toolMsg: CanonicalMessage = {
           id: idGen(),
