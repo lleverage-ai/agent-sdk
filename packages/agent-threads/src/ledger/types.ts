@@ -29,6 +29,46 @@ export interface ReasoningPart {
 }
 
 /**
+ * JSON primitive values.
+ *
+ * @category Types
+ */
+export type JsonPrimitive = string | number | boolean | null;
+
+/**
+ * A JSON-serializable value.
+ *
+ * @category Types
+ */
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
+
+/**
+ * A JSON-serializable object.
+ *
+ * @category Types
+ */
+export interface JsonObject {
+  readonly [key: string]: JsonValue;
+}
+
+/**
+ * A JSON-serializable array.
+ *
+ * @category Types
+ */
+export type JsonArray = readonly JsonValue[];
+
+/**
+ * Additional JSON-compatible metadata preserved on tool call and tool result parts.
+ *
+ * @category Types
+ */
+export interface ToolPartMetadata {
+  /** Additional JSON-compatible metadata associated with a tool part */
+  readonly [key: string]: JsonValue;
+}
+
+/**
  * A tool invocation recorded within a canonical message.
  *
  * @category Types
@@ -38,12 +78,8 @@ export interface ToolCallPart {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly input: unknown;
-  /** Human-readable label describing the tool action (e.g. "Read file: utils.ts") */
-  readonly toolLabel?: string;
-  /** Name of the skill that owns this tool */
-  readonly skillName?: string;
-  /** Icon identifier for the skill */
-  readonly skillIcon?: string;
+  /** Additional JSON-compatible metadata preserved from the tool event payload */
+  readonly metadata?: ToolPartMetadata;
 }
 
 /**
@@ -57,12 +93,8 @@ export interface ToolResultPart {
   readonly toolName: string;
   readonly output: unknown;
   readonly isError: boolean;
-  /** Human-readable label describing the tool result (e.g. "Read file: utils.ts") */
-  readonly toolLabel?: string;
-  /** Name of the skill that owns this tool */
-  readonly skillName?: string;
-  /** Icon identifier for the skill */
-  readonly skillIcon?: string;
+  /** Additional JSON-compatible metadata preserved from the tool event payload */
+  readonly metadata?: ToolPartMetadata;
 }
 
 /**
