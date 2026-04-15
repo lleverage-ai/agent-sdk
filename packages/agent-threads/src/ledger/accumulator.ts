@@ -7,6 +7,7 @@ import type {
   CanonicalMessageMetadata,
   CanonicalPart,
   ToolCallPart,
+  ToolPartMetadata,
 } from "./types.js";
 import type { IdGenerator } from "./ulid.js";
 import { ulid } from "./ulid.js";
@@ -15,36 +16,220 @@ import { ulid } from "./ulid.js";
 // Event payload shapes
 // ---------------------------------------------------------------------------
 
-interface OptionalToolMeta {
-  toolLabel?: string;
-  skillName?: string;
-  skillIcon?: string;
-}
-
-interface ToolCallEventPayload extends OptionalToolMeta {
+interface ToolCallEventPayload {
   toolCallId: string;
   toolName: string;
   input: unknown;
+  metadata?: ToolPartMetadata;
 }
 
-interface ToolResultEventPayload extends OptionalToolMeta {
+interface ToolResultEventPayload {
   toolCallId: string;
   toolName: string;
   output: unknown;
   isError?: boolean;
+  metadata?: ToolPartMetadata;
 }
 
-interface PendingToolCall extends OptionalToolMeta {
+interface PendingToolCall {
   toolName: string;
   input: unknown;
+  metadata?: ToolPartMetadata;
 }
 
-function extractOptionalToolMeta(payload: OptionalToolMeta): OptionalToolMeta {
+interface FileEventPayload {
+  mimeType: string;
+  url: string;
+  name?: string;
+}
+
+interface StepStartedEventPayload {
+  stepIndex: number;
+}
+
+interface StepFinishedEventPayload {
+  [key: string]: unknown;
+}
+
+interface UserMessageEventPayload {
+  content: string;
+}
+
+interface TextDeltaEventPayload {
+  delta: string;
+}
+
+interface ReasoningEventPayload {
+  text: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function getString(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function getBoolean(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function getNumber(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" ? value : undefined;
+}
+
+function extractLegacyToolMetadata(record: Record<string, unknown>): ToolPartMetadata | undefined {
+  const legacyMetadata: Record<string, unknown> = {};
+
+  const toolLabel = getString(record, "toolLabel");
+  if (toolLabel !== undefined) {
+    legacyMetadata.toolLabel = toolLabel;
+  }
+
+  const skillName = getString(record, "skillName");
+  if (skillName !== undefined) {
+    legacyMetadata.skillName = skillName;
+  }
+
+  const skillIcon = getString(record, "skillIcon");
+  if (skillIcon !== undefined) {
+    legacyMetadata.skillIcon = skillIcon;
+  }
+
+  return Object.keys(legacyMetadata).length > 0 ? legacyMetadata : undefined;
+}
+
+function extractToolMetadata(record: Record<string, unknown>): ToolPartMetadata | undefined {
+  const metadata = isRecord(record.metadata) ? { ...record.metadata } : undefined;
+  const legacyMetadata = extractLegacyToolMetadata(record);
+
+  if (!metadata && !legacyMetadata) {
+    return undefined;
+  }
+
   return {
-    ...(typeof payload.toolLabel === "string" ? { toolLabel: payload.toolLabel } : {}),
-    ...(typeof payload.skillName === "string" ? { skillName: payload.skillName } : {}),
-    ...(typeof payload.skillIcon === "string" ? { skillIcon: payload.skillIcon } : {}),
+    ...(legacyMetadata ?? {}),
+    ...(metadata ?? {}),
   };
+}
+
+function mergeToolMetadata(
+  base?: ToolPartMetadata,
+  override?: ToolPartMetadata,
+): ToolPartMetadata | undefined {
+  if (!base && !override) {
+    return undefined;
+  }
+
+  return {
+    ...(base ?? {}),
+    ...(override ?? {}),
+  };
+}
+
+function parseToolCallEventPayload(payload: unknown): ToolCallEventPayload | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+
+  const toolCallId = getString(payload, "toolCallId");
+  const toolName = getString(payload, "toolName");
+  if (!toolCallId || !toolName || !("input" in payload)) {
+    return undefined;
+  }
+
+  return {
+    toolCallId,
+    toolName,
+    input: payload.input,
+    metadata: extractToolMetadata(payload),
+  };
+}
+
+function parseToolResultEventPayload(payload: unknown): ToolResultEventPayload | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+
+  const toolCallId = getString(payload, "toolCallId");
+  const toolName = getString(payload, "toolName");
+  if (!toolCallId || !toolName || !("output" in payload)) {
+    return undefined;
+  }
+
+  return {
+    toolCallId,
+    toolName,
+    output: payload.output,
+    isError: getBoolean(payload, "isError"),
+    metadata: extractToolMetadata(payload),
+  };
+}
+
+function parseUserMessageEventPayload(payload: unknown): UserMessageEventPayload | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+
+  const content = getString(payload, "content");
+  return content === undefined ? undefined : { content };
+}
+
+function parseTextDeltaEventPayload(payload: unknown): TextDeltaEventPayload | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+
+  const delta = getString(payload, "delta");
+  return delta === undefined ? undefined : { delta };
+}
+
+function parseReasoningEventPayload(payload: unknown): ReasoningEventPayload | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+
+  const text = getString(payload, "text");
+  return text === undefined ? undefined : { text };
+}
+
+function parseFileEventPayload(payload: unknown): FileEventPayload | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+
+  const mimeType = getString(payload, "mimeType");
+  const url = getString(payload, "url");
+  if (!mimeType || !url) {
+    return undefined;
+  }
+
+  return {
+    mimeType,
+    url,
+    name: getString(payload, "name"),
+  };
+}
+
+function parseStepStartedEventPayload(payload: unknown): StepStartedEventPayload | undefined {
+  if (!isRecord(payload)) {
+    return undefined;
+  }
+
+  const stepIndex = getNumber(payload, "stepIndex");
+  return stepIndex === undefined ? undefined : { stepIndex };
+}
+
+function parseStepFinishedEventPayload(payload: unknown): StepFinishedEventPayload | undefined {
+  return isRecord(payload) ? payload : undefined;
+}
+
+function parseErrorEventPayload(payload: unknown): Record<string, unknown> | undefined {
+  return isRecord(payload) ? payload : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,14 +326,21 @@ function createReducer(
 
     switch (kind) {
       case "step-started": {
+        const _p = parseStepStartedEventPayload(payload);
+        if (!_p) {
+          break;
+        }
         flushTextBuffer(state);
         ensureCurrentMessage(state, idGen);
         break;
       }
 
       case "user-message": {
+        const p = parseUserMessageEventPayload(payload);
+        if (!p) {
+          break;
+        }
         commitCurrentMessage(state);
-        const p = payload as { content: string };
         const userMsg = {
           id: idGen(),
           parentMessageId: state.lastMessageId,
@@ -163,25 +355,33 @@ function createReducer(
       }
 
       case "text-delta": {
+        const p = parseTextDeltaEventPayload(payload);
+        if (!p) {
+          break;
+        }
         ensureCurrentMessage(state, idGen);
-        const p = payload as { delta: string };
         state.textBuffer += p.delta;
         break;
       }
 
       case "reasoning": {
+        const p = parseReasoningEventPayload(payload);
+        if (!p) {
+          break;
+        }
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
-        const p = payload as { text: string };
         state.currentMessage!.parts.push({ type: "reasoning", text: p.text });
         break;
       }
 
       case "tool-call": {
+        const p = parseToolCallEventPayload(payload);
+        if (!p) {
+          break;
+        }
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
-        const p = payload as ToolCallEventPayload;
-        const optionalMeta = extractOptionalToolMeta(p);
 
         // Duplicate tool-call events (e.g. async label updates) update the
         // existing part rather than appending a new one.
@@ -190,48 +390,59 @@ function createReducer(
         );
 
         if (existingPartIndex >= 0) {
-          const existing = state.currentMessage!.parts[existingPartIndex] as ToolCallPart;
-          state.currentMessage!.parts[existingPartIndex] = {
+          const existing = state.currentMessage!.parts[existingPartIndex];
+          if (existing?.type !== "tool-call") {
+            break;
+          }
+
+          const nextMetadata = mergeToolMetadata(existing.metadata, p.metadata);
+          const nextPart: ToolCallPart = {
             ...existing,
-            ...optionalMeta,
+            ...(nextMetadata !== undefined ? { metadata: nextMetadata } : {}),
           };
+
+          state.currentMessage!.parts[existingPartIndex] = nextPart;
           const existingPending = state.pendingToolCalls.get(p.toolCallId);
           if (existingPending) {
+            const nextMetadata = mergeToolMetadata(existingPending.metadata, p.metadata);
             state.pendingToolCalls.set(p.toolCallId, {
               ...existingPending,
-              ...optionalMeta,
+              ...(nextMetadata !== undefined ? { metadata: nextMetadata } : {}),
             });
           }
         } else {
-          state.currentMessage!.parts.push({
+          const nextPart: ToolCallPart = {
             type: "tool-call",
             toolCallId: p.toolCallId,
             toolName: p.toolName,
             input: p.input,
-            ...optionalMeta,
-          });
-          state.pendingToolCalls.set(p.toolCallId, {
+            ...(p.metadata !== undefined ? { metadata: p.metadata } : {}),
+          };
+          state.currentMessage!.parts.push(nextPart);
+
+          const pendingToolCall: PendingToolCall = {
             toolName: p.toolName,
             input: p.input,
-            ...optionalMeta,
-          });
+            ...(p.metadata !== undefined ? { metadata: p.metadata } : {}),
+          };
+          state.pendingToolCalls.set(p.toolCallId, pendingToolCall);
         }
         break;
       }
 
       case "tool-result": {
+        const p = parseToolResultEventPayload(payload);
+        if (!p) {
+          break;
+        }
         // Commit the current assistant message first
         commitCurrentMessage(state);
 
-        const p = payload as ToolResultEventPayload;
         const pending = state.pendingToolCalls.get(p.toolCallId);
         const toolName = p.toolName ?? pending?.toolName ?? "unknown";
         state.pendingToolCalls.delete(p.toolCallId);
 
-        const optionalMeta = {
-          ...extractOptionalToolMeta(pending ?? {}),
-          ...extractOptionalToolMeta(p),
-        };
+        const metadata = mergeToolMetadata(pending?.metadata, p.metadata);
 
         const toolMsg: CanonicalMessage = {
           id: idGen(),
@@ -244,7 +455,7 @@ function createReducer(
               toolName,
               output: p.output,
               isError: p.isError ?? false,
-              ...optionalMeta,
+              ...(metadata !== undefined ? { metadata } : {}),
             },
           ],
           createdAt: new Date().toISOString(),
@@ -256,9 +467,12 @@ function createReducer(
       }
 
       case "file": {
+        const p = parseFileEventPayload(payload);
+        if (!p) {
+          break;
+        }
         ensureCurrentMessage(state, idGen);
         flushTextBuffer(state);
-        const p = payload as { mimeType: string; url: string; name?: string };
         state.currentMessage!.parts.push({
           type: "file",
           mimeType: p.mimeType,
@@ -269,9 +483,9 @@ function createReducer(
       }
 
       case "step-finished": {
+        const p = parseStepFinishedEventPayload(payload);
         flushTextBuffer(state);
         if (state.currentMessage) {
-          const p = payload as Record<string, unknown> | undefined;
           if (p) {
             state.currentMessage.metadata = { ...state.currentMessage.metadata, stepFinish: p };
           }
@@ -281,8 +495,11 @@ function createReducer(
       }
 
       case "error": {
+        const p = parseErrorEventPayload(payload);
+        if (!p) {
+          break;
+        }
         ensureCurrentMessage(state, idGen);
-        const p = payload as Record<string, unknown>;
         state.currentMessage!.metadata = { ...state.currentMessage!.metadata, error: p };
         break;
       }

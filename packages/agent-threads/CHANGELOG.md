@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `ToolCallPart` and `ToolResultPart` now expose a generic `metadata` bag for tool provenance and UI state instead of hardcoded canonical fields, keeping transcript storage extensible for app-specific metadata
+- Accumulator now preserves `payload.metadata` on tool-call and tool-result events, merges duplicate tool-call metadata updates, and falls back to pending tool-call metadata when the matching result omits it
+
+### Fixed
+
+- Accumulator payload handling now validates tool event payloads before projecting them into canonical messages, reducing broad type assertions in the ledger reducer while keeping the stream event model open-world
+
 ## [0.1.0-alpha.4] - 2026-04-14
 
 ### Added

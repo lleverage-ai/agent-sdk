@@ -1,5 +1,5 @@
 {
-  "description": "Tool call and result with metadata (toolLabel, skillName, skillIcon)",
+  "description": "Tool call and result with generic metadata bags",
   "events": [
     { "kind": "step-started", "payload": { "stepIndex": 0 } },
     { "kind": "text-delta", "payload": { "delta": "Let me search your email." } },
@@ -9,9 +9,11 @@
         "toolCallId": "tc-1",
         "toolName": "search_emails",
         "input": { "query": "invoice" },
-        "toolLabel": "Searching emails...",
-        "skillName": "Email",
-        "skillIcon": "mail"
+        "metadata": {
+          "toolLabel": "Searching emails...",
+          "skillName": "Email",
+          "skillIcon": "mail"
+        }
       }
     },
     {
@@ -20,7 +22,9 @@
         "toolCallId": "tc-1",
         "toolName": "search_emails",
         "input": { "query": "invoice" },
-        "toolLabel": "Searching your inbox for invoices"
+        "metadata": {
+          "toolLabel": "Searching your inbox for invoices"
+        }
       }
     },
     { "kind": "step-finished", "payload": { "stepIndex": 0, "finishReason": "tool-calls" } },
@@ -31,9 +35,11 @@
         "toolName": "search_emails",
         "output": "Found 3 emails",
         "isError": false,
-        "toolLabel": "Found 3 emails about invoices",
-        "skillName": "Email",
-        "skillIcon": "mail"
+        "metadata": {
+          "toolLabel": "Found 3 emails about invoices",
+          "skillName": "Email",
+          "skillIcon": "mail"
+        }
       }
     },
     { "kind": "step-started", "payload": { "stepIndex": 1 } },
@@ -50,9 +56,11 @@
           "toolCallId": "tc-1",
           "toolName": "search_emails",
           "input": { "query": "invoice" },
-          "toolLabel": "Searching your inbox for invoices",
-          "skillName": "Email",
-          "skillIcon": "mail"
+          "metadata": {
+            "toolLabel": "Searching your inbox for invoices",
+            "skillName": "Email",
+            "skillIcon": "mail"
+          }
         }
       ]
     },
@@ -65,9 +73,11 @@
           "toolName": "search_emails",
           "output": "Found 3 emails",
           "isError": false,
-          "toolLabel": "Found 3 emails about invoices",
-          "skillName": "Email",
-          "skillIcon": "mail"
+          "metadata": {
+            "toolLabel": "Found 3 emails about invoices",
+            "skillName": "Email",
+            "skillIcon": "mail"
+          }
         }
       ]
     },
