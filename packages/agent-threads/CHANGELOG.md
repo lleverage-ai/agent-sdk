@@ -7,11 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0-alpha.5] - 2026-04-15
-
 ### Changed
 
-- `**BREAKING**:` `ToolCallPart` and `ToolResultPart` now expose a generic `metadata` bag for tool provenance and UI state instead of top-level `toolLabel`, `skillName`, and `skillIcon` fields, keeping canonical transcript storage extensible for app-specific metadata
+- **BREAKING**: `ToolCallPart` and `ToolResultPart` now expose a generic `metadata` bag for tool provenance and UI state instead of top-level `toolLabel`, `skillName`, and `skillIcon` fields, keeping canonical transcript storage extensible for app-specific metadata
 - `Accumulator` now preserves `payload.metadata` on `tool-call` and `tool-result` events, deep-merges duplicate tool-call metadata updates, and falls back to pending tool-call metadata when the matching result omits it
 - `Accumulator` continues to accept legacy top-level `toolLabel`, `skillName`, and `skillIcon` fields on tool event payloads and normalizes them into `payload.metadata` for backward-compatible ingestion during migration
 
@@ -66,8 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ledger layer: canonical message schema, `RunManager`, accumulator, reconciliation, `FullContextBuilder`, ledger stores (`InMemoryLedgerStore`, `SQLiteLedgerStore`)
 - Subpath exports for granular imports: `./stream`, `./ledger`, `./server`, `./client`, `./stores/*`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.5...HEAD
-[0.1.0-alpha.5]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.4...agent-threads@0.1.0-alpha.5
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.4...HEAD
 [0.1.0-alpha.4]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.3...agent-threads@0.1.0-alpha.4
 [0.1.0-alpha.3]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.2...agent-threads@0.1.0-alpha.3
 [0.1.0-alpha.2]: https://github.com/lleverage-ai/agent-sdk/compare/agent-threads@0.1.0-alpha.1...agent-threads@0.1.0-alpha.2
