@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.2] - 2026-04-15
+
 ### Fixed
 
 - `call_tool` now preserves the original execution context for proxied inline plugin tools, forwarding the incoming `toolCallId`, `interrupt`, and abort context instead of replacing them with synthetic proxy values (#117)
@@ -276,7 +278,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.1...agent-sdk@0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.0.14...agent-sdk@0.1.0-alpha.1
 [0.0.14]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.13...agent-sdk@0.0.14
 [0.0.13]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.12...v0.0.13
