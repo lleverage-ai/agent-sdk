@@ -14,7 +14,6 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { type Tool, type ToolSet, tool } from "ai";
 import { formatMcpToolName, isMcpToolName } from "../tool-names.js";
 import type {
-  ExtendedToolExecutionOptions,
   HttpMCPServerConfig,
   MCPServerConfig,
   SseMCPServerConfig,
@@ -23,24 +22,13 @@ import type {
   StreamingToolsFactory,
 } from "../types.js";
 import { expandEnvVars } from "./env.js";
+import {
+  createInlineToolExecutionOptions,
+  type ProxyToolCallOptions,
+} from "./execution-options.js";
 import type { MCPToolLoadResult, MCPToolMetadata, MCPToolSource } from "./types.js";
 import { isSchemaEmpty, jsonSchemaToZod, MCPInputValidator } from "./validation.js";
 import { VirtualMCPServer } from "./virtual-server.js";
-
-type ProxyToolCallOptions = Partial<ExtendedToolExecutionOptions> & {
-  streamingContext?: StreamingContext | null;
-};
-
-function createInlineToolExecutionOptions(options: ProxyToolCallOptions = {}) {
-  const { streamingContext: _streamingContext, ...toolExecutionOptions } = options;
-
-  return {
-    ...toolExecutionOptions,
-    toolCallId: toolExecutionOptions.toolCallId ?? `virtual-${Date.now()}`,
-    messages: toolExecutionOptions.messages ?? [],
-    abortSignal: toolExecutionOptions.abortSignal ?? new AbortController().signal,
-  };
-}
 
 /**
  * Connected external MCP client with metadata.
