@@ -209,6 +209,41 @@ describe("MCPManager", () => {
       expect(result).toBe("Hello, World!");
     });
 
+    it("preserves the original execution context for inline plugin tools", async () => {
+      const abortController = new AbortController();
+      const interrupt = vi.fn();
+      let receivedOptions: Record<string, unknown> | undefined;
+
+      manager.registerPluginTools("test", {
+        inspect: tool({
+          description: "Inspect",
+          inputSchema: z.object({}),
+          execute: async (_input, options) => {
+            receivedOptions = options as Record<string, unknown>;
+            return "ok";
+          },
+        }),
+      });
+
+      await manager.callTool(
+        "test__inspect",
+        {},
+        {
+          toolCallId: "original-call",
+          messages: [],
+          abortSignal: abortController.signal,
+          interrupt,
+        },
+      );
+
+      expect(receivedOptions).toMatchObject({
+        toolCallId: "original-call",
+        messages: [],
+        abortSignal: abortController.signal,
+        interrupt,
+      });
+    });
+
     it("routes inline plugin tools to virtual servers only", async () => {
       const externalCall = vi.fn();
       manager.registerPluginTools("test", {
@@ -394,6 +429,43 @@ describe("MCPManager", () => {
         },
       );
       expect(result2).toBe("rendered(writer=true): <p>world</p>");
+    });
+
+    it("preserves the original execution context for streaming plugin tools", async () => {
+      const abortController = new AbortController();
+      const interrupt = vi.fn();
+      let receivedOptions: Record<string, unknown> | undefined;
+
+      const factory = () => ({
+        inspect: tool({
+          description: "Inspect",
+          inputSchema: z.object({}),
+          execute: async (_input, options) => {
+            receivedOptions = options as Record<string, unknown>;
+            return "ok";
+          },
+        }),
+      });
+
+      manager.registerStreamingPluginTools("ui", factory);
+
+      await manager.callTool(
+        "ui__inspect",
+        {},
+        {
+          toolCallId: "streaming-call",
+          messages: [],
+          abortSignal: abortController.signal,
+          interrupt,
+        },
+      );
+
+      expect(receivedOptions).toMatchObject({
+        toolCallId: "streaming-call",
+        messages: [],
+        abortSignal: abortController.signal,
+        interrupt,
+      });
     });
 
     it("does not leak streaming context between requests", async () => {

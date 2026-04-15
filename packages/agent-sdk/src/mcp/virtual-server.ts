@@ -11,6 +11,10 @@ import type { Tool, ToolSet } from "ai";
 import { asSchema } from "ai";
 import { formatPluginToolName } from "../tool-names.js";
 import type { StreamingContext, StreamingToolsFactory } from "../types.js";
+import {
+  createInlineToolExecutionOptions,
+  type ProxyToolCallOptions,
+} from "./execution-options.js";
 import type { MCPToolMetadata } from "./types.js";
 
 const DEFAULT_STREAMING_CONTEXT: StreamingContext = { writer: null };
@@ -121,12 +125,9 @@ export class VirtualMCPServer {
   async callTool(
     toolName: string,
     args: unknown,
-    options: {
-      abortSignal?: AbortSignal;
-      streamingContext?: StreamingContext;
-    } = {},
+    options: ProxyToolCallOptions = {},
   ): Promise<unknown> {
-    const tool = this.resolveTool(toolName, options.streamingContext);
+    const tool = this.resolveTool(toolName, options.streamingContext ?? undefined);
     if (!tool) {
       throw new Error(`Tool '${toolName}' not found in inline plugin '${this.name}'`);
     }
@@ -135,11 +136,10 @@ export class VirtualMCPServer {
       throw new Error(`Tool '${toolName}' has no execute function`);
     }
 
-    return tool.execute(args as Parameters<typeof tool.execute>[0], {
-      toolCallId: `virtual-${Date.now()}`,
-      messages: [],
-      abortSignal: options.abortSignal ?? new AbortController().signal,
-    });
+    return tool.execute(
+      args as Parameters<typeof tool.execute>[0],
+      createInlineToolExecutionOptions(options),
+    );
   }
 
   /**

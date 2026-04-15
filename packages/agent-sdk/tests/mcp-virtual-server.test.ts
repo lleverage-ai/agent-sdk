@@ -56,6 +56,41 @@ describe("VirtualMCPServer", () => {
     expect(result).toBe("Hello, World!");
   });
 
+  it("preserves the original execution context for inline tools", async () => {
+    const abortController = new AbortController();
+    const interrupt = vi.fn();
+    let receivedOptions: Record<string, unknown> | undefined;
+
+    const server = new VirtualMCPServer("my-plugin", {
+      inspect: tool({
+        description: "Inspect execution context",
+        inputSchema: z.object({}),
+        execute: async (_input, options) => {
+          receivedOptions = options as Record<string, unknown>;
+          return "ok";
+        },
+      }),
+    });
+
+    await server.callTool(
+      "inspect",
+      {},
+      {
+        toolCallId: "original-call",
+        messages: [],
+        abortSignal: abortController.signal,
+        interrupt,
+      },
+    );
+
+    expect(receivedOptions).toMatchObject({
+      toolCallId: "original-call",
+      messages: [],
+      abortSignal: abortController.signal,
+      interrupt,
+    });
+  });
+
   it("throws for unknown tool", async () => {
     const server = new VirtualMCPServer("my-plugin", testTools);
     await expect(server.callTool("unknown", {})).rejects.toThrow("Tool 'unknown' not found");

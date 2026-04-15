@@ -22,6 +22,10 @@ import type {
   StreamingToolsFactory,
 } from "../types.js";
 import { expandEnvVars } from "./env.js";
+import {
+  createInlineToolExecutionOptions,
+  type ProxyToolCallOptions,
+} from "./execution-options.js";
 import type { MCPToolLoadResult, MCPToolMetadata, MCPToolSource } from "./types.js";
 import { isSchemaEmpty, jsonSchemaToZod, MCPInputValidator } from "./validation.js";
 import { VirtualMCPServer } from "./virtual-server.js";
@@ -949,10 +953,7 @@ export class MCPManager {
   async callTool(
     qualifiedName: string,
     args: unknown,
-    options: {
-      abortSignal?: AbortSignal;
-      streamingContext?: StreamingContext | null;
-    } = {},
+    options: ProxyToolCallOptions = {},
   ): Promise<unknown> {
     const mcpTool = isMcpToolName(qualifiedName);
     const parts = qualifiedName.split("__");
@@ -977,16 +978,15 @@ export class MCPManager {
             const liveTools = factory(options.streamingContext ?? { writer: null });
             const liveTool = liveTools[toolName];
             if (liveTool?.execute) {
-              return liveTool.execute(args as Parameters<typeof liveTool.execute>[0], {
-                toolCallId: `virtual-${Date.now()}`,
-                messages: [],
-                abortSignal: options.abortSignal ?? new AbortController().signal,
-              });
+              return liveTool.execute(
+                args as Parameters<typeof liveTool.execute>[0],
+                createInlineToolExecutionOptions(options),
+              );
             }
           }
 
           return virtualServer.callTool(toolName, args, {
-            abortSignal: options.abortSignal,
+            ...options,
             streamingContext: options.streamingContext ?? undefined,
           });
         }
