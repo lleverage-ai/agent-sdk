@@ -12,7 +12,11 @@ import type { Tool, ToolExecutionOptions } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
 import type { MCPManager } from "../mcp/manager.js";
-import type { StreamingContext } from "../types.js";
+import type { ExtendedToolExecutionOptions, StreamingContext } from "../types.js";
+
+type ProxyToolExecutionOptions = Partial<ExtendedToolExecutionOptions> & {
+  streamingContext?: StreamingContext | null;
+};
 
 /**
  * Options for creating the call_tool proxy tool.
@@ -110,24 +114,20 @@ export function createCallToolTool(options: CallToolOptions): Tool {
         const metadata = mcpManager.getToolMetadata(tool_name);
         if (metadata) {
           try {
+            const proxyExecutionOptions = execOptions as ProxyToolExecutionOptions | undefined;
             const requestStreamingContext =
-              (
-                execOptions as
-                  | (ToolExecutionOptions & {
-                      streamingContext?: StreamingContext | null;
-                    })
-                  | undefined
-              )?.streamingContext ??
-              streamingContext ??
-              null;
+              proxyExecutionOptions?.streamingContext ?? streamingContext ?? null;
 
             result = await mcpManager.callTool(tool_name, args, {
-              abortSignal: execOptions?.abortSignal,
+              ...proxyExecutionOptions,
               streamingContext: requestStreamingContext,
             });
             await onAfterCall?.(tool_name, args, result);
             return formatResult(tool_name, result);
           } catch (error) {
+            if (isInterruptSignalLike(error)) {
+              throw error;
+            }
             return formatError(tool_name, error);
           }
         }
@@ -160,4 +160,8 @@ function formatResult(toolName: string, result: unknown): string {
 function formatError(toolName: string, error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return `Error executing "${toolName}": ${message}`;
+}
+
+function isInterruptSignalLike(error: unknown): boolean {
+  return error instanceof Error && error.name === "InterruptSignal" && "interrupt" in error;
 }
