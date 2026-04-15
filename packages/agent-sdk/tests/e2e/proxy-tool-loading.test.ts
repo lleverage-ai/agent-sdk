@@ -12,6 +12,7 @@
 import { tool } from "ai";
 import { beforeEach, describe, expect, it } from "vitest";
 import { z } from "zod";
+import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
 import { createAgent, definePlugin } from "../../src/index.js";
 import { createMockModel, resetMocks } from "../setup.js";
 
@@ -160,6 +161,46 @@ describe("E2E: Proxy Tool Loading", () => {
         execOpts,
       );
       expect(result).toContain("Paid 100");
+    });
+
+    it("lets proxied inline plugin tools initiate interrupt flow via call_tool", async () => {
+      const plugin = definePlugin({
+        name: "approval",
+        tools: {
+          request_approval: tool({
+            description: "Request approval through an interrupt",
+            inputSchema: z.object({}),
+            execute: async (_input, options) =>
+              (options as { interrupt?: (request: unknown) => Promise<unknown> }).interrupt?.({
+                type: "approval",
+                message: "Approve?",
+              }),
+          }),
+        },
+      });
+
+      const agent = createAgent({
+        model: createMockModel(),
+        checkpointer: new MemorySaver(),
+        plugins: [plugin],
+        pluginLoading: "proxy",
+      });
+
+      await expect(
+        agent.getActiveTools().call_tool.execute!(
+          { tool_name: "approval__request_approval", arguments: {} },
+          {
+            ...execOpts,
+            toolCallId: "original-call",
+          },
+        ),
+      ).rejects.toMatchObject({
+        name: "InterruptSignal",
+        interrupt: expect.objectContaining({
+          toolCallId: "original-call",
+          request: { type: "approval", message: "Approve?" },
+        }),
+      });
     });
   });
 

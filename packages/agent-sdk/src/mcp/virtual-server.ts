@@ -10,10 +10,29 @@
 import type { Tool, ToolSet } from "ai";
 import { asSchema } from "ai";
 import { formatPluginToolName } from "../tool-names.js";
-import type { StreamingContext, StreamingToolsFactory } from "../types.js";
+import type {
+  ExtendedToolExecutionOptions,
+  StreamingContext,
+  StreamingToolsFactory,
+} from "../types.js";
 import type { MCPToolMetadata } from "./types.js";
 
 const DEFAULT_STREAMING_CONTEXT: StreamingContext = { writer: null };
+
+type ProxyToolCallOptions = Partial<ExtendedToolExecutionOptions> & {
+  streamingContext?: StreamingContext;
+};
+
+function createInlineToolExecutionOptions(options: ProxyToolCallOptions = {}) {
+  const { streamingContext: _streamingContext, ...toolExecutionOptions } = options;
+
+  return {
+    ...toolExecutionOptions,
+    toolCallId: toolExecutionOptions.toolCallId ?? `virtual-${Date.now()}`,
+    messages: toolExecutionOptions.messages ?? [],
+    abortSignal: toolExecutionOptions.abortSignal ?? new AbortController().signal,
+  };
+}
 
 /**
  * Internal wrapper that presents inline plugin tools through the shared discovery interface.
@@ -121,10 +140,7 @@ export class VirtualMCPServer {
   async callTool(
     toolName: string,
     args: unknown,
-    options: {
-      abortSignal?: AbortSignal;
-      streamingContext?: StreamingContext;
-    } = {},
+    options: ProxyToolCallOptions = {},
   ): Promise<unknown> {
     const tool = this.resolveTool(toolName, options.streamingContext);
     if (!tool) {
@@ -135,11 +151,10 @@ export class VirtualMCPServer {
       throw new Error(`Tool '${toolName}' has no execute function`);
     }
 
-    return tool.execute(args as Parameters<typeof tool.execute>[0], {
-      toolCallId: `virtual-${Date.now()}`,
-      messages: [],
-      abortSignal: options.abortSignal ?? new AbortController().signal,
-    });
+    return tool.execute(
+      args as Parameters<typeof tool.execute>[0],
+      createInlineToolExecutionOptions(options),
+    );
   }
 
   /**
