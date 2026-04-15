@@ -9,12 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `ToolCallPart` and `ToolResultPart` now expose a generic `metadata` bag for tool provenance and UI state instead of hardcoded canonical fields, keeping transcript storage extensible for app-specific metadata
-- Accumulator now preserves `payload.metadata` on tool-call and tool-result events, merges duplicate tool-call metadata updates, and falls back to pending tool-call metadata when the matching result omits it
+- `**BREAKING**:` `ToolCallPart` and `ToolResultPart` now expose a generic `metadata` bag for tool provenance and UI state instead of top-level `toolLabel`, `skillName`, and `skillIcon` fields, keeping canonical transcript storage extensible for app-specific metadata
+- `Accumulator` now preserves `payload.metadata` on `tool-call` and `tool-result` events, deep-merges duplicate tool-call metadata updates, and falls back to pending tool-call metadata when the matching result omits it
+- `Accumulator` continues to accept legacy top-level `toolLabel`, `skillName`, and `skillIcon` fields on tool event payloads and normalizes them into `payload.metadata` for backward-compatible ingestion during migration
 
 ### Fixed
 
-- Accumulator payload handling now validates tool event payloads before projecting them into canonical messages, reducing broad type assertions in the ledger reducer while keeping the stream event model open-world
+- `ToolPartMetadata` is now constrained to JSON-serializable values so `ToolCallPart.metadata` and `ToolResultPart.metadata` align with canonical transcript persistence
+- `Accumulator` payload handling now validates tool event payloads before projecting them into canonical messages, reduces broad type assertions in the ledger reducer, and safely filters metadata keys during normalization/merge while keeping the stream event model open-world
 
 ## [0.1.0-alpha.4] - 2026-04-14
 

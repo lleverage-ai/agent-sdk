@@ -6,6 +6,8 @@ import type {
   CanonicalMessage,
   CanonicalMessageMetadata,
   CanonicalPart,
+  JsonPrimitive,
+  JsonValue,
   ToolCallPart,
   ToolPartMetadata,
 } from "./types.js";
@@ -25,7 +27,7 @@ interface ToolCallEventPayload {
 
 interface ToolResultEventPayload {
   toolCallId: string;
-  toolName: string;
+  toolName?: string;
   output: unknown;
   isError?: boolean;
   metadata?: ToolPartMetadata;
@@ -82,8 +84,70 @@ function getNumber(record: Record<string, unknown>, key: string): number | undef
   return typeof value === "number" ? value : undefined;
 }
 
+function isJsonPrimitive(value: unknown): value is JsonPrimitive {
+  return (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  );
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isUnsafeMetadataKey(key: string): boolean {
+  return key === "__proto__" || key === "constructor" || key === "prototype";
+}
+
+function sanitizeJsonValue(value: unknown): JsonValue | undefined {
+  if (isJsonPrimitive(value)) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    const items: JsonValue[] = [];
+    for (const item of value) {
+      const sanitizedItem = sanitizeJsonValue(item);
+      if (sanitizedItem !== undefined) {
+        items.push(sanitizedItem);
+      }
+    }
+    return items;
+  }
+
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+
+  return sanitizeMetadataBag(value);
+}
+
+function sanitizeMetadataBag(record: Record<string, unknown>): ToolPartMetadata | undefined {
+  const metadata: Record<string, JsonValue> = {};
+
+  for (const [key, value] of Object.entries(record)) {
+    if (isUnsafeMetadataKey(key)) {
+      continue;
+    }
+
+    const sanitizedValue = sanitizeJsonValue(value);
+    if (sanitizedValue !== undefined) {
+      metadata[key] = sanitizedValue;
+    }
+  }
+
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
+}
+
 function extractLegacyToolMetadata(record: Record<string, unknown>): ToolPartMetadata | undefined {
-  const legacyMetadata: Record<string, unknown> = {};
+  const legacyMetadata: Record<string, JsonValue> = {};
 
   const toolLabel = getString(record, "toolLabel");
   if (toolLabel !== undefined) {
@@ -104,7 +168,9 @@ function extractLegacyToolMetadata(record: Record<string, unknown>): ToolPartMet
 }
 
 function extractToolMetadata(record: Record<string, unknown>): ToolPartMetadata | undefined {
-  const metadata = isRecord(record.metadata) ? { ...record.metadata } : undefined;
+  const metadata = isPlainObject(record.metadata)
+    ? sanitizeMetadataBag(record.metadata)
+    : undefined;
   const legacyMetadata = extractLegacyToolMetadata(record);
 
   if (!metadata && !legacyMetadata) {
@@ -125,10 +191,35 @@ function mergeToolMetadata(
     return undefined;
   }
 
-  return {
-    ...(base ?? {}),
-    ...(override ?? {}),
-  };
+  if (!base) {
+    return sanitizeMetadataBag(override ?? {});
+  }
+
+  if (!override) {
+    return sanitizeMetadataBag(base);
+  }
+
+  const keys = new Set([...Object.keys(base), ...Object.keys(override)]);
+  const metadata: Record<string, JsonValue> = {};
+
+  for (const key of keys) {
+    if (isUnsafeMetadataKey(key)) {
+      continue;
+    }
+
+    const baseValue = base[key];
+    const overrideValue = override[key];
+    const mergedValue =
+      isPlainObject(baseValue) && isPlainObject(overrideValue)
+        ? mergeToolMetadata(sanitizeMetadataBag(baseValue), sanitizeMetadataBag(overrideValue))
+        : (overrideValue ?? baseValue);
+
+    if (mergedValue !== undefined) {
+      metadata[key] = mergedValue;
+    }
+  }
+
+  return Object.keys(metadata).length > 0 ? metadata : undefined;
 }
 
 function parseToolCallEventPayload(payload: unknown): ToolCallEventPayload | undefined {
@@ -157,7 +248,7 @@ function parseToolResultEventPayload(payload: unknown): ToolResultEventPayload |
 
   const toolCallId = getString(payload, "toolCallId");
   const toolName = getString(payload, "toolName");
-  if (!toolCallId || !toolName || !("output" in payload)) {
+  if (!toolCallId || !("output" in payload)) {
     return undefined;
   }
 

@@ -29,13 +29,43 @@ export interface ReasoningPart {
 }
 
 /**
+ * JSON primitive values.
+ *
+ * @category Types
+ */
+export type JsonPrimitive = string | number | boolean | null;
+
+/**
+ * A JSON-serializable value.
+ *
+ * @category Types
+ */
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
+
+/**
+ * A JSON-serializable object.
+ *
+ * @category Types
+ */
+export interface JsonObject {
+  readonly [key: string]: JsonValue;
+}
+
+/**
+ * A JSON-serializable array.
+ *
+ * @category Types
+ */
+export type JsonArray = readonly JsonValue[];
+
+/**
  * Additional JSON-compatible metadata preserved on tool call and tool result parts.
  *
  * @category Types
  */
 export interface ToolPartMetadata {
   /** Additional JSON-compatible metadata associated with a tool part */
-  readonly [key: string]: unknown;
+  readonly [key: string]: JsonValue;
 }
 
 /**

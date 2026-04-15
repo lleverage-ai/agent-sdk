@@ -561,6 +561,61 @@ describe("Accumulator", () => {
       });
     });
 
+    it("deep-merges nested metadata on duplicate tool-call updates", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              ui: {
+                label: "Searching your inbox",
+                icon: "mail",
+              },
+              provenance: {
+                skillId: "skl-email",
+              },
+            },
+          },
+        },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              ui: {
+                label: "Found 3 invoices",
+              },
+            },
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      expect(messages[0]!.parts[0]).toEqual({
+        type: "tool-call",
+        toolCallId: "tc-1",
+        toolName: "search_emails",
+        input: { query: "invoice" },
+        metadata: {
+          ui: {
+            label: "Found 3 invoices",
+            icon: "mail",
+          },
+          provenance: {
+            skillId: "skl-email",
+          },
+        },
+      });
+    });
+
     it("preserves metadata on tool-result parts when isError is true", () => {
       const idGen = createCounterIdGenerator("msg");
       const storedEvents = wrapEvents([
@@ -652,6 +707,77 @@ describe("Accumulator", () => {
           skillIcon: "folder",
         },
       });
+    });
+
+    it("falls back to pending tool-call toolName when tool-result omits it", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "read_file",
+            input: { path: "utils.ts" },
+            metadata: {
+              toolLabel: "Read file: utils.ts",
+            },
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            output: "file contents",
+            isError: false,
+          },
+        },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      expect(messages[1]!.parts[0]).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "read_file",
+        output: "file contents",
+        isError: false,
+        metadata: {
+          toolLabel: "Read file: utils.ts",
+        },
+      });
+    });
+
+    it("filters unsafe metadata keys during normalization", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "web_search",
+            input: { query: "weather" },
+            metadata: {
+              toolLabel: "Searching the web...",
+              ["__proto__"]: { polluted: true },
+            },
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      expect(messages[0]!.parts[0]).toEqual({
+        type: "tool-call",
+        toolCallId: "tc-1",
+        toolName: "web_search",
+        input: { query: "weather" },
+        metadata: {
+          toolLabel: "Searching the web...",
+        },
+      });
+      expect(Object.prototype).not.toHaveProperty("polluted");
     });
 
     it("propagates duplicate tool-call metadata updates to the eventual tool-result", () => {
