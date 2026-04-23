@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.3] - 2026-04-23
+
 ### Added
 
 - First-class execution telemetry in `@lleverage-ai/agent-sdk`: generation results and hook inputs now carry `telemetry` metadata with `runId`, `threadId`, requested/response model identity, usage, and timing data for reliable per-run correlation
