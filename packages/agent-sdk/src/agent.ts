@@ -51,6 +51,11 @@ import {
 } from "./hooks.js";
 import { MCPManager } from "./mcp/manager.js";
 import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index.js";
+import {
+  buildExecutionTelemetry,
+  buildExecutionTelemetryFromIds,
+  createRunId,
+} from "./observability/execution-metadata.js";
 import { createDefaultPromptBuilder } from "./prompt-builder/components.js";
 import type {
   PromptContext,
@@ -75,6 +80,7 @@ import type {
   Agent,
   AgentOptions,
   BackendFactory,
+  ExecutionTelemetry,
   GenerateOptions,
   GenerateResult,
   GenerateResultComplete,
@@ -116,6 +122,27 @@ class InterruptSignal extends Error {
     this.name = "InterruptSignal";
     this.interrupt = interrupt;
   }
+}
+
+/** @internal */
+function getCheckpointRunId(checkpoint: Checkpoint | undefined): string | undefined {
+  return typeof checkpoint?.metadata?.runId === "string" ? checkpoint.metadata.runId : undefined;
+}
+
+/** @internal */
+function withCheckpointRunId(
+  checkpoint: Checkpoint,
+  runId: string | undefined,
+  updates?: Partial<Omit<Checkpoint, "threadId" | "createdAt">>,
+): Checkpoint {
+  return updateCheckpoint(checkpoint, {
+    ...(updates ?? {}),
+    metadata: {
+      ...(checkpoint.metadata ?? {}),
+      ...(updates?.metadata ?? {}),
+      ...(runId ? { runId } : {}),
+    },
+  });
 }
 
 /**
@@ -540,7 +567,11 @@ function wrapToolsWithPermissionMode(
  *
  * @internal
  */
-function wrapToolsWithTaskManager(tools: ToolSet, taskManager: TaskManager): ToolSet {
+function wrapToolsWithTaskManager(
+  tools: ToolSet,
+  taskManager: TaskManager,
+  telemetry?: ExecutionTelemetry,
+): ToolSet {
   const wrapped: ToolSet = {};
 
   for (const [name, tool] of Object.entries(tools)) {
@@ -558,6 +589,7 @@ function wrapToolsWithTaskManager(tools: ToolSet, taskManager: TaskManager): Too
         const extendedOptions = {
           ...options,
           taskManager,
+          executionTelemetry: telemetry,
         } as ToolExecutionOptions;
         return originalExecute(input, extendedOptions);
       },
@@ -586,6 +618,7 @@ function wrapToolsWithHooks(
   hookRegistration: HookRegistration | undefined,
   agent: Agent,
   sessionId: string,
+  telemetry?: ExecutionTelemetry,
 ): ToolSet {
   // If no tool hooks are registered, return tools unchanged
   if (
@@ -617,6 +650,7 @@ function wrapToolsWithHooks(
           hook_event_name: "PreToolUse",
           session_id: sessionId,
           cwd: process.cwd(),
+          telemetry,
           tool_name: name,
           tool_input: input as Record<string, unknown>,
         };
@@ -652,6 +686,7 @@ function wrapToolsWithHooks(
                 hook_event_name: "PostToolUseFailure",
                 session_id: sessionId,
                 cwd: process.cwd(),
+                telemetry,
                 tool_name: name,
                 tool_input: input as Record<string, unknown>,
                 error,
@@ -687,6 +722,7 @@ function wrapToolsWithHooks(
               hook_event_name: "PostToolUse",
               session_id: sessionId,
               cwd: process.cwd(),
+              telemetry,
               tool_name: name,
               tool_input: input as Record<string, unknown>,
               tool_response: output,
@@ -718,6 +754,7 @@ function wrapToolsWithHooks(
                 hook_event_name: "PostToolUseFailure",
                 session_id: sessionId,
                 cwd: process.cwd(),
+                telemetry,
                 tool_name: name,
                 tool_input: input as Record<string, unknown>,
                 error: error instanceof Error ? error : new Error(String(error)),
@@ -1368,11 +1405,21 @@ export function createAgent(options: AgentOptions): Agent {
    * 1. TaskManager injection - makes taskManager available in execution options
    * 2. Hook wrapping - enables PreToolUse/PostToolUse hooks for observability
    */
-  const applyToolHooks = (tools: ToolSet, threadId?: string): ToolSet => {
+  const applyToolHooks = (
+    tools: ToolSet,
+    threadId?: string,
+    telemetry?: ExecutionTelemetry,
+  ): ToolSet => {
     // First inject TaskManager into execution context
-    const withTaskManager = wrapToolsWithTaskManager(tools, taskManager);
+    const withTaskManager = wrapToolsWithTaskManager(tools, taskManager, telemetry);
     // Then apply hooks for observability
-    return wrapToolsWithHooks(withTaskManager, effectiveHooks, agent, threadId ?? "default");
+    return wrapToolsWithHooks(
+      withTaskManager,
+      effectiveHooks,
+      agent,
+      threadId ?? "default",
+      telemetry,
+    );
   };
 
   /**
@@ -1503,6 +1550,7 @@ export function createAgent(options: AgentOptions): Agent {
     threadId: string,
     messages: ModelMessage[],
     step: number,
+    runId?: string,
   ): Promise<Checkpoint | undefined> {
     if (!options.checkpointer) {
       return undefined;
@@ -1520,6 +1568,10 @@ export function createAgent(options: AgentOptions): Agent {
           todos: [...state.todos],
           files: { ...state.files },
         },
+        metadata: {
+          ...(existingCheckpoint.metadata ?? {}),
+          ...(runId ? { runId } : {}),
+        },
       });
     } else {
       // Create new checkpoint
@@ -1531,6 +1583,7 @@ export function createAgent(options: AgentOptions): Agent {
           todos: [...state.todos],
           files: { ...state.files },
         },
+        metadata: runId ? { runId } : undefined,
       });
     }
 
@@ -1649,6 +1702,11 @@ export function createAgent(options: AgentOptions): Agent {
       // Check if compaction is needed
       const { trigger, reason } = contextManager.shouldCompact(messages);
       if (trigger && reason) {
+        const compactionTelemetry = buildExecutionTelemetryFromIds({
+          runId: genOptions._runId ?? createRunId(),
+          threadId: forkedSessionId ?? genOptions.threadId,
+          requestedModel: options.model,
+        });
         // Calculate token count before compaction
         const tokensBefore = contextManager.tokenCounter.countMessages(messages);
         const messagesBefore = messages.length;
@@ -1660,6 +1718,7 @@ export function createAgent(options: AgentOptions): Agent {
             hook_event_name: "PreCompact",
             session_id: genOptions.threadId ?? "default",
             cwd: process.cwd(),
+            telemetry: compactionTelemetry,
             message_count: messagesBefore,
             tokens_before: tokensBefore,
           };
@@ -1680,6 +1739,7 @@ export function createAgent(options: AgentOptions): Agent {
             hook_event_name: "PostCompact",
             session_id: genOptions.threadId ?? "default",
             cwd: process.cwd(),
+            telemetry: compactionTelemetry,
             messages_before: compactionResult.messagesBefore,
             messages_after: compactionResult.messagesAfter,
             tokens_before: compactionResult.tokensBefore,
@@ -1754,6 +1814,50 @@ export function createAgent(options: AgentOptions): Agent {
     return null;
   }
 
+  async function invokeCachedPostGenerateHooks(
+    cachedResult: GenerateResult,
+    genOptions: GenerateOptions,
+    requestedModel: AgentOptions["model"],
+  ): Promise<GenerateResult> {
+    if (cachedResult.status !== "complete") {
+      return cachedResult;
+    }
+
+    const telemetry = buildExecutionTelemetryFromIds({
+      runId: genOptions._runId ?? createRunId(),
+      threadId: genOptions.threadId,
+      requestedModel,
+    });
+    const result: GenerateResultComplete = {
+      ...cachedResult,
+      telemetry,
+    };
+
+    const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
+    if (postGenerateHooks.length === 0) {
+      return result;
+    }
+
+    const postGenerateInput: PostGenerateInput = {
+      hook_event_name: "PostGenerate",
+      session_id: genOptions.threadId ?? "default",
+      cwd: process.cwd(),
+      telemetry,
+      options: genOptions,
+      result,
+    };
+    const hookOutputs = await invokeHooksWithTimeout(
+      postGenerateHooks,
+      postGenerateInput,
+      null,
+      agent,
+    );
+    const updatedResult = extractUpdatedResult<GenerateResultComplete>(hookOutputs);
+    return updatedResult
+      ? { ...updatedResult, telemetry: updatedResult.telemetry ?? telemetry }
+      : result;
+  }
+
   /**
    * Starts a `streamText()` request with the same retry pipeline used by the
    * top-level streaming entrypoints.
@@ -1770,6 +1874,7 @@ export function createAgent(options: AgentOptions): Agent {
   ): Promise<{
     result: ReturnType<typeof streamText>;
     effectiveOptions: GenerateOptions;
+    currentModel: AgentOptions["model"];
   }> {
     let requestOptions = initialGenOptions;
     const retryState = createRetryLoopState(
@@ -1782,6 +1887,7 @@ export function createAgent(options: AgentOptions): Agent {
         return {
           result: createRequest(requestOptions, retryState.currentModel),
           effectiveOptions: requestOptions,
+          currentModel: retryState.currentModel,
         };
       } catch (error) {
         const normalizedError = normalizeError(
@@ -1873,6 +1979,12 @@ export function createAgent(options: AgentOptions): Agent {
       throw new Error(`Cannot resume: no pending interrupt found for thread ${threadId}`);
     }
 
+    const resumeTelemetry = buildExecutionTelemetryFromIds({
+      runId: getCheckpointRunId(checkpoint) ?? createRunId(),
+      threadId,
+      requestedModel: options.model,
+    });
+
     if (interrupt.id !== interruptId) {
       throw new Error(
         `Cannot resume: interrupt ID mismatch. Expected ${interrupt.id}, got ${interruptId}`,
@@ -1894,6 +2006,7 @@ export function createAgent(options: AgentOptions): Agent {
         hook_event_name: "InterruptResolved",
         session_id: threadId,
         cwd: process.cwd(),
+        telemetry: resumeTelemetry,
         interrupt_id: interrupt.id,
         interrupt_type: interrupt.type,
         tool_call_id: interrupt.toolCallId,
@@ -1942,6 +2055,7 @@ export function createAgent(options: AgentOptions): Agent {
             toolCallId: interrupt.toolCallId,
             messages: checkpoint.messages,
             abortSignal: genOptions?.signal,
+            executionTelemetry: resumeTelemetry,
           } as ToolExecutionOptions);
         } catch (error) {
           toolResultOutput = `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -1992,7 +2106,11 @@ export function createAgent(options: AgentOptions): Agent {
       pendingResponses.delete(interrupt.id);
       approvalDecisions.delete(interrupt.toolCallId);
 
-      return { type: "continue", threadId, genOptions };
+      return {
+        type: "continue",
+        threadId,
+        genOptions: { ...genOptions, _runId: resumeTelemetry.runId },
+      };
     }
 
     // For custom interrupts (e.g. ask_user), manually execute the tool so
@@ -2041,6 +2159,7 @@ export function createAgent(options: AgentOptions): Agent {
         toolCallId: customToolCallId,
         messages: checkpoint.messages,
         abortSignal: genOptions?.signal,
+        executionTelemetry: resumeTelemetry,
         interrupt: async (request: unknown) => {
           // First call: return the stored user response (mirrors the
           // permission-mode wrapper when pendingResponses has a match).
@@ -2068,9 +2187,12 @@ export function createAgent(options: AgentOptions): Agent {
       if (isInterruptSignal(executeError)) {
         // Tool threw another interrupt — persist it and return re-interrupted
         const newInterrupt = executeError.interrupt;
-        const reInterruptCheckpoint = updateCheckpoint(checkpoint, {
-          pendingInterrupt: newInterrupt,
-        });
+        const reInterruptCheckpoint = withCheckpointRunId(
+          updateCheckpoint(checkpoint, {
+            pendingInterrupt: newInterrupt,
+          }),
+          resumeTelemetry.runId,
+        );
         await options.checkpointer.save(reInterruptCheckpoint);
         threadCheckpoints.set(threadId, reInterruptCheckpoint);
         return {
@@ -2118,7 +2240,11 @@ export function createAgent(options: AgentOptions): Agent {
     // Clean up
     pendingResponses.delete(interrupt.id);
 
-    return { type: "continue", threadId, genOptions };
+    return {
+      type: "continue",
+      threadId,
+      genOptions: { ...genOptions, _runId: resumeTelemetry.runId },
+    };
   }
 
   const agent: Agent = {
@@ -2133,20 +2259,33 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async generate(genOptions: GenerateOptions): Promise<GenerateResult> {
+      let runId = genOptions._runId;
+      if (!runId && genOptions.threadId && !genOptions.forkSession) {
+        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
+        if (existingCheckpoint?.pendingInterrupt) {
+          runId = getCheckpointRunId(existingCheckpoint);
+        }
+      }
+      runId ??= createRunId();
+
       // Invoke unified PreGenerate hooks
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
       const preGenResult = await invokePreGenerateHooks<GenerateResult>(
         preGenerateHooks,
-        genOptions,
+        { ...genOptions, _runId: runId },
         agent,
       );
 
       // Check for cache short-circuit via respondWith
       if (preGenResult.cachedResult !== undefined) {
-        return preGenResult.cachedResult;
+        return await invokeCachedPostGenerateHooks(
+          preGenResult.cachedResult,
+          { ...preGenResult.effectiveOptions, _runId: runId },
+          options.model,
+        );
       }
 
-      let effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(
@@ -2160,6 +2299,12 @@ export function createAgent(options: AgentOptions): Agent {
         try {
           const { messages, checkpoint, forkedSessionId } =
             await buildMessages(effectiveGenOptions);
+          const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
+          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
+            runId: effectiveGenOptions._runId ?? createRunId(),
+            threadId: checkpointThreadId,
+            requestedModel: retryState.currentModel,
+          });
           // Store for potential emergency compaction in catch block
           lastBuiltMessages = messages;
           const maxSteps = options.maxSteps ?? 10;
@@ -2178,6 +2323,7 @@ export function createAgent(options: AgentOptions): Agent {
           const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
+            executionBaseTelemetry,
           );
           const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
@@ -2205,6 +2351,8 @@ export function createAgent(options: AgentOptions): Agent {
           // the step count reaches maxSteps (whichever comes first).
           const signalStopCondition = () => signalState.interrupt != null;
 
+          const generationStartTime = Date.now();
+
           // Execute generation
           const response = await generateText({
             model: retryState.currentModel,
@@ -2226,13 +2374,21 @@ export function createAgent(options: AgentOptions): Agent {
           // Check for intercepted interrupt signal (cooperative path)
           if (signalState.interrupt) {
             const interrupt = signalState.interrupt.interrupt;
+            const interruptTelemetry = buildExecutionTelemetry({
+              runId: executionBaseTelemetry.runId,
+              threadId: checkpointThreadId,
+              requestedModel: retryState.currentModel,
+              responseModelId: response.response?.modelId,
+              usage: response.usage,
+              providerMetadata: (response as { providerMetadata?: unknown }).providerMetadata,
+              durationMs: Date.now() - generationStartTime,
+            });
 
             // Save checkpoint with messages AND the pending interrupt.
             // The normal completion path saves messages at the end of generate(),
             // but when interrupted we return early. Without saving here, resume()
             // cannot find the checkpoint (or finds one without messages/interrupt).
-            if (effectiveGenOptions.threadId && options.checkpointer) {
-              const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
+            if (checkpointThreadId && options.checkpointer) {
               const finalMessages = appendResponseMessages(
                 messages,
                 response.response?.messages,
@@ -2242,11 +2398,16 @@ export function createAgent(options: AgentOptions): Agent {
                 checkpointThreadId,
                 finalMessages,
                 startStep + response.steps.length,
+                interruptTelemetry.runId,
               );
               if (savedCheckpoint) {
-                const withInterrupt = updateCheckpoint(savedCheckpoint, {
-                  pendingInterrupt: interrupt,
-                });
+                const withInterrupt = withCheckpointRunId(
+                  savedCheckpoint,
+                  interruptTelemetry.runId,
+                  {
+                    pendingInterrupt: interrupt,
+                  },
+                );
                 await options.checkpointer.save(withInterrupt);
                 threadCheckpoints.set(checkpointThreadId, withInterrupt);
               }
@@ -2259,6 +2420,7 @@ export function createAgent(options: AgentOptions): Agent {
                 hook_event_name: "InterruptRequested",
                 session_id: effectiveGenOptions.threadId ?? "default",
                 cwd: process.cwd(),
+                telemetry: interruptTelemetry,
                 interrupt_id: interrupt.id,
                 interrupt_type: interrupt.type,
                 tool_call_id: interrupt.toolCallId,
@@ -2271,6 +2433,7 @@ export function createAgent(options: AgentOptions): Agent {
             // Return interrupted result with partial results from the response
             const interruptedResult: GenerateResultInterrupted = {
               status: "interrupted",
+              telemetry: interruptTelemetry,
               interrupt,
               partial: {
                 text: response.text,
@@ -2292,8 +2455,19 @@ export function createAgent(options: AgentOptions): Agent {
             }
           }
 
+          const telemetry = buildExecutionTelemetry({
+            runId: executionBaseTelemetry.runId,
+            threadId: checkpointThreadId,
+            requestedModel: retryState.currentModel,
+            responseModelId: response.response?.modelId,
+            usage: response.usage,
+            providerMetadata: (response as { providerMetadata?: unknown }).providerMetadata,
+            durationMs: Date.now() - generationStartTime,
+          });
+
           const result: GenerateResultComplete = {
             status: "complete",
+            telemetry,
             text: response.text,
             usage: response.usage,
             finishReason: response.finishReason as GenerateResultComplete["finishReason"],
@@ -2312,7 +2486,6 @@ export function createAgent(options: AgentOptions): Agent {
           }
 
           // Save checkpoint - use forked session ID if forking, otherwise use original threadId
-          const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
           if (checkpointThreadId && options.checkpointer) {
             const finalMessages = appendResponseMessages(
               messages,
@@ -2323,6 +2496,7 @@ export function createAgent(options: AgentOptions): Agent {
               checkpointThreadId,
               finalMessages,
               startStep + response.steps.length,
+              executionBaseTelemetry.runId,
             );
           }
 
@@ -2334,6 +2508,7 @@ export function createAgent(options: AgentOptions): Agent {
               hook_event_name: "PostGenerate",
               session_id: effectiveGenOptions.threadId ?? "default",
               cwd: process.cwd(),
+              telemetry,
               options: effectiveGenOptions,
               result,
             };
@@ -2413,6 +2588,11 @@ export function createAgent(options: AgentOptions): Agent {
           // Check if this is an InterruptSignal (new interrupt system)
           if (isInterruptSignal(error)) {
             const interrupt = error.interrupt;
+            const interruptTelemetry = buildExecutionTelemetryFromIds({
+              runId: effectiveGenOptions._runId ?? createRunId(),
+              threadId: effectiveGenOptions.threadId,
+              requestedModel: retryState.currentModel,
+            });
 
             // Save checkpoint with messages AND the pending interrupt (catch-block path).
             // lastBuiltMessages holds the messages built before generateText was called.
@@ -2421,11 +2601,16 @@ export function createAgent(options: AgentOptions): Agent {
                 effectiveGenOptions.threadId,
                 lastBuiltMessages ?? [],
                 0,
+                interruptTelemetry.runId,
               );
               if (savedCheckpoint) {
-                const withInterrupt = updateCheckpoint(savedCheckpoint, {
-                  pendingInterrupt: interrupt,
-                });
+                const withInterrupt = withCheckpointRunId(
+                  savedCheckpoint,
+                  interruptTelemetry.runId,
+                  {
+                    pendingInterrupt: interrupt,
+                  },
+                );
                 await options.checkpointer.save(withInterrupt);
                 threadCheckpoints.set(effectiveGenOptions.threadId, withInterrupt);
               }
@@ -2438,6 +2623,7 @@ export function createAgent(options: AgentOptions): Agent {
                 hook_event_name: "InterruptRequested",
                 session_id: effectiveGenOptions.threadId ?? "default",
                 cwd: process.cwd(),
+                telemetry: interruptTelemetry,
                 interrupt_id: interrupt.id,
                 interrupt_type: interrupt.type,
                 tool_call_id: interrupt.toolCallId,
@@ -2450,6 +2636,7 @@ export function createAgent(options: AgentOptions): Agent {
             // Return interrupted result
             const interruptedResult: GenerateResultInterrupted = {
               status: "interrupted",
+              telemetry: interruptTelemetry,
               interrupt,
               partial: {
                 text: "",
@@ -2559,7 +2746,10 @@ export function createAgent(options: AgentOptions): Agent {
 
           if (errorDecision.shouldRetry) {
             if (errorDecision.updatedOptions) {
-              effectiveGenOptions = errorDecision.updatedOptions;
+              effectiveGenOptions = {
+                ...errorDecision.updatedOptions,
+                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
+              };
             }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
@@ -2579,18 +2769,31 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async *stream(genOptions: GenerateOptions): AsyncGenerator<StreamPart> {
+      let runId = genOptions._runId;
+      if (!runId && genOptions.threadId && !genOptions.forkSession) {
+        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
+        if (existingCheckpoint?.pendingInterrupt) {
+          runId = getCheckpointRunId(existingCheckpoint);
+        }
+      }
+      runId ??= createRunId();
+
       // Invoke unified PreGenerate hooks
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
       const preGenResult = await invokePreGenerateHooks<GenerateResult>(
         preGenerateHooks,
-        genOptions,
+        { ...genOptions, _runId: runId },
         agent,
       );
 
       // Check for cache short-circuit via respondWith
       // For streaming, we convert the cached GenerateResult into StreamParts
       if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = preGenResult.cachedResult;
+        const cachedResult = await invokeCachedPostGenerateHooks(
+          preGenResult.cachedResult,
+          { ...preGenResult.effectiveOptions, _runId: runId },
+          options.model,
+        );
         // Only process complete results (interrupted results can't be cached)
         if (cachedResult.status === "complete") {
           // Yield cached result as stream parts
@@ -2627,7 +2830,7 @@ export function createAgent(options: AgentOptions): Agent {
         return;
       }
 
-      let effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(
@@ -2642,6 +2845,11 @@ export function createAgent(options: AgentOptions): Agent {
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
           const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
+          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
+            runId: effectiveGenOptions._runId ?? createRunId(),
+            threadId: checkpointThreadId,
+            requestedModel: retryState.currentModel,
+          });
 
           // Signal state for cooperative signal catching in streaming mode
           const signalState: GenerateSignalState = {};
@@ -2652,6 +2860,7 @@ export function createAgent(options: AgentOptions): Agent {
           const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
+            executionBaseTelemetry,
           );
           const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
@@ -2678,6 +2887,8 @@ export function createAgent(options: AgentOptions): Agent {
           // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
           const signalStopCondition = () => signalState.interrupt != null;
+          const generationStartTime = Date.now();
+          let firstTextDeltaAt: number | undefined;
 
           // Execute stream
           const response = streamText({
@@ -2699,6 +2910,7 @@ export function createAgent(options: AgentOptions): Agent {
 
           for await (const part of response.fullStream) {
             if (part.type === "text-delta") {
+              firstTextDeltaAt ??= Date.now();
               yield { type: "text-delta", text: part.text };
             } else if (part.type === "reasoning-start") {
               yield {
@@ -2771,8 +2983,20 @@ export function createAgent(options: AgentOptions): Agent {
             }
           }
 
+          const telemetry = buildExecutionTelemetry({
+            runId: executionBaseTelemetry.runId,
+            threadId: checkpointThreadId,
+            requestedModel: retryState.currentModel,
+            responseModelId: responseMeta?.modelId,
+            usage,
+            durationMs: Date.now() - generationStartTime,
+            timeToFirstTokenMs:
+              firstTextDeltaAt !== undefined ? firstTextDeltaAt - generationStartTime : undefined,
+          });
+
           const result: GenerateResultComplete = {
             status: "complete",
+            telemetry,
             text,
             usage,
             finishReason: finishReason as GenerateResultComplete["finishReason"],
@@ -2787,7 +3011,12 @@ export function createAgent(options: AgentOptions): Agent {
               responseMessages.length > 0
                 ? [...messages, ...responseMessages]
                 : buildMessagesFromStepResponses(messages, steps, text);
-            await saveCheckpoint(checkpointThreadId, finalMessages, startStep + steps.length);
+            await saveCheckpoint(
+              checkpointThreadId,
+              finalMessages,
+              startStep + steps.length,
+              telemetry.runId,
+            );
           }
 
           // Save pending interrupt to checkpoint (mirrors generate() pattern)
@@ -2795,7 +3024,7 @@ export function createAgent(options: AgentOptions): Agent {
             const interrupt = signalState.interrupt.interrupt;
             const savedCheckpoint = threadCheckpoints.get(checkpointThreadId);
             if (savedCheckpoint) {
-              const withInterrupt = updateCheckpoint(savedCheckpoint, {
+              const withInterrupt = withCheckpointRunId(savedCheckpoint, telemetry.runId, {
                 pendingInterrupt: interrupt,
               });
               await options.checkpointer.save(withInterrupt);
@@ -2809,6 +3038,7 @@ export function createAgent(options: AgentOptions): Agent {
                 hook_event_name: "InterruptRequested",
                 session_id: effectiveGenOptions.threadId ?? "default",
                 cwd: process.cwd(),
+                telemetry,
                 interrupt_id: interrupt.id,
                 interrupt_type: interrupt.type,
                 tool_call_id: interrupt.toolCallId,
@@ -2826,6 +3056,7 @@ export function createAgent(options: AgentOptions): Agent {
               hook_event_name: "PostGenerate",
               session_id: effectiveGenOptions.threadId ?? "default",
               cwd: process.cwd(),
+              telemetry,
               options: effectiveGenOptions,
               result,
             };
@@ -2912,7 +3143,10 @@ export function createAgent(options: AgentOptions): Agent {
 
           if (errorDecision.shouldRetry) {
             if (errorDecision.updatedOptions) {
-              effectiveGenOptions = errorDecision.updatedOptions;
+              effectiveGenOptions = {
+                ...errorDecision.updatedOptions,
+                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
+              };
             }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
@@ -2932,18 +3166,31 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamResponse(genOptions: GenerateOptions): Promise<Response> {
+      let runId = genOptions._runId;
+      if (!runId && genOptions.threadId && !genOptions.forkSession) {
+        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
+        if (existingCheckpoint?.pendingInterrupt) {
+          runId = getCheckpointRunId(existingCheckpoint);
+        }
+      }
+      runId ??= createRunId();
+
       // Invoke unified PreGenerate hooks
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
       const preGenResult = await invokePreGenerateHooks<GenerateResult>(
         preGenerateHooks,
-        genOptions,
+        { ...genOptions, _runId: runId },
         agent,
       );
 
       // Check for cache short-circuit via respondWith
       // For streaming response, create a simple text response from the cached result
       if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = preGenResult.cachedResult;
+        const cachedResult = await invokeCachedPostGenerateHooks(
+          preGenResult.cachedResult,
+          { ...preGenResult.effectiveOptions, _runId: runId },
+          options.model,
+        );
         // For cached results, return a simple Response with the cached text
         // This is compatible with useChat and provides immediate delivery
         // Only complete results can be cached
@@ -2955,7 +3202,7 @@ export function createAgent(options: AgentOptions): Agent {
         });
       }
 
-      let effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(
@@ -2968,6 +3215,11 @@ export function createAgent(options: AgentOptions): Agent {
           const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
+          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
+            runId: effectiveGenOptions._runId ?? createRunId(),
+            threadId: effectiveGenOptions.threadId,
+            requestedModel: retryState.currentModel,
+          });
 
           // Signal state for cooperative signal catching in streaming mode
           const signalState: GenerateSignalState = {};
@@ -2978,6 +3230,7 @@ export function createAgent(options: AgentOptions): Agent {
           const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
+            executionBaseTelemetry,
           );
           const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
@@ -3007,6 +3260,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
           const signalStopCondition = () => signalState.interrupt != null;
+          const generationStartTime = Date.now();
 
           // Track step count for incremental checkpointing
           let currentStepCount = 0;
@@ -3051,6 +3305,7 @@ export function createAgent(options: AgentOptions): Agent {
                       effectiveGenOptions.threadId!,
                       streamedMessages,
                       startStep + currentStepCount,
+                      effectiveGenOptions._runId,
                     );
                   }
                 }
@@ -3076,12 +3331,22 @@ export function createAgent(options: AgentOptions): Agent {
                   effectiveGenOptions.threadId!,
                   finalMessages,
                   startStep + finishResult.steps.length,
+                  effectiveGenOptions._runId,
                 );
               }
 
               // Invoke unified PostGenerate hooks
+              const telemetry = buildExecutionTelemetry({
+                runId: executionBaseTelemetry.runId,
+                threadId: effectiveGenOptions.threadId,
+                requestedModel: modelToUse,
+                responseModelId: finishResult.response?.modelId,
+                usage: finishResult.usage,
+                durationMs: Date.now() - generationStartTime,
+              });
               const hookResult: GenerateResultComplete = {
                 status: "complete",
+                telemetry,
                 text: finishResult.text,
                 usage: finishResult.usage,
                 finishReason: finishResult.finishReason as GenerateResultComplete["finishReason"],
@@ -3094,6 +3359,7 @@ export function createAgent(options: AgentOptions): Agent {
                   hook_event_name: "PostGenerate",
                   session_id: effectiveGenOptions.threadId ?? "default",
                   cwd: process.cwd(),
+                  telemetry,
                   options: effectiveGenOptions,
                   result: hookResult,
                 };
@@ -3136,43 +3402,56 @@ export function createAgent(options: AgentOptions): Agent {
                       { role: "user" as const, content: followUpPrompt },
                     ],
                   };
-                  const { result: followUpResult, effectiveOptions: followUpEffectiveOptions } =
-                    await startRetriedStreamText(
-                      followUpRequestOptions,
-                      (requestOptions, currentModel) => {
-                        const followUpMessages = requestOptions.messages ?? [];
-                        const followUpTools = applyToolHooks(
-                          addTaskToolIfConfigured(getActiveToolSet(requestOptions.threadId)),
-                          requestOptions.threadId,
-                        );
-                        const activeFollowUpTools = wrapToolsWithSignalCatching(
-                          followUpTools,
-                          signalState,
-                        );
-                        const followUpPromptContext = buildPromptContext(
-                          requestOptions,
-                          followUpMessages,
-                          requestOptions.threadId,
-                        );
+                  const {
+                    result: followUpResult,
+                    effectiveOptions: followUpEffectiveOptions,
+                    currentModel: followUpModel,
+                  } = await startRetriedStreamText(
+                    followUpRequestOptions,
+                    (requestOptions, currentModel) => {
+                      const followUpMessages = requestOptions.messages ?? [];
+                      const followUpTelemetry = buildExecutionTelemetryFromIds({
+                        runId: requestOptions._runId ?? executionBaseTelemetry.runId,
+                        threadId: requestOptions.threadId,
+                        requestedModel: currentModel,
+                      });
+                      const followUpTools = applyToolHooks(
+                        addTaskToolIfConfigured(getActiveToolSet(requestOptions.threadId)),
+                        requestOptions.threadId,
+                        followUpTelemetry,
+                      );
+                      const activeFollowUpTools = wrapToolsWithSignalCatching(
+                        followUpTools,
+                        signalState,
+                      );
+                      const followUpPromptContext = buildPromptContext(
+                        requestOptions,
+                        followUpMessages,
+                        requestOptions.threadId,
+                      );
 
-                        return streamText({
-                          model: currentModel,
-                          system: getSystemPrompt(followUpPromptContext),
-                          messages: followUpMessages,
-                          tools: activeFollowUpTools as ToolSet,
-                          maxOutputTokens: requestOptions.maxTokens,
-                          temperature: requestOptions.temperature,
-                          stopSequences: requestOptions.stopSequences,
-                          abortSignal: requestOptions.signal,
-                          stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
-                          output: requestOptions.output,
-                          // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                          providerOptions: requestOptions.providerOptions as any,
-                          headers: requestOptions.headers,
-                        });
-                      },
-                    );
-                  followUpBaseOptions = followUpEffectiveOptions;
+                      return streamText({
+                        model: currentModel,
+                        system: getSystemPrompt(followUpPromptContext),
+                        messages: followUpMessages,
+                        tools: activeFollowUpTools as ToolSet,
+                        maxOutputTokens: requestOptions.maxTokens,
+                        temperature: requestOptions.temperature,
+                        stopSequences: requestOptions.stopSequences,
+                        abortSignal: requestOptions.signal,
+                        stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                        output: requestOptions.output,
+                        // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                        providerOptions: requestOptions.providerOptions as any,
+                        headers: requestOptions.headers,
+                      });
+                    },
+                  );
+                  const followUpStartTime = Date.now();
+                  followUpBaseOptions = {
+                    ...followUpEffectiveOptions,
+                    _runId: followUpEffectiveOptions._runId ?? followUpBaseOptions._runId,
+                  };
 
                   writer.merge(followUpResult.toUIMessageStream());
                   const followUpText = await followUpResult.text;
@@ -3199,6 +3478,7 @@ export function createAgent(options: AgentOptions): Agent {
                       followUpEffectiveOptions.threadId,
                       currentMessages,
                       startStep + accumulatedStepCount,
+                      followUpEffectiveOptions._runId,
                     );
                   }
 
@@ -3216,8 +3496,17 @@ export function createAgent(options: AgentOptions): Agent {
                   const followUpPostGenerateHooks = effectiveHooks?.PostGenerate ?? [];
                   if (followUpPostGenerateHooks.length > 0) {
                     const followUpFinishReason = await followUpResult.finishReason;
+                    const followUpTelemetry = buildExecutionTelemetry({
+                      runId: followUpEffectiveOptions._runId ?? executionBaseTelemetry.runId,
+                      threadId: followUpEffectiveOptions.threadId,
+                      requestedModel: followUpModel,
+                      responseModelId: followUpResponse?.modelId,
+                      usage: followUpUsage,
+                      durationMs: Date.now() - followUpStartTime,
+                    });
                     const followUpHookResult: GenerateResultComplete = {
                       status: "complete",
+                      telemetry: followUpTelemetry,
                       text: followUpText,
                       usage: followUpUsage,
                       finishReason: followUpFinishReason as GenerateResultComplete["finishReason"],
@@ -3228,6 +3517,7 @@ export function createAgent(options: AgentOptions): Agent {
                       hook_event_name: "PostGenerate",
                       session_id: followUpEffectiveOptions.threadId ?? "default",
                       cwd: process.cwd(),
+                      telemetry: followUpTelemetry,
                       options: followUpEffectiveOptions,
                       result: followUpHookResult,
                     };
@@ -3271,7 +3561,10 @@ export function createAgent(options: AgentOptions): Agent {
 
           if (errorDecision.shouldRetry) {
             if (errorDecision.updatedOptions) {
-              effectiveGenOptions = errorDecision.updatedOptions;
+              effectiveGenOptions = {
+                ...errorDecision.updatedOptions,
+                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
+              };
             }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
@@ -3291,6 +3584,15 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamRaw(genOptions: GenerateOptions) {
+      let runId = genOptions._runId;
+      if (!runId && genOptions.threadId && !genOptions.forkSession) {
+        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
+        if (existingCheckpoint?.pendingInterrupt) {
+          runId = getCheckpointRunId(existingCheckpoint);
+        }
+      }
+      runId ??= createRunId();
+
       // Invoke unified PreGenerate hooks
       // Note: respondWith cache short-circuit is NOT supported for streamRaw()
       // because it returns the raw AI SDK streamText result which cannot be mocked.
@@ -3298,12 +3600,12 @@ export function createAgent(options: AgentOptions): Agent {
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
       const preGenResult = await invokePreGenerateHooks<GenerateResult>(
         preGenerateHooks,
-        genOptions,
+        { ...genOptions, _runId: runId },
         agent,
       );
 
       // Input transformation is applied even though respondWith is not supported
-      let effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(
@@ -3316,6 +3618,11 @@ export function createAgent(options: AgentOptions): Agent {
           const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
+          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
+            runId: effectiveGenOptions._runId ?? createRunId(),
+            threadId: effectiveGenOptions.threadId,
+            requestedModel: retryState.currentModel,
+          });
 
           // Signal state for cooperative signal catching in streaming mode
           const signalState: GenerateSignalState = {};
@@ -3326,6 +3633,7 @@ export function createAgent(options: AgentOptions): Agent {
           const hookedTools = applyToolHooks(
             addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
             effectiveGenOptions.threadId,
+            executionBaseTelemetry,
           );
           const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
 
@@ -3356,6 +3664,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
           const signalStopCondition = () => signalState.interrupt != null;
+          const generationStartTime = Date.now();
 
           // Execute stream
           const result = streamText({
@@ -3394,6 +3703,7 @@ export function createAgent(options: AgentOptions): Agent {
                       effectiveGenOptions.threadId!,
                       streamedMessages,
                       startStep + currentStepCount,
+                      effectiveGenOptions._runId,
                     );
                   }
                 }
@@ -3419,12 +3729,22 @@ export function createAgent(options: AgentOptions): Agent {
                   effectiveGenOptions.threadId!,
                   finalMessages,
                   startStep + finishResult.steps.length,
+                  effectiveGenOptions._runId,
                 );
               }
 
               // Invoke unified PostGenerate hooks
+              const telemetry = buildExecutionTelemetry({
+                runId: executionBaseTelemetry.runId,
+                threadId: effectiveGenOptions.threadId,
+                requestedModel: retryState.currentModel,
+                responseModelId: finishResult.response?.modelId,
+                usage: finishResult.usage,
+                durationMs: Date.now() - generationStartTime,
+              });
               const hookResult: GenerateResultComplete = {
                 status: "complete",
+                telemetry,
                 text: finishResult.text,
                 usage: finishResult.usage,
                 finishReason: finishResult.finishReason as GenerateResultComplete["finishReason"],
@@ -3437,6 +3757,7 @@ export function createAgent(options: AgentOptions): Agent {
                   hook_event_name: "PostGenerate",
                   session_id: effectiveGenOptions.threadId ?? "default",
                   cwd: process.cwd(),
+                  telemetry,
                   options: effectiveGenOptions,
                   result: hookResult,
                 };
@@ -3471,7 +3792,10 @@ export function createAgent(options: AgentOptions): Agent {
 
           if (errorDecision.shouldRetry) {
             if (errorDecision.updatedOptions) {
-              effectiveGenOptions = errorDecision.updatedOptions;
+              effectiveGenOptions = {
+                ...errorDecision.updatedOptions,
+                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
+              };
             }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
@@ -3491,18 +3815,31 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamDataResponse(genOptions: GenerateOptions): Promise<Response> {
+      let runId = genOptions._runId;
+      if (!runId && genOptions.threadId && !genOptions.forkSession) {
+        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
+        if (existingCheckpoint?.pendingInterrupt) {
+          runId = getCheckpointRunId(existingCheckpoint);
+        }
+      }
+      runId ??= createRunId();
+
       // Invoke unified PreGenerate hooks
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
       const preGenResult = await invokePreGenerateHooks<GenerateResult>(
         preGenerateHooks,
-        genOptions,
+        { ...genOptions, _runId: runId },
         agent,
       );
 
       // Check for cache short-circuit via respondWith
       // For data stream response, create a simple text response from the cached result
       if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = preGenResult.cachedResult;
+        const cachedResult = await invokeCachedPostGenerateHooks(
+          preGenResult.cachedResult,
+          { ...preGenResult.effectiveOptions, _runId: runId },
+          options.model,
+        );
         // For cached results, return a simple Response with the cached text
         // This is compatible with useChat and provides immediate delivery
         // Only complete results can be cached
@@ -3514,7 +3851,7 @@ export function createAgent(options: AgentOptions): Agent {
         });
       }
 
-      let effectiveGenOptions = preGenResult.effectiveOptions;
+      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
 
       // Initialize retry loop state
       const retryState = createRetryLoopState(
@@ -3527,6 +3864,11 @@ export function createAgent(options: AgentOptions): Agent {
           const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
           const maxSteps = options.maxSteps ?? 10;
           const startStep = checkpoint?.step ?? 0;
+          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
+            runId: effectiveGenOptions._runId ?? createRunId(),
+            threadId: effectiveGenOptions.threadId,
+            requestedModel: retryState.currentModel,
+          });
 
           // Capture currentModel for use in the callback closure
           const modelToUse = retryState.currentModel;
@@ -3554,6 +3896,7 @@ export function createAgent(options: AgentOptions): Agent {
                   streamingContext, // Pass streaming context for streaming subagents
                 ),
                 effectiveGenOptions.threadId,
+                executionBaseTelemetry,
               );
               const requestScopedStreamingTools = wrapToolsWithStreamingContext(
                 hookedStreamingTools,
@@ -3592,6 +3935,7 @@ export function createAgent(options: AgentOptions): Agent {
               // Stop condition: stop when a flow-control signal was caught, OR when
               // the step count reaches maxSteps.
               const signalStopCondition = () => signalState.interrupt != null;
+              const generationStartTime = Date.now();
 
               // Execute stream
               const result = streamText({
@@ -3630,6 +3974,7 @@ export function createAgent(options: AgentOptions): Agent {
                           effectiveGenOptions.threadId!,
                           streamedMessages,
                           startStep + currentStepCount,
+                          effectiveGenOptions._runId,
                         );
                       }
                     }
@@ -3655,12 +4000,22 @@ export function createAgent(options: AgentOptions): Agent {
                       effectiveGenOptions.threadId!,
                       finalMessages,
                       startStep + finishResult.steps.length,
+                      effectiveGenOptions._runId,
                     );
                   }
 
                   // Invoke unified PostGenerate hooks
+                  const telemetry = buildExecutionTelemetry({
+                    runId: executionBaseTelemetry.runId,
+                    threadId: effectiveGenOptions.threadId,
+                    requestedModel: modelToUse,
+                    responseModelId: finishResult.response?.modelId,
+                    usage: finishResult.usage,
+                    durationMs: Date.now() - generationStartTime,
+                  });
                   const hookResult: GenerateResultComplete = {
                     status: "complete",
+                    telemetry,
                     text: finishResult.text,
                     usage: finishResult.usage,
                     finishReason:
@@ -3674,6 +4029,7 @@ export function createAgent(options: AgentOptions): Agent {
                       hook_event_name: "PostGenerate",
                       session_id: effectiveGenOptions.threadId ?? "default",
                       cwd: process.cwd(),
+                      telemetry,
                       options: effectiveGenOptions,
                       result: hookResult,
                     };
@@ -3695,9 +4051,13 @@ export function createAgent(options: AgentOptions): Agent {
                 const interrupt = signalState.interrupt.interrupt;
                 const savedCheckpoint = threadCheckpoints.get(effectiveGenOptions.threadId);
                 if (savedCheckpoint) {
-                  const withInterrupt = updateCheckpoint(savedCheckpoint, {
-                    pendingInterrupt: interrupt,
-                  });
+                  const withInterrupt = withCheckpointRunId(
+                    savedCheckpoint,
+                    executionBaseTelemetry.runId,
+                    {
+                      pendingInterrupt: interrupt,
+                    },
+                  );
                   await options.checkpointer.save(withInterrupt);
                   threadCheckpoints.set(effectiveGenOptions.threadId, withInterrupt);
                 }
@@ -3709,6 +4069,7 @@ export function createAgent(options: AgentOptions): Agent {
                     hook_event_name: "InterruptRequested",
                     session_id: effectiveGenOptions.threadId ?? "default",
                     cwd: process.cwd(),
+                    telemetry: executionBaseTelemetry,
                     interrupt_id: interrupt.id,
                     interrupt_type: interrupt.type,
                     tool_call_id: interrupt.toolCallId,
@@ -3742,53 +4103,63 @@ export function createAgent(options: AgentOptions): Agent {
                       { role: "user" as const, content: followUpPrompt },
                     ],
                   };
-                  const { result: followUpResult, effectiveOptions: followUpEffectiveOptions } =
-                    await startRetriedStreamText(
-                      followUpRequestOptions,
-                      (requestOptions, currentModel) => {
-                        const followUpMessages = requestOptions.messages ?? [];
-                        const hookedFollowUpTools = applyToolHooks(
-                          addTaskToolIfConfigured(
-                            getActiveToolSetWithStreaming(
-                              streamingContext,
-                              requestOptions.threadId,
-                            ),
-                            streamingContext,
-                          ),
-                          requestOptions.threadId,
-                        );
-                        const requestScopedFollowUpTools = wrapToolsWithStreamingContext(
-                          hookedFollowUpTools,
+                  const {
+                    result: followUpResult,
+                    effectiveOptions: followUpEffectiveOptions,
+                    currentModel: followUpModel,
+                  } = await startRetriedStreamText(
+                    followUpRequestOptions,
+                    (requestOptions, currentModel) => {
+                      const followUpMessages = requestOptions.messages ?? [];
+                      const followUpTelemetry = buildExecutionTelemetryFromIds({
+                        runId: requestOptions._runId ?? executionBaseTelemetry.runId,
+                        threadId: requestOptions.threadId,
+                        requestedModel: currentModel,
+                      });
+                      const hookedFollowUpTools = applyToolHooks(
+                        addTaskToolIfConfigured(
+                          getActiveToolSetWithStreaming(streamingContext, requestOptions.threadId),
                           streamingContext,
-                        );
-                        const activeFollowUpTools = wrapToolsWithSignalCatching(
-                          requestScopedFollowUpTools,
-                          signalState,
-                        );
-                        const followUpPromptContext = buildPromptContext(
-                          requestOptions,
-                          followUpMessages,
-                          requestOptions.threadId,
-                        );
+                        ),
+                        requestOptions.threadId,
+                        followUpTelemetry,
+                      );
+                      const requestScopedFollowUpTools = wrapToolsWithStreamingContext(
+                        hookedFollowUpTools,
+                        streamingContext,
+                      );
+                      const activeFollowUpTools = wrapToolsWithSignalCatching(
+                        requestScopedFollowUpTools,
+                        signalState,
+                      );
+                      const followUpPromptContext = buildPromptContext(
+                        requestOptions,
+                        followUpMessages,
+                        requestOptions.threadId,
+                      );
 
-                        return streamText({
-                          model: currentModel,
-                          system: getSystemPrompt(followUpPromptContext),
-                          messages: followUpMessages,
-                          tools: activeFollowUpTools as ToolSet,
-                          maxOutputTokens: requestOptions.maxTokens,
-                          temperature: requestOptions.temperature,
-                          stopSequences: requestOptions.stopSequences,
-                          abortSignal: requestOptions.signal,
-                          stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
-                          output: requestOptions.output,
-                          // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                          providerOptions: requestOptions.providerOptions as any,
-                          headers: requestOptions.headers,
-                        });
-                      },
-                    );
-                  followUpBaseOptions = followUpEffectiveOptions;
+                      return streamText({
+                        model: currentModel,
+                        system: getSystemPrompt(followUpPromptContext),
+                        messages: followUpMessages,
+                        tools: activeFollowUpTools as ToolSet,
+                        maxOutputTokens: requestOptions.maxTokens,
+                        temperature: requestOptions.temperature,
+                        stopSequences: requestOptions.stopSequences,
+                        abortSignal: requestOptions.signal,
+                        stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                        output: requestOptions.output,
+                        // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                        providerOptions: requestOptions.providerOptions as any,
+                        headers: requestOptions.headers,
+                      });
+                    },
+                  );
+                  const followUpStartTime = Date.now();
+                  followUpBaseOptions = {
+                    ...followUpEffectiveOptions,
+                    _runId: followUpEffectiveOptions._runId ?? followUpBaseOptions._runId,
+                  };
 
                   writer.merge(followUpResult.toUIMessageStream());
                   const followUpText = await followUpResult.text;
@@ -3815,6 +4186,7 @@ export function createAgent(options: AgentOptions): Agent {
                       followUpEffectiveOptions.threadId,
                       currentMessages,
                       startStep + accumulatedStepCount,
+                      followUpEffectiveOptions._runId,
                     );
                   }
 
@@ -3832,8 +4204,17 @@ export function createAgent(options: AgentOptions): Agent {
                   const followUpPostGenerateHooks = effectiveHooks?.PostGenerate ?? [];
                   if (followUpPostGenerateHooks.length > 0) {
                     const followUpFinishReason = await followUpResult.finishReason;
+                    const followUpTelemetry = buildExecutionTelemetry({
+                      runId: followUpEffectiveOptions._runId ?? executionBaseTelemetry.runId,
+                      threadId: followUpEffectiveOptions.threadId,
+                      requestedModel: followUpModel,
+                      responseModelId: followUpResponse?.modelId,
+                      usage: followUpUsage,
+                      durationMs: Date.now() - followUpStartTime,
+                    });
                     const followUpHookResult: GenerateResultComplete = {
                       status: "complete",
+                      telemetry: followUpTelemetry,
                       text: followUpText,
                       usage: followUpUsage,
                       finishReason: followUpFinishReason as GenerateResultComplete["finishReason"],
@@ -3844,6 +4225,7 @@ export function createAgent(options: AgentOptions): Agent {
                       hook_event_name: "PostGenerate",
                       session_id: followUpEffectiveOptions.threadId ?? "default",
                       cwd: process.cwd(),
+                      telemetry: followUpTelemetry,
                       options: followUpEffectiveOptions,
                       result: followUpHookResult,
                     };
@@ -3887,7 +4269,10 @@ export function createAgent(options: AgentOptions): Agent {
 
           if (errorDecision.shouldRetry) {
             if (errorDecision.updatedOptions) {
-              effectiveGenOptions = errorDecision.updatedOptions;
+              effectiveGenOptions = {
+                ...errorDecision.updatedOptions,
+                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
+              };
             }
             // Update retry state
             Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
@@ -3944,6 +4329,11 @@ export function createAgent(options: AgentOptions): Agent {
       if (outcome.type === "re-interrupted") {
         return {
           status: "interrupted",
+          telemetry: buildExecutionTelemetryFromIds({
+            runId: getCheckpointRunId(outcome.checkpoint) ?? createRunId(),
+            threadId,
+            requestedModel: options.model,
+          }),
           interrupt: outcome.interrupt,
           partial: undefined,
         } as GenerateResultInterrupted;

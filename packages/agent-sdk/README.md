@@ -54,6 +54,7 @@ console.log(result.text);
 - Plugins that bundle tools, skills, hooks, and MCP integrations
 - Deferred discovery and proxy loading with `search_tools` and `call_tool`
 - Subagents, teams, memory, observability, middleware, and security utilities
+- SDK-level execution telemetry with stable `runId` / `threadId` correlation and resolved model metadata on results, hooks, logs, and traces
 
 ## When To Use This Package
 

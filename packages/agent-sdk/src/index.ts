@@ -492,6 +492,7 @@ export {
   createObservabilityPreset,
   createOTLPSpanExporter,
   createPrettyFormatter,
+  createTracingHooks,
   // Tracing
   createTracer,
   // Metrics

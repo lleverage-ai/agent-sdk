@@ -111,6 +111,7 @@ describe("Checkpoint: interrupt on first generation", () => {
     expect(checkpoint?.threadId).toBe(threadId);
     expect(checkpoint?.pendingInterrupt).toBeDefined();
     expect(checkpoint?.pendingInterrupt?.id).toBe("int_call_first_gen");
+    expect(typeof checkpoint?.metadata?.runId).toBe("string");
   });
 
   it("should allow resume() after interrupt on first generation", async () => {
@@ -222,6 +223,7 @@ describe("Checkpoint: interrupt on first generation", () => {
 
     const checkpointAfterFirst = await checkpointer.load(threadId);
     expect(checkpointAfterFirst).toBeDefined();
+    expect(typeof checkpointAfterFirst?.metadata?.runId).toBe("string");
 
     // Second generation: interrupt updates existing checkpoint
     const secondResult = await agent.generate({ prompt: "Use the tool", threadId });
@@ -230,5 +232,6 @@ describe("Checkpoint: interrupt on first generation", () => {
     const checkpointAfterInterrupt = await checkpointer.load(threadId);
     expect(checkpointAfterInterrupt).toBeDefined();
     expect(checkpointAfterInterrupt?.pendingInterrupt).toBeDefined();
+    expect(typeof checkpointAfterInterrupt?.metadata?.runId).toBe("string");
   });
 });

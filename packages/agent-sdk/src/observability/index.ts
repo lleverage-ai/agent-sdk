@@ -135,6 +135,9 @@ export {
 
 // Tracing
 export {
+  createTracingHooks,
+} from "./tracing-hooks.js";
+export {
   createCallbackSpanExporter,
   // Exporters
   createConsoleSpanExporter,

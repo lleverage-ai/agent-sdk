@@ -166,6 +166,11 @@ export function createLoggingHooks(options: LoggingHooksOptions = {}): HookCallb
     const messageInfo = logFullMessages ? JSON.stringify(messages) : formatMessageCount(messages);
 
     let logMsg = `${prefix} PreGenerate:`;
+    if (preGenInput.telemetry?.runId) logMsg += `\n  Run: ${preGenInput.telemetry.runId}`;
+    if (preGenInput.telemetry?.threadId) logMsg += `\n  Thread: ${preGenInput.telemetry.threadId}`;
+    if (preGenInput.telemetry?.requestedModelId) {
+      logMsg += `\n  Model: ${preGenInput.telemetry.requestedModelId}`;
+    }
     logMsg += `\n  Messages: ${messageInfo}`;
     if (temperature !== undefined) logMsg += `\n  Temperature: ${temperature}`;
     if (maxTokens !== undefined) logMsg += `\n  MaxTokens: ${maxTokens}`;
@@ -189,6 +194,14 @@ export function createLoggingHooks(options: LoggingHooksOptions = {}): HookCallb
     const { result } = postGenInput;
 
     let logMsg = `${prefix} PostGenerate:`;
+    if (postGenInput.result.telemetry?.runId)
+      logMsg += `\n  Run: ${postGenInput.result.telemetry.runId}`;
+    if (postGenInput.result.telemetry?.threadId) {
+      logMsg += `\n  Thread: ${postGenInput.result.telemetry.threadId}`;
+    }
+    if (postGenInput.result.telemetry?.modelId) {
+      logMsg += `\n  Model: ${postGenInput.result.telemetry.modelId}`;
+    }
     logMsg += `\n  Text: ${truncate(result.text || "", maxTextLength)}`;
     logMsg += `\n  Finish: ${result.finishReason}`;
 
@@ -218,6 +231,12 @@ export function createLoggingHooks(options: LoggingHooksOptions = {}): HookCallb
     const failureInput = input as PostGenerateFailureInput;
 
     let logMsg = `${prefix} PostGenerateFailure:`;
+    if (failureInput.telemetry?.runId) logMsg += `\n  Run: ${failureInput.telemetry.runId}`;
+    if (failureInput.telemetry?.threadId)
+      logMsg += `\n  Thread: ${failureInput.telemetry.threadId}`;
+    if (failureInput.telemetry?.requestedModelId) {
+      logMsg += `\n  Model: ${failureInput.telemetry.requestedModelId}`;
+    }
     logMsg += `\n  Error: ${failureInput.error.message}`;
 
     // Add timing if available

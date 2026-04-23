@@ -7,8 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- First-class execution telemetry in `@lleverage-ai/agent-sdk`: generation results and hook inputs now carry `telemetry` metadata with `runId`, `threadId`, requested/response model identity, usage, and timing data for reliable per-run correlation
+- Built-in tracing hooks via `createTracingHooks()`, including generation, tool, compaction, and subagent spans with execution correlation metadata
+
+### Changed
+
+- `createObservabilityPreset()` now auto-wires metrics and tracing hooks in addition to logging hooks, so enabling observability also instruments agent requests, tools, compaction, retries, and subagent lifecycle events by default
+- Built-in logging, audit, metrics, and observability event hooks now record resolved model identity and execution correlation metadata emitted by the SDK runtime instead of relying on app-level labels
+- Checkpointed interrupt/resume flows now persist SDK-generated `runId` metadata alongside thread state so resumed executions keep stable correlation IDs across interrupts
+
 ### Fixed
 
+- Execution telemetry follow-up runs, cached responses, tracing spans, and rate-limit metrics now preserve accurate model attribution and clean up request-scoped observability state
+- Observability metrics now avoid negative in-progress request gauges and token overcounts when lifecycle starts or usage fields are absent
+- Background follow-up tool hooks now receive execution telemetry, and observability metric timing state is pruned for abandoned lifecycle pairs
+- Cached generation results now receive fresh per-request telemetry, and request metrics stay open across retryable generation failures until the retry decision is terminal
+- Cached `PostGenerate` hooks now apply updated results, resume-time tool execution receives telemetry, and in-progress metrics reuse their original gauge labels when closing
 - `call_tool` now preserves the original execution context for proxied inline plugin tools, forwarding the incoming `toolCallId`, `interrupt`, and abort context instead of replacing them with synthetic proxy values (#117)
 
 ## [0.1.0-alpha.1] - 2026-04-14

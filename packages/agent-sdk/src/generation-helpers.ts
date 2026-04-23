@@ -17,6 +17,7 @@ import {
   extractUpdatedInput,
   invokeHooksWithTimeout,
 } from "./hooks.js";
+import { buildExecutionTelemetryFromIds } from "./observability/execution-metadata.js";
 import type {
   Agent,
   GenerateOptions,
@@ -170,6 +171,11 @@ export async function invokePreGenerateHooks<T = GenerateResult>(
     hook_event_name: "PreGenerate",
     session_id: genOptions.threadId ?? "default",
     cwd: process.cwd(),
+    telemetry: buildExecutionTelemetryFromIds({
+      runId: genOptions._runId ?? "run_unknown",
+      threadId: genOptions.threadId,
+      requestedModel: agent.options.model,
+    }),
     options: genOptions,
   };
 
@@ -535,6 +541,11 @@ async function emitRetryDecisionHooks(
     hook_event_name: "GenerationRetryDecision",
     session_id: genOptions.threadId ?? "default",
     cwd: process.cwd(),
+    telemetry: buildExecutionTelemetryFromIds({
+      runId: genOptions._runId ?? "run_unknown",
+      threadId: genOptions.threadId,
+      requestedModel: state.currentModel,
+    }),
     options: genOptions,
     error,
     requestClass: decision.requestClass,
@@ -585,6 +596,11 @@ export async function handleGenerationError({
       hook_event_name: "PostGenerateFailure",
       session_id: genOptions.threadId ?? "default",
       cwd: process.cwd(),
+      telemetry: buildExecutionTelemetryFromIds({
+        runId: genOptions._runId ?? "run_unknown",
+        threadId: genOptions.threadId,
+        requestedModel: state.currentModel,
+      }),
       options: genOptions,
       error,
       requestClass,

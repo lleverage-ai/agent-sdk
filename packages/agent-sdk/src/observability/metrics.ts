@@ -601,14 +601,30 @@ export interface AgentMetrics {
   tokensTotal: Counter;
   /** Tool calls made */
   toolCallsTotal: Counter;
+  /** Tool execution duration in milliseconds */
+  toolDurationMs: Histogram;
   /** Tool call errors */
   toolErrorsTotal: Counter;
   /** Subagent spawns */
   subagentSpawnsTotal: Counter;
   /** Errors by type */
   errorsTotal: Counter;
+  /** Retry attempts by classification */
+  retryAttemptsTotal: Counter;
+  /** Rate-limit errors */
+  rateLimitErrorsTotal: Counter;
   /** Context compactions */
   compactionsTotal: Counter;
+  /** Context compaction duration in milliseconds */
+  compactionDurationMs: Histogram;
+  /** Prompt cache write tokens */
+  cacheCreationInputTokensTotal: Counter;
+  /** Prompt cache read tokens */
+  cacheReadInputTokensTotal: Counter;
+  /** Streaming time-to-first-token in milliseconds */
+  streamTimeToFirstTokenMs: Histogram;
+  /** Streaming output throughput in tokens/sec */
+  streamOutputTokensPerSecond: Histogram;
   /** Checkpoint operations */
   checkpointsTotal: Counter;
 }
@@ -652,10 +668,43 @@ export function createAgentMetrics(registry: MetricsRegistry): AgentMetrics {
     outputTokensTotal: registry.counter("agent_output_tokens_total", "Total output tokens used"),
     tokensTotal: registry.counter("agent_tokens_total", "Total tokens used (input + output)"),
     toolCallsTotal: registry.counter("agent_tool_calls_total", "Total tool calls made"),
+    toolDurationMs: registry.histogram(
+      "agent_tool_duration_ms",
+      DEFAULT_LATENCY_BUCKETS,
+      "Tool execution duration in milliseconds",
+    ),
     toolErrorsTotal: registry.counter("agent_tool_errors_total", "Total tool call errors"),
     subagentSpawnsTotal: registry.counter("agent_subagent_spawns_total", "Total subagent spawns"),
     errorsTotal: registry.counter("agent_errors_total", "Total errors by type"),
+    retryAttemptsTotal: registry.counter("agent_retry_attempts_total", "Total retry attempts"),
+    rateLimitErrorsTotal: registry.counter(
+      "agent_rate_limit_errors_total",
+      'Total rate-limit errors (only incremented for subtype === "rate_limit")',
+    ),
     compactionsTotal: registry.counter("agent_compactions_total", "Total context compactions"),
+    compactionDurationMs: registry.histogram(
+      "agent_compaction_duration_ms",
+      DEFAULT_LATENCY_BUCKETS,
+      "Context compaction duration in milliseconds",
+    ),
+    cacheCreationInputTokensTotal: registry.counter(
+      "agent_cache_creation_input_tokens_total",
+      "Total prompt-cache write tokens",
+    ),
+    cacheReadInputTokensTotal: registry.counter(
+      "agent_cache_read_input_tokens_total",
+      "Total prompt-cache read tokens",
+    ),
+    streamTimeToFirstTokenMs: registry.histogram(
+      "agent_stream_ttft_ms",
+      DEFAULT_LATENCY_BUCKETS,
+      "Streaming time-to-first-token in milliseconds",
+    ),
+    streamOutputTokensPerSecond: registry.histogram(
+      "agent_stream_output_tokens_per_second",
+      DEFAULT_TOKEN_BUCKETS,
+      "Streaming output throughput in tokens per second",
+    ),
     checkpointsTotal: registry.counter("agent_checkpoints_total", "Total checkpoint operations"),
   };
 }
@@ -665,12 +714,19 @@ export function createAgentMetrics(registry: MetricsRegistry): AgentMetrics {
 // =============================================================================
 
 import type {
+  GenerationRetryDecisionInput,
   HookCallback,
   PostCompactInput,
+  PostGenerateFailureInput,
   PostGenerateInput,
   PostToolUseFailureInput,
   PostToolUseInput,
+  PreCompactInput,
+  PreGenerateInput,
+  PreToolUseInput,
+  SubagentStartInput,
 } from "../types.js";
+import { requestKey } from "./execution-metadata.js";
 
 /**
  * Creates hooks that automatically update agent metrics.
@@ -698,55 +754,250 @@ import type {
  * @category Observability
  */
 export function createMetricsHooks(metrics: AgentMetrics): {
+  PreGenerate: HookCallback;
   PostGenerate: HookCallback;
+  PostGenerateFailure: HookCallback;
+  GenerationRetryDecision: HookCallback;
+  PreCompact: HookCallback;
+  PreToolUse: HookCallback;
   PostToolUse: HookCallback;
   PostToolUseFailure: HookCallback;
   PostCompact: HookCallback;
+  SubagentStart: HookCallback;
 } {
+  const requestStartTimes = new Map<string, { startedAt: number; labels: MetricLabels }>();
+  const toolStartTimes = new Map<string, number>();
+  const compactionStartTimes = new Map<string, number>();
+  const isFiniteNumber = (value: unknown): value is number =>
+    typeof value === "number" && Number.isFinite(value);
+  const staleTimingTtlMs = Number(process.env.AGENT_SDK_METRICS_TIMING_TTL_MS ?? 300000);
+
+  const pruneStaleRequestStartTimes = (maxAgeMs = staleTimingTtlMs): void => {
+    const now = Date.now();
+    for (const [key, entry] of requestStartTimes) {
+      if (now - entry.startedAt > maxAgeMs) {
+        requestStartTimes.delete(key);
+      }
+    }
+  };
+
+  const pruneStaleStartTimes = (map: Map<string, number>, maxAgeMs = staleTimingTtlMs): void => {
+    const now = Date.now();
+    for (const [key, startedAt] of map) {
+      if (now - startedAt > maxAgeMs) {
+        map.delete(key);
+      }
+    }
+  };
+
+  const pruneAllStartTimes = (): void => {
+    pruneStaleRequestStartTimes();
+    pruneStaleStartTimes(toolStartTimes);
+    pruneStaleStartTimes(compactionStartTimes);
+  };
+
+  const labelsFor = (input: {
+    telemetry?: {
+      modelId?: string;
+      requestedModelId?: string;
+      modelProvider?: string;
+      requestedModelProvider?: string;
+    };
+    requestClass?: string;
+    options?: { requestClass?: string };
+  }): MetricLabels => {
+    const labels: MetricLabels = {};
+    const modelId = input.telemetry?.modelId ?? input.telemetry?.requestedModelId;
+    const provider = input.telemetry?.modelProvider ?? input.telemetry?.requestedModelProvider;
+    const requestClass = input.requestClass ?? input.options?.requestClass;
+    if (modelId) labels.model = modelId;
+    if (provider) labels.provider = provider;
+    if (requestClass) labels.request_class = requestClass;
+    return labels;
+  };
+
   return {
+    PreGenerate: async (input) => {
+      if (input.hook_event_name !== "PreGenerate") return {};
+      pruneAllStartTimes();
+      const preGenInput = input as PreGenerateInput;
+      const labels = labelsFor(preGenInput);
+      requestStartTimes.set(requestKey(preGenInput), { startedAt: Date.now(), labels });
+      metrics.requestsInProgress.inc(1, labels);
+      return {};
+    },
+
     PostGenerate: async (input) => {
       if (input.hook_event_name !== "PostGenerate") return {};
       const postGenInput = input as PostGenerateInput;
+      const labels = labelsFor(postGenInput);
 
-      metrics.requestsTotal.inc();
+      metrics.requestsTotal.inc(1, labels);
+
+      const key = requestKey(postGenInput);
+      const started = requestStartTimes.get(key);
+      if (started) {
+        metrics.requestsInProgress.dec(1, started.labels);
+        metrics.requestDurationMs.observe(Date.now() - started.startedAt, labels);
+        requestStartTimes.delete(key);
+      } else if (postGenInput.result.telemetry?.durationMs !== undefined) {
+        metrics.requestDurationMs.observe(postGenInput.result.telemetry.durationMs, labels);
+      }
 
       if (postGenInput.result.usage) {
-        metrics.inputTokensTotal.inc(postGenInput.result.usage.inputTokens);
-        metrics.outputTokensTotal.inc(postGenInput.result.usage.outputTokens);
-        metrics.tokensTotal.inc(postGenInput.result.usage.totalTokens);
+        const { inputTokens, outputTokens, totalTokens } = postGenInput.result.usage;
+        if (isFiniteNumber(inputTokens)) {
+          metrics.inputTokensTotal.inc(inputTokens, labels);
+        }
+        if (isFiniteNumber(outputTokens)) {
+          metrics.outputTokensTotal.inc(outputTokens, labels);
+        }
+        if (isFiniteNumber(totalTokens)) {
+          metrics.tokensTotal.inc(totalTokens, labels);
+        }
+      }
+
+      const usageTelemetry = postGenInput.result.telemetry?.usage;
+      if (usageTelemetry?.cacheCreationInputTokens !== undefined) {
+        metrics.cacheCreationInputTokensTotal.inc(usageTelemetry.cacheCreationInputTokens, labels);
+      }
+      if (usageTelemetry?.cacheReadInputTokens !== undefined) {
+        metrics.cacheReadInputTokensTotal.inc(usageTelemetry.cacheReadInputTokens, labels);
+      }
+      if (postGenInput.result.telemetry?.timeToFirstTokenMs !== undefined) {
+        metrics.streamTimeToFirstTokenMs.observe(
+          postGenInput.result.telemetry.timeToFirstTokenMs,
+          labels,
+        );
+      }
+      if (postGenInput.result.telemetry?.outputTokensPerSecond !== undefined) {
+        metrics.streamOutputTokensPerSecond.observe(
+          postGenInput.result.telemetry.outputTokensPerSecond,
+          labels,
+        );
       }
 
       return {};
     },
 
-    PostToolUse: async (input) => {
-      if (input.hook_event_name !== "PostToolUse") return {};
-      const postToolInput = input as PostToolUseInput;
+    PostGenerateFailure: async (input) => {
+      if (input.hook_event_name !== "PostGenerateFailure") return {};
+      const failureInput = input as PostGenerateFailureInput;
+      const labels = labelsFor(failureInput);
 
-      metrics.toolCallsTotal.inc(1, { tool: postToolInput.tool_name });
+      metrics.errorsTotal.inc(1, {
+        ...labels,
+        type: failureInput.failureClassification?.type ?? "generation_error",
+      });
+
+      if (failureInput.failureClassification?.subtype === "rate_limit") {
+        metrics.rateLimitErrorsTotal.inc(1, labels);
+      }
 
       return {};
     },
 
-    PostToolUseFailure: async (input) => {
+    GenerationRetryDecision: async (input) => {
+      if (input.hook_event_name !== "GenerationRetryDecision") return {};
+      const retryInput = input as GenerationRetryDecisionInput;
+      if (retryInput.decision !== "retry" && retryInput.decision !== "fallback") {
+        const labels = labelsFor(retryInput);
+        const key = requestKey(retryInput);
+        const started = requestStartTimes.get(key);
+        if (started) {
+          metrics.requestsInProgress.dec(1, started.labels);
+          metrics.requestDurationMs.observe(Date.now() - started.startedAt, labels);
+          requestStartTimes.delete(key);
+        }
+        return {};
+      }
+
+      metrics.retryAttemptsTotal.inc(1, {
+        ...labelsFor(retryInput),
+        decision: retryInput.decision,
+        failure_type: retryInput.failureClassification.type,
+      });
+      return {};
+    },
+
+    PreCompact: async (input) => {
+      if (input.hook_event_name !== "PreCompact") return {};
+      pruneAllStartTimes();
+      const preCompactInput = input as PreCompactInput;
+      compactionStartTimes.set(requestKey(preCompactInput), Date.now());
+      return {};
+    },
+
+    PreToolUse: async (input, toolUseId) => {
+      if (input.hook_event_name !== "PreToolUse") return {};
+      pruneAllStartTimes();
+      const _preToolInput = input as PreToolUseInput;
+      if (toolUseId) {
+        toolStartTimes.set(toolUseId, Date.now());
+      }
+      return {};
+    },
+
+    PostToolUse: async (input, toolUseId) => {
+      if (input.hook_event_name !== "PostToolUse") return {};
+      const postToolInput = input as PostToolUseInput;
+      const labels = {
+        ...labelsFor(postToolInput),
+        tool: postToolInput.tool_name,
+      };
+
+      metrics.toolCallsTotal.inc(1, labels);
+      if (toolUseId && toolStartTimes.has(toolUseId)) {
+        metrics.toolDurationMs.observe(Date.now() - (toolStartTimes.get(toolUseId) ?? 0), labels);
+        toolStartTimes.delete(toolUseId);
+      }
+
+      return {};
+    },
+
+    PostToolUseFailure: async (input, toolUseId) => {
       if (input.hook_event_name !== "PostToolUseFailure") return {};
       const failureInput = input as PostToolUseFailureInput;
+      const labels = {
+        ...labelsFor(failureInput),
+        tool: failureInput.tool_name,
+      };
 
-      metrics.toolErrorsTotal.inc(1, { tool: failureInput.tool_name });
-      metrics.errorsTotal.inc(1, { type: "tool_error" });
+      metrics.toolErrorsTotal.inc(1, labels);
+      metrics.errorsTotal.inc(1, { ...labels, type: "tool_error" });
+      if (toolUseId) {
+        const startedAt = toolStartTimes.get(toolUseId);
+        if (startedAt !== undefined) {
+          metrics.toolDurationMs.observe(Date.now() - startedAt, labels);
+        }
+        toolStartTimes.delete(toolUseId);
+      }
 
       return {};
     },
 
     PostCompact: async (input) => {
       if (input.hook_event_name !== "PostCompact") return {};
-      const _postCompactInput = input as PostCompactInput;
+      const postCompactInput = input as PostCompactInput;
+      const labels = labelsFor(postCompactInput);
 
-      metrics.compactionsTotal.inc();
+      metrics.compactionsTotal.inc(1, labels);
+      const startedAt = compactionStartTimes.get(requestKey(postCompactInput));
+      if (startedAt !== undefined) {
+        metrics.compactionDurationMs.observe(Date.now() - startedAt, labels);
+        compactionStartTimes.delete(requestKey(postCompactInput));
+      }
 
-      // Note: Could add additional metrics here like tokens_saved gauge
-      // but keeping it simple for now - the hook input has all the data
-      // if users want to track more granular metrics
+      return {};
+    },
+
+    SubagentStart: async (input) => {
+      if (input.hook_event_name !== "SubagentStart") return {};
+      const subagentInput = input as SubagentStartInput;
+      metrics.subagentSpawnsTotal.inc(1, {
+        ...labelsFor(subagentInput),
+        agent_type: subagentInput.agent_type,
+      });
 
       return {};
     },

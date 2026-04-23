@@ -255,7 +255,12 @@ export function createAuditHooks(options: AuditHooksOptions): HookCallback[] {
       toolUseId,
       toolName: preToolInput.tool_name,
       toolInput: preToolInput.tool_input,
-      metadata,
+      metadata: {
+        ...metadata,
+        threadId: preToolInput.telemetry?.threadId,
+        runId: preToolInput.telemetry?.runId,
+        model: preToolInput.telemetry?.modelId ?? preToolInput.telemetry?.requestedModelId,
+      },
     };
 
     await onEvent(event);
@@ -282,7 +287,12 @@ export function createAuditHooks(options: AuditHooksOptions): HookCallback[] {
       toolName: postToolInput.tool_name,
       toolInput: postToolInput.tool_input,
       toolOutput: postToolInput.tool_response,
-      metadata,
+      metadata: {
+        ...metadata,
+        threadId: postToolInput.telemetry?.threadId,
+        runId: postToolInput.telemetry?.runId,
+        model: postToolInput.telemetry?.modelId ?? postToolInput.telemetry?.requestedModelId,
+      },
     };
 
     await onEvent(event);
@@ -310,7 +320,12 @@ export function createAuditHooks(options: AuditHooksOptions): HookCallback[] {
       toolInput: failureInput.tool_input,
       error:
         typeof failureInput.error === "string" ? failureInput.error : failureInput.error.message,
-      metadata,
+      metadata: {
+        ...metadata,
+        threadId: failureInput.telemetry?.threadId,
+        runId: failureInput.telemetry?.runId,
+        model: failureInput.telemetry?.modelId ?? failureInput.telemetry?.requestedModelId,
+      },
     };
 
     await onEvent(event);
@@ -332,8 +347,11 @@ export function createAuditHooks(options: AuditHooksOptions): HookCallback[] {
       event: "PreGenerate",
       timestamp: Date.now(),
       sessionId: preGenInput.session_id,
+      model: preGenInput.telemetry?.requestedModelId,
       metadata: {
         ...metadata,
+        threadId: preGenInput.telemetry?.threadId,
+        runId: preGenInput.telemetry?.runId,
         messageCount: preGenInput.options.messages?.length || 0,
       },
     };
@@ -357,9 +375,12 @@ export function createAuditHooks(options: AuditHooksOptions): HookCallback[] {
       event: "PostGenerate",
       timestamp: Date.now(),
       sessionId: postGenInput.session_id,
+      model: postGenInput.result.telemetry?.modelId ?? postGenInput.telemetry?.requestedModelId,
       usage: postGenInput.result.usage,
       metadata: {
         ...metadata,
+        threadId: postGenInput.result.telemetry?.threadId,
+        runId: postGenInput.result.telemetry?.runId,
         finishReason: postGenInput.result.finishReason,
       },
     };
@@ -384,7 +405,12 @@ export function createAuditHooks(options: AuditHooksOptions): HookCallback[] {
       timestamp: Date.now(),
       sessionId: failureInput.session_id,
       error: failureInput.error.message,
-      metadata,
+      model: failureInput.telemetry?.requestedModelId,
+      metadata: {
+        ...metadata,
+        threadId: failureInput.telemetry?.threadId,
+        runId: failureInput.telemetry?.runId,
+      },
     };
 
     await onEvent(event);

@@ -227,6 +227,8 @@ export function createLoggingMiddleware(options: LoggingMiddlewareOptions): Agen
             messageCount: preInput.options.messages?.length ?? 0,
             hasPrompt: !!preInput.options.prompt,
             threadId: preInput.options.threadId,
+            runId: preInput.telemetry?.runId,
+            model: preInput.telemetry?.requestedModelId,
           });
 
           return {};
@@ -240,6 +242,9 @@ export function createLoggingMiddleware(options: LoggingMiddlewareOptions): Agen
             finishReason: postInput.result.finishReason,
             text: truncate(postInput.result.text ?? "", maxContentLength),
             stepCount: postInput.result.steps?.length ?? 0,
+            runId: postInput.result.telemetry?.runId,
+            threadId: postInput.result.telemetry?.threadId,
+            model: postInput.result.telemetry?.modelId,
           };
 
           if (postInput.result.usage) {
@@ -272,6 +277,9 @@ export function createLoggingMiddleware(options: LoggingMiddlewareOptions): Agen
 
           const context: Record<string, unknown> = {
             error: failInput.error?.message ?? "Unknown error",
+            runId: failInput.telemetry?.runId,
+            threadId: failInput.telemetry?.threadId,
+            model: failInput.telemetry?.requestedModelId,
           };
 
           if (includeTiming) {

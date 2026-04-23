@@ -2096,6 +2096,11 @@ describe("Additional hook event types", () => {
 // =============================================================================
 
 describe("Hook execution order", () => {
+  beforeEach(() => {
+    resetMocks();
+    vi.clearAllMocks();
+  });
+
   it("executes hooks in registration order", async () => {
     const executionOrder: number[] = [];
 
@@ -2265,6 +2270,85 @@ describe("Hook execution order", () => {
     await agent.generate({ prompt: "test" });
 
     expect(events).toEqual(["generate", "post-hook"]);
+  });
+
+  it("PreGenerate hooks receive execution telemetry", async () => {
+    const mockGenerate = vi.mocked(generateText);
+    mockGenerate.mockResolvedValue({
+      text: "response",
+      finishReason: "stop",
+      usage: { totalTokens: 10, promptTokens: 5, completionTokens: 5 },
+      steps: [],
+      response: {
+        id: "resp-1",
+        timestamp: new Date(),
+        modelId: "mock-response-model",
+        messages: [],
+      },
+    } as any);
+
+    const preHook: HookCallback = vi.fn().mockResolvedValue({});
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      hooks: {
+        PreGenerate: [preHook],
+      },
+    });
+
+    await agent.generate({ prompt: "test", threadId: "thread-123" });
+
+    const hookInput = vi.mocked(preHook).mock.calls[0]?.[0] as PreGenerateInput;
+    expect(hookInput.telemetry).toBeDefined();
+    expect(hookInput.telemetry?.threadId).toBe("thread-123");
+    expect(hookInput.telemetry?.runId).toBeTruthy();
+    expect(hookInput.telemetry?.requestedModelId).toBe("mock-model");
+    expect(hookInput.telemetry?.modelId).toBe("mock-model");
+  });
+
+  it("generate() results and PostGenerate hooks expose execution telemetry", async () => {
+    const mockGenerate = vi.mocked(generateText);
+    mockGenerate.mockResolvedValue({
+      text: "response",
+      finishReason: "stop",
+      usage: {
+        totalTokens: 12,
+        promptTokens: 5,
+        completionTokens: 7,
+        inputTokens: 5,
+        outputTokens: 7,
+      },
+      steps: [],
+      response: {
+        id: "resp-2",
+        timestamp: new Date(),
+        modelId: "mock-response-model",
+        messages: [],
+      },
+    } as any);
+
+    const postHook: HookCallback = vi.fn().mockResolvedValue({});
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      hooks: {
+        PostGenerate: [postHook],
+      },
+    });
+
+    const result = await agent.generate({ prompt: "test", threadId: "thread-456" });
+
+    expect(result.telemetry).toBeDefined();
+    expect(result.telemetry?.threadId).toBe("thread-456");
+    expect(result.telemetry?.runId).toBeTruthy();
+    expect(result.telemetry?.requestedModelId).toBe("mock-model");
+    expect(result.telemetry?.modelId).toBe("mock-response-model");
+    expect(result.telemetry?.usage?.totalTokens).toBe(12);
+
+    const hookInput = vi.mocked(postHook).mock.calls[0]?.[0] as PostGenerateInput;
+    expect(hookInput.result.telemetry).toEqual(result.telemetry);
   });
 });
 
