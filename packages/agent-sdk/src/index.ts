@@ -162,6 +162,16 @@ export type {
   TokenBudget,
   TokenCounter,
 } from "./context-manager.js";
+// Context Manager factories
+export {
+  createApproximateTokenCounter,
+  createCompactionScheduler,
+  createContextManager,
+  createCustomTokenCounter,
+  createTokenBudget,
+  DEFAULT_COMPACTION_POLICY,
+  DEFAULT_SUMMARIZATION_CONFIG,
+} from "./context-manager.js";
 
 // Error types
 export type {
