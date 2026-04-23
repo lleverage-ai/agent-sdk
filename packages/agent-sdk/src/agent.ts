@@ -1818,27 +1818,26 @@ export function createAgent(options: AgentOptions): Agent {
     cachedResult: GenerateResult,
     genOptions: GenerateOptions,
     requestedModel: AgentOptions["model"],
-  ): Promise<void> {
+  ): Promise<GenerateResult> {
     if (cachedResult.status !== "complete") {
-      return;
+      return cachedResult;
     }
 
-    const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-    if (postGenerateHooks.length === 0) {
-      return;
-    }
-
-    const telemetry =
-      cachedResult.telemetry ??
-      buildExecutionTelemetryFromIds({
-        runId: genOptions._runId ?? createRunId(),
-        threadId: genOptions.threadId,
-        requestedModel,
-      });
+    const telemetry = buildExecutionTelemetryFromIds({
+      runId: genOptions._runId ?? createRunId(),
+      threadId: genOptions.threadId,
+      requestedModel,
+    });
     const result: GenerateResultComplete = {
       ...cachedResult,
       telemetry,
     };
+
+    const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
+    if (postGenerateHooks.length === 0) {
+      return result;
+    }
+
     const postGenerateInput: PostGenerateInput = {
       hook_event_name: "PostGenerate",
       session_id: genOptions.threadId ?? "default",
@@ -1848,6 +1847,7 @@ export function createAgent(options: AgentOptions): Agent {
       result,
     };
     await invokeHooksWithTimeout(postGenerateHooks, postGenerateInput, null, agent);
+    return result;
   }
 
   /**
@@ -2268,12 +2268,11 @@ export function createAgent(options: AgentOptions): Agent {
 
       // Check for cache short-circuit via respondWith
       if (preGenResult.cachedResult !== undefined) {
-        await invokeCachedPostGenerateHooks(
+        return await invokeCachedPostGenerateHooks(
           preGenResult.cachedResult,
           { ...preGenResult.effectiveOptions, _runId: runId },
           options.model,
         );
-        return preGenResult.cachedResult;
       }
 
       let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
@@ -2780,9 +2779,8 @@ export function createAgent(options: AgentOptions): Agent {
       // Check for cache short-circuit via respondWith
       // For streaming, we convert the cached GenerateResult into StreamParts
       if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = preGenResult.cachedResult;
-        await invokeCachedPostGenerateHooks(
-          cachedResult,
+        const cachedResult = await invokeCachedPostGenerateHooks(
+          preGenResult.cachedResult,
           { ...preGenResult.effectiveOptions, _runId: runId },
           options.model,
         );
@@ -3178,9 +3176,8 @@ export function createAgent(options: AgentOptions): Agent {
       // Check for cache short-circuit via respondWith
       // For streaming response, create a simple text response from the cached result
       if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = preGenResult.cachedResult;
-        await invokeCachedPostGenerateHooks(
-          cachedResult,
+        const cachedResult = await invokeCachedPostGenerateHooks(
+          preGenResult.cachedResult,
           { ...preGenResult.effectiveOptions, _runId: runId },
           options.model,
         );
@@ -3826,9 +3823,8 @@ export function createAgent(options: AgentOptions): Agent {
       // Check for cache short-circuit via respondWith
       // For data stream response, create a simple text response from the cached result
       if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = preGenResult.cachedResult;
-        await invokeCachedPostGenerateHooks(
-          cachedResult,
+        const cachedResult = await invokeCachedPostGenerateHooks(
+          preGenResult.cachedResult,
           { ...preGenResult.effectiveOptions, _runId: runId },
           options.model,
         );

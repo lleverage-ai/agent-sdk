@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Execution telemetry follow-up runs, cached responses, tracing spans, and rate-limit metrics now preserve accurate model attribution and clean up request-scoped observability state
 - Observability metrics now avoid negative in-progress request gauges and token overcounts when lifecycle starts or usage fields are absent
 - Background follow-up tool hooks now receive execution telemetry, and observability metric timing state is pruned for abandoned lifecycle pairs
+- Cached generation results now receive fresh per-request telemetry, and request metrics stay open across retryable generation failures until the retry decision is terminal
 - `call_tool` now preserves the original execution context for proxied inline plugin tools, forwarding the incoming `toolCallId`, `interrupt`, and abort context instead of replacing them with synthetic proxy values (#117)
 
 ## [0.1.0-alpha.1] - 2026-04-14

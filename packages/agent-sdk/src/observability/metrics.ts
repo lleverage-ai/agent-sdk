@@ -876,20 +876,10 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       const failureInput = input as PostGenerateFailureInput;
       const labels = labelsFor(failureInput);
 
-      const key = requestKey(failureInput);
-      const startedAt = requestStartTimes.get(key);
-      if (startedAt !== undefined) {
-        metrics.requestsInProgress.dec(1, labels);
-      }
       metrics.errorsTotal.inc(1, {
         ...labels,
         type: failureInput.failureClassification?.type ?? "generation_error",
       });
-
-      if (startedAt !== undefined) {
-        metrics.requestDurationMs.observe(Date.now() - startedAt, labels);
-        requestStartTimes.delete(key);
-      }
 
       if (failureInput.failureClassification?.subtype === "rate_limit") {
         metrics.rateLimitErrorsTotal.inc(1, labels);
@@ -902,6 +892,14 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       if (input.hook_event_name !== "GenerationRetryDecision") return {};
       const retryInput = input as GenerationRetryDecisionInput;
       if (retryInput.decision !== "retry" && retryInput.decision !== "fallback") {
+        const labels = labelsFor(retryInput);
+        const key = requestKey(retryInput);
+        const startedAt = requestStartTimes.get(key);
+        if (startedAt !== undefined) {
+          metrics.requestsInProgress.dec(1, labels);
+          metrics.requestDurationMs.observe(Date.now() - startedAt, labels);
+          requestStartTimes.delete(key);
+        }
         return {};
       }
 
