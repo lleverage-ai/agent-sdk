@@ -765,12 +765,21 @@ export function createMetricsHooks(metrics: AgentMetrics): {
   PostCompact: HookCallback;
   SubagentStart: HookCallback;
 } {
-  const requestStartTimes = new Map<string, number>();
+  const requestStartTimes = new Map<string, { startedAt: number; labels: MetricLabels }>();
   const toolStartTimes = new Map<string, number>();
   const compactionStartTimes = new Map<string, number>();
   const isFiniteNumber = (value: unknown): value is number =>
     typeof value === "number" && Number.isFinite(value);
   const staleTimingTtlMs = Number(process.env.AGENT_SDK_METRICS_TIMING_TTL_MS ?? 300000);
+
+  const pruneStaleRequestStartTimes = (maxAgeMs = staleTimingTtlMs): void => {
+    const now = Date.now();
+    for (const [key, entry] of requestStartTimes) {
+      if (now - entry.startedAt > maxAgeMs) {
+        requestStartTimes.delete(key);
+      }
+    }
+  };
 
   const pruneStaleStartTimes = (map: Map<string, number>, maxAgeMs = staleTimingTtlMs): void => {
     const now = Date.now();
@@ -782,7 +791,7 @@ export function createMetricsHooks(metrics: AgentMetrics): {
   };
 
   const pruneAllStartTimes = (): void => {
-    pruneStaleStartTimes(requestStartTimes);
+    pruneStaleRequestStartTimes();
     pruneStaleStartTimes(toolStartTimes);
     pruneStaleStartTimes(compactionStartTimes);
   };
@@ -813,7 +822,7 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       pruneAllStartTimes();
       const preGenInput = input as PreGenerateInput;
       const labels = labelsFor(preGenInput);
-      requestStartTimes.set(requestKey(preGenInput), Date.now());
+      requestStartTimes.set(requestKey(preGenInput), { startedAt: Date.now(), labels });
       metrics.requestsInProgress.inc(1, labels);
       return {};
     },
@@ -826,10 +835,10 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       metrics.requestsTotal.inc(1, labels);
 
       const key = requestKey(postGenInput);
-      const startedAt = requestStartTimes.get(key);
-      if (startedAt !== undefined) {
-        metrics.requestsInProgress.dec(1, labels);
-        metrics.requestDurationMs.observe(Date.now() - startedAt, labels);
+      const started = requestStartTimes.get(key);
+      if (started) {
+        metrics.requestsInProgress.dec(1, started.labels);
+        metrics.requestDurationMs.observe(Date.now() - started.startedAt, labels);
         requestStartTimes.delete(key);
       } else if (postGenInput.result.telemetry?.durationMs !== undefined) {
         metrics.requestDurationMs.observe(postGenInput.result.telemetry.durationMs, labels);
@@ -894,10 +903,10 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       if (retryInput.decision !== "retry" && retryInput.decision !== "fallback") {
         const labels = labelsFor(retryInput);
         const key = requestKey(retryInput);
-        const startedAt = requestStartTimes.get(key);
-        if (startedAt !== undefined) {
-          metrics.requestsInProgress.dec(1, labels);
-          metrics.requestDurationMs.observe(Date.now() - startedAt, labels);
+        const started = requestStartTimes.get(key);
+        if (started) {
+          metrics.requestsInProgress.dec(1, started.labels);
+          metrics.requestDurationMs.observe(Date.now() - started.startedAt, labels);
           requestStartTimes.delete(key);
         }
         return {};

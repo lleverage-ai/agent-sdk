@@ -1846,8 +1846,16 @@ export function createAgent(options: AgentOptions): Agent {
       options: genOptions,
       result,
     };
-    await invokeHooksWithTimeout(postGenerateHooks, postGenerateInput, null, agent);
-    return result;
+    const hookOutputs = await invokeHooksWithTimeout(
+      postGenerateHooks,
+      postGenerateInput,
+      null,
+      agent,
+    );
+    const updatedResult = extractUpdatedResult<GenerateResultComplete>(hookOutputs);
+    return updatedResult
+      ? { ...updatedResult, telemetry: updatedResult.telemetry ?? telemetry }
+      : result;
   }
 
   /**
@@ -2047,6 +2055,7 @@ export function createAgent(options: AgentOptions): Agent {
             toolCallId: interrupt.toolCallId,
             messages: checkpoint.messages,
             abortSignal: genOptions?.signal,
+            executionTelemetry: resumeTelemetry,
           } as ToolExecutionOptions);
         } catch (error) {
           toolResultOutput = `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -2150,6 +2159,7 @@ export function createAgent(options: AgentOptions): Agent {
         toolCallId: customToolCallId,
         messages: checkpoint.messages,
         abortSignal: genOptions?.signal,
+        executionTelemetry: resumeTelemetry,
         interrupt: async (request: unknown) => {
           // First call: return the stored user response (mirrors the
           // permission-mode wrapper when pendingResponses has a match).
@@ -3437,6 +3447,7 @@ export function createAgent(options: AgentOptions): Agent {
                       });
                     },
                   );
+                  const followUpStartTime = Date.now();
                   followUpBaseOptions = {
                     ...followUpEffectiveOptions,
                     _runId: followUpEffectiveOptions._runId ?? followUpBaseOptions._runId,
@@ -3491,6 +3502,7 @@ export function createAgent(options: AgentOptions): Agent {
                       requestedModel: followUpModel,
                       responseModelId: followUpResponse?.modelId,
                       usage: followUpUsage,
+                      durationMs: Date.now() - followUpStartTime,
                     });
                     const followUpHookResult: GenerateResultComplete = {
                       status: "complete",
@@ -4143,6 +4155,7 @@ export function createAgent(options: AgentOptions): Agent {
                       });
                     },
                   );
+                  const followUpStartTime = Date.now();
                   followUpBaseOptions = {
                     ...followUpEffectiveOptions,
                     _runId: followUpEffectiveOptions._runId ?? followUpBaseOptions._runId,
@@ -4197,6 +4210,7 @@ export function createAgent(options: AgentOptions): Agent {
                       requestedModel: followUpModel,
                       responseModelId: followUpResponse?.modelId,
                       usage: followUpUsage,
+                      durationMs: Date.now() - followUpStartTime,
                     });
                     const followUpHookResult: GenerateResultComplete = {
                       status: "complete",
