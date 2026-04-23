@@ -768,6 +768,8 @@ export function createMetricsHooks(metrics: AgentMetrics): {
   const requestStartTimes = new Map<string, number>();
   const toolStartTimes = new Map<string, number>();
   const compactionStartTimes = new Map<string, number>();
+  const isFiniteNumber = (value: unknown): value is number =>
+    typeof value === "number" && Number.isFinite(value);
 
   const labelsFor = (input: {
     telemetry?: {
@@ -803,20 +805,28 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       const labels = labelsFor(postGenInput);
 
       metrics.requestsTotal.inc(1, labels);
-      metrics.requestsInProgress.dec(1, labels);
 
-      const startedAt = requestStartTimes.get(requestKey(postGenInput));
+      const key = requestKey(postGenInput);
+      const startedAt = requestStartTimes.get(key);
       if (startedAt !== undefined) {
+        metrics.requestsInProgress.dec(1, labels);
         metrics.requestDurationMs.observe(Date.now() - startedAt, labels);
-        requestStartTimes.delete(requestKey(postGenInput));
+        requestStartTimes.delete(key);
       } else if (postGenInput.result.telemetry?.durationMs !== undefined) {
         metrics.requestDurationMs.observe(postGenInput.result.telemetry.durationMs, labels);
       }
 
       if (postGenInput.result.usage) {
-        metrics.inputTokensTotal.inc(postGenInput.result.usage.inputTokens, labels);
-        metrics.outputTokensTotal.inc(postGenInput.result.usage.outputTokens, labels);
-        metrics.tokensTotal.inc(postGenInput.result.usage.totalTokens, labels);
+        const { inputTokens, outputTokens, totalTokens } = postGenInput.result.usage;
+        if (isFiniteNumber(inputTokens)) {
+          metrics.inputTokensTotal.inc(inputTokens, labels);
+        }
+        if (isFiniteNumber(outputTokens)) {
+          metrics.outputTokensTotal.inc(outputTokens, labels);
+        }
+        if (isFiniteNumber(totalTokens)) {
+          metrics.tokensTotal.inc(totalTokens, labels);
+        }
       }
 
       const usageTelemetry = postGenInput.result.telemetry?.usage;
@@ -847,16 +857,19 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       const failureInput = input as PostGenerateFailureInput;
       const labels = labelsFor(failureInput);
 
-      metrics.requestsInProgress.dec(1, labels);
+      const key = requestKey(failureInput);
+      const startedAt = requestStartTimes.get(key);
+      if (startedAt !== undefined) {
+        metrics.requestsInProgress.dec(1, labels);
+      }
       metrics.errorsTotal.inc(1, {
         ...labels,
         type: failureInput.failureClassification?.type ?? "generation_error",
       });
 
-      const startedAt = requestStartTimes.get(requestKey(failureInput));
       if (startedAt !== undefined) {
         metrics.requestDurationMs.observe(Date.now() - startedAt, labels);
-        requestStartTimes.delete(requestKey(failureInput));
+        requestStartTimes.delete(key);
       }
 
       if (failureInput.failureClassification?.subtype === "rate_limit") {

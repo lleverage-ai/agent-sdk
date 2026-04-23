@@ -114,6 +114,17 @@ function errorFromUnknown(error: unknown): Error {
   }
 }
 
+/** @internal */
+function errorMessage(error: unknown): string | undefined {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string" || typeof error === "number" || typeof error === "boolean") {
+    return String(error);
+  }
+  return undefined;
+}
+
 /**
  * Creates lifecycle hooks that emit tracing spans for generation, tools,
  * compaction, retries, and subagents.
@@ -214,6 +225,7 @@ export function createTracingHooks(tracer: Tracer): {
 
       applyExecutionAttributes(span, failureInput.telemetry);
       span.recordException(failureInput.error);
+      span.setStatus("error", errorMessage(failureInput.error));
       span.end();
       generationSpans.delete(requestKey(failureInput));
       return {};
@@ -272,6 +284,7 @@ export function createTracingHooks(tracer: Tracer): {
 
       const error = errorFromUnknown(failureInput.error);
       span.recordException(error);
+      span.setStatus("error", error.message);
       span.end();
       toolSpans.delete(toolUseId);
       return {};
@@ -340,6 +353,7 @@ export function createTracingHooks(tracer: Tracer): {
 
       if (subagentInput.error) {
         span.recordException(subagentInput.error);
+        span.setStatus("error", subagentInput.error.message);
       } else {
         span.setStatus("ok");
       }

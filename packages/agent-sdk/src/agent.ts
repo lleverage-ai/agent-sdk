@@ -124,10 +124,12 @@ class InterruptSignal extends Error {
   }
 }
 
+/** @internal */
 function getCheckpointRunId(checkpoint: Checkpoint | undefined): string | undefined {
   return typeof checkpoint?.metadata?.runId === "string" ? checkpoint.metadata.runId : undefined;
 }
 
+/** @internal */
 function withCheckpointRunId(
   checkpoint: Checkpoint,
   runId: string | undefined,
