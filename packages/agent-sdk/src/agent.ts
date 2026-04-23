@@ -3403,9 +3403,15 @@ export function createAgent(options: AgentOptions): Agent {
                     followUpRequestOptions,
                     (requestOptions, currentModel) => {
                       const followUpMessages = requestOptions.messages ?? [];
+                      const followUpTelemetry = buildExecutionTelemetryFromIds({
+                        runId: requestOptions._runId ?? executionBaseTelemetry.runId,
+                        threadId: requestOptions.threadId,
+                        requestedModel: currentModel,
+                      });
                       const followUpTools = applyToolHooks(
                         addTaskToolIfConfigured(getActiveToolSet(requestOptions.threadId)),
                         requestOptions.threadId,
+                        followUpTelemetry,
                       );
                       const activeFollowUpTools = wrapToolsWithSignalCatching(
                         followUpTools,
@@ -4097,12 +4103,18 @@ export function createAgent(options: AgentOptions): Agent {
                     followUpRequestOptions,
                     (requestOptions, currentModel) => {
                       const followUpMessages = requestOptions.messages ?? [];
+                      const followUpTelemetry = buildExecutionTelemetryFromIds({
+                        runId: requestOptions._runId ?? executionBaseTelemetry.runId,
+                        threadId: requestOptions.threadId,
+                        requestedModel: currentModel,
+                      });
                       const hookedFollowUpTools = applyToolHooks(
                         addTaskToolIfConfigured(
                           getActiveToolSetWithStreaming(streamingContext, requestOptions.threadId),
                           streamingContext,
                         ),
                         requestOptions.threadId,
+                        followUpTelemetry,
                       );
                       const requestScopedFollowUpTools = wrapToolsWithStreamingContext(
                         hookedFollowUpTools,

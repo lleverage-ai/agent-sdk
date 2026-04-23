@@ -679,7 +679,7 @@ export function createAgentMetrics(registry: MetricsRegistry): AgentMetrics {
     retryAttemptsTotal: registry.counter("agent_retry_attempts_total", "Total retry attempts"),
     rateLimitErrorsTotal: registry.counter(
       "agent_rate_limit_errors_total",
-      "Total rate-limit and overload errors",
+      'Total rate-limit errors (only incremented for subtype === "rate_limit")',
     ),
     compactionsTotal: registry.counter("agent_compactions_total", "Total context compactions"),
     compactionDurationMs: registry.histogram(
@@ -770,6 +770,22 @@ export function createMetricsHooks(metrics: AgentMetrics): {
   const compactionStartTimes = new Map<string, number>();
   const isFiniteNumber = (value: unknown): value is number =>
     typeof value === "number" && Number.isFinite(value);
+  const staleTimingTtlMs = Number(process.env.AGENT_SDK_METRICS_TIMING_TTL_MS ?? 300000);
+
+  const pruneStaleStartTimes = (map: Map<string, number>, maxAgeMs = staleTimingTtlMs): void => {
+    const now = Date.now();
+    for (const [key, startedAt] of map) {
+      if (now - startedAt > maxAgeMs) {
+        map.delete(key);
+      }
+    }
+  };
+
+  const pruneAllStartTimes = (): void => {
+    pruneStaleStartTimes(requestStartTimes);
+    pruneStaleStartTimes(toolStartTimes);
+    pruneStaleStartTimes(compactionStartTimes);
+  };
 
   const labelsFor = (input: {
     telemetry?: {
@@ -778,20 +794,23 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       modelProvider?: string;
       requestedModelProvider?: string;
     };
+    requestClass?: string;
     options?: { requestClass?: string };
   }): MetricLabels => {
     const labels: MetricLabels = {};
     const modelId = input.telemetry?.modelId ?? input.telemetry?.requestedModelId;
     const provider = input.telemetry?.modelProvider ?? input.telemetry?.requestedModelProvider;
+    const requestClass = input.requestClass ?? input.options?.requestClass;
     if (modelId) labels.model = modelId;
     if (provider) labels.provider = provider;
-    if (input.options?.requestClass) labels.request_class = input.options.requestClass;
+    if (requestClass) labels.request_class = requestClass;
     return labels;
   };
 
   return {
     PreGenerate: async (input) => {
       if (input.hook_event_name !== "PreGenerate") return {};
+      pruneAllStartTimes();
       const preGenInput = input as PreGenerateInput;
       const labels = labelsFor(preGenInput);
       requestStartTimes.set(requestKey(preGenInput), Date.now());
@@ -896,6 +915,7 @@ export function createMetricsHooks(metrics: AgentMetrics): {
 
     PreCompact: async (input) => {
       if (input.hook_event_name !== "PreCompact") return {};
+      pruneAllStartTimes();
       const preCompactInput = input as PreCompactInput;
       compactionStartTimes.set(requestKey(preCompactInput), Date.now());
       return {};
@@ -903,6 +923,7 @@ export function createMetricsHooks(metrics: AgentMetrics): {
 
     PreToolUse: async (input, toolUseId) => {
       if (input.hook_event_name !== "PreToolUse") return {};
+      pruneAllStartTimes();
       const _preToolInput = input as PreToolUseInput;
       if (toolUseId) {
         toolStartTimes.set(toolUseId, Date.now());
@@ -938,6 +959,10 @@ export function createMetricsHooks(metrics: AgentMetrics): {
       metrics.toolErrorsTotal.inc(1, labels);
       metrics.errorsTotal.inc(1, { ...labels, type: "tool_error" });
       if (toolUseId) {
+        const startedAt = toolStartTimes.get(toolUseId);
+        if (startedAt !== undefined) {
+          metrics.toolDurationMs.observe(Date.now() - startedAt, labels);
+        }
         toolStartTimes.delete(toolUseId);
       }
 
