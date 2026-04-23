@@ -74,7 +74,7 @@ const registry = createMetricsRegistry({
 });
 
 const metrics = createAgentMetrics(registry);
-metrics.requestsTotal.inc({ model: "claude-3" });
+metrics.requestsTotal.inc(1, { model: "claude-3" });
 metrics.requestDurationMs.observe(1500, { model: "claude-3" });
 ```
 
@@ -318,8 +318,8 @@ const result = await agent.generate({
 
 console.log(result.telemetry?.threadId); // "thread_123"
 console.log(result.telemetry?.runId); // Stable per-run ID
-console.log(result.telemetry?.requestedModel?.modelId);
-console.log(result.telemetry?.responseModelId);
+console.log(result.telemetry?.requestedModelId);
+console.log(result.telemetry?.modelId);
 ```
 
 This metadata is intended for correlation in logs, traces, audit events, and event stores. `threadId` and `runId` are intentionally not added as built-in metric labels because they are high-cardinality dimensions.

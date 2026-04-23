@@ -26,10 +26,24 @@ interface BuildExecutionTelemetryOptions {
 /**
  * Creates a stable execution/run identifier.
  *
+ * @returns A unique run identifier containing a timestamp and random suffix
+ *
  * @category Observability
  */
 export function createRunId(): string {
   return `run_${Date.now().toString(36)}_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+/**
+ * Creates a composite key for request-scoped observability state.
+ *
+ * @param input - Hook input containing session and optional run metadata
+ * @returns Request correlation key
+ *
+ * @internal
+ */
+export function requestKey(input: { session_id: string; telemetry?: { runId?: string } }): string {
+  return `${input.session_id}:${input.telemetry?.runId ?? "run_unknown"}`;
 }
 
 /**
@@ -177,6 +191,7 @@ export function normalizeExecutionUsage(
   };
 }
 
+/** @internal */
 function identityFromModelId(modelId: string | undefined): ResolvedModelIdentity {
   if (!modelId) {
     return {};
@@ -189,10 +204,12 @@ function identityFromModelId(modelId: string | undefined): ResolvedModelIdentity
   };
 }
 
+/** @internal */
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
 }
 
+/** @internal */
 function firstNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (typeof value === "number" && Number.isFinite(value)) {

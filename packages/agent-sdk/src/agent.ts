@@ -1812,6 +1812,42 @@ export function createAgent(options: AgentOptions): Agent {
     return null;
   }
 
+  async function invokeCachedPostGenerateHooks(
+    cachedResult: GenerateResult,
+    genOptions: GenerateOptions,
+    requestedModel: AgentOptions["model"],
+  ): Promise<void> {
+    if (cachedResult.status !== "complete") {
+      return;
+    }
+
+    const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
+    if (postGenerateHooks.length === 0) {
+      return;
+    }
+
+    const telemetry =
+      cachedResult.telemetry ??
+      buildExecutionTelemetryFromIds({
+        runId: genOptions._runId ?? createRunId(),
+        threadId: genOptions.threadId,
+        requestedModel,
+      });
+    const result: GenerateResultComplete = {
+      ...cachedResult,
+      telemetry,
+    };
+    const postGenerateInput: PostGenerateInput = {
+      hook_event_name: "PostGenerate",
+      session_id: genOptions.threadId ?? "default",
+      cwd: process.cwd(),
+      telemetry,
+      options: genOptions,
+      result,
+    };
+    await invokeHooksWithTimeout(postGenerateHooks, postGenerateInput, null, agent);
+  }
+
   /**
    * Starts a `streamText()` request with the same retry pipeline used by the
    * top-level streaming entrypoints.
@@ -1828,6 +1864,7 @@ export function createAgent(options: AgentOptions): Agent {
   ): Promise<{
     result: ReturnType<typeof streamText>;
     effectiveOptions: GenerateOptions;
+    currentModel: AgentOptions["model"];
   }> {
     let requestOptions = initialGenOptions;
     const retryState = createRetryLoopState(
@@ -1840,6 +1877,7 @@ export function createAgent(options: AgentOptions): Agent {
         return {
           result: createRequest(requestOptions, retryState.currentModel),
           effectiveOptions: requestOptions,
+          currentModel: retryState.currentModel,
         };
       } catch (error) {
         const normalizedError = normalizeError(
@@ -2137,15 +2175,18 @@ export function createAgent(options: AgentOptions): Agent {
       if (isInterruptSignal(executeError)) {
         // Tool threw another interrupt — persist it and return re-interrupted
         const newInterrupt = executeError.interrupt;
-        const reInterruptCheckpoint = updateCheckpoint(checkpoint, {
-          pendingInterrupt: newInterrupt,
-        });
+        const reInterruptCheckpoint = withCheckpointRunId(
+          updateCheckpoint(checkpoint, {
+            pendingInterrupt: newInterrupt,
+          }),
+          resumeTelemetry.runId,
+        );
         await options.checkpointer.save(reInterruptCheckpoint);
         threadCheckpoints.set(threadId, reInterruptCheckpoint);
         return {
           type: "re-interrupted",
           interrupt: newInterrupt,
-          checkpoint: withCheckpointRunId(reInterruptCheckpoint, resumeTelemetry.runId),
+          checkpoint: reInterruptCheckpoint,
         };
       }
       customToolResult = `Tool execution failed: ${executeError instanceof Error ? executeError.message : String(executeError)}`;
@@ -2225,6 +2266,11 @@ export function createAgent(options: AgentOptions): Agent {
 
       // Check for cache short-circuit via respondWith
       if (preGenResult.cachedResult !== undefined) {
+        await invokeCachedPostGenerateHooks(
+          preGenResult.cachedResult,
+          { ...preGenResult.effectiveOptions, _runId: runId },
+          options.model,
+        );
         return preGenResult.cachedResult;
       }
 
@@ -2733,6 +2779,11 @@ export function createAgent(options: AgentOptions): Agent {
       // For streaming, we convert the cached GenerateResult into StreamParts
       if (preGenResult.cachedResult !== undefined) {
         const cachedResult = preGenResult.cachedResult;
+        await invokeCachedPostGenerateHooks(
+          cachedResult,
+          { ...preGenResult.effectiveOptions, _runId: runId },
+          options.model,
+        );
         // Only process complete results (interrupted results can't be cached)
         if (cachedResult.status === "complete") {
           // Yield cached result as stream parts
@@ -3126,6 +3177,11 @@ export function createAgent(options: AgentOptions): Agent {
       // For streaming response, create a simple text response from the cached result
       if (preGenResult.cachedResult !== undefined) {
         const cachedResult = preGenResult.cachedResult;
+        await invokeCachedPostGenerateHooks(
+          cachedResult,
+          { ...preGenResult.effectiveOptions, _runId: runId },
+          options.model,
+        );
         // For cached results, return a simple Response with the cached text
         // This is compatible with useChat and provides immediate delivery
         // Only complete results can be cached
@@ -3337,42 +3393,45 @@ export function createAgent(options: AgentOptions): Agent {
                       { role: "user" as const, content: followUpPrompt },
                     ],
                   };
-                  const { result: followUpResult, effectiveOptions: followUpEffectiveOptions } =
-                    await startRetriedStreamText(
-                      followUpRequestOptions,
-                      (requestOptions, currentModel) => {
-                        const followUpMessages = requestOptions.messages ?? [];
-                        const followUpTools = applyToolHooks(
-                          addTaskToolIfConfigured(getActiveToolSet(requestOptions.threadId)),
-                          requestOptions.threadId,
-                        );
-                        const activeFollowUpTools = wrapToolsWithSignalCatching(
-                          followUpTools,
-                          signalState,
-                        );
-                        const followUpPromptContext = buildPromptContext(
-                          requestOptions,
-                          followUpMessages,
-                          requestOptions.threadId,
-                        );
+                  const {
+                    result: followUpResult,
+                    effectiveOptions: followUpEffectiveOptions,
+                    currentModel: followUpModel,
+                  } = await startRetriedStreamText(
+                    followUpRequestOptions,
+                    (requestOptions, currentModel) => {
+                      const followUpMessages = requestOptions.messages ?? [];
+                      const followUpTools = applyToolHooks(
+                        addTaskToolIfConfigured(getActiveToolSet(requestOptions.threadId)),
+                        requestOptions.threadId,
+                      );
+                      const activeFollowUpTools = wrapToolsWithSignalCatching(
+                        followUpTools,
+                        signalState,
+                      );
+                      const followUpPromptContext = buildPromptContext(
+                        requestOptions,
+                        followUpMessages,
+                        requestOptions.threadId,
+                      );
 
-                        return streamText({
-                          model: currentModel,
-                          system: getSystemPrompt(followUpPromptContext),
-                          messages: followUpMessages,
-                          tools: activeFollowUpTools as ToolSet,
-                          maxOutputTokens: requestOptions.maxTokens,
-                          temperature: requestOptions.temperature,
-                          stopSequences: requestOptions.stopSequences,
-                          abortSignal: requestOptions.signal,
-                          stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
-                          output: requestOptions.output,
-                          // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                          providerOptions: requestOptions.providerOptions as any,
-                          headers: requestOptions.headers,
-                        });
-                      },
-                    );
+                      return streamText({
+                        model: currentModel,
+                        system: getSystemPrompt(followUpPromptContext),
+                        messages: followUpMessages,
+                        tools: activeFollowUpTools as ToolSet,
+                        maxOutputTokens: requestOptions.maxTokens,
+                        temperature: requestOptions.temperature,
+                        stopSequences: requestOptions.stopSequences,
+                        abortSignal: requestOptions.signal,
+                        stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                        output: requestOptions.output,
+                        // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                        providerOptions: requestOptions.providerOptions as any,
+                        headers: requestOptions.headers,
+                      });
+                    },
+                  );
                   followUpBaseOptions = {
                     ...followUpEffectiveOptions,
                     _runId: followUpEffectiveOptions._runId ?? followUpBaseOptions._runId,
@@ -3424,7 +3483,7 @@ export function createAgent(options: AgentOptions): Agent {
                     const followUpTelemetry = buildExecutionTelemetry({
                       runId: followUpEffectiveOptions._runId ?? executionBaseTelemetry.runId,
                       threadId: followUpEffectiveOptions.threadId,
-                      requestedModel: retryState.currentModel,
+                      requestedModel: followUpModel,
                       responseModelId: followUpResponse?.modelId,
                       usage: followUpUsage,
                     });
@@ -3760,6 +3819,11 @@ export function createAgent(options: AgentOptions): Agent {
       // For data stream response, create a simple text response from the cached result
       if (preGenResult.cachedResult !== undefined) {
         const cachedResult = preGenResult.cachedResult;
+        await invokeCachedPostGenerateHooks(
+          cachedResult,
+          { ...preGenResult.effectiveOptions, _runId: runId },
+          options.model,
+        );
         // For cached results, return a simple Response with the cached text
         // This is compatible with useChat and provides immediate delivery
         // Only complete results can be cached
@@ -4023,52 +4087,52 @@ export function createAgent(options: AgentOptions): Agent {
                       { role: "user" as const, content: followUpPrompt },
                     ],
                   };
-                  const { result: followUpResult, effectiveOptions: followUpEffectiveOptions } =
-                    await startRetriedStreamText(
-                      followUpRequestOptions,
-                      (requestOptions, currentModel) => {
-                        const followUpMessages = requestOptions.messages ?? [];
-                        const hookedFollowUpTools = applyToolHooks(
-                          addTaskToolIfConfigured(
-                            getActiveToolSetWithStreaming(
-                              streamingContext,
-                              requestOptions.threadId,
-                            ),
-                            streamingContext,
-                          ),
-                          requestOptions.threadId,
-                        );
-                        const requestScopedFollowUpTools = wrapToolsWithStreamingContext(
-                          hookedFollowUpTools,
+                  const {
+                    result: followUpResult,
+                    effectiveOptions: followUpEffectiveOptions,
+                    currentModel: followUpModel,
+                  } = await startRetriedStreamText(
+                    followUpRequestOptions,
+                    (requestOptions, currentModel) => {
+                      const followUpMessages = requestOptions.messages ?? [];
+                      const hookedFollowUpTools = applyToolHooks(
+                        addTaskToolIfConfigured(
+                          getActiveToolSetWithStreaming(streamingContext, requestOptions.threadId),
                           streamingContext,
-                        );
-                        const activeFollowUpTools = wrapToolsWithSignalCatching(
-                          requestScopedFollowUpTools,
-                          signalState,
-                        );
-                        const followUpPromptContext = buildPromptContext(
-                          requestOptions,
-                          followUpMessages,
-                          requestOptions.threadId,
-                        );
+                        ),
+                        requestOptions.threadId,
+                      );
+                      const requestScopedFollowUpTools = wrapToolsWithStreamingContext(
+                        hookedFollowUpTools,
+                        streamingContext,
+                      );
+                      const activeFollowUpTools = wrapToolsWithSignalCatching(
+                        requestScopedFollowUpTools,
+                        signalState,
+                      );
+                      const followUpPromptContext = buildPromptContext(
+                        requestOptions,
+                        followUpMessages,
+                        requestOptions.threadId,
+                      );
 
-                        return streamText({
-                          model: currentModel,
-                          system: getSystemPrompt(followUpPromptContext),
-                          messages: followUpMessages,
-                          tools: activeFollowUpTools as ToolSet,
-                          maxOutputTokens: requestOptions.maxTokens,
-                          temperature: requestOptions.temperature,
-                          stopSequences: requestOptions.stopSequences,
-                          abortSignal: requestOptions.signal,
-                          stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
-                          output: requestOptions.output,
-                          // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                          providerOptions: requestOptions.providerOptions as any,
-                          headers: requestOptions.headers,
-                        });
-                      },
-                    );
+                      return streamText({
+                        model: currentModel,
+                        system: getSystemPrompt(followUpPromptContext),
+                        messages: followUpMessages,
+                        tools: activeFollowUpTools as ToolSet,
+                        maxOutputTokens: requestOptions.maxTokens,
+                        temperature: requestOptions.temperature,
+                        stopSequences: requestOptions.stopSequences,
+                        abortSignal: requestOptions.signal,
+                        stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                        output: requestOptions.output,
+                        // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
+                        providerOptions: requestOptions.providerOptions as any,
+                        headers: requestOptions.headers,
+                      });
+                    },
+                  );
                   followUpBaseOptions = {
                     ...followUpEffectiveOptions,
                     _runId: followUpEffectiveOptions._runId ?? followUpBaseOptions._runId,
@@ -4120,7 +4184,7 @@ export function createAgent(options: AgentOptions): Agent {
                     const followUpTelemetry = buildExecutionTelemetry({
                       runId: followUpEffectiveOptions._runId ?? executionBaseTelemetry.runId,
                       threadId: followUpEffectiveOptions.threadId,
-                      requestedModel: retryState.currentModel,
+                      requestedModel: followUpModel,
                       responseModelId: followUpResponse?.modelId,
                       usage: followUpUsage,
                     });

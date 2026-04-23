@@ -2096,6 +2096,11 @@ describe("Additional hook event types", () => {
 // =============================================================================
 
 describe("Hook execution order", () => {
+  beforeEach(() => {
+    resetMocks();
+    vi.clearAllMocks();
+  });
+
   it("executes hooks in registration order", async () => {
     const executionOrder: number[] = [];
 

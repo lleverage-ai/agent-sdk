@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Execution telemetry follow-up runs, cached responses, tracing spans, and rate-limit metrics now preserve accurate model attribution and clean up request-scoped observability state
 - `call_tool` now preserves the original execution context for proxied inline plugin tools, forwarding the incoming `toolCallId`, `interrupt`, and abort context instead of replacing them with synthetic proxy values (#117)
 
 ## [0.1.0-alpha.1] - 2026-04-14

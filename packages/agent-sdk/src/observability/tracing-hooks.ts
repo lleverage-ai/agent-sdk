@@ -17,37 +17,38 @@ import type {
   SubagentStartInput,
   SubagentStopInput,
 } from "../types.js";
+import { requestKey } from "./execution-metadata.js";
 import { SemanticAttributes, type Span, type SpanContext, type Tracer } from "./tracing.js";
 
-function requestKey(input: { session_id: string; telemetry?: { runId?: string } }): string {
-  return `${input.session_id}:${input.telemetry?.runId ?? "run_unknown"}`;
+interface SpanTelemetryInput {
+  runId: string;
+  threadId?: string;
+  requestedModelId?: string;
+  modelId?: string;
+  durationMs?: number;
+  timeToFirstTokenMs?: number;
+  outputTokensPerSecond?: number;
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+  };
 }
 
+interface ActiveSpan {
+  span: Span;
+  startedAt: number;
+}
+
+/** @internal */
 function spanContext(span: Span): SpanContext {
   return { traceId: span.traceId, spanId: span.spanId };
 }
 
-function applyExecutionAttributes(
-  span: Span,
-  telemetry:
-    | {
-        runId: string;
-        threadId?: string;
-        requestedModelId?: string;
-        modelId?: string;
-        durationMs?: number;
-        timeToFirstTokenMs?: number;
-        outputTokensPerSecond?: number;
-        usage?: {
-          inputTokens?: number;
-          outputTokens?: number;
-          totalTokens?: number;
-          cacheCreationInputTokens?: number;
-          cacheReadInputTokens?: number;
-        };
-      }
-    | undefined,
-): void {
+/** @internal */
+function applyExecutionAttributes(span: Span, telemetry: SpanTelemetryInput | undefined): void {
   if (!telemetry) return;
 
   span.setAttribute("agent.run_id", telemetry.runId);
@@ -87,12 +88,52 @@ function applyExecutionAttributes(
   }
 }
 
+/** @internal */
+function pruneStaleSpans(map: Map<string, ActiveSpan>, maxAgeMs: number): void {
+  const now = Date.now();
+  for (const [key, activeSpan] of map) {
+    if (now - activeSpan.startedAt > maxAgeMs) {
+      activeSpan.span.end();
+      map.delete(key);
+    }
+  }
+}
+
+/** @internal */
+function errorFromUnknown(error: unknown): Error {
+  if (error instanceof Error) {
+    return error;
+  }
+  if (typeof error === "string" || typeof error === "number" || typeof error === "boolean") {
+    return new Error(String(error));
+  }
+  try {
+    return new Error(JSON.stringify(error));
+  } catch {
+    return new Error("Unknown non-Error value");
+  }
+}
+
 /**
  * Creates lifecycle hooks that emit tracing spans for generation, tools,
  * compaction, retries, and subagents.
  *
  * @param tracer - Tracer instance
  * @returns Hook callbacks for tracing
+ *
+ * @example
+ * ```typescript
+ * import { createAgent, createTracingHooks } from "@lleverage-ai/agent-sdk";
+ *
+ * const tracingHooks = createTracingHooks(tracer);
+ * const agent = createAgent({
+ *   model,
+ *   hooks: {
+ *     PreGenerate: [tracingHooks.PreGenerate],
+ *     PostGenerate: [tracingHooks.PostGenerate],
+ *   },
+ * });
+ * ```
  *
  * @category Observability
  */
@@ -109,35 +150,49 @@ export function createTracingHooks(tracer: Tracer): {
   SubagentStart: HookCallback;
   SubagentStop: HookCallback;
 } {
-  const generationSpans = new Map<string, Span>();
-  const toolSpans = new Map<string, Span>();
-  const compactionSpans = new Map<string, Span>();
-  const subagentSpans = new Map<string, Span>();
+  const staleSpanTtlMs = Number(process.env.AGENT_SDK_TRACING_SPAN_TTL_MS ?? 300000);
+  const generationSpans = new Map<string, ActiveSpan>();
+  const toolSpans = new Map<string, ActiveSpan>();
+  const compactionSpans = new Map<string, ActiveSpan>();
+  const subagentSpans = new Map<string, ActiveSpan>();
+
+  const pruneAll = () => {
+    pruneStaleSpans(generationSpans, staleSpanTtlMs);
+    pruneStaleSpans(toolSpans, staleSpanTtlMs);
+    pruneStaleSpans(compactionSpans, staleSpanTtlMs);
+    pruneStaleSpans(subagentSpans, staleSpanTtlMs);
+  };
 
   return {
     PreGenerate: async (input) => {
       if (input.hook_event_name !== "PreGenerate") return {};
+      pruneAll();
       const preGenInput = input as PreGenerateInput;
       const span = tracer.startSpan("agent.generate", {
         kind: "internal",
         attributes: {
-          [SemanticAttributes.GEN_AI_REQUEST_TEMPERATURE]: preGenInput.options.temperature ?? 0,
-          [SemanticAttributes.GEN_AI_REQUEST_MAX_TOKENS]: preGenInput.options.maxTokens ?? 0,
+          ...(preGenInput.options.temperature != null
+            ? { [SemanticAttributes.GEN_AI_REQUEST_TEMPERATURE]: preGenInput.options.temperature }
+            : {}),
+          ...(preGenInput.options.maxTokens != null
+            ? { [SemanticAttributes.GEN_AI_REQUEST_MAX_TOKENS]: preGenInput.options.maxTokens }
+            : {}),
           ...(preGenInput.options.requestClass
             ? { "agent.request_class": preGenInput.options.requestClass }
             : {}),
         },
       });
       applyExecutionAttributes(span, preGenInput.telemetry);
-      generationSpans.set(requestKey(preGenInput), span);
+      generationSpans.set(requestKey(preGenInput), { span, startedAt: Date.now() });
       return {};
     },
 
     PostGenerate: async (input) => {
       if (input.hook_event_name !== "PostGenerate") return {};
       const postGenInput = input as PostGenerateInput;
-      const span = generationSpans.get(requestKey(postGenInput));
-      if (!span) return {};
+      const activeSpan = generationSpans.get(requestKey(postGenInput));
+      if (!activeSpan) return {};
+      const { span } = activeSpan;
 
       applyExecutionAttributes(span, postGenInput.result.telemetry ?? postGenInput.telemetry);
       span.setAttribute(
@@ -153,8 +208,9 @@ export function createTracingHooks(tracer: Tracer): {
     PostGenerateFailure: async (input) => {
       if (input.hook_event_name !== "PostGenerateFailure") return {};
       const failureInput = input as PostGenerateFailureInput;
-      const span = generationSpans.get(requestKey(failureInput));
-      if (!span) return {};
+      const activeSpan = generationSpans.get(requestKey(failureInput));
+      if (!activeSpan) return {};
+      const { span } = activeSpan;
 
       applyExecutionAttributes(span, failureInput.telemetry);
       span.recordException(failureInput.error);
@@ -166,8 +222,9 @@ export function createTracingHooks(tracer: Tracer): {
     GenerationRetryDecision: async (input) => {
       if (input.hook_event_name !== "GenerationRetryDecision") return {};
       const retryInput = input as GenerationRetryDecisionInput;
-      const span = generationSpans.get(requestKey(retryInput));
-      if (!span) return {};
+      const activeSpan = generationSpans.get(requestKey(retryInput));
+      if (!activeSpan) return {};
+      const { span } = activeSpan;
 
       span.addEvent("generation.retry_decision", {
         "agent.retry.attempt": retryInput.retryAttempt,
@@ -180,8 +237,9 @@ export function createTracingHooks(tracer: Tracer): {
 
     PreToolUse: async (input, toolUseId) => {
       if (input.hook_event_name !== "PreToolUse" || !toolUseId) return {};
+      pruneAll();
       const preToolInput = input as PreToolUseInput;
-      const parentSpan = generationSpans.get(requestKey(preToolInput));
+      const parentSpan = generationSpans.get(requestKey(preToolInput))?.span;
       const span = tracer.startSpan(`tool.${preToolInput.tool_name}`, {
         parent: parentSpan ? spanContext(parentSpan) : undefined,
         attributes: {
@@ -189,14 +247,15 @@ export function createTracingHooks(tracer: Tracer): {
         },
       });
       applyExecutionAttributes(span, preToolInput.telemetry);
-      toolSpans.set(toolUseId, span);
+      toolSpans.set(toolUseId, { span, startedAt: Date.now() });
       return {};
     },
 
     PostToolUse: async (input, toolUseId) => {
       if (input.hook_event_name !== "PostToolUse" || !toolUseId) return {};
-      const span = toolSpans.get(toolUseId);
-      if (!span) return {};
+      const activeSpan = toolSpans.get(toolUseId);
+      if (!activeSpan) return {};
+      const { span } = activeSpan;
 
       span.setStatus("ok");
       span.end();
@@ -207,11 +266,11 @@ export function createTracingHooks(tracer: Tracer): {
     PostToolUseFailure: async (input, toolUseId) => {
       if (input.hook_event_name !== "PostToolUseFailure" || !toolUseId) return {};
       const failureInput = input as PostToolUseFailureInput;
-      const span = toolSpans.get(toolUseId);
-      if (!span) return {};
+      const activeSpan = toolSpans.get(toolUseId);
+      if (!activeSpan) return {};
+      const { span } = activeSpan;
 
-      const error =
-        failureInput.error instanceof Error ? failureInput.error : new Error(failureInput.error);
+      const error = errorFromUnknown(failureInput.error);
       span.recordException(error);
       span.end();
       toolSpans.delete(toolUseId);
@@ -220,8 +279,9 @@ export function createTracingHooks(tracer: Tracer): {
 
     PreCompact: async (input) => {
       if (input.hook_event_name !== "PreCompact") return {};
+      pruneAll();
       const preCompactInput = input as PreCompactInput;
-      const parentSpan = generationSpans.get(requestKey(preCompactInput));
+      const parentSpan = generationSpans.get(requestKey(preCompactInput))?.span;
       const span = tracer.startSpan("agent.compact", {
         parent: parentSpan ? spanContext(parentSpan) : undefined,
         attributes: {
@@ -230,15 +290,16 @@ export function createTracingHooks(tracer: Tracer): {
         },
       });
       applyExecutionAttributes(span, preCompactInput.telemetry);
-      compactionSpans.set(requestKey(preCompactInput), span);
+      compactionSpans.set(requestKey(preCompactInput), { span, startedAt: Date.now() });
       return {};
     },
 
     PostCompact: async (input) => {
       if (input.hook_event_name !== "PostCompact") return {};
       const postCompactInput = input as PostCompactInput;
-      const span = compactionSpans.get(requestKey(postCompactInput));
-      if (!span) return {};
+      const activeSpan = compactionSpans.get(requestKey(postCompactInput));
+      if (!activeSpan) return {};
+      const { span } = activeSpan;
 
       span.setAttributes({
         "agent.compaction.messages_before": postCompactInput.messages_before,
@@ -255,8 +316,9 @@ export function createTracingHooks(tracer: Tracer): {
 
     SubagentStart: async (input) => {
       if (input.hook_event_name !== "SubagentStart") return {};
+      pruneAll();
       const subagentInput = input as SubagentStartInput;
-      const parentSpan = generationSpans.get(requestKey(subagentInput));
+      const parentSpan = generationSpans.get(requestKey(subagentInput))?.span;
       const span = tracer.startSpan(`subagent.${subagentInput.agent_type}`, {
         parent: parentSpan ? spanContext(parentSpan) : undefined,
         attributes: {
@@ -265,15 +327,16 @@ export function createTracingHooks(tracer: Tracer): {
         },
       });
       applyExecutionAttributes(span, subagentInput.telemetry);
-      subagentSpans.set(subagentInput.agent_id, span);
+      subagentSpans.set(subagentInput.agent_id, { span, startedAt: Date.now() });
       return {};
     },
 
     SubagentStop: async (input) => {
       if (input.hook_event_name !== "SubagentStop") return {};
       const subagentInput = input as SubagentStopInput;
-      const span = subagentSpans.get(subagentInput.agent_id);
-      if (!span) return {};
+      const activeSpan = subagentSpans.get(subagentInput.agent_id);
+      if (!activeSpan) return {};
+      const { span } = activeSpan;
 
       if (subagentInput.error) {
         span.recordException(subagentInput.error);

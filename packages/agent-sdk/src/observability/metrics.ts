@@ -726,6 +726,7 @@ import type {
   PreToolUseInput,
   SubagentStartInput,
 } from "../types.js";
+import { requestKey } from "./execution-metadata.js";
 
 /**
  * Creates hooks that automatically update agent metrics.
@@ -779,16 +780,12 @@ export function createMetricsHooks(metrics: AgentMetrics): {
   }): MetricLabels => {
     const labels: MetricLabels = {};
     const modelId = input.telemetry?.modelId ?? input.telemetry?.requestedModelId;
-    const provider =
-      input.telemetry?.modelProvider ?? input.telemetry?.requestedModelProvider ?? undefined;
+    const provider = input.telemetry?.modelProvider ?? input.telemetry?.requestedModelProvider;
     if (modelId) labels.model = modelId;
     if (provider) labels.provider = provider;
     if (input.options?.requestClass) labels.request_class = input.options.requestClass;
     return labels;
   };
-
-  const requestKey = (input: { session_id: string; telemetry?: { runId?: string } }): string =>
-    `${input.session_id}:${input.telemetry?.runId ?? "run_unknown"}`;
 
   return {
     PreGenerate: async (input) => {
@@ -862,7 +859,7 @@ export function createMetricsHooks(metrics: AgentMetrics): {
         requestStartTimes.delete(requestKey(failureInput));
       }
 
-      if (failureInput.failureClassification?.type === "overload") {
+      if (failureInput.failureClassification?.subtype === "rate_limit") {
         metrics.rateLimitErrorsTotal.inc(1, labels);
       }
 
