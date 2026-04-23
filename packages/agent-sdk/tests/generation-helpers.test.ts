@@ -20,6 +20,9 @@ import type {
 // Mock agent for tests
 const createMockAgent = (): Agent =>
   ({
+    options: {
+      model: createMockModel(),
+    },
     generate: vi.fn(),
     stream: vi.fn(),
     streamResponse: vi.fn(),

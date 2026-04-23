@@ -8,18 +8,22 @@
  * @packageDocumentation
  */
 
-import type { LanguageModel, Tool } from "ai";
+import type { LanguageModel, Tool, ToolExecutionOptions } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
+import { invokeHooksWithTimeout } from "../hooks.js";
 import { createSubagent } from "../subagents.js";
 import type { BackgroundTask, BaseTaskStore } from "../task-store/index.js";
 import { createBackgroundTask, updateBackgroundTask } from "../task-store/index.js";
 import type {
   Agent,
+  ExecutionTelemetry,
   StreamingContext,
   StreamingMetadata,
   SubagentCreateContext,
   SubagentDefinition,
+  SubagentStartInput,
+  SubagentStopInput,
 } from "../types.js";
 
 // =============================================================================
@@ -522,8 +526,11 @@ ${subagentDescriptions}`;
           "Fire-and-forget: start the task in the background and continue the conversation immediately. Only use this for work you do not need before your next important step. If your host surfaces background completions automatically, prefer waiting for that notification rather than polling. For parallel execution where you still need the results before continuing, call the task tool multiple times in the same step instead.",
         ),
     }),
-    execute: async (params) => {
+    execute: async (params, toolOptions?: ToolExecutionOptions) => {
       const { description, subagent_type, max_turns, run_in_background } = params;
+      const executionTelemetry = (
+        toolOptions as { executionTelemetry?: ExecutionTelemetry } | undefined
+      )?.executionTelemetry;
 
       // Find the subagent definition
       const subagentDef = subagents.find((s) => s.type === subagent_type);
@@ -588,6 +595,20 @@ ${subagentDescriptions}`;
 
         // Create the subagent with resolved context
         const subagent = await subagentDef.create(createContext);
+
+        const subagentStartHooks = parentAgent.options.hooks?.SubagentStart ?? [];
+        if (subagentStartHooks.length > 0) {
+          const input: SubagentStartInput = {
+            hook_event_name: "SubagentStart",
+            session_id: executionTelemetry?.threadId ?? "default",
+            cwd: process.cwd(),
+            telemetry: executionTelemetry,
+            agent_id: taskId,
+            agent_type: subagent_type,
+            prompt: description,
+          };
+          await invokeHooksWithTimeout(subagentStartHooks, input, null, parentAgent);
+        }
 
         // Wait for subagent's async initialization (MCP connections, plugin setup)
         await subagent.ready;
@@ -654,6 +675,20 @@ ${subagentDescriptions}`;
           }
         }
 
+        const subagentStopHooks = parentAgent.options.hooks?.SubagentStop ?? [];
+        if (subagentStopHooks.length > 0) {
+          const input: SubagentStopInput = {
+            hook_event_name: "SubagentStop",
+            session_id: executionTelemetry?.threadId ?? "default",
+            cwd: process.cwd(),
+            telemetry: executionTelemetry,
+            agent_id: taskId,
+            agent_type: subagent_type,
+            result: resultText,
+          };
+          await invokeHooksWithTimeout(subagentStopHooks, input, null, parentAgent);
+        }
+
         return resultText;
       };
 
@@ -702,6 +737,20 @@ ${subagentDescriptions}`;
             }
           })
           .catch(async (error) => {
+            const subagentStopHooks = parentAgent.options.hooks?.SubagentStop ?? [];
+            if (subagentStopHooks.length > 0) {
+              const input: SubagentStopInput = {
+                hook_event_name: "SubagentStop",
+                session_id: executionTelemetry?.threadId ?? "default",
+                cwd: process.cwd(),
+                telemetry: executionTelemetry,
+                agent_id: taskId,
+                agent_type: subagent_type,
+                error: error instanceof Error ? error : new Error(String(error)),
+              };
+              await invokeHooksWithTimeout(subagentStopHooks, input, null, parentAgent);
+            }
+
             const errorMessage = error instanceof Error ? error.message : String(error);
             const updates = {
               status: "failed" as const,
@@ -749,6 +798,20 @@ ${subagentDescriptions}`;
           text: resultText,
         };
       } catch (error) {
+        const subagentStopHooks = parentAgent.options.hooks?.SubagentStop ?? [];
+        if (subagentStopHooks.length > 0) {
+          const input: SubagentStopInput = {
+            hook_event_name: "SubagentStop",
+            session_id: executionTelemetry?.threadId ?? "default",
+            cwd: process.cwd(),
+            telemetry: executionTelemetry,
+            agent_id: taskId,
+            agent_type: subagent_type,
+            error: error instanceof Error ? error : new Error(String(error)),
+          };
+          await invokeHooksWithTimeout(subagentStopHooks, input, null, parentAgent);
+        }
+
         const errorMessage = error instanceof Error ? error.message : String(error);
 
         const failedTask = updateBackgroundTask(task, {

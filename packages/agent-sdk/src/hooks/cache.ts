@@ -7,6 +7,7 @@
  * @packageDocumentation
  */
 
+import { resolveModelIdentity } from "../observability/execution-metadata.js";
 import type {
   HookCallback,
   HookCallbackContext,
@@ -132,20 +133,7 @@ export interface CacheHooksOptions {
  */
 function defaultKeyGenerator(input: PreGenerateInput, context?: HookCallbackContext): string {
   const opts = input.options;
-  // Extract model identifier from agent context
-  // The AI SDK LanguageModel may have modelId as a property or be a string
-  const model = context?.agent?.options?.model;
-  let modelId = "unknown";
-  if (model) {
-    if (typeof model === "string") {
-      modelId = model;
-    } else if ("modelId" in model && typeof (model as { modelId?: string }).modelId === "string") {
-      modelId = (model as { modelId: string }).modelId;
-    } else if ("specificationVersion" in model) {
-      // For LanguageModel objects, try to extract identifier from provider
-      modelId = String(model);
-    }
-  }
+  const modelId = resolveModelIdentity(context?.agent?.options?.model).modelId ?? "unknown";
   const keyData = {
     // Include model to differentiate between different models
     model: modelId,

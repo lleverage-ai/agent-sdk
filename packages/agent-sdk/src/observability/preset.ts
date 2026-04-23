@@ -19,6 +19,7 @@ import {
 import {
   type AgentMetrics,
   createAgentMetrics,
+  createMetricsHooks,
   createMetricsRegistry,
   type MetricsRegistry,
   type MetricsRegistryOptions,
@@ -30,6 +31,7 @@ import {
   type Tracer,
   type TracerOptions,
 } from "./tracing.js";
+import { createTracingHooks } from "./tracing-hooks.js";
 
 /**
  * Options for creating an observability preset.
@@ -260,6 +262,59 @@ export function createObservabilityPreset(
         PostToolUseFailure: toolHooks[2] ? [{ hooks: [toolHooks[2]] }] : undefined,
         PreCompact: compactionHooks[0] ? [compactionHooks[0]] : undefined,
         PostCompact: compactionHooks[1] ? [compactionHooks[1]] : undefined,
+      };
+    }
+
+    if (enableMetrics && preset.metrics) {
+      const metricHooks = createMetricsHooks(preset.metrics);
+      hooks = {
+        ...hooks,
+        PreGenerate: [...(hooks?.PreGenerate ?? []), metricHooks.PreGenerate],
+        PostGenerate: [...(hooks?.PostGenerate ?? []), metricHooks.PostGenerate],
+        PostGenerateFailure: [
+          ...(hooks?.PostGenerateFailure ?? []),
+          metricHooks.PostGenerateFailure,
+        ],
+        GenerationRetryDecision: [
+          ...(hooks?.GenerationRetryDecision ?? []),
+          metricHooks.GenerationRetryDecision,
+        ],
+        PreCompact: [...(hooks?.PreCompact ?? []), metricHooks.PreCompact],
+        PostCompact: [...(hooks?.PostCompact ?? []), metricHooks.PostCompact],
+        PreToolUse: [...(hooks?.PreToolUse ?? []), { hooks: [metricHooks.PreToolUse] }],
+        PostToolUse: [...(hooks?.PostToolUse ?? []), { hooks: [metricHooks.PostToolUse] }],
+        PostToolUseFailure: [
+          ...(hooks?.PostToolUseFailure ?? []),
+          { hooks: [metricHooks.PostToolUseFailure] },
+        ],
+        SubagentStart: [...(hooks?.SubagentStart ?? []), metricHooks.SubagentStart],
+      };
+    }
+
+    if (enableTracing && preset.tracer) {
+      const tracingHooks = createTracingHooks(preset.tracer);
+      hooks = {
+        ...hooks,
+        PreGenerate: [...(hooks?.PreGenerate ?? []), tracingHooks.PreGenerate],
+        PostGenerate: [...(hooks?.PostGenerate ?? []), tracingHooks.PostGenerate],
+        PostGenerateFailure: [
+          ...(hooks?.PostGenerateFailure ?? []),
+          tracingHooks.PostGenerateFailure,
+        ],
+        GenerationRetryDecision: [
+          ...(hooks?.GenerationRetryDecision ?? []),
+          tracingHooks.GenerationRetryDecision,
+        ],
+        PreCompact: [...(hooks?.PreCompact ?? []), tracingHooks.PreCompact],
+        PostCompact: [...(hooks?.PostCompact ?? []), tracingHooks.PostCompact],
+        PreToolUse: [...(hooks?.PreToolUse ?? []), { hooks: [tracingHooks.PreToolUse] }],
+        PostToolUse: [...(hooks?.PostToolUse ?? []), { hooks: [tracingHooks.PostToolUse] }],
+        PostToolUseFailure: [
+          ...(hooks?.PostToolUseFailure ?? []),
+          { hooks: [tracingHooks.PostToolUseFailure] },
+        ],
+        SubagentStart: [...(hooks?.SubagentStart ?? []), tracingHooks.SubagentStart],
+        SubagentStop: [...(hooks?.SubagentStop ?? []), tracingHooks.SubagentStop],
       };
     }
 

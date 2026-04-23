@@ -1925,6 +1925,80 @@ export interface GenerateOptions {
    * @internal
    */
   _skipCompaction?: boolean;
+
+  /**
+   * Internal execution/run identifier used to correlate resumed generations.
+   * @internal
+   */
+  _runId?: string;
+}
+
+/**
+ * Telemetry-safe token usage breakdown for a generation or streamed response.
+ *
+ * This supplements the raw AI SDK {@link LanguageModelUsage} shape with
+ * provider-specific categories that are useful for observability, while staying
+ * stable enough to expose in logs, traces, and structured events.
+ *
+ * @category Observability
+ */
+export interface ExecutionUsageTelemetry {
+  /** Input token count */
+  inputTokens?: number;
+
+  /** Output token count */
+  outputTokens?: number;
+
+  /** Total token count */
+  totalTokens?: number;
+
+  /** Input tokens written into a prompt cache, when the provider exposes them */
+  cacheCreationInputTokens?: number;
+
+  /** Input tokens read from a prompt cache, when the provider exposes them */
+  cacheReadInputTokens?: number;
+}
+
+/**
+ * Correlation and performance metadata for a single agent execution/run.
+ *
+ * `threadId` identifies the long-lived conversation/session, while `runId`
+ * identifies a single execution within that thread. This metadata is suitable
+ * for traces, logs, audit records, and event stores. It should not be used as a
+ * high-cardinality metric label.
+ *
+ * @category Observability
+ */
+export interface ExecutionTelemetry {
+  /** Stable identifier for this execution/run */
+  runId: string;
+
+  /** Conversation/session identifier when available */
+  threadId?: string;
+
+  /** Requested model identifier if known */
+  requestedModelId?: string;
+
+  /** Requested model provider if known */
+  requestedModelProvider?: string;
+
+  /** Model identifier reported by the provider if known */
+  modelId?: string;
+
+  /** Model provider inferred from the model identifier or object if known */
+  modelProvider?: string;
+
+  /** Total execution duration in milliseconds */
+  durationMs?: number;
+
+  /** Streaming time-to-first-token in milliseconds */
+  timeToFirstTokenMs?: number;
+
+  /** Streaming output throughput in tokens/sec */
+  outputTokensPerSecond?: number;
+
+  /** Normalized token usage breakdown */
+  usage?: ExecutionUsageTelemetry;
 }
 
 /**
@@ -1937,6 +2011,9 @@ export interface GenerateOptions {
 export interface GenerateResultComplete {
   /** Status indicating the generation completed successfully */
   status: "complete";
+
+  /** Execution metadata for correlation and observability */
+  telemetry?: ExecutionTelemetry;
 
   /** The generated text */
   text: string;
@@ -1998,6 +2075,9 @@ export interface PartialGenerateResult {
 export interface GenerateResultInterrupted {
   /** Status indicating the generation was interrupted */
   status: "interrupted";
+
+  /** Execution metadata for correlation and observability */
+  telemetry?: ExecutionTelemetry;
 
   /** The interrupt that caused the pause */
   interrupt: Interrupt;
@@ -2545,6 +2625,8 @@ export interface BaseHookInput {
   session_id: string;
   /** Current working directory */
   cwd: string;
+  /** Execution metadata when the SDK can provide it */
+  telemetry?: ExecutionTelemetry;
 }
 
 /**

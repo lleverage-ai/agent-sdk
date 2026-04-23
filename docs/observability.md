@@ -75,7 +75,7 @@ const registry = createMetricsRegistry({
 
 const metrics = createAgentMetrics(registry);
 metrics.requestsTotal.inc({ model: "claude-3" });
-metrics.latencyHistogram.observe({ model: "claude-3" }, 1500);
+metrics.requestDurationMs.observe(1500, { model: "claude-3" });
 ```
 
 ### Built-in Agent Metrics
@@ -84,9 +84,11 @@ metrics.latencyHistogram.observe({ model: "claude-3" }, 1500);
 |--------|------|-------------|
 | `requestsTotal` | Counter | Total number of requests |
 | `errorsTotal` | Counter | Total number of errors |
-| `latencyHistogram` | Histogram | Request latency distribution |
-| `tokensUsed` | Counter | Total tokens consumed |
+| `requestDurationMs` | Histogram | Request latency distribution |
+| `tokensTotal` | Counter | Total tokens consumed |
 | `toolCallsTotal` | Counter | Total tool invocations |
+| `toolDurationMs` | Histogram | Tool latency distribution |
+| `streamTimeToFirstTokenMs` | Histogram | Stream time-to-first-token |
 
 ### Custom Metrics
 
@@ -279,18 +281,21 @@ const mcpEvents = store.getByType("MCPConnectionFailed");
 One-line setup for common observability needs:
 
 ```typescript
-import { createObservabilityPreset } from "@lleverage-ai/agent-sdk";
+import {
+  createConsoleTransport,
+  createConsoleSpanExporter,
+  createObservabilityPreset,
+} from "@lleverage-ai/agent-sdk";
 
 const { logger, metrics, tracer, hooks } = createObservabilityPreset({
   name: "my-agent",
-  logLevel: "info",
   enableMetrics: true,
   enableTracing: true,
-  exporters: {
-    logs: [createConsoleTransport()],
-    metrics: [createPrometheusExporter({ port: 9090 })],
-    traces: [createJaegerExporter({ endpoint: "http://jaeger:14268" })],
+  loggerOptions: {
+    level: "info",
+    transports: [createConsoleTransport()],
   },
+  spanExporters: [createConsoleSpanExporter()],
 });
 
 const agent = createAgent({
@@ -298,6 +303,26 @@ const agent = createAgent({
   hooks,
 });
 ```
+
+When `enableHooks` is left on, the preset now wires logging, metrics, and tracing hooks together. That means request counters, latency histograms, tool metrics, and spans are emitted automatically without extra manual hook registration.
+
+## Execution Metadata
+
+Generation results and generation/tool/subagent hook inputs now include SDK-generated execution metadata:
+
+```typescript
+const result = await agent.generate({
+  prompt: "Summarize this",
+  threadId: "thread_123",
+});
+
+console.log(result.telemetry?.threadId); // "thread_123"
+console.log(result.telemetry?.runId); // Stable per-run ID
+console.log(result.telemetry?.requestedModel?.modelId);
+console.log(result.telemetry?.responseModelId);
+```
+
+This metadata is intended for correlation in logs, traces, audit events, and event stores. `threadId` and `runId` are intentionally not added as built-in metric labels because they are high-cardinality dimensions.
 
 ## Logging Hooks
 

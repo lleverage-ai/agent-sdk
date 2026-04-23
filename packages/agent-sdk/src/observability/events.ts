@@ -77,6 +77,11 @@ export interface EventExporterOptions {
  */
 export function toStructuredEvent(event: ObservabilityEvent): StructuredEvent {
   const timestamp = new Date().toISOString();
+  const executionMetadata = {
+    ...(event.telemetry?.threadId ? { thread_id: event.telemetry.threadId } : {}),
+    ...(event.telemetry?.runId ? { run_id: event.telemetry.runId } : {}),
+    ...(event.telemetry?.modelId ? { model_id: event.telemetry.modelId } : {}),
+  };
 
   switch (event.hook_event_name) {
     case "MCPConnectionFailed": {
@@ -86,6 +91,7 @@ export function toStructuredEvent(event: ObservabilityEvent): StructuredEvent {
         severity: "error",
         message: `MCP server '${event.server_name}' failed to connect: ${event.error.message}`,
         metadata: {
+          ...executionMetadata,
           server_name: event.server_name,
           config_type: event.config.type,
           error_name: event.error.name,
@@ -102,6 +108,7 @@ export function toStructuredEvent(event: ObservabilityEvent): StructuredEvent {
         severity: "info",
         message: `MCP server '${event.server_name}' connected successfully with ${event.tool_count} tools`,
         metadata: {
+          ...executionMetadata,
           server_name: event.server_name,
           tool_count: event.tool_count,
         },
@@ -116,6 +123,7 @@ export function toStructuredEvent(event: ObservabilityEvent): StructuredEvent {
         severity: "info",
         message: `Tool '${event.tool_name}' registered${event.source ? ` from ${event.source}` : ""}`,
         metadata: {
+          ...executionMetadata,
           tool_name: event.tool_name,
           description: event.description,
           source: event.source,
@@ -131,6 +139,7 @@ export function toStructuredEvent(event: ObservabilityEvent): StructuredEvent {
         severity: "warning",
         message: `Failed to load tool '${event.tool_name}': ${event.error.message}`,
         metadata: {
+          ...executionMetadata,
           tool_name: event.tool_name,
           error_name: event.error.name,
           error_message: event.error.message,
@@ -147,6 +156,7 @@ export function toStructuredEvent(event: ObservabilityEvent): StructuredEvent {
         severity: "info",
         message: `Context compaction started: ${event.message_count} messages, ${event.tokens_before} tokens`,
         metadata: {
+          ...executionMetadata,
           message_count: event.message_count,
           tokens_before: event.tokens_before,
         },
@@ -165,6 +175,7 @@ export function toStructuredEvent(event: ObservabilityEvent): StructuredEvent {
         severity: "info",
         message: `Context compaction completed: ${event.messages_before} → ${event.messages_after} messages, saved ${event.tokens_saved} tokens (${reductionPercent}%)`,
         metadata: {
+          ...executionMetadata,
           messages_before: event.messages_before,
           messages_after: event.messages_after,
           tokens_before: event.tokens_before,
