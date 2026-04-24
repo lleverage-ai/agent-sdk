@@ -3148,6 +3148,164 @@ describe("tool lifecycle hooks integration", () => {
     expect(toolExecuteFn).not.toHaveBeenCalled();
   });
 
+  it("PreToolUse hook can short-circuit execution via respondWith", async () => {
+    const mockGenerateText = vi.mocked(generateText);
+    const toolExecuteFn = vi.fn().mockResolvedValue("Tool result");
+
+    const { tool } = await import("ai");
+    const { z } = await import("zod");
+    const testTool = tool({
+      description: "A test tool",
+      parameters: z.object({
+        message: z.string(),
+      }),
+      execute: toolExecuteFn,
+    });
+
+    let capturedToolResult: unknown;
+
+    mockGenerateText.mockImplementation(async (params) => {
+      const tools = params.tools || {};
+      if (
+        tools.testTool &&
+        typeof (tools.testTool as { execute?: unknown }).execute === "function"
+      ) {
+        capturedToolResult = await (
+          tools.testTool as { execute: (input: unknown, options: unknown) => Promise<unknown> }
+        ).execute({ message: "hello" }, {});
+      }
+      return {
+        text: "Response",
+        steps: [],
+        toolCalls: [],
+        toolResults: [],
+        finishReason: "stop",
+        usage: { inputTokens: 10, outputTokens: 20, inputTokenDetails: {}, outputTokenDetails: {} },
+        response: { id: "test-id", timestamp: new Date(), modelId: "test-model", messages: [] },
+        request: {},
+        warnings: [],
+        providerMetadata: undefined,
+        files: [],
+        sources: [],
+        reasoning: [],
+        reasoningText: undefined,
+        content: [],
+      } as never;
+    });
+
+    const syntheticResult = { content: "resolved file content", source: "memory://path" };
+
+    const preToolHandler: HookCallback = async (input) => {
+      if (input.hook_event_name === "PreToolUse") {
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            respondWith: syntheticResult,
+          },
+        };
+      }
+      return {};
+    };
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      tools: { testTool },
+      hooks: {
+        PreToolUse: [{ hooks: [preToolHandler] }],
+      },
+    });
+
+    await agent.generate({ prompt: "Test" });
+
+    // Original tool execute should not have been called
+    expect(toolExecuteFn).not.toHaveBeenCalled();
+    // Wrapped execute should return the respondWith value
+    expect(capturedToolResult).toEqual(syntheticResult);
+  });
+
+  it("PreToolUse respondWith still fires PostToolUse hooks", async () => {
+    const mockGenerateText = vi.mocked(generateText);
+    const toolExecuteFn = vi.fn().mockResolvedValue("Tool result");
+    const postToolHandler = vi.fn().mockResolvedValue({});
+
+    const { tool } = await import("ai");
+    const { z } = await import("zod");
+    const testTool = tool({
+      description: "A test tool",
+      parameters: z.object({
+        message: z.string(),
+      }),
+      execute: toolExecuteFn,
+    });
+
+    mockGenerateText.mockImplementation(async (params) => {
+      const tools = params.tools || {};
+      if (
+        tools.testTool &&
+        typeof (tools.testTool as { execute?: unknown }).execute === "function"
+      ) {
+        await (
+          tools.testTool as { execute: (input: unknown, options: unknown) => Promise<unknown> }
+        ).execute({ message: "hello" }, {});
+      }
+      return {
+        text: "Response",
+        steps: [],
+        toolCalls: [],
+        toolResults: [],
+        finishReason: "stop",
+        usage: { inputTokens: 10, outputTokens: 20, inputTokenDetails: {}, outputTokenDetails: {} },
+        response: { id: "test-id", timestamp: new Date(), modelId: "test-model", messages: [] },
+        request: {},
+        warnings: [],
+        providerMetadata: undefined,
+        files: [],
+        sources: [],
+        reasoning: [],
+        reasoningText: undefined,
+        content: [],
+      } as never;
+    });
+
+    const syntheticResult = "resolved content";
+
+    const preToolHook: HookCallback = async (input) => {
+      if (input.hook_event_name === "PreToolUse") {
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            respondWith: syntheticResult,
+          },
+        };
+      }
+      return {};
+    };
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      tools: { testTool },
+      hooks: {
+        PreToolUse: [{ hooks: [preToolHook] }],
+        PostToolUse: [{ hooks: [postToolHandler] }],
+      },
+    });
+
+    await agent.generate({ prompt: "Test" });
+
+    expect(toolExecuteFn).not.toHaveBeenCalled();
+    expect(postToolHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hook_event_name: "PostToolUse",
+        tool_name: "testTool",
+        tool_response: syntheticResult,
+      }),
+      expect.any(String),
+      expect.any(Object),
+    );
+  });
+
   it("tool hook matcher filters tools by name", async () => {
     const mockGenerateText = vi.mocked(generateText);
 
