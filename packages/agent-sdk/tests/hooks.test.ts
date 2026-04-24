@@ -3306,6 +3306,94 @@ describe("tool lifecycle hooks integration", () => {
     );
   });
 
+  it("PreToolUse respondWith allows PostToolUse to transform the result via updatedResult", async () => {
+    const mockGenerateText = vi.mocked(generateText);
+    const toolExecuteFn = vi.fn().mockResolvedValue("Tool result");
+
+    const { tool } = await import("ai");
+    const { z } = await import("zod");
+    const testTool = tool({
+      description: "A test tool",
+      parameters: z.object({
+        message: z.string(),
+      }),
+      execute: toolExecuteFn,
+    });
+
+    let capturedToolResult: unknown;
+
+    mockGenerateText.mockImplementation(async (params) => {
+      const tools = params.tools || {};
+      if (
+        tools.testTool &&
+        typeof (tools.testTool as { execute?: unknown }).execute === "function"
+      ) {
+        capturedToolResult = await (
+          tools.testTool as { execute: (input: unknown, options: unknown) => Promise<unknown> }
+        ).execute({ message: "hello" }, {});
+      }
+      return {
+        text: "Response",
+        steps: [],
+        toolCalls: [],
+        toolResults: [],
+        finishReason: "stop",
+        usage: { inputTokens: 10, outputTokens: 20, inputTokenDetails: {}, outputTokenDetails: {} },
+        response: { id: "test-id", timestamp: new Date(), modelId: "test-model", messages: [] },
+        request: {},
+        warnings: [],
+        providerMetadata: undefined,
+        files: [],
+        sources: [],
+        reasoning: [],
+        reasoningText: undefined,
+        content: [],
+      } as never;
+    });
+
+    const syntheticResult = { content: "raw file" };
+    const transformedResult = { content: "raw file", enriched: true };
+
+    const preToolHook: HookCallback = async (input) => {
+      if (input.hook_event_name === "PreToolUse") {
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            respondWith: syntheticResult,
+          },
+        };
+      }
+      return {};
+    };
+
+    const postToolHook: HookCallback = async (input) => {
+      if (input.hook_event_name === "PostToolUse") {
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PostToolUse",
+            updatedResult: transformedResult,
+          },
+        };
+      }
+      return {};
+    };
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      tools: { testTool },
+      hooks: {
+        PreToolUse: [{ hooks: [preToolHook] }],
+        PostToolUse: [{ hooks: [postToolHook] }],
+      },
+    });
+
+    await agent.generate({ prompt: "Test" });
+
+    expect(toolExecuteFn).not.toHaveBeenCalled();
+    expect(capturedToolResult).toEqual(transformedResult);
+  });
+
   it("tool hook matcher filters tools by name", async () => {
     const mockGenerateText = vi.mocked(generateText);
 

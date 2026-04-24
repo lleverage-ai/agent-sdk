@@ -719,18 +719,24 @@ function wrapToolsWithHooks(
                 hook_event_name: "PostToolUse",
                 session_id: sessionId,
                 cwd: process.cwd(),
+                telemetry,
                 tool_name: name,
                 tool_input: input as Record<string, unknown>,
                 tool_response: respondWithValue,
               };
 
-              await invokeMatchingHooks(
+              const postHookOutputs = await invokeMatchingHooks(
                 hookRegistration.PostToolUse,
                 name,
                 syntheticPostInput,
                 toolUseId,
                 agent,
               );
+
+              const updatedResult = extractUpdatedResult(postHookOutputs);
+              if (updatedResult !== undefined) {
+                return updatedResult;
+              }
             }
 
             return respondWithValue;
