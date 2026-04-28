@@ -2653,6 +2653,14 @@ export interface PostToolUseInput extends BaseHookInput {
   tool_input: Record<string, unknown>;
   /** Result from the tool execution */
   tool_response: unknown;
+  /**
+   * `true` when `tool_response` came from a `PreToolUse` `respondWith`
+   * short-circuit rather than the tool's own `execute`. Hooks that
+   * record tool activity (audit logs, metrics, side-effects) can use
+   * this to distinguish intercepted calls from real ones.
+   * @defaultValue undefined
+   */
+  tool_result_synthetic?: boolean;
 }
 
 /**

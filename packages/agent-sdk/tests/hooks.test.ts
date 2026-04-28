@@ -3300,6 +3300,7 @@ describe("tool lifecycle hooks integration", () => {
         hook_event_name: "PostToolUse",
         tool_name: "testTool",
         tool_response: syntheticResult,
+        tool_result_synthetic: true,
       }),
       expect.any(String),
       expect.any(Object),
@@ -3392,6 +3393,163 @@ describe("tool lifecycle hooks integration", () => {
 
     expect(toolExecuteFn).not.toHaveBeenCalled();
     expect(capturedToolResult).toEqual(transformedResult);
+  });
+
+  it("PreToolUse respondWith forwards updatedInput to PostToolUse tool_input", async () => {
+    const mockGenerateText = vi.mocked(generateText);
+    const toolExecuteFn = vi.fn().mockResolvedValue("Tool result");
+    const postToolHandler = vi.fn().mockResolvedValue({});
+
+    const { tool } = await import("ai");
+    const { z } = await import("zod");
+    const testTool = tool({
+      description: "A test tool",
+      parameters: z.object({
+        message: z.string(),
+      }),
+      execute: toolExecuteFn,
+    });
+
+    mockGenerateText.mockImplementation(async (params) => {
+      const tools = params.tools || {};
+      if (
+        tools.testTool &&
+        typeof (tools.testTool as { execute?: unknown }).execute === "function"
+      ) {
+        await (
+          tools.testTool as { execute: (input: unknown, options: unknown) => Promise<unknown> }
+        ).execute({ message: "original" }, {});
+      }
+      return {
+        text: "Response",
+        steps: [],
+        toolCalls: [],
+        toolResults: [],
+        finishReason: "stop",
+        usage: { inputTokens: 10, outputTokens: 20, inputTokenDetails: {}, outputTokenDetails: {} },
+        response: { id: "test-id", timestamp: new Date(), modelId: "test-model", messages: [] },
+        request: {},
+        warnings: [],
+        providerMetadata: undefined,
+        files: [],
+        sources: [],
+        reasoning: [],
+        reasoningText: undefined,
+        content: [],
+      } as never;
+    });
+
+    const preToolHook: HookCallback = async (input) => {
+      if (input.hook_event_name === "PreToolUse") {
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            updatedInput: { message: "transformed" },
+            respondWith: "synthetic",
+          },
+        };
+      }
+      return {};
+    };
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      tools: { testTool },
+      hooks: {
+        PreToolUse: [{ hooks: [preToolHook] }],
+        PostToolUse: [{ hooks: [postToolHandler] }],
+      },
+    });
+
+    await agent.generate({ prompt: "Test" });
+
+    expect(toolExecuteFn).not.toHaveBeenCalled();
+    expect(postToolHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hook_event_name: "PostToolUse",
+        tool_input: { message: "transformed" },
+        tool_response: "synthetic",
+      }),
+      expect.any(String),
+      expect.any(Object),
+    );
+  });
+
+  it("PreToolUse permissionDecision 'deny' wins over respondWith from the same hook", async () => {
+    const mockGenerateText = vi.mocked(generateText);
+    const toolExecuteFn = vi.fn().mockResolvedValue("Tool result");
+    const postToolHandler = vi.fn().mockResolvedValue({});
+
+    const { tool } = await import("ai");
+    const { z } = await import("zod");
+    const testTool = tool({
+      description: "A test tool",
+      parameters: z.object({
+        message: z.string(),
+      }),
+      execute: toolExecuteFn,
+    });
+
+    let capturedToolResult: unknown;
+
+    mockGenerateText.mockImplementation(async (params) => {
+      const tools = params.tools || {};
+      if (
+        tools.testTool &&
+        typeof (tools.testTool as { execute?: unknown }).execute === "function"
+      ) {
+        try {
+          capturedToolResult = await (
+            tools.testTool as { execute: (input: unknown, options: unknown) => Promise<unknown> }
+          ).execute({ message: "hello" }, {});
+        } catch {
+          capturedToolResult = "threw";
+        }
+      }
+      return {
+        text: "Response",
+        steps: [],
+        toolCalls: [],
+        toolResults: [],
+        finishReason: "stop",
+        usage: { inputTokens: 10, outputTokens: 20, inputTokenDetails: {}, outputTokenDetails: {} },
+        response: { id: "test-id", timestamp: new Date(), modelId: "test-model", messages: [] },
+        request: {},
+        warnings: [],
+        providerMetadata: undefined,
+        files: [],
+        sources: [],
+        reasoning: [],
+        reasoningText: undefined,
+        content: [],
+      } as never;
+    });
+
+    const preToolHandler = vi.fn().mockResolvedValue({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse" as const,
+        permissionDecision: "deny" as const,
+        permissionDecisionReason: "Not allowed",
+        respondWith: "should-be-ignored",
+      },
+    });
+
+    const model = createMockModel();
+    const agent = createAgent({
+      model,
+      tools: { testTool },
+      hooks: {
+        PreToolUse: [{ hooks: [preToolHandler] }],
+        PostToolUse: [{ hooks: [postToolHandler] }],
+      },
+    });
+
+    await agent.generate({ prompt: "Test" });
+
+    expect(toolExecuteFn).not.toHaveBeenCalled();
+    expect(postToolHandler).not.toHaveBeenCalled();
+    expect(capturedToolResult).toBe("threw");
   });
 
   it("tool hook matcher filters tools by name", async () => {

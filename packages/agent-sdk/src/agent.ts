@@ -723,6 +723,7 @@ function wrapToolsWithHooks(
                 tool_name: name,
                 tool_input: input as Record<string, unknown>,
                 tool_response: respondWithValue,
+                tool_result_synthetic: true,
               };
 
               const postHookOutputs = await invokeMatchingHooks(
