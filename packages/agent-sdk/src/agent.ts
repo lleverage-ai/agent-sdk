@@ -44,6 +44,7 @@ import {
 } from "./generation-helpers.js";
 import {
   aggregatePermissionDecisions,
+  extractRespondWith,
   extractUpdatedInput,
   extractUpdatedResult,
   invokeHooksWithTimeout,
@@ -708,6 +709,38 @@ function wrapToolsWithHooks(
           const updatedInput = extractUpdatedInput(preHookOutputs);
           if (updatedInput !== undefined) {
             input = updatedInput;
+          }
+
+          // Check for short-circuit via respondWith (skips tool execution)
+          const respondWithValue = extractRespondWith(preHookOutputs);
+          if (respondWithValue !== undefined) {
+            if (hookRegistration?.PostToolUse?.length) {
+              const syntheticPostInput: PostToolUseInput = {
+                hook_event_name: "PostToolUse",
+                session_id: sessionId,
+                cwd: process.cwd(),
+                telemetry,
+                tool_name: name,
+                tool_input: input as Record<string, unknown>,
+                tool_response: respondWithValue,
+                tool_result_synthetic: true,
+              };
+
+              const postHookOutputs = await invokeMatchingHooks(
+                hookRegistration.PostToolUse,
+                name,
+                syntheticPostInput,
+                toolUseId,
+                agent,
+              );
+
+              const updatedResult = extractUpdatedResult(postHookOutputs);
+              if (updatedResult !== undefined) {
+                return updatedResult;
+              }
+            }
+
+            return respondWithValue;
           }
         }
 

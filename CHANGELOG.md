@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `PreToolUse` hooks now support `respondWith` in `HookSpecificOutput` to short-circuit tool execution and return a synthetic result without calling the original tool. `PostToolUse` hooks still fire with the synthetic result for observability, and the `PostToolUseInput` carries `tool_result_synthetic: true` so audit/log/metrics hooks can distinguish intercepted calls from real ones
+
 ## [0.1.0-alpha.3] - 2026-04-23
 
 ### Added
