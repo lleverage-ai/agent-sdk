@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `ToolPartMetadata` is now constrained to JSON-serializable values so `ToolCallPart.metadata` and `ToolResultPart.metadata` align with canonical transcript persistence
 - `Accumulator` payload handling now validates tool event payloads before projecting them into canonical messages, reduces broad type assertions in the ledger reducer, and safely filters metadata keys during normalization/merge while keeping the stream event model open-world
+- `Accumulator` now preserves assistant turn boundaries when `tool-result` events arrive before `step-finished`, queuing tool results until the assistant step is committed so step metadata remains attached to the correct message
 
 ## [0.1.0-alpha.4] - 2026-04-14
 

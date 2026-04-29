@@ -39,6 +39,14 @@ interface PendingToolCall {
   metadata?: ToolPartMetadata;
 }
 
+interface PendingToolResult {
+  toolCallId: string;
+  toolName: string;
+  output: unknown;
+  isError: boolean;
+  metadata?: ToolPartMetadata;
+}
+
 interface FileEventPayload {
   mimeType: string;
   url: string;
@@ -347,6 +355,8 @@ export interface AccumulatorState {
   textBuffer: string;
   /** Pending tool calls awaiting results */
   pendingToolCalls: Map<string, PendingToolCall>;
+  /** Tool results received before their assistant step boundary closes */
+  pendingToolResults: PendingToolResult[];
   /** ID of the last committed message */
   lastMessageId: string | null;
 }
@@ -361,6 +371,7 @@ function createInitialState(): AccumulatorState {
     currentMessage: null,
     textBuffer: "",
     pendingToolCalls: new Map(),
+    pendingToolResults: [],
     lastMessageId: null,
   };
 }
@@ -402,6 +413,44 @@ function commitCurrentMessage(state: AccumulatorState): void {
   state.currentMessage = null;
 }
 
+function materializeToolResult(
+  state: AccumulatorState,
+  idGen: IdGenerator,
+  result: PendingToolResult,
+): void {
+  const toolMsg: CanonicalMessage = {
+    id: idGen(),
+    parentMessageId: state.lastMessageId,
+    role: "tool",
+    parts: [
+      {
+        type: "tool-result",
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        output: result.output,
+        isError: result.isError,
+        ...(result.metadata !== undefined ? { metadata: result.metadata } : {}),
+      },
+    ],
+    createdAt: new Date().toISOString(),
+    metadata: { schemaVersion: 1 },
+  };
+  state.messages.push(toolMsg);
+  state.lastMessageId = toolMsg.id;
+}
+
+function flushPendingToolResults(state: AccumulatorState, idGen: IdGenerator): void {
+  if (state.pendingToolResults.length === 0) {
+    return;
+  }
+
+  const pendingResults = state.pendingToolResults;
+  state.pendingToolResults = [];
+  for (const result of pendingResults) {
+    materializeToolResult(state, idGen, result);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reducer
 // ---------------------------------------------------------------------------
@@ -421,7 +470,8 @@ function createReducer(
         if (!_p) {
           break;
         }
-        flushTextBuffer(state);
+        commitCurrentMessage(state);
+        flushPendingToolResults(state, idGen);
         ensureCurrentMessage(state, idGen);
         break;
       }
@@ -526,34 +576,25 @@ function createReducer(
         if (!p) {
           break;
         }
-        // Commit the current assistant message first
-        commitCurrentMessage(state);
-
         const pending = state.pendingToolCalls.get(p.toolCallId);
         const toolName = p.toolName ?? pending?.toolName ?? "unknown";
         state.pendingToolCalls.delete(p.toolCallId);
 
         const metadata = mergeToolMetadata(pending?.metadata, p.metadata);
 
-        const toolMsg: CanonicalMessage = {
-          id: idGen(),
-          parentMessageId: state.lastMessageId,
-          role: "tool",
-          parts: [
-            {
-              type: "tool-result",
-              toolCallId: p.toolCallId,
-              toolName,
-              output: p.output,
-              isError: p.isError ?? false,
-              ...(metadata !== undefined ? { metadata } : {}),
-            },
-          ],
-          createdAt: new Date().toISOString(),
-          metadata: { schemaVersion: 1 },
+        const result: PendingToolResult = {
+          toolCallId: p.toolCallId,
+          toolName,
+          output: p.output,
+          isError: p.isError ?? false,
+          ...(metadata !== undefined ? { metadata } : {}),
         };
-        state.messages.push(toolMsg);
-        state.lastMessageId = toolMsg.id;
+
+        if (state.currentMessage) {
+          state.pendingToolResults.push(result);
+        } else {
+          materializeToolResult(state, idGen, result);
+        }
         break;
       }
 
@@ -582,6 +623,7 @@ function createReducer(
           }
         }
         commitCurrentMessage(state);
+        flushPendingToolResults(state, idGen);
         break;
       }
 
@@ -661,7 +703,8 @@ export function accumulateEvents(
   idGenerator?: IdGenerator,
   options?: { forkFromMessageId?: string },
 ): CanonicalMessage[] {
-  const config = createAccumulatorProjectorConfig(idGenerator);
+  const idGen = idGenerator ?? ulid;
+  const config = createAccumulatorProjectorConfig(idGen);
   // Empty fork IDs are treated as absent to avoid creating dangling parent links.
   if (options?.forkFromMessageId) {
     config.initialState.lastMessageId = options.forkFromMessageId;
@@ -671,5 +714,6 @@ export function accumulateEvents(
   // Flush any in-progress message (getState() returns a clone, so mutation is safe)
   const state = projector.getState();
   commitCurrentMessage(state);
+  flushPendingToolResults(state, idGen);
   return state.messages;
 }

@@ -191,6 +191,72 @@ describe("PromptBuilder", () => {
       const prompt = builder.build({ model: "claude-3-5-sonnet" });
       expect(prompt).toBe("Model: claude-3-5-sonnet");
     });
+
+    it("should build prompts with per-section diagnostics", () => {
+      const builder = new PromptBuilder()
+        .register({
+          name: "identity",
+          priority: 100,
+          stability: "static",
+          budget: { maxTokens: 128 },
+          render: () => "You are helpful.",
+        })
+        .register({
+          name: "context",
+          priority: 10,
+          stability: "dynamic",
+          budget: { maxTokens: 64, optional: true },
+          render: (ctx) => `Thread: ${ctx.threadId ?? "none"}`,
+        })
+        .register({
+          name: "empty",
+          priority: 50,
+          stability: "static",
+          render: () => "",
+        });
+
+      const result = builder.buildWithDiagnostics({ threadId: "thread-123" });
+
+      expect(result.prompt).toBe("You are helpful.\n\nThread: thread-123");
+      expect(result.fingerprint).toMatch(/^fnv1a32:[0-9a-f]{8}$/);
+      expect(result.sections).toEqual([
+        {
+          name: "identity",
+          priority: 100,
+          stability: "static",
+          budget: { maxTokens: 128 },
+          fingerprint: expect.stringMatching(/^fnv1a32:[0-9a-f]{8}$/),
+          charCount: "You are helpful.".length,
+        },
+        {
+          name: "context",
+          priority: 10,
+          stability: "dynamic",
+          budget: { maxTokens: 64, optional: true },
+          fingerprint: expect.stringMatching(/^fnv1a32:[0-9a-f]{8}$/),
+          charCount: "Thread: thread-123".length,
+        },
+      ]);
+    });
+
+    it("should default diagnostics to dynamic stability and priority 50", () => {
+      const builder = new PromptBuilder().register({
+        name: "defaulted",
+        render: () => "Default metadata",
+      });
+
+      const result = builder.buildWithDiagnostics({});
+
+      expect(result.sections).toEqual([
+        {
+          name: "defaulted",
+          priority: 50,
+          stability: "dynamic",
+          fingerprint: expect.stringMatching(/^fnv1a32:[0-9a-f]{8}$/),
+          charCount: "Default metadata".length,
+        },
+      ]);
+    });
   });
 });
 
@@ -211,6 +277,10 @@ describe("Default Components", () => {
 
     it("should have high priority", () => {
       expect(identityComponent.priority).toBe(100);
+    });
+
+    it("should be marked as static for diagnostics", () => {
+      expect(identityComponent.stability).toBe("static");
     });
   });
 
@@ -280,6 +350,10 @@ describe("Default Components", () => {
 
       expect(runtimeIndex).toBeLessThan(skillIndex);
       expect(skillIndex).toBeLessThan(memoryIndex);
+    });
+
+    it("should be marked as dynamic for diagnostics", () => {
+      expect(instructionLayersComponent.stability).toBe("dynamic");
     });
   });
 

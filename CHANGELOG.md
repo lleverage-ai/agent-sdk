@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `PreToolUse` hooks now support `respondWith` in `HookSpecificOutput` to short-circuit tool execution and return a synthetic result without calling the original tool. `PostToolUse` hooks still fire with the synthetic result for observability, and the `PostToolUseInput` carries `tool_result_synthetic: true` so audit/log/metrics hooks can distinguish intercepted calls from real ones
+- `PromptComponent` now supports `stability` and `budget` metadata, and `PromptBuilder.buildWithDiagnostics()` returns prompt and section fingerprints for lightweight prompt-cache diagnostics
+
+### Fixed
+
+- `@lleverage-ai/agent-threads` accumulation now preserves assistant turn boundaries when `tool-result` events arrive before `step-finished`, queuing tool results until the assistant step is committed so step metadata remains attached to the correct message
 
 ## [0.1.0-alpha.3] - 2026-04-23
 
