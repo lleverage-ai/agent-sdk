@@ -555,6 +555,18 @@ function createReducer(
               ...(nextMetadata !== undefined ? { metadata: nextMetadata } : {}),
             });
           }
+          state.pendingToolResults = state.pendingToolResults.map((result) => {
+            if (result.toolCallId !== p.toolCallId) {
+              return result;
+            }
+
+            const nextMetadata = mergeToolMetadata(result.metadata, p.metadata);
+            return {
+              ...result,
+              toolName: p.toolName,
+              ...(nextMetadata !== undefined ? { metadata: nextMetadata } : {}),
+            };
+          });
         } else {
           const nextPart: ToolCallPart = {
             type: "tool-call",

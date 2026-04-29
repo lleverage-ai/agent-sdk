@@ -257,6 +257,24 @@ describe("PromptBuilder", () => {
         },
       ]);
     });
+
+    it("should clone budget metadata in diagnostics", () => {
+      const budget = { maxTokens: 128, optional: true };
+      const builder = new PromptBuilder().register({
+        name: "budgeted",
+        budget,
+        render: () => "Budgeted",
+      });
+
+      const result = builder.buildWithDiagnostics({});
+      result.sections[0]!.budget!.maxTokens = 64;
+
+      expect(budget.maxTokens).toBe(128);
+      expect(builder.buildWithDiagnostics({}).sections[0]!.budget).toEqual({
+        maxTokens: 128,
+        optional: true,
+      });
+    });
   });
 });
 

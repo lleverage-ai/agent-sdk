@@ -998,5 +998,61 @@ describe("Accumulator", () => {
         },
       });
     });
+
+    it("propagates duplicate tool-call metadata updates after an early tool-result", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              toolLabel: "Searching your inbox",
+              skillName: "Email",
+              skillIcon: "mail",
+            },
+          },
+        },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            output: "Found 3 emails",
+            isError: false,
+          },
+        },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              toolLabel: "Found 3 invoices",
+            },
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const resultPart = messages[1]!.parts[0]!;
+      expect(resultPart).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "search_emails",
+        output: "Found 3 emails",
+        isError: false,
+        metadata: {
+          toolLabel: "Found 3 invoices",
+          skillName: "Email",
+          skillIcon: "mail",
+        },
+      });
+    });
   });
 });

@@ -548,7 +548,7 @@ export class PromptBuilder {
         name: component.name,
         priority: component.priority ?? 50,
         stability: component.stability ?? "dynamic",
-        ...(component.budget !== undefined ? { budget: component.budget } : {}),
+        ...(component.budget !== undefined ? { budget: { ...component.budget } } : {}),
         fingerprint: fingerprintText(text),
         charCount: text.length,
       })),
