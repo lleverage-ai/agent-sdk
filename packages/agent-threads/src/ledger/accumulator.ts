@@ -217,10 +217,13 @@ function mergeToolMetadata(
 
     const baseValue = base[key];
     const overrideValue = override[key];
+    const hasOverride = Object.hasOwn(override, key);
     const mergedValue =
       isPlainObject(baseValue) && isPlainObject(overrideValue)
         ? mergeToolMetadata(sanitizeMetadataBag(baseValue), sanitizeMetadataBag(overrideValue))
-        : (overrideValue ?? baseValue);
+        : hasOverride
+          ? overrideValue
+          : baseValue;
 
     if (mergedValue !== undefined) {
       metadata[key] = mergedValue;

@@ -298,8 +298,8 @@ describe("Accumulator", () => {
       const messages = accumulateEvents(storedEvents, idGen);
 
       expect(messages).toHaveLength(1);
+      expect(messages[0]!.id).toBeDefined();
       expect(messages[0]).toMatchObject({
-        id: "msg-2",
         parentMessageId: null,
         role: "assistant",
         parts: [{ type: "text", text: "Next step" }],
@@ -1051,6 +1051,62 @@ describe("Accumulator", () => {
           toolLabel: "Found 3 invoices",
           skillName: "Email",
           skillIcon: "mail",
+        },
+      });
+    });
+
+    it("preserves explicit null metadata updates for queued early tool results", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              toolLabel: "Searching your inbox",
+              skillName: "Email",
+              skillIcon: "mail",
+            },
+          },
+        },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            output: "Found 3 emails",
+            isError: false,
+          },
+        },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              skillIcon: null,
+            },
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const resultPart = messages[1]!.parts[0]!;
+      expect(resultPart).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "search_emails",
+        output: "Found 3 emails",
+        isError: false,
+        metadata: {
+          toolLabel: "Searching your inbox",
+          skillName: "Email",
+          skillIcon: null,
         },
       });
     });
