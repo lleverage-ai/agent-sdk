@@ -8,9 +8,11 @@
  * @packageDocumentation
  */
 
+import type { ToolExecutionOptions } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
-import type { BackendProtocol, FileInfo, GrepMatch } from "../backend.js";
+import type { BackendProtocol, FileInfo, GrepMatch, SandboxReadResult } from "../backend.js";
+import type { ModelInputCapabilities } from "../types.js";
 
 // =============================================================================
 // Constants
@@ -21,6 +23,185 @@ const DEFAULT_READ_LIMIT = 2000;
 
 /** Character count threshold for warning (approximate tokens = chars / 4) */
 const LARGE_CONTENT_WARNING_CHARS = 80_000; // ~20k tokens
+
+type ReadToolContentPart =
+  | { type: "text"; text: string }
+  | { type: "image-data"; data: string; mediaType: string }
+  | { type: "file-data"; data: string; mediaType: string; filename?: string };
+
+type ReadToolContentOutput = {
+  type: "content";
+  value: ReadToolContentPart[];
+};
+
+type ReadToolModelOutput =
+  | { type: "text"; value: string }
+  // biome-ignore lint/suspicious/noExplicitAny: Mirrors AI SDK JSON fallback typing.
+  | { type: "json"; value: any }
+  | ReadToolContentOutput;
+
+interface ReadToolExecutionContext {
+  agentSdk?: {
+    modelCapabilities?: ModelInputCapabilities;
+  };
+  modelCapabilities?: ModelInputCapabilities;
+}
+
+function isSandboxReadResult(value: unknown): value is SandboxReadResult {
+  const type = (value as { type?: unknown } | null)?.type;
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (type === "text" ||
+      type === "image" ||
+      type === "file" ||
+      type === "rendered_pages" ||
+      type === "unsupported")
+  );
+}
+
+function getModelCapabilities(options?: ToolExecutionOptions): ModelInputCapabilities | undefined {
+  const context = options?.experimental_context as ReadToolExecutionContext | undefined;
+  return context?.agentSdk?.modelCapabilities ?? context?.modelCapabilities;
+}
+
+function supportsImageInput(options?: ToolExecutionOptions): boolean {
+  return getModelCapabilities(options)?.imageInput !== false;
+}
+
+function supportsFileInput(options?: ToolExecutionOptions): boolean {
+  return getModelCapabilities(options)?.fileInput !== false;
+}
+
+function withLargeContentWarning(text: string): string {
+  if (text.length <= LARGE_CONTENT_WARNING_CHARS) {
+    return text;
+  }
+
+  const estimatedTokens = Math.round(text.length / 4);
+  return `[Warning: Large file content (~${estimatedTokens} tokens). Consider using offset/limit to read specific sections.]\n\n${text}`;
+}
+
+function textPart(text: string): ReadToolContentPart {
+  return { type: "text", text };
+}
+
+function fallbackText(message: string, text?: string): string {
+  return withLargeContentWarning(text ? `${message}\n\n${text}` : message);
+}
+
+function isReadToolContentOutput(value: unknown): value is ReadToolContentOutput {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    (value as { type?: unknown }).type === "content" &&
+    Array.isArray((value as { value?: unknown }).value)
+  );
+}
+
+function toReadToolModelOutput(output: unknown): ReadToolModelOutput {
+  if (typeof output === "string") {
+    return { type: "text", value: output };
+  }
+
+  if (isReadToolContentOutput(output)) {
+    return output;
+  }
+
+  return { type: "json", value: output ?? null };
+}
+
+function formatSandboxReadResult(
+  result: SandboxReadResult,
+  options?: ToolExecutionOptions,
+): string | ReadToolContentOutput {
+  switch (result.type) {
+    case "text":
+      return withLargeContentWarning(result.text);
+
+    case "unsupported":
+      return result.text;
+
+    case "image": {
+      const note =
+        result.text ?? `Read image (${result.mediaType}). The image is attached as model input.`;
+
+      if (!supportsImageInput(options)) {
+        return fallbackText(
+          `Read image (${result.mediaType}), but the active model does not support image input.`,
+          result.text,
+        );
+      }
+
+      return {
+        type: "content",
+        value: [
+          textPart(note),
+          { type: "image-data", data: result.data, mediaType: result.mediaType },
+        ],
+      };
+    }
+
+    case "file": {
+      const note =
+        result.text ??
+        `Read file${result.filename ? ` ${result.filename}` : ""} (${result.mediaType}). The file is attached as model input.`;
+
+      if (result.data == null) {
+        return note;
+      }
+
+      if (!supportsFileInput(options)) {
+        return fallbackText(
+          `Read file${result.filename ? ` ${result.filename}` : ""} (${result.mediaType}), but the active model does not support file input.`,
+          result.text,
+        );
+      }
+
+      return {
+        type: "content",
+        value: [
+          textPart(note),
+          {
+            type: "file-data",
+            data: result.data,
+            mediaType: result.mediaType,
+            filename: result.filename,
+          },
+        ],
+      };
+    }
+
+    case "rendered_pages": {
+      const intro =
+        result.text ??
+        `Read ${result.pages.length} rendered page${result.pages.length === 1 ? "" : "s"}.`;
+
+      if (!supportsImageInput(options)) {
+        const pages = result.pages
+          .map((page) => `page ${page.page} (${page.mediaType})`)
+          .join(", ");
+        return fallbackText(
+          `Read rendered pages, but the active model does not support image input. Rendered pages omitted: ${pages}.`,
+          result.text,
+        );
+      }
+
+      return {
+        type: "content",
+        value: result.pages.flatMap((page, index) => [
+          ...(index === 0 ? [textPart(intro)] : []),
+          textPart(`Page ${page.page}`),
+          {
+            type: "image-data" as const,
+            data: page.data,
+            mediaType: page.mediaType,
+          },
+        ]),
+      };
+    }
+  }
+}
 
 // =============================================================================
 // Read Tool
@@ -59,26 +240,28 @@ export function createReadTool(backend: BackendProtocol) {
         .optional()
         .describe(`Maximum lines to read (default: ${DEFAULT_READ_LIMIT})`),
     }),
-    execute: async ({
-      file_path,
-      offset,
-      limit,
-    }: {
-      file_path: string;
-      offset?: number;
-      limit?: number;
-    }) => {
+    execute: async (
+      {
+        file_path,
+        offset,
+        limit,
+      }: {
+        file_path: string;
+        offset?: number;
+        limit?: number;
+      },
+      options?: ToolExecutionOptions,
+    ) => {
       const effectiveLimit = limit ?? DEFAULT_READ_LIMIT;
       const content = await backend.read(file_path, offset, effectiveLimit);
 
-      // Add warning for large content
-      if (content.length > LARGE_CONTENT_WARNING_CHARS) {
-        const estimatedTokens = Math.round(content.length / 4);
-        return `[Warning: Large file content (~${estimatedTokens} tokens). Consider using offset/limit to read specific sections.]\n\n${content}`;
+      if (isSandboxReadResult(content)) {
+        return formatSandboxReadResult(content, options);
       }
 
-      return content;
+      return withLargeContentWarning(content);
     },
+    toModelOutput: ({ output }: { output: unknown }) => toReadToolModelOutput(output),
   });
 }
 

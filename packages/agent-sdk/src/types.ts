@@ -43,6 +43,59 @@ export type {
   UIMessage,
 };
 
+/**
+ * Declares which typed content parts a language model can accept as input.
+ *
+ * The SDK uses these capabilities when projecting backend read results and
+ * replayed messages. Omitted fields mean "unknown", so typed content is allowed
+ * through and the provider remains responsible for validation.
+ *
+ * @category Types
+ */
+export interface ModelInputCapabilities {
+  /**
+   * Whether the model supports image inputs.
+   *
+   * Set to `false` to downgrade image read results to text fallbacks before
+   * sending the request.
+   *
+   * @defaultValue undefined
+   */
+  imageInput?: boolean;
+
+  /**
+   * Whether the model supports file/document inputs.
+   *
+   * Set to `false` to downgrade file read results to text fallbacks before
+   * sending the request.
+   *
+   * @defaultValue undefined
+   */
+  fileInput?: boolean;
+}
+
+/**
+ * Resolver function that maps a model to its input capabilities.
+ *
+ * @param model - Active {@link LanguageModel} for the current request
+ * @returns The {@link ModelInputCapabilities} for the model, or `undefined`
+ * when capabilities are unknown
+ *
+ * @category Types
+ */
+export type ModelInputCapabilitiesResolverFn = (
+  model: LanguageModel,
+) => ModelInputCapabilities | undefined;
+
+/**
+ * Static or model-aware resolver for input capabilities.
+ *
+ * @category Types
+ */
+export type ModelInputCapabilitiesResolver =
+  | ModelInputCapabilities
+  | ModelInputCapabilitiesResolverFn;
+
 // =============================================================================
 // Tool Interrupt Types
 // =============================================================================
@@ -334,6 +387,37 @@ export type AgentUIMessage = UIMessage<AgentDataTypes>;
 export interface AgentOptions {
   /** The AI model to use for generation */
   model: LanguageModel;
+
+  /**
+   * Declares multimodal input support for the active model.
+   *
+   * Backends can return typed read results such as images, files, and rendered
+   * pages. The SDK uses these capabilities to decide whether to pass those parts
+   * through to the model or downgrade them to clear text fallbacks. Provide a
+   * resolver when primary and fallback models have different capabilities.
+   *
+   * Omitted fields mean "unknown", so typed content is preserved.
+   *
+   * @example
+   * ```typescript
+   * const agent = createAgent({
+   *   model,
+   *   modelCapabilities: { imageInput: true, fileInput: false },
+   * });
+   *
+   * const agentWithResolver = createAgent({
+   *   model: activeModel,
+   *   fallbackModel,
+   *   modelCapabilities: (model) =>
+   *     model === fallbackModel
+   *       ? { imageInput: false, fileInput: false }
+   *       : { imageInput: true, fileInput: true },
+   * });
+   * ```
+   *
+   * @defaultValue undefined
+   */
+  modelCapabilities?: ModelInputCapabilitiesResolver;
 
   /**
    * Fallback model to use when the primary model fails.
@@ -2262,6 +2346,22 @@ export type StreamPart =
   | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
   | { type: "finish"; finishReason: FinishReason; usage?: LanguageModelUsage }
   | { type: "error"; error: Error }
+  // Lifecycle events. A "turn" is one round-trip to the model (one assistant
+  // message). A `generate()`/`stream()` invocation produces one or more turns
+  // until the loop terminates. These events make turn boundaries explicit so
+  // callers do not need to derive them from `step-start`/`step-finish` chunks
+  // or invent message IDs themselves.
+  //
+  // `turn-start` always precedes the first content delta of a new assistant
+  // message. `turn-end` always follows the last delta of that message. Tools
+  // executed within the turn appear between them as `tool-call`/`tool-result`.
+  | { type: "turn-start"; messageId?: string }
+  | {
+      type: "turn-end";
+      messageId?: string;
+      finishReason?: FinishReason;
+      usage?: LanguageModelUsage;
+    }
   // Agent-specific events
   | { type: "subagent-spawn"; data: AgentDataTypes["subagent-spawn"] }
   | { type: "subagent-complete"; data: AgentDataTypes["subagent-complete"] }

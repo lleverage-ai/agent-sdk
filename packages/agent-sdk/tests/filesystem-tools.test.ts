@@ -96,6 +96,180 @@ describe("Filesystem Tools", () => {
       expect(result).toContain("[Warning: Large file content");
       expect(result).toContain("tokens");
     });
+
+    it("should return image read results as tool content", async () => {
+      const imageBackend = {
+        ...backend,
+        read: () => ({
+          type: "image" as const,
+          text: "Screenshot of the app.",
+          data: "iVBORw0KGgo=",
+          mediaType: "image/png",
+        }),
+      };
+      const read = createReadTool(imageBackend);
+
+      const result = await read.execute({ file_path: "/screenshot.png" }, {} as any);
+
+      expect(result).toEqual({
+        type: "content",
+        value: [
+          { type: "text", text: "Screenshot of the app." },
+          { type: "image-data", data: "iVBORw0KGgo=", mediaType: "image/png" },
+        ],
+      });
+    });
+
+    it("should handle typed reads when executed without tool options", async () => {
+      const imageBackend = {
+        ...backend,
+        read: () => ({
+          type: "image" as const,
+          text: "Screenshot of the app.",
+          data: "iVBORw0KGgo=",
+          mediaType: "image/png",
+        }),
+      };
+      const read = createReadTool(imageBackend);
+
+      const result = await read.execute?.({ file_path: "/screenshot.png" }, undefined as any);
+
+      expect(result).toEqual({
+        type: "content",
+        value: [
+          { type: "text", text: "Screenshot of the app." },
+          { type: "image-data", data: "iVBORw0KGgo=", mediaType: "image/png" },
+        ],
+      });
+    });
+
+    it("should preserve content read results for model output", async () => {
+      const imageBackend = {
+        ...backend,
+        read: () => ({
+          type: "image" as const,
+          text: "Screenshot of the app.",
+          data: "iVBORw0KGgo=",
+          mediaType: "image/png",
+        }),
+      };
+      const read = createReadTool(imageBackend);
+      const result = await read.execute({ file_path: "/screenshot.png" }, {} as any);
+
+      const modelOutput = await read.toModelOutput?.({
+        toolCallId: "call_1",
+        input: { file_path: "/screenshot.png" },
+        output: result,
+      });
+
+      expect(modelOutput).toEqual(result);
+    });
+
+    it("should downgrade image read results when the model cannot read images", async () => {
+      const imageBackend = {
+        ...backend,
+        read: () => ({
+          type: "image" as const,
+          text: "Screenshot of the app.",
+          data: "iVBORw0KGgo=",
+          mediaType: "image/png",
+        }),
+      };
+      const read = createReadTool(imageBackend);
+
+      const result = await read.execute({ file_path: "/screenshot.png" }, {
+        experimental_context: { agentSdk: { modelCapabilities: { imageInput: false } } },
+      } as any);
+
+      expect(result).toContain("does not support image input");
+      expect(result).toContain("Screenshot of the app.");
+    });
+
+    it("should return file read results as tool content", async () => {
+      const fileBackend = {
+        ...backend,
+        read: () => ({
+          type: "file" as const,
+          text: "PDF document.",
+          data: "JVBERi0xLjQ=",
+          mediaType: "application/pdf",
+          filename: "report.pdf",
+        }),
+      };
+      const read = createReadTool(fileBackend);
+
+      const result = await read.execute({ file_path: "/report.pdf" }, {} as any);
+
+      expect(result).toEqual({
+        type: "content",
+        value: [
+          { type: "text", text: "PDF document." },
+          {
+            type: "file-data",
+            data: "JVBERi0xLjQ=",
+            mediaType: "application/pdf",
+            filename: "report.pdf",
+          },
+        ],
+      });
+    });
+
+    it("should preserve empty string file payloads", async () => {
+      const fileBackend = {
+        ...backend,
+        read: () => ({
+          type: "file" as const,
+          text: "Empty PDF document.",
+          data: "",
+          mediaType: "application/pdf",
+          filename: "empty.pdf",
+        }),
+      };
+      const read = createReadTool(fileBackend);
+
+      const result = await read.execute({ file_path: "/empty.pdf" }, {} as any);
+
+      expect(result).toEqual({
+        type: "content",
+        value: [
+          { type: "text", text: "Empty PDF document." },
+          {
+            type: "file-data",
+            data: "",
+            mediaType: "application/pdf",
+            filename: "empty.pdf",
+          },
+        ],
+      });
+    });
+
+    it("should label each rendered page before its image", async () => {
+      const pageBackend = {
+        ...backend,
+        read: () => ({
+          type: "rendered_pages" as const,
+          text: "Rendered PDF pages.",
+          pages: [
+            { page: 12, data: "page-12", mediaType: "image/png" },
+            { page: 13, data: "page-13", mediaType: "image/png" },
+          ],
+        }),
+      };
+      const read = createReadTool(pageBackend);
+
+      const result = await read.execute({ file_path: "/report.pdf" }, {} as any);
+
+      expect(result).toEqual({
+        type: "content",
+        value: [
+          { type: "text", text: "Rendered PDF pages." },
+          { type: "text", text: "Page 12" },
+          { type: "image-data", data: "page-12", mediaType: "image/png" },
+          { type: "text", text: "Page 13" },
+          { type: "image-data", data: "page-13", mediaType: "image/png" },
+        ],
+      });
+    });
   });
 
   describe("createWriteTool", () => {

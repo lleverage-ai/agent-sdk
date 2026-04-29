@@ -73,6 +73,12 @@ export type {
   FileInfo,
   FileUploadResponse,
   GrepMatch,
+  SandboxFileReadResult,
+  SandboxImageReadResult,
+  SandboxReadResult,
+  SandboxRenderedPagesReadResult,
+  SandboxTextReadResult,
+  SandboxUnsupportedReadResult,
   WriteResult,
 } from "./backend.js";
 // Backend
@@ -718,6 +724,9 @@ export type {
   LanguageModelUsage,
   MCPConnectionFailedInput,
   MCPConnectionRestoredInput,
+  ModelInputCapabilities,
+  ModelInputCapabilitiesResolver,
+  ModelInputCapabilitiesResolverFn,
   // MCP types
   MCPServerConfig,
   // AI SDK re-exports

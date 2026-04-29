@@ -37,6 +37,7 @@ import type {
   FileData,
   FileInfo,
   GrepMatch,
+  SandboxReadResult,
   WriteResult,
 } from "../backend.js";
 
@@ -162,14 +163,22 @@ export class CompositeBackend implements BackendProtocol {
   }
 
   /**
-   * Read file content with optional line numbers.
+   * Read file content from the backend selected by path prefix.
+   *
+   * The routed backend may return historical formatted text, or a typed
+   * {@link SandboxReadResult} for multimodal reads such as images, native files,
+   * rendered pages, or unsupported content.
    *
    * @param filePath - Path to the file to read
    * @param offset - Starting line offset (0-indexed)
    * @param limit - Maximum number of lines to read
-   * @returns Formatted content with line numbers
+   * @returns Formatted text, or the routed backend's structured {@link SandboxReadResult}
    */
-  async read(filePath: string, offset?: number, limit?: number): Promise<string> {
+  async read(
+    filePath: string,
+    offset?: number,
+    limit?: number,
+  ): Promise<string | SandboxReadResult> {
     const { backend, relativePath } = this.resolveBackend(filePath);
     return backend.read(relativePath, offset, limit);
   }
