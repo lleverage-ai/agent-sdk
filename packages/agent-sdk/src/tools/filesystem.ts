@@ -29,10 +29,10 @@ type ReadToolContentPart =
   | { type: "image-data"; data: string; mediaType: string }
   | { type: "file-data"; data: string; mediaType: string; filename?: string };
 
-type ReadToolContentOutput = {
+interface ReadToolContentOutput {
   type: "content";
   value: ReadToolContentPart[];
-};
+}
 
 type ReadToolModelOutput =
   | { type: "text"; value: string }
@@ -120,7 +120,7 @@ function formatSandboxReadResult(
       return withLargeContentWarning(result.text);
 
     case "unsupported":
-      return result.text;
+      return withLargeContentWarning(result.text);
 
     case "image": {
       const note =
@@ -143,13 +143,16 @@ function formatSandboxReadResult(
     }
 
     case "file": {
+      if (result.data == null) {
+        return withLargeContentWarning(
+          result.text ??
+            `Read file${result.filename ? ` ${result.filename}` : ""} (${result.mediaType}), but no file payload is attached.`,
+        );
+      }
+
       const note =
         result.text ??
         `Read file${result.filename ? ` ${result.filename}` : ""} (${result.mediaType}). The file is attached as model input.`;
-
-      if (result.data == null) {
-        return note;
-      }
 
       if (!supportsFileInput(options)) {
         return fallbackText(
@@ -189,15 +192,17 @@ function formatSandboxReadResult(
 
       return {
         type: "content",
-        value: result.pages.flatMap((page, index) => [
-          ...(index === 0 ? [textPart(intro)] : []),
-          textPart(`Page ${page.page}`),
-          {
-            type: "image-data" as const,
-            data: page.data,
-            mediaType: page.mediaType,
-          },
-        ]),
+        value: [
+          textPart(intro),
+          ...result.pages.flatMap((page) => [
+            textPart(`Page ${page.page}`),
+            {
+              type: "image-data" as const,
+              data: page.data,
+              mediaType: page.mediaType,
+            },
+          ]),
+        ],
       };
     }
   }

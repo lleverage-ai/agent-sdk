@@ -214,6 +214,27 @@ describe("Filesystem Tools", () => {
       });
     });
 
+    it("should downgrade file read results when the model cannot read files", async () => {
+      const fileBackend = {
+        ...backend,
+        read: () => ({
+          type: "file" as const,
+          text: "PDF document.",
+          data: "JVBERi0xLjQ=",
+          mediaType: "application/pdf",
+          filename: "report.pdf",
+        }),
+      };
+      const read = createReadTool(fileBackend);
+
+      const result = await read.execute({ file_path: "/report.pdf" }, {
+        experimental_context: { agentSdk: { modelCapabilities: { fileInput: false } } },
+      } as any);
+
+      expect(result).toContain("does not support file input");
+      expect(result).toContain("PDF document.");
+    });
+
     it("should preserve empty string file payloads", async () => {
       const fileBackend = {
         ...backend,
@@ -243,6 +264,23 @@ describe("Filesystem Tools", () => {
       });
     });
 
+    it("should not claim file payload is attached when data is missing", async () => {
+      const fileBackend = {
+        ...backend,
+        read: () => ({
+          type: "file" as const,
+          mediaType: "application/pdf",
+          filename: "missing.pdf",
+        }),
+      };
+      const read = createReadTool(fileBackend);
+
+      const result = await read.execute({ file_path: "/missing.pdf" }, {} as any);
+
+      expect(result).toContain("no file payload is attached");
+      expect(result).not.toContain("attached as model input");
+    });
+
     it("should label each rendered page before its image", async () => {
       const pageBackend = {
         ...backend,
@@ -269,6 +307,50 @@ describe("Filesystem Tools", () => {
           { type: "image-data", data: "page-13", mediaType: "image/png" },
         ],
       });
+    });
+
+    it("should preserve rendered page intro when no pages are returned", async () => {
+      const pageBackend = {
+        ...backend,
+        read: () => ({
+          type: "rendered_pages" as const,
+          text: "Rendered PDF pages.",
+          pages: [],
+        }),
+      };
+      const read = createReadTool(pageBackend);
+
+      const result = await read.execute({ file_path: "/report.pdf" }, {} as any);
+
+      expect(result).toEqual({
+        type: "content",
+        value: [{ type: "text", text: "Rendered PDF pages." }],
+      });
+    });
+
+    it("should downgrade rendered page reads when the model cannot read images", async () => {
+      const pageBackend = {
+        ...backend,
+        read: () => ({
+          type: "rendered_pages" as const,
+          text: "Rendered PDF pages.",
+          pages: [
+            { page: 12, data: "page-12", mediaType: "image/png" },
+            { page: 13, data: "page-13", mediaType: "image/png" },
+          ],
+        }),
+      };
+      const read = createReadTool(pageBackend);
+
+      const result = await read.execute({ file_path: "/report.pdf" }, {
+        experimental_context: { agentSdk: { modelCapabilities: { imageInput: false } } },
+      } as any);
+
+      expect(result).toContain("does not support image input");
+      expect(result).toContain("Rendered PDF pages.");
+      expect(result).toContain("page 12 (image/png)");
+      expect(result).toContain("page 13 (image/png)");
+      expect(result).not.toContain("image-data");
     });
   });
 
