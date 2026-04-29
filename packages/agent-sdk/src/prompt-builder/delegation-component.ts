@@ -55,6 +55,7 @@ user's goal.
 export const delegationComponent: PromptComponent = {
   name: "delegation-instructions",
   priority: 75,
+  stability: "dynamic",
   condition: (ctx) => ctx.custom?.hasSubagents === true,
   render: (ctx) => {
     // Allow custom delegation instructions to override default

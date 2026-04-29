@@ -241,10 +241,20 @@ Each component contributes one section to the final prompt:
 interface PromptComponent {
   name: string;
   priority?: number;
+  stability?: "static" | "dynamic";
+  budget?: {
+    maxTokens?: number;
+    optional?: boolean;
+  };
   condition?: (ctx: PromptContext) => boolean;
   render: (ctx: PromptContext) => string;
 }
 ```
+
+`stability` and `budget` are metadata for diagnostics and host policy. The
+builder does not automatically trim sections. Static sections are expected to
+stay stable across turns for the same agent configuration; dynamic sections may
+change with runtime context.
 
 ### PromptBuilder
 
@@ -255,6 +265,21 @@ The builder:
 3. sorts them by priority
 4. renders them
 5. joins non-empty output with blank lines
+
+Use `buildWithDiagnostics()` when you need prompt-cache diagnostics:
+
+```typescript
+const result = builder.buildWithDiagnostics(context);
+
+console.log(result.fingerprint);
+for (const section of result.sections) {
+  console.log(section.name, section.stability, section.fingerprint);
+}
+```
+
+The returned diagnostics include the final prompt, a prompt fingerprint, and
+per-section fingerprints with effective priority, stability, optional budget
+metadata, and rendered character counts.
 
 ## Customization Patterns
 

@@ -322,7 +322,14 @@ export {
   VirtualMCPServer,
 } from "./mcp/index.js";
 // Prompt Builder types
-export type { PromptComponent, PromptContext } from "./prompt-builder/index.js";
+export type {
+  PromptBuildResult,
+  PromptComponent,
+  PromptComponentBudget,
+  PromptComponentStability,
+  PromptContext,
+  PromptSectionDiagnostics,
+} from "./prompt-builder/index.js";
 export type {
   PromptInstructionLayer,
   PromptLoadedSkill,

@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PreToolUse` hooks now support `respondWith` in `HookSpecificOutput` to short-circuit tool execution and return a synthetic result without calling the original tool. `PostToolUse` hooks still fire with the synthetic result for observability, and the `PostToolUseInput` carries `tool_result_synthetic: true` so audit/log/metrics hooks can distinguish intercepted calls from real ones
 - `agent.stream()` now emits `turn-start` and `turn-end` lifecycle events bracketing each assistant message in the stream. `turn-end` carries the AI SDK response id (as `messageId`), the per-turn `finishReason`, and per-turn `usage`. This lets consumers attach a stable message identifier to deltas and tool calls without inventing one, and lets per-turn telemetry be recorded without awaiting the final result. The events are additive — exhaustive `switch` statements on `StreamPart` will see two new variants but no existing variant changes shape
 - Backend `read()` methods can now return typed `SandboxReadResult` values for text, image, file, rendered page, and unsupported reads. The default `read` tool projects supported images/files into AI SDK tool-result content and downgrades them to text fallbacks when `AgentOptions.modelCapabilities` declares the active model cannot accept those inputs
+- `PromptComponent` now supports `stability` and `budget` metadata, and `PromptBuilder.buildWithDiagnostics()` returns prompt and section fingerprints for lightweight prompt-cache diagnostics
+
+### Fixed
+
+- `@lleverage-ai/agent-threads` accumulation now preserves assistant turn boundaries when `tool-result` events arrive before `step-finished`, queuing tool results until the assistant step is committed so step metadata remains attached to the correct message
 
 ## [0.1.0-alpha.3] - 2026-04-23
 
