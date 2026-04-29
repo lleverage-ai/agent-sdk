@@ -401,6 +401,32 @@ function fingerprintText(text: string): string {
 export class PromptBuilder {
   private components: PromptComponent[] = [];
 
+  private getActiveComponents(context: PromptContext): PromptComponent[] {
+    const activeComponents = this.components.filter((component) => {
+      if (component.condition) {
+        return component.condition(context);
+      }
+      return true;
+    });
+
+    activeComponents.sort((a, b) => {
+      const aPriority = a.priority ?? 50;
+      const bPriority = b.priority ?? 50;
+      return bPriority - aPriority;
+    });
+
+    return activeComponents;
+  }
+
+  private renderSections(context: PromptContext): Array<{ component: PromptComponent; text: string }> {
+    return this.getActiveComponents(context)
+      .map((component) => {
+        const text = component.render(context);
+        return { component, text };
+      })
+      .filter(({ text }) => text.trim().length > 0);
+  }
+
   /**
    * Register a single component.
    *
@@ -485,7 +511,9 @@ export class PromptBuilder {
    * ```
    */
   build(context: PromptContext): string {
-    return this.buildWithDiagnostics(context).prompt;
+    return this.renderSections(context)
+      .map(({ text }) => text)
+      .join("\n\n");
   }
 
   /**
@@ -496,30 +524,19 @@ export class PromptBuilder {
    *
    * @param context - The context to pass to components
    * @returns The final prompt and per-section diagnostics
+   * @throws {Error} When a component condition or render callback throws
+   *
+   * @example
+   * ```typescript
+   * const context: PromptContext = {
+   *   tools: [{ name: "read", description: "Read files" }],
+   * };
+   * const result: PromptBuildResult = builder.buildWithDiagnostics(context);
+   * console.log(result.fingerprint, result.sections);
+   * ```
    */
   buildWithDiagnostics(context: PromptContext): PromptBuildResult {
-    // Filter components by condition
-    const activeComponents = this.components.filter((component) => {
-      if (component.condition) {
-        return component.condition(context);
-      }
-      return true;
-    });
-
-    // Sort by priority (higher first)
-    activeComponents.sort((a, b) => {
-      const aPriority = a.priority ?? 50;
-      const bPriority = b.priority ?? 50;
-      return bPriority - aPriority;
-    });
-
-    // Render and join
-    const renderedSections = activeComponents
-      .map((component) => {
-        const text = component.render(context);
-        return { component, text };
-      })
-      .filter(({ text }) => text.trim().length > 0);
+    const renderedSections = this.renderSections(context);
 
     // Filter out empty strings and join with double newlines
     const prompt = renderedSections.map(({ text }) => text).join("\n\n");

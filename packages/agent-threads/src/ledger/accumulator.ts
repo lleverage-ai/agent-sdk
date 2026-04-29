@@ -398,7 +398,10 @@ function ensureCurrentMessage(state: AccumulatorState, idGen: IdGenerator): void
 function commitCurrentMessage(state: AccumulatorState): void {
   if (!state.currentMessage) return;
   flushTextBuffer(state);
-  if (state.currentMessage.parts.length === 0) return;
+  if (state.currentMessage.parts.length === 0) {
+    state.currentMessage = null;
+    return;
+  }
 
   const msg: CanonicalMessage = {
     id: state.currentMessage.id,
@@ -482,6 +485,7 @@ function createReducer(
           break;
         }
         commitCurrentMessage(state);
+        flushPendingToolResults(state, idGen);
         const userMsg = {
           id: idGen(),
           parentMessageId: state.lastMessageId,

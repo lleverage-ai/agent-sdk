@@ -285,6 +285,27 @@ describe("Accumulator", () => {
       expect(messages[2]!.parts).toEqual([{ type: "text", text: "Assistant reply" }]);
     });
 
+    it("discards empty assistant messages at step boundaries", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "stop" } },
+        { kind: "step-started", payload: { stepIndex: 1 } },
+        { kind: "text-delta", payload: { delta: "Next step" } },
+        { kind: "step-finished", payload: { stepIndex: 1, finishReason: "stop" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({
+        id: "msg-2",
+        parentMessageId: null,
+        role: "assistant",
+        parts: [{ type: "text", text: "Next step" }],
+      });
+    });
+
     it("does not commit assistant turns on tool-result before step-finished", () => {
       const idGen = createCounterIdGenerator("msg");
       const storedEvents = wrapEvents([
@@ -403,6 +424,28 @@ describe("Accumulator", () => {
         parentMessageId: "msg-1",
         parts: [{ type: "tool-result", toolCallId: "tc-1", output: "a" }],
       });
+    });
+
+    it("flushes queued early tool results before user messages", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: { toolCallId: "tc-1", toolName: "read", input: { path: "/a.txt" } },
+        },
+        {
+          kind: "tool-result",
+          payload: { toolCallId: "tc-1", toolName: "read", output: "a", isError: false },
+        },
+        { kind: "user-message", payload: { content: "Next user turn" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+
+      expect(messages.map((message) => message.role)).toEqual(["assistant", "tool", "user"]);
+      expect(messages.map((message) => message.parentMessageId)).toEqual([null, "msg-1", "msg-2"]);
+      expect(messages[2]!.parts).toEqual([{ type: "text", text: "Next user turn" }]);
     });
   });
 
