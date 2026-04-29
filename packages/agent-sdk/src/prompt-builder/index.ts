@@ -205,6 +205,38 @@ export interface PromptContext {
 }
 
 /**
+ * Stability classification for a prompt component.
+ *
+ * Static components should render the same text across turns for the same
+ * agent configuration. Dynamic components may change with messages, memory,
+ * tools, permissions, or other runtime context.
+ *
+ * @category Types
+ */
+export type PromptComponentStability = "static" | "dynamic";
+
+/**
+ * Token-budget metadata for a prompt component.
+ *
+ * This is advisory metadata for diagnostics and host policy. The builder does
+ * not trim component output automatically.
+ *
+ * @category Types
+ */
+export interface PromptComponentBudget {
+  /**
+   * Optional maximum token budget expected for this component.
+   */
+  maxTokens?: number;
+
+  /**
+   * Whether this component may be omitted by host policy when prompt budget is tight.
+   * @defaultValue false
+   */
+  optional?: boolean;
+}
+
+/**
  * A component that contributes to the system prompt.
  *
  * Components are sorted by priority (higher = rendered earlier in prompt)
@@ -240,6 +272,22 @@ export interface PromptComponent {
   priority?: number;
 
   /**
+   * Whether this component is expected to be stable across turns.
+   *
+   * `static` sections are good prompt-cache anchors. `dynamic` sections are
+   * expected to vary with runtime context and can explain cache-prefix churn in
+   * diagnostics.
+   *
+   * @defaultValue "dynamic"
+   */
+  stability?: PromptComponentStability;
+
+  /**
+   * Optional advisory budget metadata for this component.
+   */
+  budget?: PromptComponentBudget;
+
+  /**
    * Optional condition to determine if this component should be included.
    * If not provided or returns true, the component is included.
    * @param ctx - The prompt context
@@ -253,6 +301,74 @@ export interface PromptComponent {
    * @returns The text to include in the system prompt
    */
   render: (ctx: PromptContext) => string;
+}
+
+/**
+ * Diagnostic information for a rendered prompt component.
+ *
+ * @category Context
+ */
+export interface PromptSectionDiagnostics {
+  /**
+   * Component name.
+   */
+  name: string;
+
+  /**
+   * Effective component priority used for ordering.
+   */
+  priority: number;
+
+  /**
+   * Stability classification for this rendered section.
+   */
+  stability: PromptComponentStability;
+
+  /**
+   * Optional advisory budget metadata from the component.
+   */
+  budget?: PromptComponentBudget;
+
+  /**
+   * Stable fingerprint of the rendered section text.
+   */
+  fingerprint: string;
+
+  /**
+   * Rendered section length in UTF-16 code units.
+   */
+  charCount: number;
+}
+
+/**
+ * Result returned by {@link PromptBuilder.buildWithDiagnostics}.
+ *
+ * @category Context
+ */
+export interface PromptBuildResult {
+  /**
+   * Final prompt string.
+   */
+  prompt: string;
+
+  /**
+   * Stable fingerprint of the final prompt string.
+   */
+  fingerprint: string;
+
+  /**
+   * Diagnostics for rendered, non-empty prompt sections.
+   */
+  sections: PromptSectionDiagnostics[];
+}
+
+function fingerprintText(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 /**
@@ -284,6 +400,32 @@ export interface PromptComponent {
  */
 export class PromptBuilder {
   private components: PromptComponent[] = [];
+
+  private getActiveComponents(context: PromptContext): PromptComponent[] {
+    const activeComponents = this.components.filter((component) => {
+      if (component.condition) {
+        return component.condition(context);
+      }
+      return true;
+    });
+
+    activeComponents.sort((a, b) => {
+      const aPriority = a.priority ?? 50;
+      const bPriority = b.priority ?? 50;
+      return bPriority - aPriority;
+    });
+
+    return activeComponents;
+  }
+
+  private renderSections(context: PromptContext): Array<{ component: PromptComponent; text: string }> {
+    return this.getActiveComponents(context)
+      .map((component) => {
+        const text = component.render(context);
+        return { component, text };
+      })
+      .filter(({ text }) => text.trim().length > 0);
+  }
 
   /**
    * Register a single component.
@@ -369,26 +511,48 @@ export class PromptBuilder {
    * ```
    */
   build(context: PromptContext): string {
-    // Filter components by condition
-    const activeComponents = this.components.filter((component) => {
-      if (component.condition) {
-        return component.condition(context);
-      }
-      return true;
-    });
+    return this.renderSections(context)
+      .map(({ text }) => text)
+      .join("\n\n");
+  }
 
-    // Sort by priority (higher first)
-    activeComponents.sort((a, b) => {
-      const aPriority = a.priority ?? 50;
-      const bPriority = b.priority ?? 50;
-      return bPriority - aPriority;
-    });
-
-    // Render and join
-    const parts = activeComponents.map((component) => component.render(context));
+  /**
+   * Build the final prompt and return rendered section diagnostics.
+   *
+   * Diagnostics include component stability, advisory budget metadata, and
+   * content fingerprints suitable for prompt-cache debugging.
+   *
+   * @param context - The context to pass to components
+   * @returns The final prompt and per-section diagnostics
+   * @throws {Error} When a component condition or render callback throws
+   *
+   * @example
+   * ```typescript
+   * const context: PromptContext = {
+   *   tools: [{ name: "read", description: "Read files" }],
+   * };
+   * const result: PromptBuildResult = builder.buildWithDiagnostics(context);
+   * console.log(result.fingerprint, result.sections);
+   * ```
+   */
+  buildWithDiagnostics(context: PromptContext): PromptBuildResult {
+    const renderedSections = this.renderSections(context);
 
     // Filter out empty strings and join with double newlines
-    return parts.filter((part) => part.trim().length > 0).join("\n\n");
+    const prompt = renderedSections.map(({ text }) => text).join("\n\n");
+
+    return {
+      prompt,
+      fingerprint: fingerprintText(prompt),
+      sections: renderedSections.map(({ component, text }) => ({
+        name: component.name,
+        priority: component.priority ?? 50,
+        stability: component.stability ?? "dynamic",
+        ...(component.budget !== undefined ? { budget: { ...component.budget } } : {}),
+        fingerprint: fingerprintText(text),
+        charCount: text.length,
+      })),
+    };
   }
 
   /**

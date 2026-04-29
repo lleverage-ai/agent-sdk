@@ -139,6 +139,7 @@ function renderStructuredEntries(
 export const identityComponent: PromptComponent = {
   name: "identity",
   priority: 100,
+  stability: "static",
   render: () =>
     "You are an interactive agent. Your job is to help the user achieve their goal using the instructions below and the tools available to you.",
 };
@@ -153,6 +154,7 @@ export const identityComponent: PromptComponent = {
 export const interactionContractComponent: PromptComponent = {
   name: "interaction-contract",
   priority: 95,
+  stability: "static",
   render: () => `# Interaction Contract
 
 - All text you output outside of tool use is shown directly to the user.
@@ -171,6 +173,7 @@ export const interactionContractComponent: PromptComponent = {
 export const actionPolicyComponent: PromptComponent = {
   name: "action-policy",
   priority: 90,
+  stability: "static",
   render: () => `# Action Policy
 
 - Choose the simplest effective action that advances the user's goal.
@@ -193,6 +196,7 @@ export const actionPolicyComponent: PromptComponent = {
 export const instructionLayersComponent: PromptComponent = {
   name: "instruction-layers",
   priority: 87,
+  stability: "dynamic",
   condition: (ctx) => resolveInstructionLayers(ctx).length > 0,
   render: (ctx) => {
     const layers = resolveInstructionLayers(ctx);
@@ -224,6 +228,7 @@ ${renderedLayers.join("\n\n")}`;
 export const capabilitySummaryComponent: PromptComponent = {
   name: "capability-summary",
   priority: 85,
+  stability: "dynamic",
   render: (ctx) => {
     const capabilities: string[] = [];
     const hasWorkspaceAccess = hasWorkspaceTool(ctx);
@@ -293,6 +298,7 @@ export const capabilitySummaryComponent: PromptComponent = {
 export const skillLoadingPolicyComponent: PromptComponent = {
   name: "skill-loading-policy",
   priority: 80,
+  stability: "static",
   condition: (ctx) => hasSkillLoadingCapability(ctx) && ctx.permissionMode !== "plan",
   render: () => `# Skill Loading
 
@@ -311,6 +317,7 @@ export const skillLoadingPolicyComponent: PromptComponent = {
 export const memoryPolicyComponent: PromptComponent = {
   name: "memory-policy",
   priority: 60,
+  stability: "static",
   condition: (ctx) => ctx.memoryAvailable ?? true,
   render: () => `# Memory
 
@@ -329,6 +336,7 @@ export const memoryPolicyComponent: PromptComponent = {
 export const recalledMemoryComponent: PromptComponent = {
   name: "recalled-memory",
   priority: 62,
+  stability: "dynamic",
   condition: (ctx) => hasNonEmptyMemoryEntries(ctx.memory?.recall),
   render: (ctx) =>
     renderStructuredEntries("# Recalled Memory", ctx.memory?.recall ?? [], {
@@ -352,6 +360,7 @@ export const recalledMemoryComponent: PromptComponent = {
 export const toolsComponent: PromptComponent = {
   name: "tools-listing",
   priority: 70,
+  stability: "dynamic",
   condition: (ctx) => ctx.tools !== undefined && ctx.tools.length > 0,
   render: (ctx) => {
     const toolLines = ctx.tools!.map((t) => `- **${t.name}**: ${t.description}`);
@@ -375,6 +384,7 @@ export const toolsComponent: PromptComponent = {
 export const skillsComponent: PromptComponent = {
   name: "skills-listing",
   priority: 65,
+  stability: "dynamic",
   condition: (ctx) => ctx.skills !== undefined && ctx.skills.length > 0,
   render: (ctx) => {
     const skillLines = ctx.skills!.map((s) => `- **${s.name}**: ${s.description}`);
@@ -397,6 +407,7 @@ export const skillsComponent: PromptComponent = {
 export const capabilitiesComponent: PromptComponent = {
   name: "capabilities",
   priority: 60,
+  stability: "dynamic",
   render: (ctx) => {
     const capabilities: string[] = [];
 
@@ -437,6 +448,7 @@ export const capabilitiesComponent: PromptComponent = {
 export const contextComponent: PromptComponent = {
   name: "context",
   priority: 50,
+  stability: "dynamic",
   condition: (ctx) => !!ctx.threadId || !!(ctx.currentMessages && ctx.currentMessages.length > 0),
   render: (ctx) => {
     const parts: string[] = [];
@@ -474,6 +486,7 @@ export const contextComponent: PromptComponent = {
 export const pluginsComponent: PromptComponent = {
   name: "plugins-listing",
   priority: 68,
+  stability: "dynamic",
   condition: (ctx) => ctx.plugins !== undefined && ctx.plugins.length > 0,
   render: (ctx) => {
     const pluginLines = ctx.plugins!.map((p) => `- **${p.name}**: ${p.description}`);
@@ -497,6 +510,7 @@ export const pluginsComponent: PromptComponent = {
 export const permissionModeComponent: PromptComponent = {
   name: "permission-mode",
   priority: 55,
+  stability: "dynamic",
   condition: (ctx) => !!ctx.permissionMode,
   render: (ctx) => {
     const mode = ctx.permissionMode!;

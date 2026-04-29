@@ -284,6 +284,169 @@ describe("Accumulator", () => {
       expect(messages[2]!.parentMessageId).toBe("msg-2");
       expect(messages[2]!.parts).toEqual([{ type: "text", text: "Assistant reply" }]);
     });
+
+    it("discards empty assistant messages at step boundaries", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "stop" } },
+        { kind: "step-started", payload: { stepIndex: 1 } },
+        { kind: "text-delta", payload: { delta: "Next step" } },
+        { kind: "step-finished", payload: { stepIndex: 1, finishReason: "stop" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+
+      expect(messages).toHaveLength(1);
+      expect(messages[0]!.id).toBeDefined();
+      expect(messages[0]).toMatchObject({
+        parentMessageId: null,
+        role: "assistant",
+        parts: [{ type: "text", text: "Next step" }],
+      });
+    });
+
+    it("does not commit assistant turns on tool-result before step-finished", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        { kind: "text-delta", payload: { delta: "I'll check." } },
+        {
+          kind: "tool-call",
+          payload: { toolCallId: "tc-1", toolName: "search", input: { query: "weather" } },
+        },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search",
+            output: "Sunny",
+            isError: false,
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+        { kind: "step-started", payload: { stepIndex: 1 } },
+        { kind: "text-delta", payload: { delta: "It is sunny." } },
+        { kind: "step-finished", payload: { stepIndex: 1, finishReason: "stop" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+
+      expect(messages).toHaveLength(3);
+      expect(messages[0]).toMatchObject({
+        id: "msg-1",
+        parentMessageId: null,
+        role: "assistant",
+        parts: [
+          { type: "text", text: "I'll check." },
+          {
+            type: "tool-call",
+            toolCallId: "tc-1",
+            toolName: "search",
+            input: { query: "weather" },
+          },
+        ],
+        metadata: {
+          stepFinish: { stepIndex: 0, finishReason: "tool-calls" },
+        },
+      });
+      expect(messages[1]).toMatchObject({
+        id: "msg-2",
+        parentMessageId: "msg-1",
+        role: "tool",
+        parts: [
+          {
+            type: "tool-result",
+            toolCallId: "tc-1",
+            toolName: "search",
+            output: "Sunny",
+            isError: false,
+          },
+        ],
+      });
+      expect(messages[2]).toMatchObject({
+        id: "msg-3",
+        parentMessageId: "msg-2",
+        role: "assistant",
+        parts: [{ type: "text", text: "It is sunny." }],
+      });
+    });
+
+    it("queues multiple early tool results until the assistant step boundary", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: { toolCallId: "tc-1", toolName: "read", input: { path: "/a.txt" } },
+        },
+        {
+          kind: "tool-call",
+          payload: { toolCallId: "tc-2", toolName: "read", input: { path: "/b.txt" } },
+        },
+        {
+          kind: "tool-result",
+          payload: { toolCallId: "tc-1", toolName: "read", output: "a", isError: false },
+        },
+        {
+          kind: "tool-result",
+          payload: { toolCallId: "tc-2", toolName: "read", output: "b", isError: false },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+
+      expect(messages.map((message) => message.role)).toEqual(["assistant", "tool", "tool"]);
+      expect(messages.map((message) => message.parentMessageId)).toEqual([null, "msg-1", "msg-2"]);
+      expect(messages[1]!.parts[0]).toMatchObject({ toolCallId: "tc-1", output: "a" });
+      expect(messages[2]!.parts[0]).toMatchObject({ toolCallId: "tc-2", output: "b" });
+    });
+
+    it("flushes queued early tool results when accumulation ends mid-step", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: { toolCallId: "tc-1", toolName: "read", input: { path: "/a.txt" } },
+        },
+        {
+          kind: "tool-result",
+          payload: { toolCallId: "tc-1", toolName: "read", output: "a", isError: false },
+        },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+
+      expect(messages.map((message) => message.role)).toEqual(["assistant", "tool"]);
+      expect(messages[1]).toMatchObject({
+        parentMessageId: "msg-1",
+        parts: [{ type: "tool-result", toolCallId: "tc-1", output: "a" }],
+      });
+    });
+
+    it("flushes queued early tool results before user messages", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: { toolCallId: "tc-1", toolName: "read", input: { path: "/a.txt" } },
+        },
+        {
+          kind: "tool-result",
+          payload: { toolCallId: "tc-1", toolName: "read", output: "a", isError: false },
+        },
+        { kind: "user-message", payload: { content: "Next user turn" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+
+      expect(messages.map((message) => message.role)).toEqual(["assistant", "tool", "user"]);
+      expect(messages.map((message) => message.parentMessageId)).toEqual([null, "msg-1", "msg-2"]);
+      expect(messages[2]!.parts).toEqual([{ type: "text", text: "Next user turn" }]);
+    });
   });
 
   describe("tool metadata", () => {
@@ -832,6 +995,118 @@ describe("Accumulator", () => {
           toolLabel: "Found 3 invoices",
           skillName: "Email",
           skillIcon: "mail",
+        },
+      });
+    });
+
+    it("propagates duplicate tool-call metadata updates after an early tool-result", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              toolLabel: "Searching your inbox",
+              skillName: "Email",
+              skillIcon: "mail",
+            },
+          },
+        },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            output: "Found 3 emails",
+            isError: false,
+          },
+        },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              toolLabel: "Found 3 invoices",
+            },
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const resultPart = messages[1]!.parts[0]!;
+      expect(resultPart).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "search_emails",
+        output: "Found 3 emails",
+        isError: false,
+        metadata: {
+          toolLabel: "Found 3 invoices",
+          skillName: "Email",
+          skillIcon: "mail",
+        },
+      });
+    });
+
+    it("preserves explicit null metadata updates for queued early tool results", () => {
+      const idGen = createCounterIdGenerator("msg");
+      const storedEvents = wrapEvents([
+        { kind: "step-started", payload: { stepIndex: 0 } },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              toolLabel: "Searching your inbox",
+              skillName: "Email",
+              skillIcon: "mail",
+            },
+          },
+        },
+        {
+          kind: "tool-result",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            output: "Found 3 emails",
+            isError: false,
+          },
+        },
+        {
+          kind: "tool-call",
+          payload: {
+            toolCallId: "tc-1",
+            toolName: "search_emails",
+            input: { query: "invoice" },
+            metadata: {
+              skillIcon: null,
+            },
+          },
+        },
+        { kind: "step-finished", payload: { stepIndex: 0, finishReason: "tool-calls" } },
+      ]);
+
+      const messages = accumulateEvents(storedEvents, idGen);
+      const resultPart = messages[1]!.parts[0]!;
+      expect(resultPart).toEqual({
+        type: "tool-result",
+        toolCallId: "tc-1",
+        toolName: "search_emails",
+        output: "Found 3 emails",
+        isError: false,
+        metadata: {
+          toolLabel: "Searching your inbox",
+          skillName: "Email",
+          skillIcon: null,
         },
       });
     });
