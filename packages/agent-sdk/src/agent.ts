@@ -92,6 +92,7 @@ import type {
   InterruptResolvedInput,
   MCPConnectionFailedInput,
   MCPConnectionRestoredInput,
+  ModelInputCapabilities,
   PermissionDecision,
   PermissionMode,
   PostGenerateInput,
@@ -106,6 +107,40 @@ import type {
 } from "./types.js";
 
 let agentIdCounter = 0;
+
+type ToolContentOutputPart =
+  | { type: "text"; text: string; [key: string]: unknown }
+  | { type: "media"; data: string; mediaType: string; [key: string]: unknown }
+  | { type: "image-data"; data: string; mediaType: string; [key: string]: unknown }
+  | { type: "image-url"; url: string; [key: string]: unknown }
+  | { type: "image-file-id"; fileId: string | Record<string, string>; [key: string]: unknown }
+  | {
+      type: "file-data";
+      data: string;
+      mediaType: string;
+      filename?: string;
+      [key: string]: unknown;
+    }
+  | { type: "file-url"; url: string; [key: string]: unknown }
+  | { type: "file-id"; fileId: string | Record<string, string>; [key: string]: unknown }
+  | { type: "custom"; [key: string]: unknown }
+  | { type: string; [key: string]: unknown };
+
+type ToolContentOutput = {
+  type: "content";
+  value: ToolContentOutputPart[];
+  [key: string]: unknown;
+};
+
+/** @internal */
+function isToolContentOutput(output: unknown): output is ToolContentOutput {
+  return (
+    typeof output === "object" &&
+    output !== null &&
+    (output as { type?: unknown }).type === "content" &&
+    Array.isArray((output as { value?: unknown }).value)
+  );
+}
 
 /**
  * Internal signal for interrupt flow control.
@@ -144,6 +179,167 @@ function withCheckpointRunId(
       ...(runId ? { runId } : {}),
     },
   });
+}
+
+/** @internal */
+function resolveModelInputCapabilities(
+  options: AgentOptions,
+  model: AgentOptions["model"],
+): ModelInputCapabilities | undefined {
+  const resolver = options.modelCapabilities;
+
+  if (!resolver) {
+    return undefined;
+  }
+
+  return typeof resolver === "function" ? resolver(model) : resolver;
+}
+
+/** @internal */
+function createToolExecutionContext(
+  options: AgentOptions,
+  model: AgentOptions["model"],
+): {
+  agentSdk: { currentModel: AgentOptions["model"]; modelCapabilities?: ModelInputCapabilities };
+} {
+  const modelCapabilities = resolveModelInputCapabilities(options, model);
+
+  return {
+    agentSdk: {
+      currentModel: model,
+      ...(modelCapabilities ? { modelCapabilities } : {}),
+    },
+  };
+}
+
+/** @internal */
+async function createToolModelOutput({
+  tool,
+  toolCallId,
+  input,
+  output,
+}: {
+  tool: Tool | undefined;
+  toolCallId: string;
+  input: unknown;
+  output: unknown;
+}): Promise<unknown> {
+  const toolWithModelOutput = tool as
+    | {
+        toModelOutput?: (options: {
+          toolCallId: string;
+          input: unknown;
+          output: unknown;
+        }) => unknown | PromiseLike<unknown>;
+      }
+    | undefined;
+
+  if (toolWithModelOutput?.toModelOutput) {
+    return toolWithModelOutput.toModelOutput({ toolCallId, input, output });
+  }
+
+  return typeof output === "string"
+    ? { type: "text" as const, value: output }
+    : { type: "json" as const, value: output ?? null };
+}
+
+/** @internal */
+function downgradeToolContentOutput(
+  output: unknown,
+  capabilities: ModelInputCapabilities | undefined,
+): unknown {
+  if (
+    typeof output === "object" &&
+    output !== null &&
+    (output as { type?: unknown }).type === "json" &&
+    "value" in output
+  ) {
+    return {
+      ...output,
+      value: downgradeToolContentOutput((output as { value: unknown }).value, capabilities),
+    };
+  }
+
+  if (!isToolContentOutput(output)) {
+    return output;
+  }
+
+  const value: ToolContentOutputPart[] = [];
+
+  for (const part of output.value) {
+    switch (part.type) {
+      case "text":
+        value.push(part);
+        break;
+      case "image-data":
+      case "image-url":
+      case "image-file-id":
+      case "media":
+        value.push(
+          capabilities?.imageInput === false
+            ? {
+                type: "text",
+                text: "[Image omitted: active model does not support image input.]",
+              }
+            : part,
+        );
+        break;
+      case "file-data":
+      case "file-url":
+      case "file-id":
+        value.push(
+          capabilities?.fileInput === false
+            ? {
+                type: "text",
+                text: "[File omitted: active model does not support file input.]",
+              }
+            : part,
+        );
+        break;
+      case "custom":
+        value.push(part);
+        break;
+      default:
+        value.push(part);
+        break;
+    }
+  }
+
+  return { ...output, value };
+}
+
+/** @internal */
+function projectMessagesForModel(
+  messages: ModelMessage[],
+  capabilities: ModelInputCapabilities | undefined,
+): ModelMessage[] {
+  if (capabilities?.imageInput !== false && capabilities?.fileInput !== false) {
+    return messages;
+  }
+
+  return messages.map((message) => {
+    if (message.role !== "tool" || !Array.isArray(message.content)) {
+      return message;
+    }
+
+    return {
+      ...message,
+      content: message.content.map((part) => {
+        if (part.type !== "tool-result") {
+          return part;
+        }
+
+        const output = "output" in part ? part.output : undefined;
+        const result = "result" in part ? (part as { result?: unknown }).result : undefined;
+
+        return {
+          ...part,
+          ...("output" in part ? { output: downgradeToolContentOutput(output, capabilities) } : {}),
+          ...("result" in part ? { result: downgradeToolContentOutput(result, capabilities) } : {}),
+        };
+      }),
+    };
+  }) as ModelMessage[];
 }
 
 /**
@@ -2084,10 +2280,12 @@ export function createAgent(options: AgentOptions): Agent {
         }
 
         try {
+          const toolExecutionContext = createToolExecutionContext(options, options.model);
           toolResultOutput = await tool.execute(interrupt.request.args, {
             toolCallId: interrupt.toolCallId,
             messages: checkpoint.messages,
             abortSignal: genOptions?.signal,
+            experimental_context: toolExecutionContext,
             executionTelemetry: resumeTelemetry,
           } as ToolExecutionOptions);
         } catch (error) {
@@ -2100,13 +2298,12 @@ export function createAgent(options: AgentOptions): Agent {
         }`;
       }
 
-      // Build the tool result message with proper ToolResultOutput format.
-      // The AI SDK validates messages against modelMessageSchema which
-      // requires output to be { type: 'text', value } or { type: 'json', value }.
-      const approvalOutput =
-        typeof toolResultOutput === "string"
-          ? { type: "text" as const, value: toolResultOutput }
-          : { type: "json" as const, value: toolResultOutput };
+      const approvalOutput = await createToolModelOutput({
+        tool: approvalResponse.approved ? collectAllTools()[interrupt.toolName] : undefined,
+        toolCallId: interrupt.toolCallId,
+        input: interrupt.request.args,
+        output: toolResultOutput,
+      });
 
       const toolResultMessage = {
         role: "tool" as const,
@@ -2185,6 +2382,7 @@ export function createAgent(options: AgentOptions): Agent {
 
     let customToolResult: unknown;
     try {
+      const toolExecutionContext = createToolExecutionContext(options, options.model);
       // Execute the tool, providing an interrupt function that returns
       // the stored user response. This mirrors what happens inside the
       // permission-mode tool wrapper when pendingResponses has a match.
@@ -2192,6 +2390,7 @@ export function createAgent(options: AgentOptions): Agent {
         toolCallId: customToolCallId,
         messages: checkpoint.messages,
         abortSignal: genOptions?.signal,
+        experimental_context: toolExecutionContext,
         executionTelemetry: resumeTelemetry,
         interrupt: async (request: unknown) => {
           // First call: return the stored user response (mirrors the
@@ -2237,11 +2436,12 @@ export function createAgent(options: AgentOptions): Agent {
       customToolResult = `Tool execution failed: ${executeError instanceof Error ? executeError.message : String(executeError)}`;
     }
 
-    // Build tool result message with proper ToolResultOutput format.
-    const customOutput =
-      typeof customToolResult === "string"
-        ? { type: "text" as const, value: customToolResult }
-        : { type: "json" as const, value: customToolResult };
+    const customOutput = await createToolModelOutput({
+      tool: customTool,
+      toolCallId: customToolCallId,
+      input: interrupt.request,
+      output: customToolResult,
+    });
 
     const customToolResultMessage = {
       role: "tool" as const,
@@ -2385,12 +2585,16 @@ export function createAgent(options: AgentOptions): Agent {
           const signalStopCondition = () => signalState.interrupt != null;
 
           const generationStartTime = Date.now();
+          const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
 
           // Execute generation
           const response = await generateText({
             model: retryState.currentModel,
             system: initialParams.system,
-            messages: initialParams.messages,
+            messages: projectMessagesForModel(
+              initialParams.messages,
+              toolExecutionContext.agentSdk.modelCapabilities,
+            ),
             tools: initialParams.tools as ToolSet,
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
@@ -2402,6 +2606,7 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
+            experimental_context: toolExecutionContext,
           });
 
           // Check for intercepted interrupt signal (cooperative path)
@@ -2829,13 +3034,28 @@ export function createAgent(options: AgentOptions): Agent {
         );
         // Only process complete results (interrupted results can't be cached)
         if (cachedResult.status === "complete") {
-          // Yield cached result as stream parts
-          // First, yield text as a single text-delta
-          if (cachedResult.text) {
-            yield { type: "text-delta", text: cachedResult.text };
+          const cachedSteps = cachedResult.steps ?? [];
+
+          if (cachedSteps.length === 0) {
+            yield { type: "turn-start" };
+            if (cachedResult.text) {
+              yield { type: "text-delta", text: cachedResult.text };
+            }
+            yield {
+              type: "turn-end",
+              finishReason: cachedResult.finishReason,
+              usage: cachedResult.usage,
+            };
           }
-          // Yield tool calls and results from steps
-          for (const step of cachedResult.steps ?? []) {
+
+          for (const [index, step] of cachedSteps.entries()) {
+            yield { type: "turn-start" };
+
+            const stepText = (index === 0 ? cachedResult.text : undefined) || step.text;
+            if (stepText) {
+              yield { type: "text-delta", text: stepText };
+            }
+
             for (const toolCall of step.toolCalls ?? []) {
               yield {
                 type: "tool-call",
@@ -2852,8 +3072,15 @@ export function createAgent(options: AgentOptions): Agent {
                 output: toolResult.output,
               };
             }
+
+            yield {
+              type: "turn-end",
+              finishReason: step.finishReason,
+              usage: step.usage,
+            };
           }
-          // Finally yield finish
+
+          // Finally yield finish (overall stream terminator)
           yield {
             type: "finish",
             finishReason: cachedResult.finishReason,
@@ -2922,12 +3149,16 @@ export function createAgent(options: AgentOptions): Agent {
           const signalStopCondition = () => signalState.interrupt != null;
           const generationStartTime = Date.now();
           let firstTextDeltaAt: number | undefined;
+          const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
 
           // Execute stream
           const response = streamText({
             model: retryState.currentModel,
             system: initialParams.system,
-            messages: initialParams.messages,
+            messages: projectMessagesForModel(
+              initialParams.messages,
+              toolExecutionContext.agentSdk.modelCapabilities,
+            ),
             tools: initialParams.tools as ToolSet,
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
@@ -2939,10 +3170,34 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
+            experimental_context: toolExecutionContext,
           });
 
+          // AI SDK only carries the response id on `finish-step`, not on
+          // `start-step`, so `turn-start` is emitted without a messageId and
+          // consumers correlate via the matching `turn-end`.
           for await (const part of response.fullStream) {
-            if (part.type === "text-delta") {
+            if (part.type === "start-step") {
+              // A new assistant message is beginning.
+              yield { type: "turn-start" };
+            } else if (part.type === "finish-step") {
+              // The current assistant turn completed. Surface the response id
+              // (from AI SDK's LanguageModelResponseMetadata) plus per-turn
+              // finish reason and usage so consumers can record per-turn
+              // telemetry without polling the awaited promises.
+              const stepResponse = part.response as { id?: unknown } | undefined;
+              const messageId = typeof stepResponse?.id === "string" ? stepResponse.id : undefined;
+              yield {
+                type: "turn-end",
+                messageId,
+                finishReason: part.finishReason as StreamPart extends {
+                  type: "finish";
+                }
+                  ? StreamPart["finishReason"]
+                  : never,
+                usage: part.usage,
+              };
+            } else if (part.type === "text-delta") {
               firstTextDeltaAt ??= Date.now();
               yield { type: "text-delta", text: part.text };
             } else if (part.type === "reasoning-start") {
@@ -3289,6 +3544,7 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Capture currentModel for use in the callback closure
           const modelToUse = retryState.currentModel;
+          const toolExecutionContext = createToolExecutionContext(options, modelToUse);
 
           // Stop condition: stop when an interrupt signal was caught, OR when
           // the step count reaches maxSteps.
@@ -3305,7 +3561,10 @@ export function createAgent(options: AgentOptions): Agent {
           const result = streamText({
             model: modelToUse,
             system: initialParams.system,
-            messages: initialParams.messages,
+            messages: projectMessagesForModel(
+              initialParams.messages,
+              toolExecutionContext.agentSdk.modelCapabilities,
+            ),
             tools: initialParams.tools as ToolSet,
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
@@ -3317,6 +3576,7 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
+            experimental_context: toolExecutionContext,
             // Incremental checkpointing: save after each step if enabled
             onStepFinish: effectiveGenOptions.checkpointAfterToolCall
               ? async (stepResult) => {
@@ -3462,11 +3722,18 @@ export function createAgent(options: AgentOptions): Agent {
                         followUpMessages,
                         requestOptions.threadId,
                       );
+                      const toolExecutionContext = createToolExecutionContext(
+                        options,
+                        currentModel,
+                      );
 
                       return streamText({
                         model: currentModel,
                         system: getSystemPrompt(followUpPromptContext),
-                        messages: followUpMessages,
+                        messages: projectMessagesForModel(
+                          followUpMessages,
+                          toolExecutionContext.agentSdk.modelCapabilities,
+                        ),
                         tools: activeFollowUpTools as ToolSet,
                         maxOutputTokens: requestOptions.maxTokens,
                         temperature: requestOptions.temperature,
@@ -3477,6 +3744,7 @@ export function createAgent(options: AgentOptions): Agent {
                         // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                         providerOptions: requestOptions.providerOptions as any,
                         headers: requestOptions.headers,
+                        experimental_context: toolExecutionContext,
                       });
                     },
                   );
@@ -3698,12 +3966,16 @@ export function createAgent(options: AgentOptions): Agent {
           // the step count reaches maxSteps.
           const signalStopCondition = () => signalState.interrupt != null;
           const generationStartTime = Date.now();
+          const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
 
           // Execute stream
           const result = streamText({
             model: retryState.currentModel,
             system: initialParams.system,
-            messages: initialParams.messages,
+            messages: projectMessagesForModel(
+              initialParams.messages,
+              toolExecutionContext.agentSdk.modelCapabilities,
+            ),
             tools: initialParams.tools as ToolSet,
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
@@ -3715,6 +3987,7 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
+            experimental_context: toolExecutionContext,
             // Incremental checkpointing: save after each step if enabled
             onStepFinish: effectiveGenOptions.checkpointAfterToolCall
               ? async (stepResult) => {
@@ -3969,12 +4242,16 @@ export function createAgent(options: AgentOptions): Agent {
               // the step count reaches maxSteps.
               const signalStopCondition = () => signalState.interrupt != null;
               const generationStartTime = Date.now();
+              const toolExecutionContext = createToolExecutionContext(options, modelToUse);
 
               // Execute stream
               const result = streamText({
                 model: modelToUse,
                 system: initialParams.system,
-                messages: initialParams.messages,
+                messages: projectMessagesForModel(
+                  initialParams.messages,
+                  toolExecutionContext.agentSdk.modelCapabilities,
+                ),
                 tools: initialParams.tools as ToolSet,
                 maxOutputTokens: initialParams.maxTokens,
                 temperature: initialParams.temperature,
@@ -3986,6 +4263,7 @@ export function createAgent(options: AgentOptions): Agent {
                 // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                 providerOptions: initialParams.providerOptions as any,
                 headers: initialParams.headers,
+                experimental_context: toolExecutionContext,
                 // Incremental checkpointing: save after each step if enabled
                 onStepFinish: effectiveGenOptions.checkpointAfterToolCall
                   ? async (stepResult) => {
@@ -4170,11 +4448,18 @@ export function createAgent(options: AgentOptions): Agent {
                         followUpMessages,
                         requestOptions.threadId,
                       );
+                      const toolExecutionContext = createToolExecutionContext(
+                        options,
+                        currentModel,
+                      );
 
                       return streamText({
                         model: currentModel,
                         system: getSystemPrompt(followUpPromptContext),
-                        messages: followUpMessages,
+                        messages: projectMessagesForModel(
+                          followUpMessages,
+                          toolExecutionContext.agentSdk.modelCapabilities,
+                        ),
                         tools: activeFollowUpTools as ToolSet,
                         maxOutputTokens: requestOptions.maxTokens,
                         temperature: requestOptions.temperature,
@@ -4185,6 +4470,7 @@ export function createAgent(options: AgentOptions): Agent {
                         // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                         providerOptions: requestOptions.providerOptions as any,
                         headers: requestOptions.headers,
+                        experimental_context: toolExecutionContext,
                       });
                     },
                   );

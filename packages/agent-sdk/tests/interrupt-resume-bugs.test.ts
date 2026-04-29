@@ -186,6 +186,71 @@ describe("Interrupt resume flow bugs", () => {
       const updatedCheckpoint = await checkpointer.load(threadId);
       expect(updatedCheckpoint?.pendingInterrupt).toBeDefined();
     });
+
+    it("should preserve toModelOutput content after custom interrupt resume", async () => {
+      const checkpointer = new MemorySaver();
+      const threadId = "custom-content-output-thread";
+      const toolCallId = "call_custom_content";
+      const interruptId = `int_${toolCallId}`;
+      const contentOutput = {
+        type: "content" as const,
+        value: [
+          { type: "text" as const, text: "Screenshot" },
+          { type: "image-data" as const, data: "iVBORw0KGgo=", mediaType: "image/png" },
+        ],
+      };
+
+      const checkpoint: Checkpoint = {
+        threadId,
+        step: 1,
+        messages: [{ role: "user", content: "Read an image after asking" }],
+        state: { todos: [], files: {} },
+        pendingInterrupt: createInterrupt({
+          id: interruptId,
+          threadId,
+          type: "custom",
+          toolCallId,
+          toolName: "read_after_interrupt",
+          request: { file_path: "/screenshot.png" },
+        }),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await checkpointer.save(checkpoint);
+
+      vi.mocked(generateText).mockResolvedValue({
+        text: "Done",
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: "stop",
+        steps: [],
+      } as never);
+
+      const agent = createAgent({
+        model: createMockModel(),
+        checkpointer,
+        tools: {
+          read_after_interrupt: {
+            description: "Read after interrupt",
+            execute: async (_input: unknown, options: { interrupt?: () => Promise<unknown> }) => {
+              await options.interrupt?.();
+              return contentOutput;
+            },
+            toModelOutput: ({ output }: { output: unknown }) => output,
+          },
+        },
+      });
+
+      await agent.resume(threadId, interruptId, "approved");
+
+      const updatedCheckpoint = await checkpointer.load(threadId);
+      const toolMsg = updatedCheckpoint?.messages.find((m) => m.role === "tool");
+      const toolContent = toolMsg?.content as Array<{
+        type: string;
+        output: unknown;
+      }>;
+
+      expect(toolContent[0].output).toEqual(contentOutput);
+    });
   });
 
   describe("Bug 3: ToolResultOutput format", () => {
@@ -252,6 +317,69 @@ describe("Interrupt resume flow bugs", () => {
         type: expect.stringMatching(/^(text|json)$/),
         value: expect.anything(),
       });
+    });
+
+    it("should preserve tool toModelOutput content after approval resume", async () => {
+      const checkpointer = new MemorySaver();
+      const contentOutput = {
+        type: "content" as const,
+        value: [
+          { type: "text" as const, text: "Screenshot" },
+          { type: "image-data" as const, data: "iVBORw0KGgo=", mediaType: "image/png" },
+        ],
+      };
+      const toolExecuted = vi.fn().mockResolvedValue(contentOutput);
+      const threadId = "approval-content-output-thread";
+      const toolCallId = "call_content_output";
+
+      const checkpoint: Checkpoint = {
+        threadId,
+        step: 1,
+        messages: [{ role: "user", content: "Test" }],
+        state: { todos: [], files: {} },
+        pendingInterrupt: createApprovalInterrupt({
+          id: `int_${toolCallId}`,
+          threadId,
+          toolCallId,
+          toolName: "readImage",
+          args: { file_path: "/screenshot.png" },
+          step: 1,
+        }),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      await checkpointer.save(checkpoint);
+
+      vi.mocked(generateText).mockResolvedValue({
+        text: "Done",
+        usage: { inputTokens: 10, outputTokens: 5 },
+        finishReason: "stop",
+        steps: [],
+      } as never);
+
+      const agent = createAgent({
+        model: createMockModel(),
+        checkpointer,
+        tools: {
+          readImage: {
+            description: "Read an image",
+            execute: toolExecuted,
+            toModelOutput: ({ output }: { output: unknown }) => output,
+          },
+        },
+      });
+
+      const interrupt = await agent.getInterrupt(threadId);
+      await agent.resume(threadId, interrupt!.id, { approved: true });
+
+      const updatedCheckpoint = await checkpointer.load(threadId);
+      const toolMsg = updatedCheckpoint?.messages.find((m) => m.role === "tool");
+      const toolContent = toolMsg?.content as Array<{
+        type: string;
+        output: unknown;
+      }>;
+
+      expect(toolContent[0].output).toEqual(contentOutput);
     });
 
     it("should use { type, value } format for denial result output", async () => {

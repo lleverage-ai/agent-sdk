@@ -57,6 +57,142 @@ export interface FileData {
   modified_at: string;
 }
 
+/**
+ * Text content returned from a backend read.
+ *
+ * This is equivalent to the historical string read result, but lets backends
+ * attach metadata while still preserving offset/limit text semantics.
+ *
+ * @category Backend
+ */
+export interface SandboxTextReadResult {
+  /** Discriminator for formatted text read results. */
+  type: "text";
+
+  /** Text content, usually formatted with line numbers and offset/limit applied. */
+  text: string;
+
+  /** Optional backend-defined metadata about the read operation. */
+  metadata?: unknown;
+}
+
+/**
+ * Image content returned from a backend read.
+ *
+ * `data` must be base64-encoded image data. The SDK read tool can project this
+ * into AI SDK tool-result content for models that support image inputs, or into
+ * a text fallback for models that do not.
+ *
+ * @category Backend
+ */
+export interface SandboxImageReadResult {
+  /** Discriminator for image read results. */
+  type: "image";
+
+  /** Optional text note to send alongside the image. */
+  text?: string;
+
+  /** Base64-encoded image bytes. */
+  data: string;
+
+  /** IANA media type for the image, such as `image/png`. */
+  mediaType: string;
+
+  /** Optional backend-defined metadata about the image. */
+  metadata?: unknown;
+}
+
+/**
+ * Generic file content returned from a backend read.
+ *
+ * `data`, when present, must be base64-encoded file data. This shape leaves room
+ * for native document/PDF reads while still allowing text-only fallbacks.
+ *
+ * @category Backend
+ */
+export interface SandboxFileReadResult {
+  /** Discriminator for native file/document read results. */
+  type: "file";
+
+  /** Optional text note or extracted summary to send alongside the file. */
+  text?: string;
+
+  /** Optional base64-encoded file bytes. */
+  data?: string;
+
+  /** IANA media type for the file, such as `application/pdf`. */
+  mediaType: string;
+
+  /** Optional filename hint for model/provider file parts. */
+  filename?: string;
+
+  /** Optional backend-defined metadata about the file. */
+  metadata?: unknown;
+}
+
+/**
+ * Rendered page images returned from a backend read.
+ *
+ * This is intended for PDFs and other paged documents where a backend renders
+ * selected pages into image data instead of returning a whole native document.
+ *
+ * @category Backend
+ */
+export interface SandboxRenderedPagesReadResult {
+  /** Discriminator for rendered page image read results. */
+  type: "rendered_pages";
+
+  /** Optional text note or extracted summary to send before the rendered pages. */
+  text?: string;
+
+  /** Rendered document pages, ordered as they should be shown to the model. */
+  pages: Array<{
+    /** One-based page number from the source document. */
+    page: number;
+
+    /** Base64-encoded rendered page image bytes. */
+    data: string;
+
+    /** IANA media type for the rendered page image, such as `image/png`. */
+    mediaType: string;
+  }>;
+
+  /** Optional backend-defined metadata about the rendered document. */
+  metadata?: unknown;
+}
+
+/**
+ * Unsupported content returned from a backend read.
+ *
+ * Backends can use this when they recognize a file but cannot provide text or
+ * typed content for it.
+ *
+ * @category Backend
+ */
+export interface SandboxUnsupportedReadResult {
+  /** Discriminator for unsupported read results. */
+  type: "unsupported";
+
+  /** Human-readable explanation of why the file could not be read usefully. */
+  text: string;
+}
+
+/**
+ * Provider-neutral content that can be returned by backend `read()` methods.
+ *
+ * String read results remain supported. Typed results let backend read tools
+ * expose images, native files, and rendered pages without flattening everything
+ * to plain text before the model sees it.
+ *
+ * @category Backend
+ */
+export type SandboxReadResult =
+  | SandboxTextReadResult
+  | SandboxImageReadResult
+  | SandboxFileReadResult
+  | SandboxRenderedPagesReadResult
+  | SandboxUnsupportedReadResult;
+
 // =============================================================================
 // Search Types
 // =============================================================================
@@ -179,26 +315,39 @@ export interface BackendProtocol {
   lsInfo(path: string): FileInfo[] | Promise<FileInfo[]>;
 
   /**
-   * Read file content with optional line numbers.
+   * Read file content with optional line range controls.
    *
-   * Returns content formatted with line numbers for display, suitable for
-   * showing to the model or user.
+   * Text-oriented backends may return a formatted string with line numbers,
+   * preserving the historical read contract. Multimodal backends may instead
+   * return a {@link SandboxReadResult} variant: `text` for formatted text with
+   * metadata, `image` for base64 image bytes plus media type, `file` for native
+   * document/file bytes, `rendered_pages` for page images, or `unsupported` for
+   * a clear text fallback.
+   *
+   * Callers must handle both synchronous and Promise returns, and must
+   * discriminate non-string results by `result.type`.
    *
    * @param filePath - Path to the file to read
    * @param offset - Starting line offset (0-indexed)
    * @param limit - Maximum number of lines to read
-   * @returns Formatted content with line numbers
+   * @returns Formatted text or a structured {@link SandboxReadResult}
    *
    * @example
    * ```typescript
-   * // Read first 50 lines
-   * const content = await backend.read("/src/index.ts", 0, 50);
+   * const result = await backend.read("/src/index.ts", 0, 50);
    *
-   * // Read lines 100-200
-   * const content = await backend.read("/src/index.ts", 100, 100);
+   * if (typeof result === "string") {
+   *   console.log(result);
+   * } else if (result.type === "image") {
+   *   console.log(result.mediaType, result.data);
+   * }
    * ```
    */
-  read(filePath: string, offset?: number, limit?: number): string | Promise<string>;
+  read(
+    filePath: string,
+    offset?: number,
+    limit?: number,
+  ): string | SandboxReadResult | Promise<string | SandboxReadResult>;
 
   /**
    * Read raw file content as FileData.
