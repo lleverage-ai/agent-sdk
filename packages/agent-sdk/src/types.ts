@@ -2342,6 +2342,9 @@ export type StreamPart =
   | { type: "reasoning-start"; id?: string }
   | { type: "reasoning-delta"; id?: string; text: string }
   | { type: "reasoning-end"; id?: string }
+  | { type: "tool-input-start"; toolCallId: string; toolName?: string }
+  | { type: "tool-input-delta"; toolCallId: string; toolName?: string; inputTextDelta: string }
+  | { type: "tool-input-end"; toolCallId: string; toolName?: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
   | { type: "finish"; finishReason: FinishReason; usage?: LanguageModelUsage }
@@ -2353,8 +2356,10 @@ export type StreamPart =
   // or invent message IDs themselves.
   //
   // `turn-start` always precedes the first content delta of a new assistant
-  // message. `turn-end` always follows the last delta of that message. Tools
-  // executed within the turn appear between them as `tool-call`/`tool-result`.
+  // message. `turn-end` always follows the last delta of that message. Tool
+  // input lifecycle events (`tool-input-start`/`tool-input-delta`/
+  // `tool-input-end`) can appear between them before the authoritative
+  // `tool-call`, and tool results can appear as `tool-result`.
   | { type: "turn-start"; messageId?: string }
   | {
       type: "turn-end";
