@@ -2342,6 +2342,9 @@ export type StreamPart =
   | { type: "reasoning-start"; id?: string }
   | { type: "reasoning-delta"; id?: string; text: string }
   | { type: "reasoning-end"; id?: string }
+  | { type: "tool-input-start"; toolCallId: string; toolName?: string }
+  | { type: "tool-input-delta"; toolCallId: string; toolName?: string; inputTextDelta: string }
+  | { type: "tool-input-end"; toolCallId: string; toolName?: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
   | { type: "finish"; finishReason: FinishReason; usage?: LanguageModelUsage }

@@ -3223,6 +3223,54 @@ export function createAgent(options: AgentOptions): Agent {
                 type: "reasoning-end",
                 id: typeof part.id === "string" ? part.id : undefined,
               };
+            } else if (part.type === "tool-input-start") {
+              const rawPart = part as unknown as { toolCallId?: unknown; toolName?: unknown };
+              if (typeof rawPart.toolCallId === "string") {
+                yield {
+                  type: "tool-input-start",
+                  toolCallId: rawPart.toolCallId,
+                  toolName: typeof rawPart.toolName === "string" ? rawPart.toolName : undefined,
+                };
+              }
+            } else if (
+              part.type === "tool-input-delta" ||
+              (part as { type: string }).type === "tool-call-delta"
+            ) {
+              const rawPart = part as unknown as {
+                toolCallId?: unknown;
+                toolName?: unknown;
+                inputTextDelta?: unknown;
+                argsTextDelta?: unknown;
+                textDelta?: unknown;
+                delta?: unknown;
+              };
+              if (typeof rawPart.toolCallId === "string") {
+                const inputTextDelta =
+                  typeof rawPart.inputTextDelta === "string"
+                    ? rawPart.inputTextDelta
+                    : typeof rawPart.argsTextDelta === "string"
+                      ? rawPart.argsTextDelta
+                      : typeof rawPart.textDelta === "string"
+                        ? rawPart.textDelta
+                        : typeof rawPart.delta === "string"
+                          ? rawPart.delta
+                          : "";
+                yield {
+                  type: "tool-input-delta",
+                  toolCallId: rawPart.toolCallId,
+                  toolName: typeof rawPart.toolName === "string" ? rawPart.toolName : undefined,
+                  inputTextDelta,
+                };
+              }
+            } else if (part.type === "tool-input-end") {
+              const rawPart = part as unknown as { toolCallId?: unknown; toolName?: unknown };
+              if (typeof rawPart.toolCallId === "string") {
+                yield {
+                  type: "tool-input-end",
+                  toolCallId: rawPart.toolCallId,
+                  toolName: typeof rawPart.toolName === "string" ? rawPart.toolName : undefined,
+                };
+              }
             } else if (part.type === "tool-call") {
               yield {
                 type: "tool-call",
