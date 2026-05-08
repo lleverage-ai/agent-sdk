@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.5] - 2026-05-08
+
 ### Added
 
 - `agent.stream()` now forwards streamed tool input lifecycle chunks (`tool-input-start`, normalized `tool-input-delta`, and `tool-input-end`) before the final `tool-call`, allowing clients to render tool arguments as they are generated (#132)
