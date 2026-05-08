@@ -2356,8 +2356,10 @@ export type StreamPart =
   // or invent message IDs themselves.
   //
   // `turn-start` always precedes the first content delta of a new assistant
-  // message. `turn-end` always follows the last delta of that message. Tools
-  // executed within the turn appear between them as `tool-call`/`tool-result`.
+  // message. `turn-end` always follows the last delta of that message. Tool
+  // input lifecycle events (`tool-input-start`/`tool-input-delta`/
+  // `tool-input-end`) can appear between them before the authoritative
+  // `tool-call`, and tool results can appear as `tool-result`.
   | { type: "turn-start"; messageId?: string }
   | {
       type: "turn-end";

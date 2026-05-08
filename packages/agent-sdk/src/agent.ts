@@ -3254,13 +3254,15 @@ export function createAgent(options: AgentOptions): Agent {
                         ? rawPart.textDelta
                         : typeof rawPart.delta === "string"
                           ? rawPart.delta
-                          : "";
-                yield {
-                  type: "tool-input-delta",
-                  toolCallId: rawPart.toolCallId,
-                  toolName: typeof rawPart.toolName === "string" ? rawPart.toolName : undefined,
-                  inputTextDelta,
-                };
+                          : undefined;
+                if (inputTextDelta !== undefined) {
+                  yield {
+                    type: "tool-input-delta",
+                    toolCallId: rawPart.toolCallId,
+                    toolName: typeof rawPart.toolName === "string" ? rawPart.toolName : undefined,
+                    inputTextDelta,
+                  };
+                }
               }
             } else if (part.type === "tool-input-end") {
               const rawPart = part as unknown as { toolCallId?: unknown; toolName?: unknown };
