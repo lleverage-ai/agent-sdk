@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `agent.stream()` now normalizes AI SDK v6 tool input chunks that use `id`/`delta` fields, preserving `toolName` across start/delta/end events so real provider streams expose progressive tool arguments (#132)
+
 ## [0.1.0-alpha.5] - 2026-05-08
 
 ### Added

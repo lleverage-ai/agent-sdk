@@ -3176,6 +3176,7 @@ export function createAgent(options: AgentOptions): Agent {
           // AI SDK only carries the response id on `finish-step`, not on
           // `start-step`, so `turn-start` is emitted without a messageId and
           // consumers correlate via the matching `turn-end`.
+          const activeToolInputToolNames = new Map<string, string>();
           for await (const part of response.fullStream) {
             if (part.type === "start-step") {
               // A new assistant message is beginning.
@@ -3224,12 +3225,26 @@ export function createAgent(options: AgentOptions): Agent {
                 id: typeof part.id === "string" ? part.id : undefined,
               };
             } else if (part.type === "tool-input-start") {
-              const rawPart = part as unknown as { toolCallId?: unknown; toolName?: unknown };
-              if (typeof rawPart.toolCallId === "string") {
+              const rawPart = part as unknown as {
+                id?: unknown;
+                toolCallId?: unknown;
+                toolName?: unknown;
+              };
+              const toolCallId =
+                typeof rawPart.toolCallId === "string"
+                  ? rawPart.toolCallId
+                  : typeof rawPart.id === "string"
+                    ? rawPart.id
+                    : undefined;
+              const toolName = typeof rawPart.toolName === "string" ? rawPart.toolName : undefined;
+              if (toolCallId !== undefined) {
+                if (toolName !== undefined) {
+                  activeToolInputToolNames.set(toolCallId, toolName);
+                }
                 yield {
                   type: "tool-input-start",
-                  toolCallId: rawPart.toolCallId,
-                  toolName: typeof rawPart.toolName === "string" ? rawPart.toolName : undefined,
+                  toolCallId,
+                  toolName,
                 };
               }
             } else if (
@@ -3237,6 +3252,7 @@ export function createAgent(options: AgentOptions): Agent {
               (part as { type: string }).type === "tool-call-delta"
             ) {
               const rawPart = part as unknown as {
+                id?: unknown;
                 toolCallId?: unknown;
                 toolName?: unknown;
                 inputTextDelta?: unknown;
@@ -3244,7 +3260,13 @@ export function createAgent(options: AgentOptions): Agent {
                 textDelta?: unknown;
                 delta?: unknown;
               };
-              if (typeof rawPart.toolCallId === "string") {
+              const toolCallId =
+                typeof rawPart.toolCallId === "string"
+                  ? rawPart.toolCallId
+                  : typeof rawPart.id === "string"
+                    ? rawPart.id
+                    : undefined;
+              if (toolCallId !== undefined) {
                 const inputTextDelta =
                   typeof rawPart.inputTextDelta === "string"
                     ? rawPart.inputTextDelta
@@ -3258,20 +3280,37 @@ export function createAgent(options: AgentOptions): Agent {
                 if (inputTextDelta !== undefined) {
                   yield {
                     type: "tool-input-delta",
-                    toolCallId: rawPart.toolCallId,
-                    toolName: typeof rawPart.toolName === "string" ? rawPart.toolName : undefined,
+                    toolCallId,
+                    toolName:
+                      typeof rawPart.toolName === "string"
+                        ? rawPart.toolName
+                        : activeToolInputToolNames.get(toolCallId),
                     inputTextDelta,
                   };
                 }
               }
             } else if (part.type === "tool-input-end") {
-              const rawPart = part as unknown as { toolCallId?: unknown; toolName?: unknown };
-              if (typeof rawPart.toolCallId === "string") {
+              const rawPart = part as unknown as {
+                id?: unknown;
+                toolCallId?: unknown;
+                toolName?: unknown;
+              };
+              const toolCallId =
+                typeof rawPart.toolCallId === "string"
+                  ? rawPart.toolCallId
+                  : typeof rawPart.id === "string"
+                    ? rawPart.id
+                    : undefined;
+              if (toolCallId !== undefined) {
                 yield {
                   type: "tool-input-end",
-                  toolCallId: rawPart.toolCallId,
-                  toolName: typeof rawPart.toolName === "string" ? rawPart.toolName : undefined,
+                  toolCallId,
+                  toolName:
+                    typeof rawPart.toolName === "string"
+                      ? rawPart.toolName
+                      : activeToolInputToolNames.get(toolCallId),
                 };
+                activeToolInputToolNames.delete(toolCallId);
               }
             } else if (part.type === "tool-call") {
               yield {

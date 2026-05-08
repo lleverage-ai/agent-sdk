@@ -261,6 +261,95 @@ describe("Stream lifecycle events", () => {
     });
   });
 
+  it("normalizes AI SDK tool input chunks that use id and delta fields", async () => {
+    const model = createMockModel();
+    const agent = createAgent({ model });
+
+    const usage = { promptTokens: 4, completionTokens: 8, totalTokens: 12 };
+    const mockStream = {
+      fullStream: (async function* () {
+        yield { type: "start-step" as const };
+        yield {
+          type: "tool-input-start" as const,
+          id: "call_1",
+          toolName: "send_user_message",
+        };
+        yield {
+          type: "tool-input-delta" as const,
+          id: "call_1",
+          delta: '{"message":"Hel',
+        };
+        yield {
+          type: "tool-input-delta" as const,
+          id: "call_1",
+          delta: 'lo"}',
+        };
+        yield {
+          type: "tool-input-end" as const,
+          id: "call_1",
+        };
+        yield {
+          type: "tool-call" as const,
+          toolCallId: "call_1",
+          toolName: "send_user_message",
+          input: { message: "Hello" },
+        };
+        yield {
+          type: "finish-step" as const,
+          response: { id: "msg_tool" },
+          finishReason: "tool-calls" as const,
+          usage,
+        };
+        yield {
+          type: "finish" as const,
+          finishReason: "tool-calls" as const,
+          totalUsage: usage,
+        };
+      })(),
+      text: Promise.resolve(""),
+      usage: Promise.resolve(usage),
+      finishReason: Promise.resolve("tool-calls" as const),
+      steps: Promise.resolve([]),
+    };
+    vi.mocked(streamText).mockReturnValue(mockStream as any);
+
+    const collected: StreamPart[] = [];
+    for await (const part of agent.stream({ prompt: "test" })) {
+      collected.push(part);
+    }
+
+    expect(collected.slice(1, 5)).toEqual([
+      {
+        type: "tool-input-start",
+        toolCallId: "call_1",
+        toolName: "send_user_message",
+      },
+      {
+        type: "tool-input-delta",
+        toolCallId: "call_1",
+        toolName: "send_user_message",
+        inputTextDelta: '{"message":"Hel',
+      },
+      {
+        type: "tool-input-delta",
+        toolCallId: "call_1",
+        toolName: "send_user_message",
+        inputTextDelta: 'lo"}',
+      },
+      {
+        type: "tool-input-end",
+        toolCallId: "call_1",
+        toolName: "send_user_message",
+      },
+    ]);
+    expect(collected[5]).toEqual({
+      type: "tool-call",
+      toolCallId: "call_1",
+      toolName: "send_user_message",
+      input: { message: "Hello" },
+    });
+  });
+
   it("emits turn-start/turn-end without messageId when finish-step has no response id", async () => {
     const model = createMockModel();
     const agent = createAgent({ model });
