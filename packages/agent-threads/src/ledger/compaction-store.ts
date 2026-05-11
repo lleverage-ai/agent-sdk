@@ -85,19 +85,33 @@ export function createLedgerCompactionStore(ledgerStore: ILedgerStore): Compacti
       const run = await ledgerStore.beginRun({ threadId });
       await ledgerStore.activateRun(run.runId);
 
-      const carrier: CanonicalMessage = {
-        id: summary.summaryId,
-        parentMessageId: summary.coveredRange.endMessageId,
-        role: "system",
-        parts: [summary],
-        createdAt: summary.provenance.createdAt,
-        metadata: {
-          schemaVersion: CANONICAL_MESSAGE_SCHEMA_VERSION,
-          isCompactionCarrier: true,
-        },
-      };
+      try {
+        const carrier: CanonicalMessage = {
+          id: summary.summaryId,
+          parentMessageId: summary.coveredRange.endMessageId,
+          role: "system",
+          parts: [summary],
+          createdAt: summary.provenance.createdAt,
+          metadata: {
+            schemaVersion: CANONICAL_MESSAGE_SCHEMA_VERSION,
+            isCompactionCarrier: true,
+          },
+        };
 
-      await ledgerStore.finalizeRun({ runId: run.runId, status: "committed", messages: [carrier] });
+        await ledgerStore.finalizeRun({
+          runId: run.runId,
+          status: "committed",
+          messages: [carrier],
+        });
+      } catch (error) {
+        // Best-effort: mark the helper run failed so reconciliation does not
+        // have to clean it up later. Swallow secondary failures so the original
+        // error always surfaces to the caller.
+        await ledgerStore
+          .finalizeRun({ runId: run.runId, status: "failed" })
+          .catch(() => undefined);
+        throw error;
+      }
     },
 
     load,
