@@ -4,68 +4,138 @@
  * @module
  */
 
-/** Current canonical message schema version. */
+/**
+ * Current canonical message schema version. Bump when {@link CanonicalMessage}
+ * or any of its nested part shapes change in a way persisted carriers must
+ * detect.
+ *
+ * @category Canonical
+ */
 export const CANONICAL_MESSAGE_SCHEMA_VERSION = 2;
 
-/** JSON primitive values. */
+/**
+ * JSON primitive values.
+ *
+ * @category Canonical
+ */
 export type JsonPrimitive = string | number | boolean | null;
 
-/** A JSON-serializable value. */
+/**
+ * A JSON-serializable value (primitive, object, or array).
+ *
+ * @category Canonical
+ */
 export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
 
-/** A JSON-serializable object. */
+/**
+ * A JSON-serializable object whose keys are strings and values are
+ * {@link JsonValue}.
+ *
+ * @category Canonical
+ */
 export interface JsonObject {
   readonly [key: string]: JsonValue;
 }
 
-/** A JSON-serializable array. */
+/**
+ * A JSON-serializable array of {@link JsonValue}.
+ *
+ * @category Canonical
+ */
 export type JsonArray = readonly JsonValue[];
 
-/** A text segment within a canonical message. */
+/**
+ * A text segment within a canonical message.
+ *
+ * @category Canonical
+ */
 export interface TextPart {
+  /** Discriminator for {@link CanonicalPart}. */
   readonly type: "text";
+  /** Raw text content of the segment. */
   readonly text: string;
 }
 
-/** A reasoning/thinking segment within a canonical message. */
+/**
+ * A reasoning/thinking segment within a canonical message.
+ *
+ * @category Canonical
+ */
 export interface ReasoningPart {
+  /** Discriminator for {@link CanonicalPart}. */
   readonly type: "reasoning";
+  /** Raw reasoning content emitted by the model. */
   readonly text: string;
 }
 
-/** Additional JSON-compatible metadata preserved on tool call and tool result parts. */
+/**
+ * Additional JSON-compatible metadata preserved on tool call and tool result parts.
+ *
+ * @category Canonical
+ */
 export interface ToolPartMetadata {
   readonly [key: string]: JsonValue;
 }
 
-/** A tool invocation recorded within a canonical message. */
+/**
+ * A tool invocation recorded within a canonical message.
+ *
+ * @category Canonical
+ */
 export interface ToolCallPart {
+  /** Discriminator for {@link CanonicalPart}. */
   readonly type: "tool-call";
+  /** Stable identifier the matching {@link ToolResultPart} references. */
   readonly toolCallId: string;
+  /** Name of the tool being invoked. */
   readonly toolName: string;
+  /** Arguments passed to the tool. Shape is tool-specific. */
   readonly input: unknown;
+  /** Optional provider/runtime-specific metadata. */
   readonly metadata?: ToolPartMetadata;
 }
 
-/** A tool result recorded as part of a tool-role message. */
+/**
+ * A tool result recorded as part of a tool-role message.
+ *
+ * @category Canonical
+ */
 export interface ToolResultPart {
+  /** Discriminator for {@link CanonicalPart}. */
   readonly type: "tool-result";
+  /** Identifier of the originating {@link ToolCallPart}. */
   readonly toolCallId: string;
+  /** Name of the tool that produced the result. */
   readonly toolName: string;
+  /** Result payload. Shape is tool-specific. */
   readonly output: unknown;
+  /** Whether the tool reported an error rather than a successful result. */
   readonly isError: boolean;
+  /** Optional provider/runtime-specific metadata. */
   readonly metadata?: ToolPartMetadata;
 }
 
-/** A file attachment within a canonical message. */
+/**
+ * A file attachment within a canonical message.
+ *
+ * @category Canonical
+ */
 export interface FilePart {
+  /** Discriminator for {@link CanonicalPart}. */
   readonly type: "file";
+  /** IANA media type of the referenced file. */
   readonly mimeType: string;
+  /** URL or URI where the file content lives. */
   readonly url: string;
+  /** Optional display name for the file. */
   readonly name?: string;
 }
 
-/** Reason a transcript compaction summary was created. */
+/**
+ * Reason a transcript compaction summary was created.
+ *
+ * @category Canonical
+ */
 export type CompactionTrigger =
   | "token_threshold"
   | "hard_cap"
@@ -73,53 +143,101 @@ export type CompactionTrigger =
   | "error_fallback"
   | "manual";
 
-/** Structured anchor for a compaction summary. */
+/**
+ * Structured anchor for a compaction summary. All fields are optional so
+ * producers can populate only what they have signal for.
+ *
+ * @category Canonical
+ */
 export interface CompactionSummaryStructured {
+  /** Top-line goal the conversation is pursuing. */
   readonly goal?: string;
+  /** Constraints the user or system has imposed on the work. */
   readonly constraints?: readonly string[];
+  /** Progress breakdown by lifecycle bucket. */
   readonly progress?: {
+    /** Items already completed. */
     readonly done?: readonly string[];
+    /** Items currently in flight. */
     readonly inProgress?: readonly string[];
+    /** Items blocked on external action. */
     readonly blocked?: readonly string[];
   };
+  /** Decisions made so far that should be preserved across compaction. */
   readonly decisions?: readonly string[];
+  /** Planned next steps. */
   readonly nextSteps?: readonly string[];
+  /** Critical context that must not be dropped (IDs, file paths, secrets refs). */
   readonly criticalContext?: readonly string[];
+  /** Files referenced during the compacted range. */
   readonly relevantFiles?: readonly { readonly path: string; readonly note?: string }[];
+  /** Producer-specific extensions, opaque to the canonical schema. */
   readonly extensions?: JsonObject;
 }
 
-/** Persistent summary substituting for a covered canonical message range. */
+/**
+ * Persistent summary substituting for a contiguous range of canonical messages
+ * when honoured by a summary-aware context builder.
+ *
+ * @category Canonical
+ */
 export interface CompactionSummaryPart {
+  /** Discriminator for {@link CanonicalPart}. */
   readonly type: "compaction-summary";
+  /** Stable identifier for this summary (used as the carrier message id). */
   readonly summaryId: string;
+  /** Inclusive range of message ids the summary substitutes for. */
   readonly coveredRange: {
+    /** First message id covered by the summary. */
     readonly startMessageId: string;
+    /** Last message id covered by the summary. */
     readonly endMessageId: string;
   };
+  /** Non-empty ordered list of message ids the summary replaces. */
   readonly coveredMessageIds: readonly [string, ...string[]];
+  /** Plain-text rendering of the summary, used as a fallback when no structured form is honoured. */
   readonly text: string;
+  /** Optional structured rendering preferred when the consumer supports it. */
   readonly structured?: CompactionSummaryStructured;
+  /** Provenance metadata describing how the summary was generated. */
   readonly provenance: {
+    /** Run id that produced the summary. */
     readonly runId: string;
+    /** Model identifier used to summarise. */
     readonly model: string;
+    /** Trigger that caused compaction. */
     readonly trigger: CompactionTrigger;
+    /** Token usage spent on the summarisation call. */
     readonly tokens: {
+      /** Prompt tokens consumed. */
       readonly input: number;
+      /** Completion tokens consumed. */
       readonly output: number;
+      /** Cached prompt tokens consumed, if reported by the provider. */
       readonly cachedInput?: number;
     };
+    /** Wall-clock duration of the summarisation call in milliseconds. */
     readonly durationMs: number;
+    /** Estimated token count of the original messages before compaction. */
     readonly tokensBefore: number;
+    /** Estimated token count after substituting the summary. */
     readonly tokensAfter: number;
+    /** ISO 8601 timestamp when the summary was created. */
     readonly createdAt: string;
   };
+  /** Layer index — higher tiers summarise lower tiers. */
   readonly tier: number;
+  /** Summary ids this summary absorbed (for tiered/rollup chains). */
   readonly absorbedSummaryIds?: readonly string[];
+  /** Schema version of the summary payload itself. */
   readonly schemaVersion: 1;
 }
 
-/** Discriminated union of all canonical message parts. */
+/**
+ * Discriminated union of all canonical message parts.
+ *
+ * @category Canonical
+ */
 export type CanonicalPart =
   | TextPart
   | ReasoningPart
@@ -128,33 +246,74 @@ export type CanonicalPart =
   | FilePart
   | CompactionSummaryPart;
 
-/** Metadata attached to a canonical message. */
+/**
+ * Metadata attached to a canonical message.
+ *
+ * Persistence layers may set additional well-known keys here — notably
+ * `isCompactionCarrier: true` to mark messages that carry a
+ * {@link CompactionSummaryPart} as a branch annotation rather than a
+ * regular conversation node.
+ *
+ * @category Canonical
+ */
 export interface CanonicalMessageMetadata {
+  /** Schema version this message was written under. */
   readonly schemaVersion: number;
+  /** Additional opaque metadata keys. */
   readonly [key: string]: unknown;
 }
 
-/** A normalized immutable message in a conversation transcript. */
+/**
+ * A normalized immutable message in a conversation transcript.
+ *
+ * @category Canonical
+ */
 export interface CanonicalMessage {
+  /** Stable identifier for this message. */
   readonly id: string;
+  /** Parent message id, or `null` for conversation roots. */
   readonly parentMessageId: string | null;
+  /** Author role of the message. */
   readonly role: "user" | "assistant" | "system" | "tool";
+  /** Ordered parts that make up the message body. */
   readonly parts: readonly CanonicalPart[];
+  /** ISO 8601 timestamp when the message was committed. */
   readonly createdAt: string;
+  /** Schema-versioned metadata. */
   readonly metadata: CanonicalMessageMetadata;
 }
 
-/** Explicit branch selections keyed by parent message ID. */
+/**
+ * Explicit branch selections keyed by parent message ID. The value is the
+ * child id to follow at each fork.
+ *
+ * @category Canonical
+ */
 export interface BranchSelections {
   readonly [parentMessageId: string]: string;
 }
 
-/** Returns true when a canonical part is a compaction summary. */
+/**
+ * Returns true when a canonical part is a {@link CompactionSummaryPart}.
+ *
+ * @param part - Canonical part to inspect
+ * @returns True if `part.type === "compaction-summary"`
+ *
+ * @category Canonical
+ */
 export function isCompactionSummaryPart(part: CanonicalPart): part is CompactionSummaryPart {
   return part.type === "compaction-summary";
 }
 
-/** Returns true when a canonical message carries a compaction-summary annotation. */
+/**
+ * Returns true when a canonical message is a compaction-summary carrier — i.e.
+ * its metadata declares `isCompactionCarrier: true`.
+ *
+ * @param message - Canonical message to inspect
+ * @returns True if the message carries a compaction summary as an annotation
+ *
+ * @category Canonical
+ */
 export function isCompactionCarrierMessage(message: CanonicalMessage): boolean {
   return message.metadata.isCompactionCarrier === true;
 }
@@ -426,26 +585,50 @@ export interface RecoverResult {
 // Context Builder Types
 // ---------------------------------------------------------------------------
 
-/** Options for building context from a transcript. */
+/**
+ * Options for building context from a transcript.
+ *
+ * @category ContextBuilder
+ */
 export interface ContextBuilderOptions {
+  /** Thread to build context for. */
   readonly threadId: string;
+  /** Branch resolution strategy; defaults to `"active"`. See {@link GetTranscriptOptions}. */
   readonly branch?: "active" | "all" | { selections: BranchSelections };
+  /** Maximum number of messages to return; takes the most recent when truncating. */
   readonly maxMessages?: number;
+  /** When false, strips {@link ToolResultPart} entries from message parts. */
   readonly includeToolResults?: boolean;
+  /** When false, strips {@link ReasoningPart} entries from message parts. */
   readonly includeReasoning?: boolean;
 }
 
-/** Provenance metadata for built context. */
+/**
+ * Provenance metadata returned alongside built context.
+ *
+ * @category ContextBuilder
+ */
 export interface ProvenanceMetadata {
+  /** Thread the context was built from. */
   readonly threadId: string;
+  /** Number of messages in the built context. */
   readonly messageCount: number;
+  /** Id of the first message in the built context, or `null` when empty. */
   readonly firstMessageId: string | null;
+  /** Id of the last message in the built context, or `null` when empty. */
   readonly lastMessageId: string | null;
+  /** Summary ids honoured by the builder, if any. */
   readonly summariesHonoured?: readonly string[];
 }
 
-/** Built transcript context. */
+/**
+ * Built transcript context, paired with provenance metadata.
+ *
+ * @category ContextBuilder
+ */
 export interface BuiltContext {
+  /** Messages in the built context, ordered for replay. */
   readonly messages: CanonicalMessage[];
+  /** Provenance metadata describing how the context was built. */
   readonly provenance: ProvenanceMetadata;
 }
