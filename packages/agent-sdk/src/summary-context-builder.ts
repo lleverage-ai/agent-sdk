@@ -52,7 +52,7 @@ export interface ProvenanceMetadata {
  */
 export interface BuiltContext {
   /** Messages to pass to downstream model-input conversion. */
-  readonly messages: CanonicalMessage[];
+  readonly messages: readonly CanonicalMessage[];
   /** Metadata describing how the context was built. */
   readonly provenance: ProvenanceMetadata;
 }
@@ -208,7 +208,9 @@ export class SummaryAwareContextBuilder implements IContextBuilder {
 
     const filtered = filterMessages(messages, options);
     const result = buildResult(options.threadId, filtered);
-    return { ...result, provenance: { ...result.provenance, summariesHonoured: honoured } };
+    const visibleIds = new Set(filtered.map((message) => message.id));
+    const summariesHonoured = honoured.filter((id) => visibleIds.has(id));
+    return { ...result, provenance: { ...result.provenance, summariesHonoured } };
   }
 }
 
