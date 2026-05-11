@@ -7,7 +7,36 @@ import {
 
 /** Store interface for persistent compaction summaries. */
 export interface CompactionStore {
+  /**
+   * Persist a compaction summary.
+   *
+   * @param args - Save arguments
+   * @param args.threadId - Thread identifier the summary belongs to
+   * @param args.runId - Run identifier associated with the compaction
+   * @param args.summary - The summary part to persist
+   * @returns A promise that resolves when the summary has been saved
+   * @throws {Error} If the summary already exists or the backing store fails
+   *
+   * @example
+   * ```typescript
+   * await store.save({ threadId, runId, summary });
+   * ```
+   */
   save(args: { threadId: string; runId: string; summary: CompactionSummaryPart }): Promise<void>;
+
+  /**
+   * Load all compaction summaries for a thread.
+   *
+   * @param args - Load arguments
+   * @param args.threadId - Thread identifier to load summaries for
+   * @returns Compaction summaries persisted for the thread
+   * @throws {Error} If the backing store fails to load the transcript
+   *
+   * @example
+   * ```typescript
+   * const summaries = await store.load({ threadId });
+   * ```
+   */
   load(args: { threadId: string }): Promise<readonly CompactionSummaryPart[]>;
 }
 
@@ -26,11 +55,29 @@ export interface CompactionStore {
  * the design assumes a single writer per thread (typically the run executor
  * that owns compaction). The underlying message id uniqueness — enforced by
  * the SQLite store via PRIMARY KEY — backstops the check at storage level.
+ *
+ * @param ledgerStore - Ledger store used to persist carrier messages and read summaries
+ * @returns A {@link CompactionStore} backed by the ledger
+ * @throws {Error} If ledger operations fail while saving or loading summaries
+ *
+ * @example
+ * ```typescript
+ * const compactionStore = createLedgerCompactionStore(ledgerStore);
+ * await compactionStore.save({ threadId, runId, summary });
+ * ```
  */
 export function createLedgerCompactionStore(ledgerStore: ILedgerStore): CompactionStore {
+  const load: CompactionStore["load"] = async ({ threadId }) => {
+    const transcript = await ledgerStore.getTranscript({ threadId, branch: "all" });
+    return transcript
+      .filter((message) => message.metadata.isCompactionCarrier === true)
+      .flatMap((message) => message.parts)
+      .filter((part): part is CompactionSummaryPart => part.type === "compaction-summary");
+  };
+
   return {
-    async save({ threadId, summary }) {
-      const existing = await this.load({ threadId });
+    async save({ threadId, runId: _runId, summary }) {
+      const existing = await load({ threadId });
       if (existing.some((item) => item.summaryId === summary.summaryId)) {
         throw new Error(`Compaction summary already exists: ${summary.summaryId}`);
       }
@@ -53,12 +100,6 @@ export function createLedgerCompactionStore(ledgerStore: ILedgerStore): Compacti
       await ledgerStore.finalizeRun({ runId: run.runId, status: "committed", messages: [carrier] });
     },
 
-    async load({ threadId }) {
-      const transcript = await ledgerStore.getTranscript({ threadId, branch: "all" });
-      return transcript
-        .filter((message) => message.metadata.isCompactionCarrier === true)
-        .flatMap((message) => message.parts)
-        .filter((part): part is CompactionSummaryPart => part.type === "compaction-summary");
-    },
+    load,
   };
 }

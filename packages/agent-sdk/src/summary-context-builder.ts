@@ -7,10 +7,23 @@ import { isCompactionSummaryPart } from "./canonical.js";
  * @category Context
  */
 export interface ContextBuilderOptions {
+  /** Thread identifier to build context for. */
   readonly threadId: string;
+  /** Branch view to resolve before building context.
+   * @defaultValue "active"
+   */
   readonly branch?: "active" | "all" | { selections: BranchSelections };
+  /** Maximum number of messages to return after filtering.
+   * @defaultValue undefined
+   */
   readonly maxMessages?: number;
+  /** Whether to include tool-result parts.
+   * @defaultValue true
+   */
   readonly includeToolResults?: boolean;
+  /** Whether to include reasoning parts.
+   * @defaultValue true
+   */
   readonly includeReasoning?: boolean;
 }
 
@@ -20,10 +33,15 @@ export interface ContextBuilderOptions {
  * @category Context
  */
 export interface ProvenanceMetadata {
+  /** Thread identifier used to build the context. */
   readonly threadId: string;
+  /** Number of messages returned in the built context. */
   readonly messageCount: number;
+  /** First returned message ID, or null when no messages were returned. */
   readonly firstMessageId: string | null;
+  /** Last returned message ID, or null when no messages were returned. */
   readonly lastMessageId: string | null;
+  /** Summary IDs substituted into the returned context. */
   readonly summariesHonoured?: readonly string[];
 }
 
@@ -33,7 +51,9 @@ export interface ProvenanceMetadata {
  * @category Context
  */
 export interface BuiltContext {
+  /** Messages to pass to downstream model-input conversion. */
   readonly messages: CanonicalMessage[];
+  /** Metadata describing how the context was built. */
   readonly provenance: ProvenanceMetadata;
 }
 
@@ -43,6 +63,14 @@ export interface BuiltContext {
  * @category Context
  */
 export interface CanonicalTranscriptStore {
+  /**
+   * Load a branch-resolved canonical transcript.
+   *
+   * @param options - Transcript lookup options
+   * @param options.threadId - Thread identifier to load
+   * @param options.branch - Branch view to resolve
+   * @returns Canonical messages for the requested transcript view
+   */
   getTranscript(options: {
     threadId: string;
     branch?: "active" | "all" | { selections: BranchSelections };
@@ -55,17 +83,35 @@ export interface CanonicalTranscriptStore {
  * @category Context
  */
 export interface IContextBuilder {
+  /**
+   * Build context from a transcript.
+   *
+   * @param options - Context builder options
+   * @returns Built context and provenance metadata
+   */
   build(options: ContextBuilderOptions): Promise<BuiltContext>;
 }
 
 /**
  * Reference implementation that returns a filtered full transcript.
  *
+ * @example
+ * ```typescript
+ * const builder = new FullContextBuilder(store);
+ * const context = await builder.build({ threadId: "thread-1" });
+ * ```
+ *
  * @category Context
  */
 export class FullContextBuilder implements IContextBuilder {
   constructor(private readonly store: CanonicalTranscriptStore) {}
 
+  /**
+   * Build context from the full transcript.
+   *
+   * @param options - Context builder options
+   * @returns Built context containing filtered canonical messages
+   */
   async build(options: ContextBuilderOptions): Promise<BuiltContext> {
     let messages = await this.store.getTranscript({
       threadId: options.threadId,
@@ -79,11 +125,23 @@ export class FullContextBuilder implements IContextBuilder {
 /**
  * Context builder that substitutes valid compaction summaries for their covered messages.
  *
+ * @example
+ * ```typescript
+ * const builder = new SummaryAwareContextBuilder(store);
+ * const context = await builder.build({ threadId: "thread-1" });
+ * ```
+ *
  * @category Context
  */
 export class SummaryAwareContextBuilder implements IContextBuilder {
   constructor(private readonly store: CanonicalTranscriptStore) {}
 
+  /**
+   * Build summary-aware context for a branch-resolved transcript.
+   *
+   * @param options - Context builder options
+   * @returns Built context with valid summaries substituted for covered ranges
+   */
   async build(options: ContextBuilderOptions): Promise<BuiltContext> {
     const transcript = await this.store.getTranscript({
       threadId: options.threadId,
@@ -240,8 +298,13 @@ function filterMessages(
       }))
       .filter((message) => message.parts.length > 0);
   }
-  if (options.maxMessages !== undefined && out.length > options.maxMessages)
-    return out.slice(-options.maxMessages);
+  if (options.maxMessages !== undefined) {
+    if (!Number.isInteger(options.maxMessages) || options.maxMessages < 0) {
+      throw new Error("maxMessages must be a non-negative integer");
+    }
+    if (options.maxMessages === 0) return [];
+    if (out.length > options.maxMessages) return out.slice(-options.maxMessages);
+  }
   return out;
 }
 

@@ -233,6 +233,8 @@ export interface BranchSelections {
 /**
  * Returns true when a canonical part is a compaction summary.
  *
+ * @param part - The canonical part to check
+ * @returns True when the part is a {@link CompactionSummaryPart}
  * @category Context
  */
 export function isCompactionSummaryPart(part: CanonicalPart): part is CompactionSummaryPart {
@@ -246,6 +248,8 @@ export function isCompactionSummaryPart(part: CanonicalPart): part is Compaction
  * resolution treats them as annotations attached to their parent message
  * rather than alternative continuations.
  *
+ * @param message - The canonical message to check
+ * @returns True when the message is a compaction carrier
  * @category Context
  */
 export function isCompactionCarrierMessage(message: CanonicalMessage): boolean {
