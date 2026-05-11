@@ -34,13 +34,13 @@ export type {
   StaleRunInfo,
   RecoverRunOptions,
   RecoverResult,
-  CANONICAL_MESSAGE_SCHEMA_VERSION,
   ContextBuilderOptions,
   ProvenanceMetadata,
   BuiltContext,
 } from "./types.js";
 export {
   ACTIVE_RUN_STATUSES,
+  CANONICAL_MESSAGE_SCHEMA_VERSION,
   TERMINAL_RUN_STATUSES,
   isActiveRunStatus,
   isTerminalRunStatus,
@@ -68,8 +68,9 @@ export type { ListStaleRunsOptions, RecoverAllResult } from "./reconciliation.js
 // Context building
 export { createLedgerCompactionStore } from "./compaction-store.js";
 export type { CompactionStore } from "./compaction-store.js";
-export { FullContextBuilder } from "./context-builder.js";
-export type { IContextBuilder } from "./context-builder.js";
+// Builder primitives are owned by agent-sdk; re-exported here for convenience.
+export { FullContextBuilder, SummaryAwareContextBuilder } from "@lleverage-ai/agent-sdk";
+export type { IContextBuilder } from "@lleverage-ai/agent-sdk";
 
 // Stores
 export type { ILedgerStore } from "./stores/ledger-store.js";

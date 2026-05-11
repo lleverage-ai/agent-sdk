@@ -1,12 +1,11 @@
-import type { CanonicalMessage, CompactionSummaryPart } from "./canonical.js";
+import type { BranchSelections, CanonicalMessage, CompactionSummaryPart } from "./canonical.js";
 import { isCompactionSummaryPart } from "./canonical.js";
 
-/** Branch child selections keyed by parent message ID. */
-export interface BranchSelections {
-  readonly [parentMessageId: string]: string;
-}
-
-/** Options for building context from a canonical transcript. */
+/**
+ * Options for building context from a canonical transcript.
+ *
+ * @category Context
+ */
 export interface ContextBuilderOptions {
   readonly threadId: string;
   readonly branch?: "active" | "all" | { selections: BranchSelections };
@@ -15,7 +14,11 @@ export interface ContextBuilderOptions {
   readonly includeReasoning?: boolean;
 }
 
-/** Provenance metadata returned by a context builder. */
+/**
+ * Provenance metadata returned by a context builder.
+ *
+ * @category Context
+ */
 export interface ProvenanceMetadata {
   readonly threadId: string;
   readonly messageCount: number;
@@ -24,13 +27,21 @@ export interface ProvenanceMetadata {
   readonly summariesHonoured?: readonly string[];
 }
 
-/** Built canonical context. */
+/**
+ * Built canonical context.
+ *
+ * @category Context
+ */
 export interface BuiltContext {
   readonly messages: CanonicalMessage[];
   readonly provenance: ProvenanceMetadata;
 }
 
-/** Minimal store capability required by summary-aware context building. */
+/**
+ * Minimal store capability required by summary-aware context building.
+ *
+ * @category Context
+ */
 export interface CanonicalTranscriptStore {
   getTranscript(options: {
     threadId: string;
@@ -38,12 +49,20 @@ export interface CanonicalTranscriptStore {
   }): Promise<CanonicalMessage[]>;
 }
 
-/** Interface for building context from a conversation transcript. */
+/**
+ * Interface for building context from a conversation transcript.
+ *
+ * @category Context
+ */
 export interface IContextBuilder {
   build(options: ContextBuilderOptions): Promise<BuiltContext>;
 }
 
-/** Reference implementation that returns a filtered full transcript. */
+/**
+ * Reference implementation that returns a filtered full transcript.
+ *
+ * @category Context
+ */
 export class FullContextBuilder implements IContextBuilder {
   constructor(private readonly store: CanonicalTranscriptStore) {}
 
@@ -57,7 +76,11 @@ export class FullContextBuilder implements IContextBuilder {
   }
 }
 
-/** Context builder that substitutes valid compaction summaries for their covered messages. */
+/**
+ * Context builder that substitutes valid compaction summaries for their covered messages.
+ *
+ * @category Context
+ */
 export class SummaryAwareContextBuilder implements IContextBuilder {
   constructor(private readonly store: CanonicalTranscriptStore) {}
 
@@ -86,7 +109,7 @@ export class SummaryAwareContextBuilder implements IContextBuilder {
       if (entry.summary.coveredMessageIds.some((id) => consumed.has(id))) continue;
       for (const id of entry.summary.coveredMessageIds) consumed.add(id);
       consumed.add(entry.message.id);
-      byFirstCoveredId.set(entry.summary.coveredMessageIds[0] ?? entry.message.id, entry);
+      byFirstCoveredId.set(entry.summary.coveredMessageIds[0], entry);
       honoured.push(entry.summary.summaryId);
     }
 

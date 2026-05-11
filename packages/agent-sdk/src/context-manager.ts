@@ -10,6 +10,7 @@
  */
 
 import type { LanguageModel, ModelMessage } from "ai";
+import type { CompactionTrigger } from "./canonical.js";
 import type { Agent } from "./types.js";
 
 // =============================================================================
@@ -398,17 +399,6 @@ export function createTokenBudget(
 // =============================================================================
 // Compaction Policy
 // =============================================================================
-
-/**
- * Compaction trigger reason.
- *
- * @category Context
- */
-export type CompactionTrigger =
-  | "token_threshold" // Token usage exceeded threshold
-  | "hard_cap" // Token count approaching hard limit
-  | "growth_rate" // Growth rate suggests next call will exceed cap
-  | "error_fallback"; // Triggered by context length error
 
 /**
  * Policy for determining when to trigger context compaction.

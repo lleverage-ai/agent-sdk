@@ -1,6 +1,10 @@
 import type { CompactionSummaryPart } from "./canonical.js";
 
-/** Stores persistent compaction summaries for a thread. */
+/**
+ * Stores persistent compaction summaries for a thread.
+ *
+ * @category Context
+ */
 export interface CompactionStore {
   /** Persist a compaction summary. */
   save(args: { threadId: string; runId: string; summary: CompactionSummaryPart }): Promise<void>;
@@ -9,7 +13,11 @@ export interface CompactionStore {
   load(args: { threadId: string }): Promise<readonly CompactionSummaryPart[]>;
 }
 
-/** Creates an in-memory compaction summary store. */
+/**
+ * Creates an in-memory compaction summary store.
+ *
+ * @category Context
+ */
 export function createInMemoryCompactionStore(): CompactionStore {
   const summariesByThread = new Map<string, Map<string, CompactionSummaryPart>>();
 

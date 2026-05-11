@@ -26,15 +26,15 @@ function carrier(summary: CompactionSummaryPart): CanonicalMessage {
 
 function summary(
   id: string,
-  coveredMessageIds: readonly string[],
+  coveredMessageIds: readonly [string, ...string[]],
   tier = 0,
 ): CompactionSummaryPart {
   return {
     type: "compaction-summary",
     summaryId: id,
     coveredRange: {
-      startMessageId: coveredMessageIds[0] ?? "",
-      endMessageId: coveredMessageIds.at(-1) ?? "",
+      startMessageId: coveredMessageIds[0],
+      endMessageId: coveredMessageIds.at(-1) ?? coveredMessageIds[0],
     },
     coveredMessageIds,
     text: `summary ${id}`,
@@ -113,5 +113,28 @@ describe("SummaryAwareContextBuilder", () => {
 
     expect(result.messages.map((item) => item.id)).toEqual(["s2", "m4"]);
     expect(result.provenance.summariesHonoured).toEqual(["s2"]);
+  });
+
+  it("stitches multiple non-overlapping summaries on the same path in transcript order", async () => {
+    const sA = summary("sA", ["m1", "m2"]);
+    const sB = summary("sB", ["m3", "m4"]);
+    const builder = new SummaryAwareContextBuilder({
+      async getTranscript() {
+        return [
+          message("m1", null, "one"),
+          message("m2", "m1", "two"),
+          carrier(sA),
+          message("m3", "c-sA", "three"),
+          message("m4", "m3", "four"),
+          carrier(sB),
+          message("m5", "c-sB", "five"),
+        ];
+      },
+    });
+
+    const result = await builder.build({ threadId: "t1" });
+
+    expect(result.messages.map((item) => item.id)).toEqual(["sA", "sB", "m5"]);
+    expect(result.provenance.summariesHonoured).toEqual(["sA", "sB"]);
   });
 });

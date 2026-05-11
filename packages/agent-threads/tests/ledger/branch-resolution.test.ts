@@ -25,6 +25,24 @@ function makeRecord(
   return { message, runId, order };
 }
 
+function makeCarrier(
+  id: string,
+  parentMessageId: string,
+  runId: string,
+  order: number,
+): ThreadMessageRecord {
+  const message: CanonicalMessage = {
+    id,
+    parentMessageId,
+    role: "system",
+    parts: [{ type: "text", text: `carrier:${id}` }],
+    createdAt: new Date(1_700_000_000_000 + order).toISOString(),
+    metadata: { schemaVersion: 2, isCompactionCarrier: true },
+  };
+
+  return { message, runId, order };
+}
+
 function statusMap(entries: Array<[string, RunStatus]>): Map<string, RunStatus> {
   return new Map(entries);
 }
@@ -238,5 +256,110 @@ describe("branch-resolution", () => {
         activeChildId: "orphan-right",
       },
     ]);
+  });
+
+  describe("compaction carrier annotations", () => {
+    it("emits carrier annotations after their parent on the active path", () => {
+      const records = [
+        makeRecord("m1", null, "run-1", 0),
+        makeRecord("m2", "m1", "run-2", 1),
+        makeCarrier("s1", "m2", "run-carrier", 2),
+        makeRecord("m3", "m2", "run-3", 3),
+      ];
+      const statuses = statusMap([
+        ["run-1", "committed"],
+        ["run-2", "committed"],
+        ["run-carrier", "committed"],
+        ["run-3", "committed"],
+      ]);
+
+      const transcript = resolveTranscript(records, statuses, "active");
+      expect(transcript.map((message) => message.id)).toEqual(["m1", "m2", "s1", "m3"]);
+    });
+
+    it("does not let a carrier win active-child resolution against a real conversation child", () => {
+      // Carrier committed AFTER the real next message — the bug case before the fix.
+      const records = [
+        makeRecord("m1", null, "run-1", 0),
+        makeRecord("m2", "m1", "run-2", 1),
+        makeRecord("m3", "m2", "run-3", 2),
+        makeCarrier("s1", "m2", "run-carrier", 3),
+      ];
+      const statuses = statusMap([
+        ["run-1", "committed"],
+        ["run-2", "committed"],
+        ["run-3", "committed"],
+        ["run-carrier", "committed"],
+      ]);
+
+      const transcript = resolveTranscript(records, statuses, "active");
+      expect(transcript.map((message) => message.id)).toEqual(["m1", "m2", "s1", "m3"]);
+    });
+
+    it("does not emit carriers attached to messages off the active path", () => {
+      const records = [
+        makeRecord("m1", null, "run-1", 0),
+        makeRecord("m2-a", "m1", "run-2a", 1),
+        makeCarrier("s-a", "m2-a", "run-carrier-a", 2),
+        makeRecord("m2-b", "m1", "run-2b", 3),
+      ];
+      const statuses = statusMap([
+        ["run-1", "committed"],
+        ["run-2a", "committed"],
+        ["run-carrier-a", "committed"],
+        ["run-2b", "committed"],
+      ]);
+
+      const transcript = resolveTranscript(records, statuses, "active");
+      // run-2b is more recent than run-2a, so the active branch follows m2-b;
+      // s-a is a carrier on m2-a (off-path) and must not be emitted.
+      expect(transcript.map((message) => message.id)).toEqual(["m1", "m2-b"]);
+    });
+
+    it("does not report a carrier-only sibling as a fork point", () => {
+      const records = [
+        makeRecord("m1", null, "run-1", 0),
+        makeRecord("m2", "m1", "run-2", 1),
+        makeCarrier("s1", "m2", "run-carrier", 2),
+        makeRecord("m3", "m2", "run-3", 3),
+      ];
+      const statuses = statusMap([
+        ["run-1", "committed"],
+        ["run-2", "committed"],
+        ["run-carrier", "committed"],
+        ["run-3", "committed"],
+      ]);
+
+      // m2 has two children: the carrier and m3. With carriers excluded from
+      // fork detection, m2 should not be reported as a fork.
+      const tree = buildThreadTree(records, statuses);
+      expect(tree.forkPoints).toEqual([]);
+    });
+
+    it("reports a fork point only when at least two non-carrier children exist", () => {
+      const records = [
+        makeRecord("m1", null, "run-1", 0),
+        makeRecord("m2", "m1", "run-2", 1),
+        makeCarrier("s1", "m2", "run-carrier", 2),
+        makeRecord("m3-a", "m2", "run-3a", 3),
+        makeRecord("m3-b", "m2", "run-3b", 4),
+      ];
+      const statuses = statusMap([
+        ["run-1", "committed"],
+        ["run-2", "committed"],
+        ["run-carrier", "committed"],
+        ["run-3a", "committed"],
+        ["run-3b", "committed"],
+      ]);
+
+      const tree = buildThreadTree(records, statuses);
+      expect(tree.forkPoints).toEqual([
+        {
+          forkMessageId: "m2",
+          children: ["m3-a", "m3-b"],
+          activeChildId: "m3-b",
+        },
+      ]);
+    });
   });
 });

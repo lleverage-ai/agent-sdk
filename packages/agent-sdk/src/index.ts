@@ -157,7 +157,6 @@ export type {
   CompactionStrategy,
   CompactionTask,
   CompactionTaskStatus,
-  CompactionTrigger,
   ContextManager,
   ContextManagerOptions,
   CreateTokenBudgetOptions,
@@ -789,14 +788,17 @@ export {
 // Canonical transcript and compaction exports
 export {
   CANONICAL_MESSAGE_SCHEMA_VERSION,
+  isCompactionCarrierMessage,
   isCompactionSummaryPart,
 } from "./canonical.js";
 export type {
+  BranchSelections,
   CanonicalMessage,
   CanonicalMessageMetadata,
   CanonicalPart,
   CompactionSummaryPart,
   CompactionSummaryStructured,
+  CompactionTrigger,
   FilePart,
   JsonArray,
   JsonObject,
@@ -812,7 +814,6 @@ export { createInMemoryCompactionStore } from "./compaction-store.js";
 export type { CompactionStore } from "./compaction-store.js";
 export { FullContextBuilder, SummaryAwareContextBuilder } from "./summary-context-builder.js";
 export type {
-  BranchSelections,
   BuiltContext,
   CanonicalTranscriptStore,
   ContextBuilderOptions,

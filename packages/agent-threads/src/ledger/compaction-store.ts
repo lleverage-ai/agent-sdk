@@ -1,6 +1,5 @@
 import type { ILedgerStore } from "./stores/ledger-store.js";
 import type { CanonicalMessage, CompactionSummaryPart } from "./types.js";
-import { ulid } from "./ulid.js";
 
 /** Store interface for persistent compaction summaries. */
 export interface CompactionStore {
@@ -11,9 +10,18 @@ export interface CompactionStore {
 /**
  * Creates a compaction store backed by an {@link ILedgerStore}.
  *
- * Summaries are persisted as system-role carrier messages with a single
- * `compaction-summary` part. Loading returns all summary parts present in the
- * thread; branch validity is handled by `SummaryAwareContextBuilder`.
+ * Summaries are persisted as system-role carrier messages tagged with
+ * `metadata.isCompactionCarrier = true`. The carrier message id is the
+ * `summaryId`, which makes uniqueness and lookup trivial. Carriers are
+ * attached to `summary.coveredRange.endMessageId` as annotations: branch
+ * resolution treats `isCompactionCarrier` messages as siblings of the
+ * conversation rather than alternative branches, so async compaction lands
+ * cleanly without disturbing the active branch.
+ *
+ * Concurrent `save()` calls for the same `summaryId` race the dedupe check;
+ * the design assumes a single writer per thread (typically the run executor
+ * that owns compaction). The underlying message id uniqueness — enforced by
+ * the SQLite store via PRIMARY KEY — backstops the check at storage level.
  */
 export function createLedgerCompactionStore(ledgerStore: ILedgerStore): CompactionStore {
   return {
@@ -23,14 +31,11 @@ export function createLedgerCompactionStore(ledgerStore: ILedgerStore): Compacti
         throw new Error(`Compaction summary already exists: ${summary.summaryId}`);
       }
 
-      const run = await ledgerStore.beginRun({
-        threadId,
-        forkFromMessageId: summary.coveredRange.endMessageId,
-      });
+      const run = await ledgerStore.beginRun({ threadId });
       await ledgerStore.activateRun(run.runId);
 
       const carrier: CanonicalMessage = {
-        id: ulid(),
+        id: summary.summaryId,
         parentMessageId: summary.coveredRange.endMessageId,
         role: "system",
         parts: [summary],
@@ -38,7 +43,6 @@ export function createLedgerCompactionStore(ledgerStore: ILedgerStore): Compacti
         metadata: {
           schemaVersion: 2,
           isCompactionCarrier: true,
-          summaryId: summary.summaryId,
         },
       };
 

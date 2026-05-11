@@ -10,10 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added canonical transcript compaction summary types, an in-memory `CompactionStore`, `SummaryAwareContextBuilder`, and an `@lleverage-ai/agent-threads` ledger-backed compaction store adapter for persistent branch-aware transcript summary substitution.
+- Compaction carriers persisted by `createLedgerCompactionStore` are now treated as branch annotations: `chooseActiveChild` and `buildThreadTree` exclude `metadata.isCompactionCarrier === true` messages from active-child resolution and fork-point detection, and `getTranscript({ branch: "active" })` emits carrier children immediately after their parent in tree-document order so async compaction lands cleanly without stealing the active branch.
+- Exported `isCompactionCarrierMessage` helper for identifying compaction carrier messages.
 
 ### Changed
 
+- `@lleverage-ai/agent-threads` now depends on `@lleverage-ai/agent-sdk`. The canonical transcript primitives (`CanonicalMessage`, `CanonicalPart`, `CompactionSummaryPart`, `CompactionTrigger`, `BranchSelections`, `CANONICAL_MESSAGE_SCHEMA_VERSION`, etc.) are owned by `@lleverage-ai/agent-sdk` and re-exported from `@lleverage-ai/agent-threads/ledger` for source compatibility. Consumers importing types from `@lleverage-ai/agent-threads/ledger` continue to work unchanged.
+- The duplicate `FullContextBuilder` in `@lleverage-ai/agent-threads/ledger` has been removed; the ledger barrel now re-exports `FullContextBuilder` and `SummaryAwareContextBuilder` from `@lleverage-ai/agent-sdk`.
+- `CompactionTrigger` is now defined once in `@lleverage-ai/agent-sdk` (canonical 5-value union including `"manual"`); `context-manager.ts` no longer declares its own.
 - Context summarization output budget is now configurable via `summarization.summaryMaxTokens` and defaults to 8,000 tokens instead of the previous hardcoded 1,000-token summary call limit.
+- `CompactionSummaryPart.coveredMessageIds` is now a non-empty tuple `readonly [string, ...string[]]` to make it impossible to construct an unanchored summary.
+- Compaction carriers are persisted with the `summaryId` as their canonical message id, so duplicate writes are caught by the underlying store's id uniqueness rather than relying solely on a load-then-check window.
+
+### Fixed
+
+- `CANONICAL_MESSAGE_SCHEMA_VERSION` was re-exported from `@lleverage-ai/agent-threads/ledger` as a type, so the runtime value was stripped from the compiled barrel and consumers received `undefined`. It is now exported as a value.
+- `createLedgerCompactionStore.save` no longer passes `forkFromMessageId` when creating the carrier run, so compaction commits cannot supersede unrelated regenerations at the covered range's end message.
 
 ## [0.1.0-alpha.6] - 2026-05-08
 
