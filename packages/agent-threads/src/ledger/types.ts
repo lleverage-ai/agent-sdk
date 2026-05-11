@@ -8,6 +8,9 @@
 // Canonical Parts
 // ---------------------------------------------------------------------------
 
+/** Current canonical message schema version. */
+export const CANONICAL_MESSAGE_SCHEMA_VERSION = 2;
+
 /**
  * A text segment within a canonical message.
  *
@@ -109,12 +112,72 @@ export interface FilePart {
   readonly name?: string;
 }
 
+/** Reason a transcript compaction summary was created. */
+export type CompactionTrigger =
+  | "token_threshold"
+  | "hard_cap"
+  | "growth_rate"
+  | "error_fallback"
+  | "manual";
+
+/** Structured anchor for a compaction summary. */
+export interface CompactionSummaryStructured {
+  readonly goal?: string;
+  readonly constraints?: readonly string[];
+  readonly progress?: {
+    readonly done?: readonly string[];
+    readonly inProgress?: readonly string[];
+    readonly blocked?: readonly string[];
+  };
+  readonly decisions?: readonly string[];
+  readonly nextSteps?: readonly string[];
+  readonly criticalContext?: readonly string[];
+  readonly relevantFiles?: readonly { readonly path: string; readonly note?: string }[];
+  readonly extensions?: JsonObject;
+}
+
+/** Persistent summary substituting for a covered canonical message range. */
+export interface CompactionSummaryPart {
+  readonly type: "compaction-summary";
+  readonly summaryId: string;
+  readonly coveredRange: {
+    readonly startMessageId: string;
+    readonly endMessageId: string;
+  };
+  readonly coveredMessageIds: readonly string[];
+  readonly text: string;
+  readonly structured?: CompactionSummaryStructured;
+  readonly provenance: {
+    readonly runId: string;
+    readonly model: string;
+    readonly trigger: CompactionTrigger;
+    readonly tokens: {
+      readonly input: number;
+      readonly output: number;
+      readonly cachedInput?: number;
+    };
+    readonly durationMs: number;
+    readonly tokensBefore: number;
+    readonly tokensAfter: number;
+    readonly createdAt: string;
+  };
+  readonly tier: number;
+  readonly absorbedSummaryIds?: readonly string[];
+  readonly schemaVersion: 1;
+}
+
 /**
  * Discriminated union of all canonical message parts.
  *
  * @category Types
  */
-export type CanonicalPart = TextPart | ReasoningPart | ToolCallPart | ToolResultPart | FilePart;
+export type CanonicalPart =
+  | TextPart
+  | ReasoningPart
+  | ToolCallPart
+  | ToolResultPart
+  | FilePart
+  | CompactionSummaryPart;
 
 /**
  * Metadata attached to a canonical message.

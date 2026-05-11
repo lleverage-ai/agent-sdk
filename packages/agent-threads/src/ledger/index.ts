@@ -11,6 +11,9 @@ export type {
   ToolCallPart,
   ToolResultPart,
   FilePart,
+  CompactionSummaryPart,
+  CompactionSummaryStructured,
+  CompactionTrigger,
   CanonicalPart,
   CanonicalMessageMetadata,
   CanonicalMessage,
@@ -31,6 +34,7 @@ export type {
   StaleRunInfo,
   RecoverRunOptions,
   RecoverResult,
+  CANONICAL_MESSAGE_SCHEMA_VERSION,
   ContextBuilderOptions,
   ProvenanceMetadata,
   BuiltContext,
@@ -62,6 +66,8 @@ export { DEFAULT_STALE_THRESHOLD_MS, listStaleRuns, recoverAllStaleRuns } from "
 export type { ListStaleRunsOptions, RecoverAllResult } from "./reconciliation.js";
 
 // Context building
+export { createLedgerCompactionStore } from "./compaction-store.js";
+export type { CompactionStore } from "./compaction-store.js";
 export { FullContextBuilder } from "./context-builder.js";
 export type { IContextBuilder } from "./context-builder.js";
 

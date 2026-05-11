@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added canonical transcript compaction summary types, an in-memory `CompactionStore`, `SummaryAwareContextBuilder`, and an `@lleverage-ai/agent-threads` ledger-backed compaction store adapter for persistent branch-aware transcript summary substitution.
+
+### Changed
+
+- Context summarization output budget is now configurable via `summarization.summaryMaxTokens` and defaults to 8,000 tokens instead of the previous hardcoded 1,000-token summary call limit.
+
 ## [0.1.0-alpha.6] - 2026-05-08
 
 ### Fixed

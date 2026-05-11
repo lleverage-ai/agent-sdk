@@ -643,6 +643,12 @@ export interface SummarizationConfig {
    * @defaultValue false
    */
   enableStructuredSummary?: boolean;
+
+  /**
+   * Maximum output tokens for summary generation.
+   * @defaultValue 8000
+   */
+  summaryMaxTokens?: number;
 }
 
 /**
@@ -658,6 +664,7 @@ export const DEFAULT_SUMMARIZATION_CONFIG: SummarizationConfig = {
   maxSummaryTiers: 3,
   messagesPerTier: 5,
   enableStructuredSummary: false,
+  summaryMaxTokens: 8000,
 };
 
 // =============================================================================
@@ -702,6 +709,12 @@ export interface CompactionResult {
 
   /** Summary tier level (for tiered summaries) */
   summaryTier?: number;
+
+  /** Identifier for a persisted summary, when available. */
+  summaryId?: string;
+
+  /** Message identifiers covered by a persisted compaction summary, when available. */
+  compactedMessageIds?: readonly string[];
 }
 
 // =============================================================================
@@ -1457,6 +1470,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         strategy = "rollup",
         enableStructuredSummary,
         enableTieredSummaries,
+        summaryMaxTokens = 8000,
       } = summarizationConfig;
 
       // Always keep system messages
@@ -1523,7 +1537,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
                 content: `Consolidate these summaries:\n\n${summariesContent}`,
               },
             ],
-            maxTokens: 1000,
+            maxTokens: summaryMaxTokens,
             _skipCompaction: true, // Prevent recursive compaction during summary generation
           });
 
@@ -1544,7 +1558,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
                 content: `Please summarize this conversation history:\n\n${contentToSummarize}`,
               },
             ],
-            maxTokens: 1000,
+            maxTokens: summaryMaxTokens,
             _skipCompaction: true, // Prevent recursive compaction during summary generation
           });
 
@@ -1572,7 +1586,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
               content: `Please summarize this conversation history:\n\n${contentToSummarize}`,
             },
           ],
-          maxTokens: 1000,
+          maxTokens: summaryMaxTokens,
           _skipCompaction: true, // Prevent recursive compaction during summary generation
         });
 
@@ -1597,7 +1611,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
               content: `Please summarize this conversation history:\n\n${contentToSummarize}`,
             },
           ],
-          maxTokens: 1000,
+          maxTokens: summaryMaxTokens,
           _skipCompaction: true, // Prevent recursive compaction during summary generation
         });
 
