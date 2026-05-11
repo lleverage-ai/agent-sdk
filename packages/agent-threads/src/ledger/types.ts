@@ -594,7 +594,7 @@ export interface ContextBuilderOptions {
   /** Thread to build context for. */
   readonly threadId: string;
   /** Branch resolution strategy; defaults to `"active"`. See {@link GetTranscriptOptions}. */
-  readonly branch?: "active" | "all" | { selections: BranchSelections };
+  readonly branch?: GetTranscriptOptions["branch"];
   /** Maximum number of messages to return; takes the most recent when truncating. */
   readonly maxMessages?: number;
   /** When false, strips {@link ToolResultPart} entries from message parts. */
@@ -628,7 +628,7 @@ export interface ProvenanceMetadata {
  */
 export interface BuiltContext {
   /** Messages in the built context, ordered for replay. */
-  readonly messages: CanonicalMessage[];
+  readonly messages: readonly CanonicalMessage[];
   /** Provenance metadata describing how the context was built. */
   readonly provenance: ProvenanceMetadata;
 }
