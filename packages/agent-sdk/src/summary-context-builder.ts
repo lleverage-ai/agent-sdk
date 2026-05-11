@@ -89,16 +89,28 @@ export class SummaryAwareContextBuilder implements IContextBuilder {
       threadId: options.threadId,
       branch: options.branch,
     });
+
+    if (options.branch === "all") {
+      const filtered = filterMessages(transcript, options);
+      return buildResult(options.threadId, filtered);
+    }
+
     const activeIds = new Set(transcript.map((message) => message.id));
+    const messageById = new Map(transcript.map((message) => [message.id, message] as const));
     const summaries = transcript
       .map((message) => ({ message, summary: pickCompactionSummary(message) }))
       .filter((entry): entry is { message: CanonicalMessage; summary: CompactionSummaryPart } =>
         Boolean(entry.summary),
       )
-      .filter(({ summary }) => summary.coveredMessageIds.every((id) => activeIds.has(id)))
+      .filter(
+        ({ summary }) =>
+          summary.coveredMessageIds.length > 0 &&
+          summary.coveredMessageIds.every((id) => activeIds.has(id)),
+      )
       .sort(compareSummaryPreference);
 
     const consumed = new Set<string>();
+    const parentRewrites = new Map<string, string>();
     const byFirstCoveredId = new Map<
       string,
       { message: CanonicalMessage; summary: CompactionSummaryPart }
@@ -107,8 +119,12 @@ export class SummaryAwareContextBuilder implements IContextBuilder {
 
     for (const entry of summaries) {
       if (entry.summary.coveredMessageIds.some((id) => consumed.has(id))) continue;
-      for (const id of entry.summary.coveredMessageIds) consumed.add(id);
+      for (const id of entry.summary.coveredMessageIds) {
+        consumed.add(id);
+        parentRewrites.set(id, entry.summary.summaryId);
+      }
       consumed.add(entry.message.id);
+      parentRewrites.set(entry.message.id, entry.summary.summaryId);
       byFirstCoveredId.set(entry.summary.coveredMessageIds[0], entry);
       honoured.push(entry.summary.summaryId);
     }
@@ -117,12 +133,19 @@ export class SummaryAwareContextBuilder implements IContextBuilder {
     for (const message of transcript) {
       const summaryEntry = byFirstCoveredId.get(message.id);
       if (summaryEntry) {
-        messages.push(renderSummaryAsModelMessage(summaryEntry.message, summaryEntry.summary));
+        const firstCovered = messageById.get(summaryEntry.summary.coveredMessageIds[0]);
+        const originalParentId = firstCovered?.parentMessageId ?? null;
+        const parentMessageId = originalParentId
+          ? (parentRewrites.get(originalParentId) ?? originalParentId)
+          : null;
+        messages.push(
+          renderSummaryAsModelMessage(summaryEntry.message, summaryEntry.summary, parentMessageId),
+        );
         continue;
       }
       if (consumed.has(message.id)) continue;
       if (pickCompactionSummary(message)) continue;
-      messages.push(message);
+      messages.push(rewriteParent(message, parentRewrites));
     }
 
     const filtered = filterMessages(messages, options);
@@ -138,10 +161,11 @@ function pickCompactionSummary(message: CanonicalMessage): CompactionSummaryPart
 function renderSummaryAsModelMessage(
   carrier: CanonicalMessage,
   summary: CompactionSummaryPart,
+  parentMessageId: string | null,
 ): CanonicalMessage {
   return {
     id: summary.summaryId,
-    parentMessageId: carrier.parentMessageId,
+    parentMessageId,
     role: "assistant",
     parts: [{ type: "text", text: `[Previous conversation summary]\n\n${formatSummary(summary)}` }],
     createdAt: summary.provenance.createdAt,
@@ -150,6 +174,15 @@ function renderSummaryAsModelMessage(
       renderedFromSummaryId: summary.summaryId,
     },
   };
+}
+
+function rewriteParent(
+  message: CanonicalMessage,
+  parentRewrites: ReadonlyMap<string, string>,
+): CanonicalMessage {
+  if (!message.parentMessageId) return message;
+  const parentMessageId = parentRewrites.get(message.parentMessageId);
+  return parentMessageId ? { ...message, parentMessageId } : message;
 }
 
 function formatSummary(summary: CompactionSummaryPart): string {

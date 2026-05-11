@@ -68,9 +68,8 @@ export type { ListStaleRunsOptions, RecoverAllResult } from "./reconciliation.js
 // Context building
 export { createLedgerCompactionStore } from "./compaction-store.js";
 export type { CompactionStore } from "./compaction-store.js";
-// Builder primitives are owned by agent-sdk; re-exported here for convenience.
-export { FullContextBuilder, SummaryAwareContextBuilder } from "@lleverage-ai/agent-sdk";
-export type { IContextBuilder } from "@lleverage-ai/agent-sdk";
+export { FullContextBuilder } from "./context-builder.js";
+export type { IContextBuilder } from "./context-builder.js";
 
 // Stores
 export type { ILedgerStore } from "./stores/ledger-store.js";

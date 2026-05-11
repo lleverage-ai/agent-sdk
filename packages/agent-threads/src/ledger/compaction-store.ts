@@ -1,5 +1,9 @@
 import type { ILedgerStore } from "./stores/ledger-store.js";
-import type { CanonicalMessage, CompactionSummaryPart } from "./types.js";
+import {
+  CANONICAL_MESSAGE_SCHEMA_VERSION,
+  type CanonicalMessage,
+  type CompactionSummaryPart,
+} from "./types.js";
 
 /** Store interface for persistent compaction summaries. */
 export interface CompactionStore {
@@ -41,7 +45,7 @@ export function createLedgerCompactionStore(ledgerStore: ILedgerStore): Compacti
         parts: [summary],
         createdAt: summary.provenance.createdAt,
         metadata: {
-          schemaVersion: 2,
+          schemaVersion: CANONICAL_MESSAGE_SCHEMA_VERSION,
           isCompactionCarrier: true,
         },
       };

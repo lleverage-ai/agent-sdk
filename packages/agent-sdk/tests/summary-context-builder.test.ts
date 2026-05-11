@@ -71,25 +71,29 @@ describe("SummaryAwareContextBuilder", () => {
 
     expect(result.messages.map((item) => item.id)).toEqual(["s1", "m3"]);
     expect(result.messages[0]?.role).toBe("assistant");
+    expect(result.messages[0]?.parentMessageId).toBeNull();
+    expect(result.messages[1]?.parentMessageId).toBe("s1");
     expect(result.provenance.summariesHonoured).toEqual(["s1"]);
   });
 
   it("ignores summaries whose covered messages are not on the active path", async () => {
     const s1 = summary("s1", ["m1", "m2", "m3"]);
+    const allMessages = [
+      message("m1", null, "one"),
+      message("m2", "m1", "two"),
+      message("m3", "m2", "three"),
+      carrier(s1),
+      message("m4", "m2", "fork"),
+    ];
     const builder = new SummaryAwareContextBuilder({
-      async getTranscript() {
-        return [
-          message("m1", null, "one"),
-          message("m2", "m1", "two"),
-          carrier(s1),
-          message("fork", "m2", "fork"),
-        ];
+      async getTranscript({ branch }) {
+        return branch === "all" ? allMessages : allMessages.filter((item) => item.id !== "m3");
       },
     });
 
     const result = await builder.build({ threadId: "t1" });
 
-    expect(result.messages.map((item) => item.id)).toEqual(["m1", "m2", "fork"]);
+    expect(result.messages.map((item) => item.id)).toEqual(["m1", "m2", "m4"]);
     expect(result.provenance.summariesHonoured).toEqual([]);
   });
 
@@ -112,6 +116,7 @@ describe("SummaryAwareContextBuilder", () => {
     const result = await builder.build({ threadId: "t1" });
 
     expect(result.messages.map((item) => item.id)).toEqual(["s2", "m4"]);
+    expect(result.messages[1]?.parentMessageId).toBe("s2");
     expect(result.provenance.summariesHonoured).toEqual(["s2"]);
   });
 
@@ -135,6 +140,22 @@ describe("SummaryAwareContextBuilder", () => {
     const result = await builder.build({ threadId: "t1" });
 
     expect(result.messages.map((item) => item.id)).toEqual(["sA", "sB", "m5"]);
+    expect(result.messages[1]?.parentMessageId).toBe("sA");
+    expect(result.messages[2]?.parentMessageId).toBe("sB");
     expect(result.provenance.summariesHonoured).toEqual(["sA", "sB"]);
+  });
+
+  it("does not substitute summaries for all-branch transcript views", async () => {
+    const s1 = summary("s1", ["m1", "m2"]);
+    const builder = new SummaryAwareContextBuilder({
+      async getTranscript() {
+        return [message("m1", null, "one"), message("m2", "m1", "two"), carrier(s1)];
+      },
+    });
+
+    const result = await builder.build({ threadId: "t1", branch: "all" });
+
+    expect(result.messages.map((item) => item.id)).toEqual(["m1", "m2", "c-s1"]);
+    expect(result.provenance.summariesHonoured).toBeUndefined();
   });
 });
