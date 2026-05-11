@@ -5,7 +5,11 @@ import {
   type CompactionSummaryPart,
 } from "./types.js";
 
-/** Store interface for persistent compaction summaries. */
+/**
+ * Store interface for persistent compaction summaries.
+ *
+ * @category Backend
+ */
 export interface CompactionStore {
   /**
    * Persist a compaction summary.
@@ -65,6 +69,8 @@ export interface CompactionStore {
  * const compactionStore = createLedgerCompactionStore(ledgerStore);
  * await compactionStore.save({ threadId, runId, summary });
  * ```
+ *
+ * @category Backend
  */
 export function createLedgerCompactionStore(ledgerStore: ILedgerStore): CompactionStore {
   const load: CompactionStore["load"] = async ({ threadId }) => {
@@ -83,9 +89,10 @@ export function createLedgerCompactionStore(ledgerStore: ILedgerStore): Compacti
       }
 
       const run = await ledgerStore.beginRun({ threadId });
-      await ledgerStore.activateRun(run.runId);
 
       try {
+        await ledgerStore.activateRun(run.runId);
+
         const carrier: CanonicalMessage = {
           id: summary.summaryId,
           parentMessageId: summary.coveredRange.endMessageId,
