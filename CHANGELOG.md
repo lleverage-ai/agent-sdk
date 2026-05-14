@@ -26,6 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `CANONICAL_MESSAGE_SCHEMA_VERSION` was re-exported from `@lleverage-ai/agent-threads/ledger` as a type, so the runtime value was stripped from the compiled barrel and consumers received `undefined`. It is now exported as a value.
 - `createLedgerCompactionStore.save` no longer passes `forkFromMessageId` when creating the carrier run, so compaction commits cannot supersede unrelated regenerations at the covered range's end message.
+- `FullContextBuilder` and `SummaryAwareContextBuilder` now normalize an omitted `branch` option to the documented `"active"` default before calling the store, ensuring the public contract no longer depends on per-store semantics for `undefined` and keeping the `branch === "all"` safeguard tight.
+- `filterMessages` in the context builders now repairs `parentMessageId` references after dropping tool-result/reasoning-only messages or truncating with `maxMessages`, walking up the original ancestry to the nearest still-visible parent so canonical ancestry is preserved in the returned context.
 
 ## [0.1.0-alpha.6] - 2026-05-08
 

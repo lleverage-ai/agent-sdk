@@ -113,9 +113,10 @@ export class FullContextBuilder implements IContextBuilder {
    * @returns Built context containing filtered canonical messages
    */
   async build(options: ContextBuilderOptions): Promise<BuiltContext> {
+    const branch = options.branch ?? "active";
     let messages = await this.store.getTranscript({
       threadId: options.threadId,
-      branch: options.branch,
+      branch,
     });
     messages = filterMessages(messages, options);
     return buildResult(options.threadId, messages);
@@ -143,12 +144,13 @@ export class SummaryAwareContextBuilder implements IContextBuilder {
    * @returns Built context with valid summaries substituted for covered ranges
    */
   async build(options: ContextBuilderOptions): Promise<BuiltContext> {
+    const branch = options.branch ?? "active";
     const transcript = await this.store.getTranscript({
       threadId: options.threadId,
-      branch: options.branch,
+      branch,
     });
 
-    if (options.branch === "all") {
+    if (branch === "all") {
       const filtered = filterMessages(transcript, options);
       return buildResult(options.threadId, filtered);
     }
@@ -287,6 +289,7 @@ function filterMessages(
   messages: CanonicalMessage[],
   options: ContextBuilderOptions,
 ): CanonicalMessage[] {
+  const messageById = new Map(messages.map((message) => [message.id, message] as const));
   let out = messages;
   if (options.includeToolResults === false || options.includeReasoning === false) {
     out = out
@@ -305,9 +308,24 @@ function filterMessages(
       throw new Error("maxMessages must be a non-negative integer");
     }
     if (options.maxMessages === 0) return [];
-    if (out.length > options.maxMessages) return out.slice(-options.maxMessages);
+    if (out.length > options.maxMessages) out = out.slice(-options.maxMessages);
   }
-  return out;
+  // Repair parentMessageId chains: messages dropped above (filtered tool/reasoning-only
+  // messages, or sliced-off transcript prefix) can leave survivors pointing at vanished
+  // ancestors. Walk up the original ancestry until we find a still-visible parent so the
+  // returned context preserves canonical ancestry semantics.
+  const visibleIds = new Set(out.map((message) => message.id));
+  const resolveVisibleParent = (parentMessageId: string | null): string | null => {
+    let current = parentMessageId;
+    while (current && !visibleIds.has(current)) {
+      current = messageById.get(current)?.parentMessageId ?? null;
+    }
+    return current;
+  };
+  return out.map((message) => {
+    const parentMessageId = resolveVisibleParent(message.parentMessageId);
+    return parentMessageId === message.parentMessageId ? message : { ...message, parentMessageId };
+  });
 }
 
 function buildResult(threadId: string, messages: CanonicalMessage[]): BuiltContext {

@@ -16,7 +16,11 @@ export interface CompactionStore {
    *
    * @param args - Save arguments
    * @param args.threadId - Thread identifier the summary belongs to
-   * @param args.runId - Run identifier associated with the compaction
+   * @param args.runId - Reserved for future use; currently ignored by the
+   *   ledger-backed implementation, which creates and finalizes its own
+   *   internal run to persist the carrier message. Callers should still
+   *   supply the originating run id so future implementations (or
+   *   alternative stores) can correlate summaries with their producing run.
    * @param args.summary - The summary part to persist
    * @returns A promise that resolves when the summary has been saved
    * @throws {Error} If the summary already exists or the backing store fails
@@ -82,6 +86,12 @@ export function createLedgerCompactionStore(ledgerStore: ILedgerStore): Compacti
   };
 
   return {
+    // NOTE: `runId` is intentionally ignored here. This implementation owns
+    // the carrier's run lifecycle via `beginRun`/`finalizeRun` so that
+    // compaction lands as its own committed run without disturbing the
+    // caller's run. See the TSDoc on `CompactionStore.save` — the parameter
+    // is reserved for future implementations that may correlate summaries
+    // with their producing run.
     async save({ threadId, runId: _runId, summary }) {
       const existing = await load({ threadId });
       if (existing.some((item) => item.summaryId === summary.summaryId)) {
