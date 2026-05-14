@@ -125,4 +125,48 @@ describe("createLedgerCompactionStore", () => {
     expect(built.messages.map((message) => message.id)).toEqual(["s1", "m3"]);
     expect(built.provenance.summariesHonoured).toEqual(["s1"]);
   });
+
+  it("marks the helper run failed and rethrows when finalizeRun rejects mid-save", async () => {
+    const { store: inner, threadId } = await seedConversation();
+
+    // Wrap the underlying store so the carrier-write finalize (status:
+    // "committed") rejects exactly once; the subsequent cleanup finalize
+    // (status: "failed") falls through to the real store so we can observe
+    // the helper run end up in the failed state.
+    let firstCommittedFinalizeSeen = false;
+    const wrappedStore: typeof inner = new Proxy(inner, {
+      get(target, prop, receiver) {
+        if (prop === "finalizeRun") {
+          return async (options: Parameters<typeof inner.finalizeRun>[0]) => {
+            if (!firstCommittedFinalizeSeen && options.status === "committed") {
+              firstCommittedFinalizeSeen = true;
+              throw new Error("simulated finalize failure");
+            }
+            return target.finalizeRun(options);
+          };
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    const compactionStore = createLedgerCompactionStore(wrappedStore);
+    const summary = makeSummary("s-fail", ["m1", "m2"]);
+
+    await expect(compactionStore.save({ threadId, runId: "writer", summary })).rejects.toThrow(
+      /simulated finalize failure/,
+    );
+
+    // The carrier must not have been persisted.
+    const loaded = await compactionStore.load({ threadId });
+    expect(loaded).toHaveLength(0);
+
+    // The helper run created for the (failed) carrier write should have been
+    // marked `failed` by the catch block so reconciliation does not have to
+    // clean it up later. Locate it among the runs for this thread (it is the
+    // one beyond the seed-conversation's committed run).
+    const allRuns = await inner.listRuns(threadId);
+    const failedRuns = allRuns.filter((run) => run.status === "failed");
+    expect(failedRuns).toHaveLength(1);
+    expect(failedRuns[0]?.finishedAt).not.toBeNull();
+  });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { CanonicalMessage, CompactionSummaryPart } from "../src/canonical.js";
-import { SummaryAwareContextBuilder } from "../src/summary-context-builder.js";
+import { FullContextBuilder, SummaryAwareContextBuilder } from "../src/summary-context-builder.js";
 
 function message(id: string, parentMessageId: string | null, text: string): CanonicalMessage {
   return {
@@ -157,5 +157,97 @@ describe("SummaryAwareContextBuilder", () => {
 
     expect(result.messages.map((item) => item.id)).toEqual(["m1", "m2", "c-s1"]);
     expect(result.provenance.summariesHonoured).toBeUndefined();
+  });
+});
+
+describe("FullContextBuilder parentMessageId repair", () => {
+  it("walks parentMessageId past messages sliced off the front by maxMessages", async () => {
+    // Linear chain m1 -> m2 -> m3 -> m4 -> m5; maxMessages: 2 returns [m4, m5].
+    // After slicing, m4's original parent (m3) is gone — it should walk up to null.
+    const transcript: CanonicalMessage[] = [
+      message("m1", null, "one"),
+      message("m2", "m1", "two"),
+      message("m3", "m2", "three"),
+      message("m4", "m3", "four"),
+      message("m5", "m4", "five"),
+    ];
+    const builder = new FullContextBuilder({
+      async getTranscript() {
+        return transcript;
+      },
+    });
+
+    const result = await builder.build({ threadId: "t1", maxMessages: 2 });
+
+    expect(result.messages.map((item) => item.id)).toEqual(["m4", "m5"]);
+    // m4's parent (m3) was dropped; m2 and m1 are also dropped; nearest visible
+    // ancestor is null.
+    expect(result.messages[0]?.parentMessageId).toBeNull();
+    // m5's parent (m4) is still visible — preserved unchanged.
+    expect(result.messages[1]?.parentMessageId).toBe("m4");
+  });
+
+  it("repoints parentMessageId past a reasoning-only message dropped by includeReasoning: false", async () => {
+    // m1 (text) <- m2 (reasoning only) <- m3 (text). includeReasoning: false
+    // drops m2 entirely; m3's parent should walk up to m1.
+    const transcript: CanonicalMessage[] = [
+      message("m1", null, "one"),
+      {
+        id: "m2",
+        parentMessageId: "m1",
+        role: "assistant",
+        parts: [{ type: "reasoning", text: "thinking" }],
+        createdAt: "2026-01-01T00:00:02.000Z",
+        metadata: { schemaVersion: 2 },
+      },
+      message("m3", "m2", "three"),
+    ];
+    const builder = new FullContextBuilder({
+      async getTranscript() {
+        return transcript;
+      },
+    });
+
+    const result = await builder.build({ threadId: "t1", includeReasoning: false });
+
+    expect(result.messages.map((item) => item.id)).toEqual(["m1", "m3"]);
+    expect(result.messages[0]?.parentMessageId).toBeNull();
+    // m3's original parent (m2) was dropped; walks up to m1.
+    expect(result.messages[1]?.parentMessageId).toBe("m1");
+  });
+
+  it("repoints parentMessageId across multiple dropped ancestors", async () => {
+    // m1 (text) <- m2 (reasoning) <- m3 (reasoning) <- m4 (text).
+    // includeReasoning: false drops m2 and m3; m4 should re-link to m1.
+    const transcript: CanonicalMessage[] = [
+      message("m1", null, "one"),
+      {
+        id: "m2",
+        parentMessageId: "m1",
+        role: "assistant",
+        parts: [{ type: "reasoning", text: "step one" }],
+        createdAt: "2026-01-01T00:00:02.000Z",
+        metadata: { schemaVersion: 2 },
+      },
+      {
+        id: "m3",
+        parentMessageId: "m2",
+        role: "assistant",
+        parts: [{ type: "reasoning", text: "step two" }],
+        createdAt: "2026-01-01T00:00:03.000Z",
+        metadata: { schemaVersion: 2 },
+      },
+      message("m4", "m3", "four"),
+    ];
+    const builder = new FullContextBuilder({
+      async getTranscript() {
+        return transcript;
+      },
+    });
+
+    const result = await builder.build({ threadId: "t1", includeReasoning: false });
+
+    expect(result.messages.map((item) => item.id)).toEqual(["m1", "m4"]);
+    expect(result.messages[1]?.parentMessageId).toBe("m1");
   });
 });
