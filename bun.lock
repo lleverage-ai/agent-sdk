@@ -35,6 +35,9 @@
     "packages/agent-threads": {
       "name": "@lleverage-ai/agent-threads",
       "version": "0.1.0-alpha.6",
+      "dependencies": {
+        "@lleverage-ai/agent-sdk": "workspace:*",
+      },
       "devDependencies": {
         "vitest": "^4.0.18",
         "zod": "^4.3.6",

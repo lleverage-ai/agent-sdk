@@ -157,7 +157,6 @@ export type {
   CompactionStrategy,
   CompactionTask,
   CompactionTaskStatus,
-  CompactionTrigger,
   ContextManager,
   ContextManagerOptions,
   CreateTokenBudgetOptions,
@@ -785,6 +784,42 @@ export {
   isCompleteResult,
   isInterruptedResult,
 } from "./types.js";
+
+// Canonical transcript and compaction exports
+export {
+  CANONICAL_MESSAGE_SCHEMA_VERSION,
+  isCompactionCarrierMessage,
+  isCompactionSummaryPart,
+} from "./canonical.js";
+export type {
+  BranchSelections,
+  CanonicalMessage,
+  CanonicalMessageMetadata,
+  CanonicalPart,
+  CompactionSummaryPart,
+  CompactionSummaryStructured,
+  CompactionTrigger,
+  FilePart,
+  JsonArray,
+  JsonObject,
+  JsonPrimitive,
+  JsonValue,
+  ReasoningPart,
+  TextPart,
+  ToolCallPart as CanonicalToolCallPart,
+  ToolPartMetadata,
+  ToolResultPart as CanonicalToolResultPart,
+} from "./canonical.js";
+export { createInMemoryCompactionStore } from "./compaction-store.js";
+export type { CompactionStore } from "./compaction-store.js";
+export { FullContextBuilder, SummaryAwareContextBuilder } from "./summary-context-builder.js";
+export type {
+  BuiltContext,
+  CanonicalTranscriptStore,
+  ContextBuilderOptions,
+  IContextBuilder,
+  ProvenanceMetadata,
+} from "./summary-context-builder.js";
 
 // Agent Teams Plugin
 export { createAgentTeamsPlugin, InMemoryTeamCoordinator, TEAM_HOOKS, HeadlessSessionRunner } from "./plugins/agent-teams/index.js";

@@ -1,6 +1,6 @@
+import { FullContextBuilder } from "@lleverage-ai/agent-sdk";
 import { describe, expect, it } from "vitest";
 
-import { FullContextBuilder } from "../../src/ledger/context-builder.js";
 import { InMemoryLedgerStore } from "../../src/ledger/stores/memory.js";
 import type { CanonicalMessage } from "../../src/ledger/types.js";
 

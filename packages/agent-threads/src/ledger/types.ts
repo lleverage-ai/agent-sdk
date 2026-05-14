@@ -1,159 +1,63 @@
 /**
  * Core type definitions for agent-threads (ledger layer).
  *
+ * Canonical transcript primitives are owned by `@lleverage-ai/agent-sdk` and
+ * re-exported here for source compatibility with consumers that historically
+ * imported them from `@lleverage-ai/agent-threads/ledger`. Keep this file the
+ * single re-export point so the two packages cannot drift silently — if a new
+ * canonical shape lands in `agent-sdk`, surface it here once and consumers
+ * pick it up automatically.
+ *
+ * Types that are specific to the ledger layer (runs, thread trees,
+ * reconciliation) are declared locally below.
+ *
  * @module
  */
 
-// ---------------------------------------------------------------------------
-// Canonical Parts
-// ---------------------------------------------------------------------------
-
-/**
- * A text segment within a canonical message.
- *
- * @category Types
- */
-export interface TextPart {
-  readonly type: "text";
-  readonly text: string;
-}
-
-/**
- * A reasoning/thinking segment within a canonical message.
- *
- * @category Types
- */
-export interface ReasoningPart {
-  readonly type: "reasoning";
-  readonly text: string;
-}
-
-/**
- * JSON primitive values.
- *
- * @category Types
- */
-export type JsonPrimitive = string | number | boolean | null;
-
-/**
- * A JSON-serializable value.
- *
- * @category Types
- */
-export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
-
-/**
- * A JSON-serializable object.
- *
- * @category Types
- */
-export interface JsonObject {
-  readonly [key: string]: JsonValue;
-}
-
-/**
- * A JSON-serializable array.
- *
- * @category Types
- */
-export type JsonArray = readonly JsonValue[];
-
-/**
- * Additional JSON-compatible metadata preserved on tool call and tool result parts.
- *
- * @category Types
- */
-export interface ToolPartMetadata {
-  /** Additional JSON-compatible metadata associated with a tool part */
-  readonly [key: string]: JsonValue;
-}
-
-/**
- * A tool invocation recorded within a canonical message.
- *
- * @category Types
- */
-export interface ToolCallPart {
-  readonly type: "tool-call";
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly input: unknown;
-  /** Additional JSON-compatible metadata preserved from the tool event payload */
-  readonly metadata?: ToolPartMetadata;
-}
-
-/**
- * A tool result recorded as part of a tool-role message.
- *
- * @category Types
- */
-export interface ToolResultPart {
-  readonly type: "tool-result";
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly output: unknown;
-  readonly isError: boolean;
-  /** Additional JSON-compatible metadata preserved from the tool event payload */
-  readonly metadata?: ToolPartMetadata;
-}
-
-/**
- * A file attachment within a canonical message.
- *
- * @category Types
- */
-export interface FilePart {
-  readonly type: "file";
-  readonly mimeType: string;
-  readonly url: string;
-  readonly name?: string;
-}
-
-/**
- * Discriminated union of all canonical message parts.
- *
- * @category Types
- */
-export type CanonicalPart = TextPart | ReasoningPart | ToolCallPart | ToolResultPart | FilePart;
-
-/**
- * Metadata attached to a canonical message.
- *
- * @category Types
- */
-export interface CanonicalMessageMetadata {
-  /** Schema version for canonical message serialization format */
-  readonly schemaVersion: number;
-  /** Additional extensible metadata fields */
-  readonly [key: string]: unknown;
-}
+import type { BranchSelections, CanonicalMessage } from "@lleverage-ai/agent-sdk";
 
 // ---------------------------------------------------------------------------
-// CanonicalMessage
+// Re-exports: canonical transcript primitives (owned by @lleverage-ai/agent-sdk)
 // ---------------------------------------------------------------------------
 
-/**
- * A normalized message in a conversation transcript.
- *
- * Messages are immutable once committed. The `id` is a ULID that
- * provides both uniqueness and temporal ordering.
- *
- * @category Types
- */
-export interface CanonicalMessage {
-  /** ULID — unique within the thread */
-  readonly id: string;
-  /** Parent message ID, or null for root messages */
-  readonly parentMessageId: string | null;
-  /** The role of the message author */
-  readonly role: "user" | "assistant" | "system" | "tool";
-  /** Ordered content parts */
-  readonly parts: readonly CanonicalPart[];
-  /** ISO 8601 timestamp of when the message was created */
-  readonly createdAt: string;
-  /** Extensible metadata (always includes `schemaVersion`) */
-  readonly metadata: CanonicalMessageMetadata;
-}
+export type {
+  BranchSelections,
+  CanonicalMessage,
+  CanonicalMessageMetadata,
+  CanonicalPart,
+  // The AI SDK already exports `ToolCallPart`/`ToolResultPart` from
+  // `@lleverage-ai/agent-sdk`, so the canonical versions are surfaced there
+  // under `Canonical*` names. Re-alias back to their canonical names here so
+  // existing imports from `@lleverage-ai/agent-threads/ledger` keep working.
+  CanonicalToolCallPart as ToolCallPart,
+  CanonicalToolResultPart as ToolResultPart,
+  CompactionSummaryPart,
+  CompactionSummaryStructured,
+  CompactionTrigger,
+  FilePart,
+  JsonArray,
+  JsonObject,
+  JsonPrimitive,
+  JsonValue,
+  ReasoningPart,
+  TextPart,
+  ToolPartMetadata,
+} from "@lleverage-ai/agent-sdk";
+export {
+  CANONICAL_MESSAGE_SCHEMA_VERSION,
+  isCompactionCarrierMessage,
+  isCompactionSummaryPart,
+} from "@lleverage-ai/agent-sdk";
+
+// ---------------------------------------------------------------------------
+// Re-exports: context builder types (owned by @lleverage-ai/agent-sdk)
+// ---------------------------------------------------------------------------
+
+export type {
+  BuiltContext,
+  ContextBuilderOptions,
+  ProvenanceMetadata,
+} from "@lleverage-ai/agent-sdk";
 
 // ---------------------------------------------------------------------------
 // RunRecord
@@ -316,21 +220,6 @@ export interface FinalizeResult {
 }
 
 /**
- * Options for retrieving a transcript.
- *
- * @category Types
- */
-/**
- * Explicit branch selections for transcript resolution.
- *
- * Keys are fork-point parent message IDs and values are the selected child
- * message IDs to follow at those forks.
- *
- * @category Types
- */
-export type BranchSelections = Record<string, string>;
-
-/**
  * Branch selector modes for transcript retrieval:
  *
  * - `"active"` - Resolve a single active branch path through each fork (default)
@@ -431,55 +320,4 @@ export interface RecoverResult {
   previousStatus: ActiveRunStatus;
   /** The new status after recovery */
   newStatus: Extract<TerminalRunStatus, "failed" | "cancelled">;
-}
-
-// ---------------------------------------------------------------------------
-// Context Builder Types (experimental)
-// ---------------------------------------------------------------------------
-
-/**
- * Options for building context from a transcript.
- *
- * @experimental
- * @category Types
- */
-export interface ContextBuilderOptions {
-  /** Thread to build context from */
-  threadId: string;
-  /** Maximum number of messages to include */
-  maxMessages?: number;
-  /** Whether to include tool results */
-  includeToolResults?: boolean;
-  /** Whether to include reasoning parts */
-  includeReasoning?: boolean;
-}
-
-/**
- * Provenance metadata tracking where context was sourced from.
- *
- * @experimental
- * @category Types
- */
-export interface ProvenanceMetadata {
-  /** Thread the context was built from */
-  threadId: string;
-  /** Number of messages included */
-  messageCount: number;
-  /** ID of the earliest message included */
-  firstMessageId: string | null;
-  /** ID of the latest message included */
-  lastMessageId: string | null;
-}
-
-/**
- * The result of building context from a transcript.
- *
- * @experimental
- * @category Types
- */
-export interface BuiltContext {
-  /** Messages formatted for consumption */
-  messages: CanonicalMessage[];
-  /** Provenance tracking */
-  provenance: ProvenanceMetadata;
 }

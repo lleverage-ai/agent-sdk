@@ -19,6 +19,10 @@ export interface ThreadMessageRecord {
   order: number;
 }
 
+function isCarrier(record: ThreadMessageRecord): boolean {
+  return record.message.metadata.isCompactionCarrier === true;
+}
+
 function buildChildrenByParent(
   records: ThreadMessageRecord[],
 ): Map<string | null, ThreadMessageRecord[]> {
@@ -46,23 +50,26 @@ function getRunStatus(runStatusById: ReadonlyMap<string, RunStatus>, runId: stri
 }
 
 /**
- * Active-branch heuristic: prefer the most recently inserted committed child.
- * If none are committed, fall back to the most recently inserted child.
+ * Active-branch heuristic: prefer the most recently inserted committed
+ * non-carrier child. Carriers are annotations, not branches, so they never
+ * compete for the active slot. If no conversation children exist, returns
+ * `undefined` even if carriers are attached.
  */
 function chooseActiveChild(
   children: ThreadMessageRecord[],
   runStatusById: ReadonlyMap<string, RunStatus>,
 ): ThreadMessageRecord | undefined {
-  if (children.length === 0) return undefined;
-  if (children.length === 1) return children[0];
+  const conversationChildren = children.filter((child) => !isCarrier(child));
+  if (conversationChildren.length === 0) return undefined;
+  if (conversationChildren.length === 1) return conversationChildren[0];
 
-  const committedChildren = children.filter(
+  const committedChildren = conversationChildren.filter(
     (child) => getRunStatus(runStatusById, child.runId) === "committed",
   );
   if (committedChildren.length > 0) {
     return committedChildren[committedChildren.length - 1];
   }
-  return children[children.length - 1];
+  return conversationChildren[conversationChildren.length - 1];
 }
 
 /**
@@ -78,7 +85,7 @@ function parseSelections(branch: GetTranscriptOptions["branch"]): BranchSelectio
     throw new Error("Invalid branch selector: expected { selections: Record<string, string> }");
   }
 
-  const selections: BranchSelections = {};
+  const selections: Record<string, string> = {};
   for (const [forkMessageId, childMessageId] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof childMessageId !== "string") {
       throw new Error(
@@ -116,6 +123,12 @@ function chooseChildForParent(
  * - `"active"` returns a single path that prefers committed children at forks
  * - `{ selections }` applies explicit fork choices, then falls back to active
  *
+ * Carrier messages (`metadata.isCompactionCarrier === true`) are emitted as
+ * annotations on the active path: every visited message has its carrier
+ * children appended immediately after it in tree-document order. Carriers
+ * never participate in active-child selection or fork detection — they sit
+ * alongside the conversation rather than competing with it.
+ *
  * Messages whose parent ID is missing from the thread are treated as orphan
  * branch roots and are still traversed to preserve recoverable history.
  *
@@ -141,11 +154,25 @@ export function resolveTranscript(
   const result: ThreadMessageRecord[] = [];
   const visited = new Set<string>();
 
+  const emitCarrierAnnotations = (parentId: string): void => {
+    const children = childrenByParent.get(parentId) ?? [];
+    const carriers = children
+      .filter((child) => isCarrier(child) && !visited.has(child.message.id))
+      .sort((a, b) => a.order - b.order);
+    for (const carrier of carriers) {
+      result.push(carrier);
+      visited.add(carrier.message.id);
+    }
+  };
+
   const walkFrom = (start: ThreadMessageRecord): void => {
     let current: ThreadMessageRecord | undefined = start;
     while (current && !visited.has(current.message.id)) {
       result.push(current);
       visited.add(current.message.id);
+
+      // Carriers attached to this message travel with the active path.
+      emitCarrierAnnotations(current.message.id);
 
       const children = childrenByParent.get(current.message.id) ?? [];
       if (children.length === 0) break;
@@ -157,7 +184,9 @@ export function resolveTranscript(
   };
 
   const rootMessages = childrenByParent.get(null) ?? [];
+  // Conversation roots first; carrier roots (extremely unusual) attach as annotations.
   for (const root of rootMessages) {
+    if (isCarrier(root)) continue;
     walkFrom(root);
   }
 
@@ -186,7 +215,9 @@ export function resolveTranscript(
  * Builds lightweight thread tree metadata from thread message records.
  *
  * Fork points are emitted only for non-root parent messages with at least
- * two children (root siblings are not considered a fork point).
+ * two non-carrier children. Carrier messages do not count toward the
+ * branching factor, so a parent whose only "extra" children are summary
+ * carriers is not reported as a fork.
  *
  * @internal
  */
@@ -212,17 +243,24 @@ export function buildThreadTree(
   const forkPointsWithOrder: Array<ForkPoint & { order: number }> = [];
   for (const [parentKey, children] of childrenByParent.entries()) {
     const parentMessageId = parentKey;
-    if (parentMessageId === null || children.length <= 1) continue;
+    if (parentMessageId === null) continue;
 
-    const active = chooseActiveChild(children, runStatusById);
+    const conversationChildren = children.filter((child) => !isCarrier(child));
+    if (conversationChildren.length <= 1) continue;
+
+    const active = chooseActiveChild(conversationChildren, runStatusById);
     if (!active) continue;
 
-    const childIds = children.map((child) => child.message.id) as [string, string, ...string[]];
+    const childIds = conversationChildren.map((child) => child.message.id) as [
+      string,
+      string,
+      ...string[],
+    ];
     forkPointsWithOrder.push({
       forkMessageId: parentMessageId,
       children: childIds,
       activeChildId: active.message.id,
-      order: children[0]!.order,
+      order: conversationChildren[0]!.order,
     });
   }
 
