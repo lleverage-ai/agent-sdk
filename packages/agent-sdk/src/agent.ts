@@ -2578,6 +2578,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: effectiveGenOptions.signal,
             providerOptions: effectiveGenOptions.providerOptions,
             headers: effectiveGenOptions.headers,
+            experimental_telemetry: effectiveGenOptions.experimental_telemetry,
           };
 
           // Stop condition: stop when an interrupt signal was caught, OR when
@@ -2606,6 +2607,7 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
+            experimental_telemetry: initialParams.experimental_telemetry,
             experimental_context: toolExecutionContext,
           });
 
@@ -3142,6 +3144,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: effectiveGenOptions.signal,
             providerOptions: effectiveGenOptions.providerOptions,
             headers: effectiveGenOptions.headers,
+            experimental_telemetry: effectiveGenOptions.experimental_telemetry,
           };
 
           // Stop condition: stop when an interrupt signal was caught, OR when
@@ -3170,6 +3173,7 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
+            experimental_telemetry: initialParams.experimental_telemetry,
             experimental_context: toolExecutionContext,
           });
 
@@ -3629,6 +3633,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: effectiveGenOptions.signal,
             providerOptions: effectiveGenOptions.providerOptions,
             headers: effectiveGenOptions.headers,
+            experimental_telemetry: effectiveGenOptions.experimental_telemetry,
           };
 
           // Capture currentModel for use in the callback closure
@@ -3665,6 +3670,7 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
+            experimental_telemetry: initialParams.experimental_telemetry,
             experimental_context: toolExecutionContext,
             // Incremental checkpointing: save after each step if enabled
             onStepFinish: effectiveGenOptions.checkpointAfterToolCall
@@ -3833,6 +3839,7 @@ export function createAgent(options: AgentOptions): Agent {
                         // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                         providerOptions: requestOptions.providerOptions as any,
                         headers: requestOptions.headers,
+                        experimental_telemetry: requestOptions.experimental_telemetry,
                         experimental_context: toolExecutionContext,
                       });
                     },
@@ -4045,6 +4052,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: effectiveGenOptions.signal,
             providerOptions: effectiveGenOptions.providerOptions,
             headers: effectiveGenOptions.headers,
+            experimental_telemetry: effectiveGenOptions.experimental_telemetry,
           };
 
           // Track step count for incremental checkpointing
@@ -4076,6 +4084,7 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
+            experimental_telemetry: initialParams.experimental_telemetry,
             experimental_context: toolExecutionContext,
             // Incremental checkpointing: save after each step if enabled
             onStepFinish: effectiveGenOptions.checkpointAfterToolCall
@@ -4321,6 +4330,7 @@ export function createAgent(options: AgentOptions): Agent {
                 abortSignal: effectiveGenOptions.signal,
                 providerOptions: effectiveGenOptions.providerOptions,
                 headers: effectiveGenOptions.headers,
+                experimental_telemetry: effectiveGenOptions.experimental_telemetry,
               };
 
               // Track step count for incremental checkpointing
@@ -4352,6 +4362,7 @@ export function createAgent(options: AgentOptions): Agent {
                 // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                 providerOptions: initialParams.providerOptions as any,
                 headers: initialParams.headers,
+                experimental_telemetry: initialParams.experimental_telemetry,
                 experimental_context: toolExecutionContext,
                 // Incremental checkpointing: save after each step if enabled
                 onStepFinish: effectiveGenOptions.checkpointAfterToolCall
@@ -4559,6 +4570,7 @@ export function createAgent(options: AgentOptions): Agent {
                         // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                         providerOptions: requestOptions.providerOptions as any,
                         headers: requestOptions.headers,
+                        experimental_telemetry: requestOptions.experimental_telemetry,
                         experimental_context: toolExecutionContext,
                       });
                     },

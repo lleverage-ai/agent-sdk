@@ -13,6 +13,7 @@ import type {
   ModelMessage,
   Output,
   streamText,
+  TelemetrySettings,
   Tool,
   ToolExecutionOptions,
   ToolSet,
@@ -1972,6 +1973,35 @@ export interface GenerateOptions {
    * Useful for custom authentication or provider-specific headers.
    */
   headers?: Record<string, string>;
+
+  /**
+   * OpenTelemetry telemetry configuration, passed straight through to
+   * the underlying `generateText`/`streamText` calls. When enabled and an
+   * OpenTelemetry tracer provider is registered (typically via
+   * `@opentelemetry/sdk-node`), the AI SDK emits `ai.*` spans with full
+   * `gen_ai.*` semantic-convention attributes for every model invocation
+   * and tool call inside the agent loop.
+   *
+   * The SDK does not enable, transform, or interpret this option — it is
+   * a pure passthrough to the AI SDK.
+   *
+   * @see https://ai-sdk.dev/docs/ai-sdk-core/telemetry
+   *
+   * @example
+   * ```typescript
+   * const result = await agent.generate({
+   *   prompt: "Hello",
+   *   experimental_telemetry: {
+   *     isEnabled: true,
+   *     functionId: "my-agent",
+   *     recordInputs: false,
+   *     recordOutputs: false,
+   *     metadata: { userId: "user_123" },
+   *   },
+   * });
+   * ```
+   */
+  experimental_telemetry?: TelemetrySettings;
 
   /**
    * Callback invoked when the stream writer becomes available.
