@@ -1979,11 +1979,15 @@ export interface GenerateOptions {
    * the underlying `generateText`/`streamText` calls. When enabled and an
    * OpenTelemetry tracer provider is registered (typically via
    * `@opentelemetry/sdk-node`), the AI SDK emits `ai.*` spans with full
-   * `gen_ai.*` semantic-convention attributes for every model invocation
-   * and tool call inside the agent loop.
+   * `gen_ai.*` semantic-convention attributes for each model invocation,
+   * plus `ai.toolCall` spans for tool calls executed through the SDK.
    *
    * The SDK does not enable, transform, or interpret this option — it is
    * a pure passthrough to the AI SDK.
+   *
+   * Note: `recordInputs` and `recordOutputs` default to `true`, so prompts
+   * and completions are captured unless you set them to `false` (e.g. to
+   * avoid sending sensitive content to your telemetry backend).
    *
    * @see https://ai-sdk.dev/docs/ai-sdk-core/telemetry
    *
@@ -1994,8 +1998,8 @@ export interface GenerateOptions {
    *   experimental_telemetry: {
    *     isEnabled: true,
    *     functionId: "my-agent",
-   *     recordInputs: false,
-   *     recordOutputs: false,
+   *     recordInputs: false, // omit prompts from spans
+   *     recordOutputs: false, // omit completions from spans
    *     metadata: { userId: "user_123" },
    *   },
    * });
