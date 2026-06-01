@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added an optional `experimental_telemetry?: TelemetrySettings` field to `GenerateOptions`, passed straight through to the underlying `generateText`/`streamText` calls at every model-invocation site in the agent loop. When a caller opts in and an OpenTelemetry tracer provider is registered, the AI SDK emits `ai.*` spans with `gen_ai.*` semantic-convention attributes for each model invocation and tool call. Pure passthrough — no behaviour change unless the caller opts in.
+
 ## [0.1.0-alpha.7] - 2026-05-14
 
 ### Added
