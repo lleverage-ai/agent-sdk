@@ -322,13 +322,16 @@ export {
 } from "./mcp/index.js";
 // Prompt Builder types
 export type {
+  BuildSystemMessagesOptions,
   PromptBuildResult,
+  PromptCacheTtl,
   PromptComponent,
   PromptComponentBudget,
   PromptComponentStability,
   PromptContext,
   PromptSectionDiagnostics,
 } from "./prompt-builder/index.js";
+export { MAX_PROMPT_CACHE_BREAKPOINTS } from "./prompt-builder/index.js";
 export type {
   PromptInstructionLayer,
   PromptLoadedSkill,
@@ -768,6 +771,7 @@ export type {
   SubagentOptions,
   SubagentStartInput,
   SubagentStopInput,
+  SystemPromptCachingOptions,
   TaskToolOptions,
   Tool,
   ToolCallResult,

@@ -366,6 +366,47 @@ export type AgentUIMessage = UIMessage<AgentDataTypes>;
 // =============================================================================
 
 /**
+ * Opt-in configuration for structured-block system emission with provider
+ * prompt-cache breakpoints.
+ *
+ * Additive and backward compatible: with `enabled: false` (or the whole object
+ * unset) the agent emits the system prompt as a single string exactly as
+ * before.
+ *
+ * @see {@link AgentOptions.systemPromptCaching}
+ * @category Agent
+ */
+export interface SystemPromptCachingOptions {
+  /**
+   * Whether to emit the system prompt as cache-annotated structured blocks.
+   *
+   * @defaultValue false
+   */
+  enabled: boolean;
+
+  /**
+   * Time-to-live for the cache breakpoint placed on the stable head.
+   *
+   * `"5m"` is the provider default; `"1h"` opts into the extended cache.
+   *
+   * @defaultValue "5m"
+   */
+  ttl?: import("./prompt-builder/index.js").PromptCacheTtl;
+
+  /**
+   * When `true`, also place a cache breakpoint on the latest conversation turn
+   * (the last model message), in addition to the stable system head. This
+   * caches the conversation prefix for multi-turn reuse.
+   *
+   * The total number of breakpoints is capped at four (the provider limit);
+   * the conversation breakpoint is only added while a slot remains.
+   *
+   * @defaultValue false
+   */
+  conversationBreakpoint?: boolean;
+}
+
+/**
  * Configuration options for creating an agent.
  *
  * @example
@@ -561,6 +602,36 @@ export interface AgentOptions {
    * @defaultValue undefined (uses default builder)
    */
   promptBuilder?: import("./prompt-builder/index.js").PromptBuilder;
+
+  /**
+   * Opt-in structured-block system emission with provider prompt-cache
+   * breakpoints.
+   *
+   * When unset or `enabled: false` (the default), the agent emits the system
+   * prompt as a single string exactly as before, so existing behaviour is
+   * byte-for-byte unchanged.
+   *
+   * When `enabled: true` **and** a {@link promptBuilder} is in use, the agent
+   * emits the system prompt as an array of system messages split at the
+   * builder's stability boundary, and annotates the stable head with an
+   * Anthropic `cacheControl` breakpoint. The `anthropic` provider namespace is
+   * inert for other providers, so this is safe for any model.
+   *
+   * Static `systemPrompt` strings are not split (there is no stability metadata
+   * to split on), so this option only takes effect with a builder.
+   *
+   * @example
+   * ```typescript
+   * const agent = createAgent({
+   *   model,
+   *   systemPromptCaching: { enabled: true, ttl: "5m", conversationBreakpoint: true },
+   * });
+   * ```
+   *
+   * @see {@link SystemPromptCachingOptions}
+   * @defaultValue undefined (string system, no caching)
+   */
+  systemPromptCaching?: SystemPromptCachingOptions;
 
   /**
    * Whether the host application exposes persistent memory to the agent.

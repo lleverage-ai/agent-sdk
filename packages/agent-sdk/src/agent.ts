@@ -4,7 +4,7 @@
  * @packageDocumentation
  */
 
-import type { ModelMessage, Tool, ToolExecutionOptions, ToolSet } from "ai";
+import type { ModelMessage, SystemModelMessage, Tool, ToolExecutionOptions, ToolSet } from "ai";
 import {
   createUIMessageStream,
   createUIMessageStreamResponse,
@@ -59,10 +59,12 @@ import {
 } from "./observability/execution-metadata.js";
 import { createDefaultPromptBuilder } from "./prompt-builder/components.js";
 import type {
+  PromptCacheTtl,
   PromptContext,
   PromptInstructionLayer,
   PromptMemoryContext,
 } from "./prompt-builder/index.js";
+import { MAX_PROMPT_CACHE_BREAKPOINTS } from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { createSubagent } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
@@ -340,6 +342,44 @@ function projectMessagesForModel(
       }),
     };
   }) as ModelMessage[];
+}
+
+/**
+ * Return a copy of `messages` with the last entry annotated with an Anthropic
+ * `cacheControl` breakpoint, caching the conversation prefix up to and including
+ * the latest turn for multi-turn reuse.
+ *
+ * The original array and messages are not mutated; only the last message is
+ * shallow-cloned with merged `providerOptions`. The `anthropic` namespace is
+ * inert for other providers, so the annotation is provider-agnostic.
+ *
+ * @see https://ai-sdk.dev/providers/ai-sdk-providers/anthropic
+ * @internal
+ */
+function markLatestMessageCacheBreakpoint(
+  messages: ModelMessage[],
+  ttl: PromptCacheTtl,
+): ModelMessage[] {
+  const lastIndex = messages.length - 1;
+  const last = messages[lastIndex];
+  if (last === undefined) {
+    return messages;
+  }
+
+  const marked: ModelMessage = {
+    ...last,
+    providerOptions: {
+      ...last.providerOptions,
+      anthropic: {
+        ...(last.providerOptions?.anthropic as Record<string, unknown> | undefined),
+        cacheControl: { type: "ephemeral", ttl },
+      },
+    },
+  };
+
+  const next = messages.slice();
+  next[lastIndex] = marked;
+  return next;
 }
 
 /**
@@ -1493,13 +1533,46 @@ export function createAgent(options: AgentOptions): Agent {
     };
   };
 
-  // Helper to get system prompt (either static or built from context)
-  const getSystemPrompt = (context: PromptContext): string | undefined => {
+  // Resolved system-prompt caching configuration (default: disabled).
+  const systemPromptCaching = options.systemPromptCaching;
+  const systemCachingEnabled = systemPromptCaching?.enabled === true && promptMode === "builder";
+  const systemCacheTtl: PromptCacheTtl = systemPromptCaching?.ttl ?? "5m";
+  // The stable system head consumes one breakpoint when caching is enabled.
+  const conversationBreakpointEnabled =
+    systemCachingEnabled &&
+    systemPromptCaching?.conversationBreakpoint === true &&
+    // Reserve one slot for the system head; only add the conversation
+    // breakpoint while we remain within the provider's breakpoint budget.
+    MAX_PROMPT_CACHE_BREAKPOINTS >= 2;
+
+  // Helper to get system prompt. Returns a plain string by default (byte-stable
+  // legacy behaviour), or an array of cache-annotated system messages when
+  // system-prompt caching is enabled and a builder is in use.
+  const getSystemPrompt = (context: PromptContext): string | SystemModelMessage[] | undefined => {
     if (promptMode === "static") {
       return options.systemPrompt;
     }
+    if (systemCachingEnabled) {
+      return promptBuilder!.buildSystemMessages(context, { cacheTtl: systemCacheTtl });
+    }
     // Build prompt using prompt builder
     return promptBuilder!.build(context);
+  };
+
+  // Apply the optional conversation-prefix cache breakpoint to the latest
+  // model message, then project messages for the active model capabilities.
+  // When the conversation breakpoint is disabled this is a transparent
+  // pass-through to {@link projectMessagesForModel}, so default behaviour is
+  // byte-for-byte unchanged.
+  const prepareModelMessages = (
+    messages: ModelMessage[],
+    capabilities: ModelInputCapabilities | undefined,
+  ): ModelMessage[] => {
+    const projected = projectMessagesForModel(messages, capabilities);
+    if (!conversationBreakpointEnabled || projected.length === 0) {
+      return projected;
+    }
+    return markLatestMessageCacheBreakpoint(projected, systemCacheTtl);
   };
 
   const responseMessagesToModelMessages = (messages: unknown[] | undefined): ModelMessage[] =>
@@ -2592,7 +2665,7 @@ export function createAgent(options: AgentOptions): Agent {
           const response = await generateText({
             model: retryState.currentModel,
             system: initialParams.system,
-            messages: projectMessagesForModel(
+            messages: prepareModelMessages(
               initialParams.messages,
               toolExecutionContext.agentSdk.modelCapabilities,
             ),
@@ -3158,7 +3231,7 @@ export function createAgent(options: AgentOptions): Agent {
           const response = streamText({
             model: retryState.currentModel,
             system: initialParams.system,
-            messages: projectMessagesForModel(
+            messages: prepareModelMessages(
               initialParams.messages,
               toolExecutionContext.agentSdk.modelCapabilities,
             ),
@@ -3655,7 +3728,7 @@ export function createAgent(options: AgentOptions): Agent {
           const result = streamText({
             model: modelToUse,
             system: initialParams.system,
-            messages: projectMessagesForModel(
+            messages: prepareModelMessages(
               initialParams.messages,
               toolExecutionContext.agentSdk.modelCapabilities,
             ),
@@ -3825,7 +3898,7 @@ export function createAgent(options: AgentOptions): Agent {
                       return streamText({
                         model: currentModel,
                         system: getSystemPrompt(followUpPromptContext),
-                        messages: projectMessagesForModel(
+                        messages: prepareModelMessages(
                           followUpMessages,
                           toolExecutionContext.agentSdk.modelCapabilities,
                         ),
@@ -4069,7 +4142,7 @@ export function createAgent(options: AgentOptions): Agent {
           const result = streamText({
             model: retryState.currentModel,
             system: initialParams.system,
-            messages: projectMessagesForModel(
+            messages: prepareModelMessages(
               initialParams.messages,
               toolExecutionContext.agentSdk.modelCapabilities,
             ),
@@ -4347,7 +4420,7 @@ export function createAgent(options: AgentOptions): Agent {
               const result = streamText({
                 model: modelToUse,
                 system: initialParams.system,
-                messages: projectMessagesForModel(
+                messages: prepareModelMessages(
                   initialParams.messages,
                   toolExecutionContext.agentSdk.modelCapabilities,
                 ),
@@ -4556,7 +4629,7 @@ export function createAgent(options: AgentOptions): Agent {
                       return streamText({
                         model: currentModel,
                         system: getSystemPrompt(followUpPromptContext),
-                        messages: projectMessagesForModel(
+                        messages: prepareModelMessages(
                           followUpMessages,
                           toolExecutionContext.agentSdk.modelCapabilities,
                         ),

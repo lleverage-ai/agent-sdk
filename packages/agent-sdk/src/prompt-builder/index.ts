@@ -4,7 +4,7 @@
  * @packageDocumentation
  */
 
-import type { ModelMessage } from "ai";
+import type { ModelMessage, SystemModelMessage } from "ai";
 import type { AgentState } from "../backends/state.js";
 import type { PermissionMode } from "../types.js";
 
@@ -362,6 +362,65 @@ export interface PromptBuildResult {
   sections: PromptSectionDiagnostics[];
 }
 
+/**
+ * Anthropic prompt-cache time-to-live for a cache breakpoint.
+ *
+ * `"5m"` is the provider default (a five-minute ephemeral cache); `"1h"` opts
+ * into the extended one-hour cache. Mirrors the Anthropic provider's
+ * `cacheControl.ttl` values exactly.
+ *
+ * @see https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching
+ * @category Types
+ */
+export type PromptCacheTtl = "5m" | "1h";
+
+/**
+ * The maximum number of Anthropic `cache_control` breakpoints permitted in a
+ * single request (tools + system + messages combined). The provider returns a
+ * 400 error if a fifth explicit breakpoint is supplied.
+ *
+ * @see https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching
+ * @category Constants
+ */
+export const MAX_PROMPT_CACHE_BREAKPOINTS = 4;
+
+/**
+ * Options for {@link PromptBuilder.buildSystemMessages}.
+ *
+ * @category Context
+ */
+export interface BuildSystemMessagesOptions {
+  /**
+   * When provided, the stable head system message is annotated with an
+   * Anthropic `cacheControl` breakpoint of this time-to-live. When omitted,
+   * no breakpoint is emitted and the split is purely structural.
+   *
+   * The `anthropic` provider namespace is inert for non-Anthropic providers, so
+   * this annotation is safe to emit regardless of the model in use.
+   */
+  cacheTtl?: PromptCacheTtl;
+}
+
+/**
+ * Build an Anthropic `cacheControl` provider-options object for a system block.
+ *
+ * The shape matches the Vercel AI SDK Anthropic provider
+ * (`providerOptions.anthropic.cacheControl = { type: "ephemeral", ttl? }`).
+ *
+ * @see https://ai-sdk.dev/providers/ai-sdk-providers/anthropic
+ * @internal
+ */
+function buildCacheControlProviderOptions(ttl: PromptCacheTtl): SystemModelMessage["providerOptions"] {
+  return {
+    anthropic: {
+      cacheControl: {
+        type: "ephemeral",
+        ttl,
+      },
+    },
+  };
+}
+
 function fingerprintText(text: string): string {
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i += 1) {
@@ -553,6 +612,93 @@ export class PromptBuilder {
         charCount: text.length,
       })),
     };
+  }
+
+  /**
+   * Build the system prompt as an array of system messages split at the
+   * stability boundary, for provider prompt caching.
+   *
+   * Sections are rendered in the same priority order as {@link build}, then
+   * partitioned into a **stable head** and a **dynamic tail**:
+   *
+   * - The stable head is the maximal leading run of `static` sections (in
+   *   render order). It is the byte-stable prefix that is safe to cache.
+   * - The dynamic tail is every remaining section, including any `static`
+   *   section that happens to render after a `dynamic` one. Such a section
+   *   cannot belong to a byte-stable prefix (the dynamic section before it has
+   *   already broken exact-prefix matching), so it correctly falls into the
+   *   tail rather than poisoning the cached head.
+   *
+   * Concatenating the two messages' content with the same `"\n\n"` joiner that
+   * {@link build} uses reproduces the exact string {@link build} returns, so the
+   * array form is byte-faithful to the string form.
+   *
+   * When {@link BuildSystemMessagesOptions.cacheTtl} is supplied, the stable
+   * head carries an Anthropic `cacheControl` breakpoint
+   * (`providerOptions.anthropic.cacheControl = { type: "ephemeral", ttl }`). The
+   * `anthropic` namespace is inert for other providers, so the breakpoint is a
+   * no-op there and the array remains provider-agnostic.
+   *
+   * At most one breakpoint is placed here (the stable-head boundary). When no
+   * stable head exists (the first rendered section is `dynamic`) a single
+   * unmarked system message is returned, mirroring {@link build} with no
+   * cacheable prefix.
+   *
+   * @param context - The context to pass to components.
+   * @param options - Optional cache-control configuration.
+   * @returns The system prompt as one or two {@link SystemModelMessage} entries.
+   * @throws {Error} When a component condition or render callback throws.
+   *
+   * @example
+   * ```typescript
+   * const system = builder.buildSystemMessages(context, { cacheTtl: "5m" });
+   * await streamText({ model, system, messages });
+   * ```
+   */
+  buildSystemMessages(
+    context: PromptContext,
+    options: BuildSystemMessagesOptions = {},
+  ): SystemModelMessage[] {
+    const renderedSections = this.renderSections(context);
+
+    if (renderedSections.length === 0) {
+      return [];
+    }
+
+    // The stable head is the maximal leading run of static sections.
+    let boundaryIndex = 0;
+    while (
+      boundaryIndex < renderedSections.length &&
+      (renderedSections[boundaryIndex]!.component.stability ?? "dynamic") === "static"
+    ) {
+      boundaryIndex += 1;
+    }
+
+    const join = (sections: Array<{ text: string }>): string =>
+      sections.map(({ text }) => text).join("\n\n");
+
+    const stableSections = renderedSections.slice(0, boundaryIndex);
+    const dynamicSections = renderedSections.slice(boundaryIndex);
+
+    // No stable prefix: a single unmarked system message (no cacheable head).
+    if (stableSections.length === 0) {
+      return [{ role: "system", content: join(dynamicSections) }];
+    }
+
+    const stableHead: SystemModelMessage = {
+      role: "system",
+      content: join(stableSections),
+      ...(options.cacheTtl !== undefined
+        ? { providerOptions: buildCacheControlProviderOptions(options.cacheTtl) }
+        : {}),
+    };
+
+    // No dynamic tail: only the stable head (still a valid array form).
+    if (dynamicSections.length === 0) {
+      return [stableHead];
+    }
+
+    return [stableHead, { role: "system", content: join(dynamicSections) }];
   }
 
   /**
