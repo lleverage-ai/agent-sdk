@@ -373,6 +373,13 @@ export type AgentUIMessage = UIMessage<AgentDataTypes>;
  * unset) the agent emits the system prompt as a single string exactly as
  * before.
  *
+ * Mutually exclusive with the Vercel AI Gateway's automatic caching
+ * (`providerOptions.gateway.caching: 'auto'`). The gateway inserts breakpoints
+ * server-side that are not visible to this SDK, so enabling both strategies can
+ * double-insert breakpoints and exceed the provider's four-breakpoint limit.
+ * Choose exactly one: this explicit, deterministic placement, or the gateway's
+ * automatic placement.
+ *
  * @see {@link AgentOptions.systemPromptCaching}
  * @category Agent
  */
@@ -618,7 +625,9 @@ export interface AgentOptions {
    * inert for other providers, so this is safe for any model.
    *
    * Static `systemPrompt` strings are not split (there is no stability metadata
-   * to split on), so this option only takes effect with a builder.
+   * to split on), so the structured system-message split only takes effect with
+   * a builder. The latest-message breakpoint is governed separately by
+   * {@link SystemPromptCachingOptions.conversationBreakpoint}.
    *
    * @example
    * ```typescript

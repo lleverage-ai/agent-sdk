@@ -353,9 +353,30 @@ function projectMessagesForModel(
  * shallow-cloned with merged `providerOptions`. The `anthropic` namespace is
  * inert for other providers, so the annotation is provider-agnostic.
  *
- * @see https://ai-sdk.dev/providers/ai-sdk-providers/anthropic
+ * @param messages - The model messages to annotate.
+ * @param ttl - The Anthropic prompt-cache time-to-live to apply.
+ * @returns A copied message array with the latest message annotated, or the
+ * original array when it is empty.
+ * @see {@link https://ai-sdk.dev/providers/ai-sdk-providers/anthropic | Anthropic provider options}
  * @internal
  */
+/**
+ * Report whether a model message already carries an Anthropic `cacheControl`
+ * breakpoint in its provider options.
+ *
+ * Incoming messages may already be annotated by the caller, a checkpoint
+ * restore, or a prior turn, so the conversation-breakpoint budget must account
+ * for them before stamping another.
+ *
+ * @param message - The model message to inspect, or `undefined`.
+ * @returns `true` when an Anthropic `cacheControl` breakpoint is present.
+ * @internal
+ */
+function hasAnthropicCacheBreakpoint(message: ModelMessage | undefined): boolean {
+  const anthropic = message?.providerOptions?.anthropic;
+  return typeof anthropic === "object" && anthropic !== null && "cacheControl" in anthropic;
+}
+
 function markLatestMessageCacheBreakpoint(
   messages: ModelMessage[],
   ttl: PromptCacheTtl,
@@ -1537,12 +1558,14 @@ export function createAgent(options: AgentOptions): Agent {
   const systemPromptCaching = options.systemPromptCaching;
   const systemCachingEnabled = systemPromptCaching?.enabled === true && promptMode === "builder";
   const systemCacheTtl: PromptCacheTtl = systemPromptCaching?.ttl ?? "5m";
-  // The stable system head consumes one breakpoint when caching is enabled.
+  // Whether the conversation breakpoint feature is requested. The stable system
+  // head already consumes one breakpoint, so the provider budget must allow at
+  // least two for this to ever apply. The per-request budget (which also counts
+  // breakpoints already present on incoming messages) is enforced in
+  // {@link prepareModelMessages} before any breakpoint is actually stamped.
   const conversationBreakpointEnabled =
     systemCachingEnabled &&
     systemPromptCaching?.conversationBreakpoint === true &&
-    // Reserve one slot for the system head; only add the conversation
-    // breakpoint while we remain within the provider's breakpoint budget.
     MAX_PROMPT_CACHE_BREAKPOINTS >= 2;
 
   // Helper to get system prompt. Returns a plain string by default (byte-stable
@@ -1559,17 +1582,42 @@ export function createAgent(options: AgentOptions): Agent {
     return promptBuilder!.build(context);
   };
 
-  // Apply the optional conversation-prefix cache breakpoint to the latest
-  // model message, then project messages for the active model capabilities.
+  // Project messages for the active model capabilities first, then apply the
+  // optional conversation-prefix cache breakpoint to the latest projected
+  // message. Projection shallow-clones messages, so annotating after projection
+  // guarantees the breakpoint lands on the message that is actually sent.
+  //
   // When the conversation breakpoint is disabled this is a transparent
   // pass-through to {@link projectMessagesForModel}, so default behaviour is
   // byte-for-byte unchanged.
+  //
+  // Anthropic permits at most {@link MAX_PROMPT_CACHE_BREAKPOINTS} breakpoints
+  // per request across tools, system, and messages. Incoming messages may
+  // already carry caller- or checkpoint-supplied `cacheControl` breakpoints, so
+  // the latest message is only stamped when doing so keeps the total within the
+  // provider budget and the latest message is not already marked (avoiding a
+  // double mark on the same target). When the gateway's `caching: 'auto'`
+  // provider option is also active it inserts breakpoints server-side that are
+  // not visible here; callers must therefore enable exactly one strategy. See
+  // {@link SystemPromptCachingOptions} for the documented precedence.
   const prepareModelMessages = (
     messages: ModelMessage[],
     capabilities: ModelInputCapabilities | undefined,
   ): ModelMessage[] => {
     const projected = projectMessagesForModel(messages, capabilities);
     if (!conversationBreakpointEnabled || projected.length === 0) {
+      return projected;
+    }
+    if (hasAnthropicCacheBreakpoint(projected.at(-1))) {
+      return projected;
+    }
+    const existingMessageBreakpoints = projected.reduce(
+      (count, message) => (hasAnthropicCacheBreakpoint(message) ? count + 1 : count),
+      0,
+    );
+    // The stable system head reserves one breakpoint while caching is enabled.
+    const reservedSystemBreakpoints = systemCachingEnabled ? 1 : 0;
+    if (reservedSystemBreakpoints + existingMessageBreakpoints + 1 > MAX_PROMPT_CACHE_BREAKPOINTS) {
       return projected;
     }
     return markLatestMessageCacheBreakpoint(projected, systemCacheTtl);

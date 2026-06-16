@@ -380,7 +380,7 @@ export type PromptCacheTtl = "5m" | "1h";
  * 400 error if a fifth explicit breakpoint is supplied.
  *
  * @see https://platform.claude.com/docs/en/docs/build-with-claude/prompt-caching
- * @category Constants
+ * @category Types
  */
 export const MAX_PROMPT_CACHE_BREAKPOINTS = 4;
 
@@ -646,7 +646,9 @@ export class PromptBuilder {
    *
    * @param context - The context to pass to components.
    * @param options - Optional cache-control configuration.
-   * @returns The system prompt as one or two {@link SystemModelMessage} entries.
+   * @returns The system prompt as zero, one, or two {@link SystemModelMessage}
+   * entries. An empty array is returned when no sections render (mirroring
+   * {@link build} producing an empty string).
    * @throws {Error} When a component condition or render callback throws.
    *
    * @example

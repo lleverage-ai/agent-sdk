@@ -4,7 +4,9 @@
  * Verifies: backward-compatible string mode when disabled; structured-block
  * array emission with a cacheControl breakpoint when enabled; ttl honoured;
  * conversationBreakpoint adds a second breakpoint within the provider budget;
- * and that only the `anthropic` provider namespace is touched (provider-agnostic).
+ * the budget guard refuses to exceed the four-breakpoint limit or double-mark a
+ * message that already carries a breakpoint; and that only the `anthropic`
+ * provider namespace is touched (provider-agnostic).
  */
 
 import type { SystemModelMessage } from "ai";
@@ -217,6 +219,112 @@ describe("agent system-prompt caching", () => {
       const last = messages[messages.length - 1];
       expect(hasAnthropicCacheBreakpoint(last?.providerOptions)).toBe(true);
 
+      expect(systemBreakpoints + messageBreakpoints).toBeLessThanOrEqual(4);
+    });
+
+    it("does not exceed the provider budget when incoming messages already carry breakpoints", async () => {
+      // System head reserves one breakpoint. Three incoming messages already
+      // carrying breakpoints plus the head fill the four-breakpoint budget, so
+      // the latest message must NOT be stamped (stamping would make five).
+      const markedOptions = {
+        anthropic: { cacheControl: { type: "ephemeral" as const, ttl: "5m" as const } },
+      };
+      const agent = createAgent({
+        model: createMockModel(),
+        promptBuilder: makeBuilder(),
+        systemPromptCaching: { enabled: true, conversationBreakpoint: true },
+      });
+
+      await agent.generate({
+        messages: [
+          { role: "user", content: "one", providerOptions: markedOptions },
+          { role: "assistant", content: "two", providerOptions: markedOptions },
+          { role: "user", content: "three", providerOptions: markedOptions },
+        ],
+      });
+
+      const args = capturedCallArgs();
+      const system = args.system as SystemModelMessage[];
+      const messages = args.messages as Array<{ providerOptions?: unknown }>;
+
+      const systemBreakpoints = system.filter((m) =>
+        hasAnthropicCacheBreakpoint(m.providerOptions),
+      ).length;
+      const messageBreakpoints = messages.filter((m) =>
+        hasAnthropicCacheBreakpoint(m.providerOptions),
+      ).length;
+
+      // The three pre-existing breakpoints are preserved, none added.
+      expect(systemBreakpoints).toBe(1);
+      expect(messageBreakpoints).toBe(3);
+      expect(systemBreakpoints + messageBreakpoints).toBeLessThanOrEqual(4);
+    });
+
+    it("does not double-mark a latest message that already carries a breakpoint", async () => {
+      const markedOptions = {
+        anthropic: { cacheControl: { type: "ephemeral" as const, ttl: "1h" as const } },
+      };
+      const agent = createAgent({
+        model: createMockModel(),
+        promptBuilder: makeBuilder(),
+        systemPromptCaching: { enabled: true, conversationBreakpoint: true },
+      });
+
+      await agent.generate({
+        messages: [
+          { role: "user", content: "hi" },
+          { role: "assistant", content: "marked", providerOptions: markedOptions },
+        ],
+      });
+
+      const messages = capturedCallArgs().messages as Array<{
+        providerOptions?: { anthropic?: { cacheControl?: { ttl?: string } } };
+      }>;
+      const last = messages[messages.length - 1];
+
+      // The latest message keeps its original 1h breakpoint, not overwritten.
+      expect(hasAnthropicCacheBreakpoint(last?.providerOptions)).toBe(true);
+      expect(last?.providerOptions?.anthropic?.cacheControl?.ttl).toBe("1h");
+      const messageBreakpoints = messages.filter((m) =>
+        hasAnthropicCacheBreakpoint(m.providerOptions),
+      ).length;
+      expect(messageBreakpoints).toBe(1);
+    });
+
+    it("stamps the latest message when budget allows alongside one pre-existing breakpoint", async () => {
+      const markedOptions = {
+        anthropic: { cacheControl: { type: "ephemeral" as const, ttl: "5m" as const } },
+      };
+      const agent = createAgent({
+        model: createMockModel(),
+        promptBuilder: makeBuilder(),
+        systemPromptCaching: { enabled: true, conversationBreakpoint: true },
+      });
+
+      await agent.generate({
+        messages: [
+          { role: "user", content: "marked", providerOptions: markedOptions },
+          { role: "assistant", content: "tail" },
+        ],
+      });
+
+      const args = capturedCallArgs();
+      const system = args.system as SystemModelMessage[];
+      const messages = args.messages as Array<{ providerOptions?: unknown }>;
+
+      const systemBreakpoints = system.filter((m) =>
+        hasAnthropicCacheBreakpoint(m.providerOptions),
+      ).length;
+      const messageBreakpoints = messages.filter((m) =>
+        hasAnthropicCacheBreakpoint(m.providerOptions),
+      ).length;
+
+      // Head (1) + pre-existing (1) + newly stamped latest (1) = 3 <= 4.
+      expect(systemBreakpoints).toBe(1);
+      expect(messageBreakpoints).toBe(2);
+      expect(hasAnthropicCacheBreakpoint(messages[messages.length - 1]?.providerOptions)).toBe(
+        true,
+      );
       expect(systemBreakpoints + messageBreakpoints).toBeLessThanOrEqual(4);
     });
 
