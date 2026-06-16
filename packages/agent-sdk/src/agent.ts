@@ -360,23 +360,6 @@ function projectMessagesForModel(
  * @see {@link https://ai-sdk.dev/providers/ai-sdk-providers/anthropic | Anthropic provider options}
  * @internal
  */
-/**
- * Report whether a model message already carries an Anthropic `cacheControl`
- * breakpoint in its provider options.
- *
- * Incoming messages may already be annotated by the caller, a checkpoint
- * restore, or a prior turn, so the conversation-breakpoint budget must account
- * for them before stamping another.
- *
- * @param message - The model message to inspect, or `undefined`.
- * @returns `true` when an Anthropic `cacheControl` breakpoint is present.
- * @internal
- */
-function hasAnthropicCacheBreakpoint(message: ModelMessage | undefined): boolean {
-  const anthropic = message?.providerOptions?.anthropic;
-  return typeof anthropic === "object" && anthropic !== null && "cacheControl" in anthropic;
-}
-
 function markLatestMessageCacheBreakpoint(
   messages: ModelMessage[],
   ttl: PromptCacheTtl,
@@ -401,6 +384,23 @@ function markLatestMessageCacheBreakpoint(
   const next = messages.slice();
   next[lastIndex] = marked;
   return next;
+}
+
+/**
+ * Report whether a model message already carries an Anthropic `cacheControl`
+ * breakpoint in its provider options.
+ *
+ * Incoming messages may already be annotated by the caller, a checkpoint
+ * restore, or a prior turn, so the conversation-breakpoint budget must account
+ * for them before stamping another.
+ *
+ * @param message - The model message to inspect, or `undefined`.
+ * @returns `true` when an Anthropic `cacheControl` breakpoint is present.
+ * @internal
+ */
+function hasAnthropicCacheBreakpoint(message: ModelMessage | undefined): boolean {
+  const anthropic = message?.providerOptions?.anthropic;
+  return typeof anthropic === "object" && anthropic !== null && "cacheControl" in anthropic;
 }
 
 /**
