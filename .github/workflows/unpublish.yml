@@ -6,8 +6,10 @@ on:
 
 jobs:
   unpublish:
-    # Only run for tag deletions matching the package tag format: agent-sdk@X.Y.Z
-    if: github.event.ref_type == 'tag' && contains(github.event.ref, '@')
+    # Only run for tag deletions matching the package tag format: agent-sdk@X.Y.Z.
+    # Restricted to the agent-sdk@ prefix so deleting any other `name@version`
+    # tag can never target a different package on npm.
+    if: github.event.ref_type == 'tag' && startsWith(github.event.ref, 'agent-sdk@')
     runs-on: ubuntu-latest
 
     permissions:
@@ -25,9 +27,16 @@ jobs:
         env:
           TAG_REF: ${{ github.event.ref }}
         run: |
-          # Parse monorepo tag format: package-name@version
+          # Parse package tag format: agent-sdk@version
           PACKAGE_NAME="${TAG_REF%%@*}"
           VERSION="${TAG_REF##*@}"
+
+          # Defense in depth: only ever operate on the agent-sdk package, even if
+          # the job-level guard is ever loosened.
+          if [[ "$PACKAGE_NAME" != "agent-sdk" ]]; then
+            echo "Unsupported package tag: $TAG_REF"
+            exit 1
+          fi
 
           # Validate version format (X.Y.Z with optional prerelease)
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
