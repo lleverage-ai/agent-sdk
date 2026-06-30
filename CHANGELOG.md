@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-alpha.9] - 2026-06-30
+
 ### Changed
 
 - **BREAKING**: Upgraded the AI SDK peer dependency from `ai@^6` to `ai@^7`. The
