@@ -103,7 +103,7 @@ export class VirtualMCPServer {
 
       metadata.push({
         name: qualifiedName,
-        description: tool.description ?? "",
+        description: typeof tool.description === "string" ? tool.description : "",
         inputSchema,
         source: this.name,
         sourceType: "inline",

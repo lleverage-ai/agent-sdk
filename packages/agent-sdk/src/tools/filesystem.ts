@@ -9,7 +9,7 @@
  */
 
 import type { ToolExecutionOptions } from "ai";
-import { tool } from "ai";
+import { type Tool, tool } from "ai";
 import { z } from "zod";
 import type { BackendProtocol, FileInfo, GrepMatch, SandboxReadResult } from "../backend.js";
 import type { ModelInputCapabilities } from "../types.js";
@@ -60,16 +60,22 @@ function isSandboxReadResult(value: unknown): value is SandboxReadResult {
   );
 }
 
-function getModelCapabilities(options?: ToolExecutionOptions): ModelInputCapabilities | undefined {
-  const context = options?.experimental_context as ReadToolExecutionContext | undefined;
+function getModelCapabilities(
+  options?: ToolExecutionOptions<unknown>,
+): ModelInputCapabilities | undefined {
+  // The SDK injects its per-call execution context under `experimental_context`
+  // (see `wrapToolsWithExecutionContext` in agent.ts). AI SDK 7 dropped this
+  // field from the public tool-options type, so we read it via a cast.
+  const context = (options as { experimental_context?: ReadToolExecutionContext } | undefined)
+    ?.experimental_context;
   return context?.agentSdk?.modelCapabilities ?? context?.modelCapabilities;
 }
 
-function supportsImageInput(options?: ToolExecutionOptions): boolean {
+function supportsImageInput(options?: ToolExecutionOptions<unknown>): boolean {
   return getModelCapabilities(options)?.imageInput !== false;
 }
 
-function supportsFileInput(options?: ToolExecutionOptions): boolean {
+function supportsFileInput(options?: ToolExecutionOptions<unknown>): boolean {
   return getModelCapabilities(options)?.fileInput !== false;
 }
 
@@ -113,7 +119,7 @@ function toReadToolModelOutput(output: unknown): ReadToolModelOutput {
 
 function formatSandboxReadResult(
   result: SandboxReadResult,
-  options?: ToolExecutionOptions,
+  options?: ToolExecutionOptions<unknown>,
 ): string | ReadToolContentOutput {
   switch (result.type) {
     case "text":
@@ -234,7 +240,7 @@ function formatSandboxReadResult(
  *
  * @category Tools
  */
-export function createReadTool(backend: BackendProtocol) {
+export function createReadTool(backend: BackendProtocol): Tool {
   return tool({
     description: `Read a file with line numbers. Default reads first ${DEFAULT_READ_LIMIT} lines. Use offset/limit for large files.`,
     inputSchema: z.object({
@@ -255,7 +261,7 @@ export function createReadTool(backend: BackendProtocol) {
         offset?: number;
         limit?: number;
       },
-      options?: ToolExecutionOptions,
+      options?: ToolExecutionOptions<unknown>,
     ) => {
       const effectiveLimit = limit ?? DEFAULT_READ_LIMIT;
       const content = await backend.read(file_path, offset, effectiveLimit);
@@ -296,7 +302,7 @@ export function createReadTool(backend: BackendProtocol) {
  *
  * @category Tools
  */
-export function createWriteTool(backend: BackendProtocol) {
+export function createWriteTool(backend: BackendProtocol): Tool {
   return tool({
     description:
       "Create or overwrite a file with the given content. Parent directories are created automatically.",
@@ -344,7 +350,7 @@ export function createWriteTool(backend: BackendProtocol) {
  *
  * @category Tools
  */
-export function createEditTool(backend: BackendProtocol) {
+export function createEditTool(backend: BackendProtocol): Tool {
   return tool({
     description:
       "Edit a file by replacing text. The old_string must be unique unless replace_all is true.",
@@ -408,7 +414,7 @@ export function createEditTool(backend: BackendProtocol) {
  *
  * @category Tools
  */
-export function createGlobTool(backend: BackendProtocol) {
+export function createGlobTool(backend: BackendProtocol): Tool {
   return tool({
     description:
       'Find files matching a glob pattern. Supports patterns like "**/*.ts", "src/**/*.test.ts".',
@@ -462,7 +468,7 @@ function formatGlobOutput(files: FileInfo[]): string {
  *
  * @category Tools
  */
-export function createGrepTool(backend: BackendProtocol) {
+export function createGrepTool(backend: BackendProtocol): Tool {
   return tool({
     description:
       "Search for pattern matches in files using regex. Returns matching lines with file paths and line numbers.",

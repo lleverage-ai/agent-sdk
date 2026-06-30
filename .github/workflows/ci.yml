@@ -35,6 +35,4 @@ jobs:
         run: bun run build
 
       - name: Verify package contents
-        run: |
-          cd packages/agent-threads && npm pack --dry-run
-          cd ../agent-sdk && npm pack --dry-run
+        run: cd packages/agent-sdk && npm pack --dry-run

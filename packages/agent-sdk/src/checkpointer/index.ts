@@ -12,6 +12,8 @@
  * - **MemorySaver** - In-memory storage (ephemeral, for testing/development)
  * - **FileSaver** - JSON file storage (persistent, human-readable)
  * - **KeyValueStoreSaver** - Adapter for any KeyValueStore implementation
+ * - **createLedgerCheckpointer** - Event-sourced: reconstructs messages from a
+ *   transcript ledger and persists only the resume delta (not the message blob)
  *
  * @example
  * ```typescript
@@ -33,6 +35,10 @@
 export type { FileSaverOptions } from "./file-saver.js";
 // File Saver
 export { createFileSaver, FileSaver } from "./file-saver.js";
+export type { LedgerCheckpointerOptions } from "./ledger-saver.js";
+// Ledger-backed Saver (event-sourced: messages reconstructed from the ledger,
+// only the resume delta is persisted)
+export { createLedgerCheckpointer } from "./ledger-saver.js";
 export type { KeyValueStoreSaverOptions } from "./kv-saver.js";
 // KeyValueStore Saver
 export { createKeyValueStoreSaver, KeyValueStoreSaver } from "./kv-saver.js";

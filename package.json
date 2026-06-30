@@ -5,17 +5,17 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "bun run --filter '@lleverage-ai/agent-sdk' build && bun run --filter '@lleverage-ai/agent-threads' build",
-    "test": "bun run --filter '@lleverage-ai/agent-sdk' build && bun run --filter '@lleverage-ai/agent-threads' build && bun run --filter '@lleverage-ai/agent-threads' test && bun run --filter '@lleverage-ai/agent-sdk' test",
-    "type-check": "bun run --filter '@lleverage-ai/agent-sdk' build && bun run --filter '@lleverage-ai/agent-threads' build && bun run --filter '@lleverage-ai/agent-threads' type-check && bun run --filter '@lleverage-ai/agent-sdk' type-check",
+    "build": "bun run --filter '@lleverage-ai/agent-sdk' build",
+    "test": "bun run --filter '@lleverage-ai/agent-sdk' build && bun run --filter '@lleverage-ai/agent-sdk' test",
+    "type-check": "bun run --filter '@lleverage-ai/agent-sdk' type-check",
     "check": "biome check .",
     "check:fix": "biome check --write .",
     "format": "biome format --write .",
-    "clean": "bun run --filter '@lleverage-ai/agent-sdk' clean && bun run --filter '@lleverage-ai/agent-threads' clean"
+    "clean": "bun run --filter '@lleverage-ai/agent-sdk' clean"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.4",
-    "@tsconfig/node18": "^18.2.4",
+    "@tsconfig/node22": "^22.0.2",
     "@types/json-schema": "^7.0.15",
     "@types/node": "^25.1.0",
     "typescript": "^5.9.2"

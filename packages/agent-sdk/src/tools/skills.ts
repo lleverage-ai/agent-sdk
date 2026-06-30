@@ -10,7 +10,7 @@
 
 import * as path from "node:path";
 import type { ToolSet } from "ai";
-import { tool } from "ai";
+import { type Tool, tool } from "ai";
 import { z } from "zod";
 
 // =============================================================================
@@ -571,7 +571,7 @@ export interface SkillToolOptions {
  *
  * @category Tools
  */
-export function createSkillTool(options: SkillToolOptions) {
+export function createSkillTool(options: SkillToolOptions): Tool {
   const { registry, descriptionPrefix } = options;
 
   const escapeXml = (value: string): string =>

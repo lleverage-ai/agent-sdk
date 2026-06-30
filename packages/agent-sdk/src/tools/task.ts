@@ -526,7 +526,7 @@ ${subagentDescriptions}`;
           "Fire-and-forget: start the task in the background and continue the conversation immediately. Only use this for work you do not need before your next important step. If your host surfaces background completions automatically, prefer waiting for that notification rather than polling. For parallel execution where you still need the results before continuing, call the task tool multiple times in the same step instead.",
         ),
     }),
-    execute: async (params, toolOptions?: ToolExecutionOptions) => {
+    execute: async (params, toolOptions?: ToolExecutionOptions<unknown>) => {
       const { description, subagent_type, max_turns, run_in_background } = params;
       const executionTelemetry = (
         toolOptions as { executionTelemetry?: ExecutionTelemetry } | undefined

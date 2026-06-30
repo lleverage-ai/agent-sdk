@@ -9,7 +9,7 @@ export type NormalizedInlineToolExecutionOptions = Omit<
   ProxyToolCallOptions,
   "streamingContext" | "toolCallId" | "messages" | "abortSignal"
 > &
-  Pick<ToolExecutionOptions, "toolCallId" | "messages" | "abortSignal">;
+  Pick<ToolExecutionOptions<unknown>, "toolCallId" | "messages" | "abortSignal" | "context">;
 
 export function createInlineToolExecutionOptions(
   options: ProxyToolCallOptions = {},
@@ -21,5 +21,8 @@ export function createInlineToolExecutionOptions(
     toolCallId: toolExecutionOptions.toolCallId ?? `virtual-${Date.now()}`,
     messages: toolExecutionOptions.messages ?? [],
     abortSignal: toolExecutionOptions.abortSignal ?? new AbortController().signal,
+    // AI SDK 7 requires `context` on tool execution options. Inline tools are
+    // untyped, so we forward whatever was supplied (undefined when absent).
+    context: toolExecutionOptions.context,
   };
 }

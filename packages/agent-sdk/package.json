@@ -1,7 +1,7 @@
 {
   "name": "@lleverage-ai/agent-sdk",
   "version": "0.1.0-alpha.8",
-  "description": "A TypeScript framework for building AI agents using the Vercel AI SDK v6",
+  "description": "A TypeScript framework for building AI agents using the Vercel AI SDK v7",
   "type": "module",
   "license": "MIT",
   "author": "Lleverage AI",
@@ -27,7 +27,7 @@
     "plugins"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "publishConfig": {
     "access": "public"
@@ -39,6 +39,33 @@
     "*": {
       "testing": [
         "dist/testing/index.d.ts"
+      ],
+      "threads": [
+        "dist/threads/index.d.ts"
+      ],
+      "threads/stream": [
+        "dist/threads/stream/index.d.ts"
+      ],
+      "threads/ledger": [
+        "dist/threads/ledger/index.d.ts"
+      ],
+      "threads/server": [
+        "dist/threads/stream/server/index.d.ts"
+      ],
+      "threads/client": [
+        "dist/threads/stream/client/index.d.ts"
+      ],
+      "threads/stores/event-memory": [
+        "dist/threads/stream/stores/memory.d.ts"
+      ],
+      "threads/stores/event-sqlite": [
+        "dist/threads/stream/stores/sqlite.d.ts"
+      ],
+      "threads/stores/ledger-memory": [
+        "dist/threads/ledger/stores/memory.d.ts"
+      ],
+      "threads/stores/ledger-sqlite": [
+        "dist/threads/ledger/stores/sqlite.d.ts"
       ]
     }
   },
@@ -52,6 +79,51 @@
       "types": "./dist/testing/index.d.ts",
       "import": "./dist/testing/index.js",
       "default": "./dist/testing/index.js"
+    },
+    "./threads": {
+      "types": "./dist/threads/index.d.ts",
+      "import": "./dist/threads/index.js",
+      "default": "./dist/threads/index.js"
+    },
+    "./threads/stream": {
+      "types": "./dist/threads/stream/index.d.ts",
+      "import": "./dist/threads/stream/index.js",
+      "default": "./dist/threads/stream/index.js"
+    },
+    "./threads/ledger": {
+      "types": "./dist/threads/ledger/index.d.ts",
+      "import": "./dist/threads/ledger/index.js",
+      "default": "./dist/threads/ledger/index.js"
+    },
+    "./threads/server": {
+      "types": "./dist/threads/stream/server/index.d.ts",
+      "import": "./dist/threads/stream/server/index.js",
+      "default": "./dist/threads/stream/server/index.js"
+    },
+    "./threads/client": {
+      "types": "./dist/threads/stream/client/index.d.ts",
+      "import": "./dist/threads/stream/client/index.js",
+      "default": "./dist/threads/stream/client/index.js"
+    },
+    "./threads/stores/event-memory": {
+      "types": "./dist/threads/stream/stores/memory.d.ts",
+      "import": "./dist/threads/stream/stores/memory.js",
+      "default": "./dist/threads/stream/stores/memory.js"
+    },
+    "./threads/stores/event-sqlite": {
+      "types": "./dist/threads/stream/stores/sqlite.d.ts",
+      "import": "./dist/threads/stream/stores/sqlite.js",
+      "default": "./dist/threads/stream/stores/sqlite.js"
+    },
+    "./threads/stores/ledger-memory": {
+      "types": "./dist/threads/ledger/stores/memory.d.ts",
+      "import": "./dist/threads/ledger/stores/memory.js",
+      "default": "./dist/threads/ledger/stores/memory.js"
+    },
+    "./threads/stores/ledger-sqlite": {
+      "types": "./dist/threads/ledger/stores/sqlite.d.ts",
+      "import": "./dist/threads/ledger/stores/sqlite.js",
+      "default": "./dist/threads/ledger/stores/sqlite.js"
     }
   },
   "files": [
@@ -71,13 +143,13 @@
     "yaml": "^2.8.2"
   },
   "peerDependencies": {
-    "ai": "^6.0.0",
+    "ai": "^7.0.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
-    "@ai-sdk/anthropic": "^3.0.36",
-    "@ai-sdk/gateway": "^3.0.57",
-    "ai": "^6.0.78",
+    "@ai-sdk/anthropic": "^4.0.3",
+    "@ai-sdk/gateway": "^4.0.6",
+    "ai": "^7.0.8",
     "vitest": "^4.0.18",
     "zod": "^4.3.6"
   }

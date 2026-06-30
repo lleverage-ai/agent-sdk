@@ -13,7 +13,7 @@ import type {
   ModelMessage,
   Output,
   streamText,
-  TelemetrySettings,
+  TelemetryOptions,
   Tool,
   ToolExecutionOptions,
   ToolSet,
@@ -173,7 +173,7 @@ export type InterruptFunction = <TRequest = unknown, TResponse = unknown>(
  *
  * @category Types
  */
-export interface ExtendedToolExecutionOptions extends ToolExecutionOptions {
+export interface ExtendedToolExecutionOptions extends ToolExecutionOptions<unknown> {
   /**
    * Function to request an interrupt during tool execution.
    * Available when the agent has a checkpointer configured.
@@ -1976,11 +1976,12 @@ export interface GenerateOptions {
 
   /**
    * OpenTelemetry telemetry configuration, passed straight through to
-   * the underlying `generateText`/`streamText` calls. When enabled and an
-   * OpenTelemetry tracer provider is registered (typically via
-   * `@opentelemetry/sdk-node`), the AI SDK emits `ai.*` spans with full
-   * `gen_ai.*` semantic-convention attributes for each model invocation,
-   * plus `ai.toolCall` spans for tool calls executed through the SDK.
+   * the underlying `generateText`/`streamText` calls. When enabled and a
+   * telemetry integration is registered (AI SDK 7 moves OpenTelemetry into
+   * the separate `@ai-sdk/otel` package, registered via `registerTelemetry`),
+   * the AI SDK emits `ai.*` spans with full `gen_ai.*` semantic-convention
+   * attributes for each model invocation, plus tool-call spans for tools
+   * executed through the SDK.
    *
    * The SDK does not enable, transform, or interpret this option — it is
    * a pure passthrough to the AI SDK.
@@ -1995,17 +1996,27 @@ export interface GenerateOptions {
    * ```typescript
    * const result = await agent.generate({
    *   prompt: "Hello",
-   *   experimental_telemetry: {
+   *   telemetry: {
    *     isEnabled: true,
    *     functionId: "my-agent",
    *     recordInputs: false, // omit prompts from spans
    *     recordOutputs: false, // omit completions from spans
-   *     metadata: { userId: "user_123" },
    *   },
    * });
    * ```
    */
-  experimental_telemetry?: TelemetrySettings;
+  telemetry?: TelemetryOptions;
+
+  /**
+   * Deprecated alias for {@link GenerateOptions.telemetry}, retained for
+   * backwards compatibility with AI SDK 6 call sites. When both are set,
+   * `telemetry` takes precedence.
+   *
+   * @deprecated Use {@link GenerateOptions.telemetry} instead. The underlying
+   * AI SDK 7 type no longer accepts the v6 `metadata`/`tracer` fields; provide
+   * custom attributes via a registered telemetry integration instead.
+   */
+  experimental_telemetry?: TelemetryOptions;
 
   /**
    * Callback invoked when the stream writer becomes available.
