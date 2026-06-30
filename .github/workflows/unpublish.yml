@@ -6,7 +6,7 @@ on:
 
 jobs:
   unpublish:
-    # Only run for tag deletions matching monorepo format: agent-sdk@X.Y.Z or agent-threads@X.Y.Z
+    # Only run for tag deletions matching the package tag format: agent-sdk@X.Y.Z
     if: github.event.ref_type == 'tag' && contains(github.event.ref, '@')
     runs-on: ubuntu-latest
 
