@@ -7,7 +7,7 @@
  * @packageDocumentation
  */
 
-import { tool } from "ai";
+import { type Tool, tool } from "ai";
 import { z } from "zod";
 import type { AgentState, TodoItem, TodoStatus } from "../backends/state.js";
 
@@ -175,7 +175,7 @@ async function emitTodosChanged(
  *
  * @category Tools
  */
-export function createTodoWriteTool(options: TodoWriteToolOptions) {
+export function createTodoWriteTool(options: TodoWriteToolOptions): Tool {
   const { state, onTodosChanged } = options;
 
   return tool({

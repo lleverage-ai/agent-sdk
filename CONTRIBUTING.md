@@ -1,9 +1,10 @@
 # Contributing to @lleverage-ai/agent-sdk
 
-This repository is a Bun workspace with two published packages:
+This repository is a Bun workspace that publishes a single package:
 
-- `packages/agent-sdk` — agent framework, tools, plugins, hooks, and sessions
-- `packages/agent-threads` — event transport, replay, and durable transcripts
+- `packages/agent-sdk` — agent framework, tools, plugins, hooks, and sessions,
+  plus conversation infrastructure (event transport, replay, durable transcripts)
+  under `src/threads`, published from the `./threads` subpath exports
 
 ## Getting Started
 
@@ -21,9 +22,8 @@ bun run check
 bun run type-check
 bun run test
 
-# Target a single package
+# Target the package directly
 bun run --filter '@lleverage-ai/agent-sdk' test
-bun run --filter '@lleverage-ai/agent-threads' test
 ```
 
 ## Workflow

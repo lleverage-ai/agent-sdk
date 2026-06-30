@@ -8,7 +8,7 @@
  * @packageDocumentation
  */
 
-import { tool } from "ai";
+import { type Tool, tool } from "ai";
 import { z } from "zod";
 import type { BackendProtocol, ExecutableBackend, ExecuteResponse } from "../backend.js";
 import { hasExecuteCapability } from "../backend.js";
@@ -172,7 +172,7 @@ let bashTaskIdCounter = 0;
  *
  * @category Tools
  */
-export function createBashTool(options: BashToolOptions) {
+export function createBashTool(options: BashToolOptions): Tool {
   const {
     backend,
     timeout = DEFAULT_TIMEOUT_MS,

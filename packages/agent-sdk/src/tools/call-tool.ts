@@ -102,7 +102,7 @@ export function createCallToolTool(options: CallToolOptions): Tool {
         tool_name: string;
         arguments: Record<string, unknown>;
       },
-      execOptions?: ToolExecutionOptions,
+      execOptions?: ToolExecutionOptions<unknown>,
     ) => {
       // Fire pre-call hook with the proxied tool name
       await onBeforeCall?.(tool_name, args);

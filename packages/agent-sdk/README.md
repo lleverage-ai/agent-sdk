@@ -4,7 +4,7 @@ A TypeScript framework for building AI agents with the Vercel AI SDK.
 
 `@lleverage-ai/agent-sdk` is the package most users should start with. It provides the application-layer agent framework: models, tools, plugins, hooks, sessions, subagents, and higher-level runtime behavior.
 
-If you need lower-level conversation infrastructure such as event transport, replay, or durable transcripts, use the companion package `@lleverage-ai/agent-threads` as well. You do not need `@lleverage-ai/agent-threads` for basic agent usage.
+If you need lower-level conversation infrastructure such as event transport, replay, or durable transcripts, import it from the `@lleverage-ai/agent-sdk/threads` subpaths (formerly the separate `@lleverage-ai/agent-threads` package). You do not need the threads subpaths for basic agent usage.
 
 ## Installation
 
@@ -65,7 +65,7 @@ Use `@lleverage-ai/agent-sdk` when you want to:
 - stream model output or serve chat/API responses
 - add subagents, teams, middleware, observability, and security controls
 
-Add `@lleverage-ai/agent-threads` when you also need:
+Import from the `@lleverage-ai/agent-sdk/threads` subpaths when you also need:
 
 - durable thread history and transcript storage
 - event replay
@@ -82,7 +82,7 @@ This keeps inline plugin tools distinct from real MCP-backed tools while preserv
 ## Documentation
 
 - Getting started: https://github.com/lleverage-ai/agent-sdk#readme
-- Companion infrastructure package: https://github.com/lleverage-ai/agent-sdk/tree/main/packages/agent-threads
+- AI SDK 7 migration & threads import mapping: https://github.com/lleverage-ai/agent-sdk/blob/main/docs/migration/ai-sdk-7.md
 - Tool loading: https://github.com/lleverage-ai/agent-sdk/blob/main/docs/tool-loading.md
 - MCP integration: https://github.com/lleverage-ai/agent-sdk/blob/main/docs/mcp.md
 - Agent sessions: https://github.com/lleverage-ai/agent-sdk/blob/main/docs/agent-session.md

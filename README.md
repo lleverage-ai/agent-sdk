@@ -1,28 +1,32 @@
 # @lleverage-ai/agent-sdk
 
-A TypeScript framework for building AI agents using the Vercel AI SDK v6.
+A TypeScript framework for building AI agents using the Vercel AI SDK v7.
 
-## Packages
+## Package
 
-This monorepo contains two packages:
+This repository publishes a single package:
 
 | Package | Description | Version |
 |---------|-------------|---------|
-| [`@lleverage-ai/agent-sdk`](./packages/agent-sdk) | Core agent framework — tools, plugins, hooks, teams | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-sdk)](https://www.npmjs.com/package/@lleverage-ai/agent-sdk) |
-| [`@lleverage-ai/agent-threads`](./packages/agent-threads) | Event transport, replay, and durable transcripts | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-threads)](https://www.npmjs.com/package/@lleverage-ai/agent-threads) |
+| [`@lleverage-ai/agent-sdk`](./packages/agent-sdk) | Core agent framework — tools, plugins, hooks, teams — plus conversation infrastructure under the `./threads` subpaths | [![npm](https://img.shields.io/npm/v/@lleverage-ai/agent-sdk)](https://www.npmjs.com/package/@lleverage-ai/agent-sdk) |
 
-## Which Package Do I Need?
+> The former `@lleverage-ai/agent-threads` package has been folded into this SDK.
+> Its event transport, replay, WebSocket, run-lifecycle, and durable-transcript
+> primitives are now available from `@lleverage-ai/agent-sdk/threads` (and the
+> `/threads/stream`, `/threads/ledger`, `/threads/server`, `/threads/client`,
+> `/threads/stores/*` subpaths). See
+> [docs/migration/ai-sdk-7.md](./docs/migration/ai-sdk-7.md) for the import
+> mapping.
 
-Use `@lleverage-ai/agent-sdk` if you want to build agents with models, tools, plugins, hooks, sessions, and subagents. This is the default starting point for most users.
+## What's Included
 
-Use `@lleverage-ai/agent-threads` if you need infrastructure for conversation transport and persistence: event streams, replay, WebSocket transport, run lifecycle management, and durable transcripts. You can use it by itself or alongside the SDK.
+Use `@lleverage-ai/agent-sdk` to build agents with models, tools, plugins, hooks,
+sessions, and subagents — the default starting point for most users.
 
-The simplest way to think about the split is:
-
-- `@lleverage-ai/agent-sdk` is the agent framework
-- `@lleverage-ai/agent-threads` is the conversation infrastructure layer
-
-If you are unsure, start with `@lleverage-ai/agent-sdk` and only add `@lleverage-ai/agent-threads` when you need durable thread history, replay, or transport primitives.
+When you also need conversation transport and persistence infrastructure — event
+streams, replay, WebSocket transport, run lifecycle management, and durable
+transcripts — import it from the `@lleverage-ai/agent-sdk/threads` subpaths. No
+extra package install is required.
 
 ## Installation
 
@@ -36,11 +40,7 @@ You'll also need at least one AI provider:
 bun add @ai-sdk/anthropic  # or @ai-sdk/openai
 ```
 
-If you also need durable transcript or transport primitives:
-
-```bash
-bun add @lleverage-ai/agent-threads
-```
+> Requires AI SDK 7 (`ai@^7`) and Node.js 22+.
 
 ## Quick Start
 

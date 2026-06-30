@@ -125,6 +125,7 @@ export type {
   // New interrupt types
   Interrupt,
   KeyValueStoreSaverOptions,
+  LedgerCheckpointerOptions,
   MemorySaverOptions,
 } from "./checkpointer/index.js";
 // Checkpointer System
@@ -135,6 +136,8 @@ export {
   createFileSaver,
   createInterrupt,
   createKeyValueStoreSaver,
+  // Ledger-backed Saver
+  createLedgerCheckpointer,
   createMemorySaver,
   // File Saver
   FileSaver,
@@ -791,6 +794,9 @@ export {
   isCompactionCarrierMessage,
   isCompactionSummaryPart,
 } from "./canonical.js";
+// Canonical transcript -> AI SDK model message projection (used by the
+// ledger-backed checkpointer; also exported from `@lleverage-ai/agent-sdk/threads`)
+export { canonicalMessagesToModelMessages } from "./threads/ledger/model-messages.js";
 export type {
   BranchSelections,
   CanonicalMessage,

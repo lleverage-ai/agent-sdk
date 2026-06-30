@@ -408,7 +408,7 @@ function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignal
 
     wrapped[name] = {
       ...toolDef,
-      execute: async (input: unknown, options: ToolExecutionOptions) => {
+      execute: async (input: unknown, options: ToolExecutionOptions<unknown>) => {
         try {
           return await originalExecute.call(toolDef, input, options);
         } catch (error) {
@@ -575,7 +575,7 @@ function wrapToolsWithPermissionMode(
     wrapped[name] = {
       ...tool,
       needsApproval,
-      execute: async (input: unknown, options?: import("ai").ToolExecutionOptions) => {
+      execute: async (input: unknown, options?: import("ai").ToolExecutionOptions<unknown>) => {
         const mode = getPermissionMode();
         const modeDecision = checkPermissionMode(name, mode);
 
@@ -781,13 +781,55 @@ function wrapToolsWithTaskManager(
 
     wrapped[name] = {
       ...tool,
-      execute: async (input: unknown, options?: ToolExecutionOptions) => {
+      execute: async (input: unknown, options?: ToolExecutionOptions<unknown>) => {
         // Inject taskManager into execution options
         const extendedOptions = {
           ...options,
           taskManager,
           executionTelemetry: telemetry,
-        } as ToolExecutionOptions;
+        } as ToolExecutionOptions<unknown>;
+        return originalExecute(input, extendedOptions);
+      },
+    };
+  }
+
+  return wrapped;
+}
+
+/**
+ * Wraps tools to inject the SDK's per-call execution context into tool
+ * execution options.
+ *
+ * AI SDK 7 removed the call-level `experimental_context` passthrough that
+ * previously forwarded an opaque object to every tool's execution options.
+ * The SDK now injects that context here, preserving the `experimental_context`
+ * field that inline tools (e.g. the read tool) read for model-capability
+ * awareness.
+ *
+ * @param tools - The tools to wrap
+ * @param executionContext - The per-call execution context to inject
+ * @returns Wrapped tools that receive the execution context in their options
+ *
+ * @internal
+ */
+function wrapToolsWithExecutionContext(tools: ToolSet, executionContext: unknown): ToolSet {
+  const wrapped: ToolSet = {};
+
+  for (const [name, tool] of Object.entries(tools)) {
+    if (!tool.execute) {
+      wrapped[name] = tool;
+      continue;
+    }
+
+    const originalExecute = tool.execute;
+
+    wrapped[name] = {
+      ...tool,
+      execute: async (input: unknown, options?: ToolExecutionOptions<unknown>) => {
+        const extendedOptions = {
+          ...options,
+          experimental_context: executionContext,
+        } as ToolExecutionOptions<unknown>;
         return originalExecute(input, extendedOptions);
       },
     };
@@ -839,7 +881,7 @@ function wrapToolsWithHooks(
 
     wrapped[name] = {
       ...tool,
-      execute: async (input: unknown, options?: ToolExecutionOptions) => {
+      execute: async (input: unknown, options?: ToolExecutionOptions<unknown>) => {
         const toolUseId = options?.toolCallId ?? `tool-${Date.now()}`;
 
         // Create PreToolUse input
@@ -1432,7 +1474,9 @@ export function createAgent(options: AgentOptions): Agent {
     // Extract tool metadata for context
     const toolsMetadata = Object.entries(filteredTools).map(([name, tool]) => ({
       name,
-      description: tool.description ?? "",
+      // AI SDK 7 allows a dynamic (function) description; metadata only needs
+      // the static string form, so non-string descriptions fall back to "".
+      description: typeof tool.description === "string" ? tool.description : "",
     }));
 
     // Extract skills metadata — exclude skills in the registry (accessible via skill tool)
@@ -1672,11 +1716,11 @@ export function createAgent(options: AgentOptions): Agent {
       const originalExecute = tool.execute;
       wrapped[name] = {
         ...tool,
-        execute: async (input: unknown, toolOptions?: ToolExecutionOptions) => {
+        execute: async (input: unknown, toolOptions?: ToolExecutionOptions<unknown>) => {
           const extendedOptions = {
             ...toolOptions,
             streamingContext,
-          } as ToolExecutionOptions;
+          } as ToolExecutionOptions<unknown>;
           return originalExecute(input, extendedOptions);
         },
       };
@@ -2287,7 +2331,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: genOptions?.signal,
             experimental_context: toolExecutionContext,
             executionTelemetry: resumeTelemetry,
-          } as ToolExecutionOptions);
+          } as unknown as ToolExecutionOptions<unknown>);
         } catch (error) {
           toolResultOutput = `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`;
         }
@@ -2414,7 +2458,7 @@ export function createAgent(options: AgentOptions): Agent {
           });
           throw new InterruptSignal(newInterruptData);
         },
-      } as ToolExecutionOptions);
+      } as unknown as ToolExecutionOptions<unknown>);
     } catch (executeError) {
       if (isInterruptSignal(executeError)) {
         // Tool threw another interrupt — persist it and return re-interrupted
@@ -2578,7 +2622,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: effectiveGenOptions.signal,
             providerOptions: effectiveGenOptions.providerOptions,
             headers: effectiveGenOptions.headers,
-            experimental_telemetry: effectiveGenOptions.experimental_telemetry,
+            telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
           };
 
           // Stop condition: stop when an interrupt signal was caught, OR when
@@ -2596,7 +2640,10 @@ export function createAgent(options: AgentOptions): Agent {
               initialParams.messages,
               toolExecutionContext.agentSdk.modelCapabilities,
             ),
-            tools: initialParams.tools as ToolSet,
+            tools: wrapToolsWithExecutionContext(
+              initialParams.tools as ToolSet,
+              toolExecutionContext,
+            ),
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
@@ -2607,8 +2654,10 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
-            experimental_telemetry: initialParams.experimental_telemetry,
-            experimental_context: toolExecutionContext,
+            telemetry: initialParams.telemetry,
+            // Preserve AI SDK 6 behavior: allow system-role messages within the
+            // message history (AI SDK 7 rejects them by default).
+            allowSystemInMessages: true,
           });
 
           // Check for intercepted interrupt signal (cooperative path)
@@ -3144,7 +3193,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: effectiveGenOptions.signal,
             providerOptions: effectiveGenOptions.providerOptions,
             headers: effectiveGenOptions.headers,
-            experimental_telemetry: effectiveGenOptions.experimental_telemetry,
+            telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
           };
 
           // Stop condition: stop when an interrupt signal was caught, OR when
@@ -3162,7 +3211,10 @@ export function createAgent(options: AgentOptions): Agent {
               initialParams.messages,
               toolExecutionContext.agentSdk.modelCapabilities,
             ),
-            tools: initialParams.tools as ToolSet,
+            tools: wrapToolsWithExecutionContext(
+              initialParams.tools as ToolSet,
+              toolExecutionContext,
+            ),
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
@@ -3173,8 +3225,10 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
-            experimental_telemetry: initialParams.experimental_telemetry,
-            experimental_context: toolExecutionContext,
+            telemetry: initialParams.telemetry,
+            // Preserve AI SDK 6 behavior: allow system-role messages within the
+            // message history (AI SDK 7 rejects them by default).
+            allowSystemInMessages: true,
           });
 
           // AI SDK only carries the response id on `finish-step`, not on
@@ -3633,7 +3687,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: effectiveGenOptions.signal,
             providerOptions: effectiveGenOptions.providerOptions,
             headers: effectiveGenOptions.headers,
-            experimental_telemetry: effectiveGenOptions.experimental_telemetry,
+            telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
           };
 
           // Capture currentModel for use in the callback closure
@@ -3659,7 +3713,10 @@ export function createAgent(options: AgentOptions): Agent {
               initialParams.messages,
               toolExecutionContext.agentSdk.modelCapabilities,
             ),
-            tools: initialParams.tools as ToolSet,
+            tools: wrapToolsWithExecutionContext(
+              initialParams.tools as ToolSet,
+              toolExecutionContext,
+            ),
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
@@ -3670,8 +3727,10 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
-            experimental_telemetry: initialParams.experimental_telemetry,
-            experimental_context: toolExecutionContext,
+            telemetry: initialParams.telemetry,
+            // Preserve AI SDK 6 behavior: allow system-role messages within the
+            // message history (AI SDK 7 rejects them by default).
+            allowSystemInMessages: true,
             // Incremental checkpointing: save after each step if enabled
             onStepFinish: effectiveGenOptions.checkpointAfterToolCall
               ? async (stepResult) => {
@@ -3829,7 +3888,10 @@ export function createAgent(options: AgentOptions): Agent {
                           followUpMessages,
                           toolExecutionContext.agentSdk.modelCapabilities,
                         ),
-                        tools: activeFollowUpTools as ToolSet,
+                        tools: wrapToolsWithExecutionContext(
+                          activeFollowUpTools as ToolSet,
+                          toolExecutionContext,
+                        ),
                         maxOutputTokens: requestOptions.maxTokens,
                         temperature: requestOptions.temperature,
                         stopSequences: requestOptions.stopSequences,
@@ -3839,8 +3901,9 @@ export function createAgent(options: AgentOptions): Agent {
                         // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                         providerOptions: requestOptions.providerOptions as any,
                         headers: requestOptions.headers,
-                        experimental_telemetry: requestOptions.experimental_telemetry,
-                        experimental_context: toolExecutionContext,
+                        telemetry:
+                          requestOptions.telemetry ?? requestOptions.experimental_telemetry,
+                        allowSystemInMessages: true,
                       });
                     },
                   );
@@ -4052,7 +4115,7 @@ export function createAgent(options: AgentOptions): Agent {
             abortSignal: effectiveGenOptions.signal,
             providerOptions: effectiveGenOptions.providerOptions,
             headers: effectiveGenOptions.headers,
-            experimental_telemetry: effectiveGenOptions.experimental_telemetry,
+            telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
           };
 
           // Track step count for incremental checkpointing
@@ -4073,7 +4136,10 @@ export function createAgent(options: AgentOptions): Agent {
               initialParams.messages,
               toolExecutionContext.agentSdk.modelCapabilities,
             ),
-            tools: initialParams.tools as ToolSet,
+            tools: wrapToolsWithExecutionContext(
+              initialParams.tools as ToolSet,
+              toolExecutionContext,
+            ),
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
@@ -4084,8 +4150,10 @@ export function createAgent(options: AgentOptions): Agent {
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
             providerOptions: initialParams.providerOptions as any,
             headers: initialParams.headers,
-            experimental_telemetry: initialParams.experimental_telemetry,
-            experimental_context: toolExecutionContext,
+            telemetry: initialParams.telemetry,
+            // Preserve AI SDK 6 behavior: allow system-role messages within the
+            // message history (AI SDK 7 rejects them by default).
+            allowSystemInMessages: true,
             // Incremental checkpointing: save after each step if enabled
             onStepFinish: effectiveGenOptions.checkpointAfterToolCall
               ? async (stepResult) => {
@@ -4330,7 +4398,8 @@ export function createAgent(options: AgentOptions): Agent {
                 abortSignal: effectiveGenOptions.signal,
                 providerOptions: effectiveGenOptions.providerOptions,
                 headers: effectiveGenOptions.headers,
-                experimental_telemetry: effectiveGenOptions.experimental_telemetry,
+                telemetry:
+                  effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
               };
 
               // Track step count for incremental checkpointing
@@ -4351,7 +4420,10 @@ export function createAgent(options: AgentOptions): Agent {
                   initialParams.messages,
                   toolExecutionContext.agentSdk.modelCapabilities,
                 ),
-                tools: initialParams.tools as ToolSet,
+                tools: wrapToolsWithExecutionContext(
+                  initialParams.tools as ToolSet,
+                  toolExecutionContext,
+                ),
                 maxOutputTokens: initialParams.maxTokens,
                 temperature: initialParams.temperature,
                 stopSequences: initialParams.stopSequences,
@@ -4362,8 +4434,10 @@ export function createAgent(options: AgentOptions): Agent {
                 // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                 providerOptions: initialParams.providerOptions as any,
                 headers: initialParams.headers,
-                experimental_telemetry: initialParams.experimental_telemetry,
-                experimental_context: toolExecutionContext,
+                telemetry: initialParams.telemetry,
+                // Preserve AI SDK 6 behavior: allow system-role messages within the
+                // message history (AI SDK 7 rejects them by default).
+                allowSystemInMessages: true,
                 // Incremental checkpointing: save after each step if enabled
                 onStepFinish: effectiveGenOptions.checkpointAfterToolCall
                   ? async (stepResult) => {
@@ -4560,7 +4634,10 @@ export function createAgent(options: AgentOptions): Agent {
                           followUpMessages,
                           toolExecutionContext.agentSdk.modelCapabilities,
                         ),
-                        tools: activeFollowUpTools as ToolSet,
+                        tools: wrapToolsWithExecutionContext(
+                          activeFollowUpTools as ToolSet,
+                          toolExecutionContext,
+                        ),
                         maxOutputTokens: requestOptions.maxTokens,
                         temperature: requestOptions.temperature,
                         stopSequences: requestOptions.stopSequences,
@@ -4570,8 +4647,9 @@ export function createAgent(options: AgentOptions): Agent {
                         // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                         providerOptions: requestOptions.providerOptions as any,
                         headers: requestOptions.headers,
-                        experimental_telemetry: requestOptions.experimental_telemetry,
-                        experimental_context: toolExecutionContext,
+                        telemetry:
+                          requestOptions.telemetry ?? requestOptions.experimental_telemetry,
+                        allowSystemInMessages: true,
                       });
                     },
                   );

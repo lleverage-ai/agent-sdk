@@ -1,5 +1,11 @@
 # Migrating to @lleverage-ai/agent-threads v1
 
+> **Note:** The `@lleverage-ai/agent-threads` package has been folded into
+> `@lleverage-ai/agent-sdk`. The APIs below are unchanged, but the import paths
+> have moved to the `@lleverage-ai/agent-sdk/threads*` subpaths. See
+> [ai-sdk-7.md](./ai-sdk-7.md) for the import mapping. This document is retained
+> for historical context.
+
 ## Overview
 
 `@lleverage-ai/agent-threads` provides realtime event transport and replay for AI agent conversations. It builds on an event-sourcing foundation with three layers:

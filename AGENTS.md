@@ -12,7 +12,7 @@ This is the Agent SDK (`@lleverage-ai/agent-sdk`) - a framework for building AI 
 - **Language**: TypeScript (strict mode)
 - **Testing**: Vitest
 - **Linting/Formatting**: Biome
-- **AI SDK**: Vercel AI SDK v6
+- **AI SDK**: Vercel AI SDK v7
 
 ## Commands
 
@@ -43,7 +43,6 @@ bun run clean
 
 # Run commands for a single package
 bun run --filter '@lleverage-ai/agent-sdk' test
-bun run --filter '@lleverage-ai/agent-threads' test
 ```
 
 ## Changelog
@@ -93,32 +92,25 @@ agent-sdk/                          # Workspace root
 │   │   │   ├── subagents/          # Advanced subagent utilities
 │   │   │   ├── task-store/         # Background task persistence
 │   │   │   ├── testing/            # Comprehensive test utilities
-│   │   │   └── tools/              # Core tool implementations
+│   │   │   ├── tools/              # Core tool implementations
+│   │   │   └── threads/            # Stream + ledger (formerly @lleverage-ai/agent-threads)
+│   │   │       ├── index.ts        # Unified barrel (stream + ledger) → ./threads
+│   │   │       ├── stream/         # Transport, protocol, event stores, WsServer/WsClient
+│   │   │       │   ├── types.ts        # IEventStore, StoredEvent, ProjectorConfig
+│   │   │       │   ├── projector.ts    # Projector class
+│   │   │       │   ├── stream-event.ts # Event kinds, EventKindRegistry
+│   │   │       │   ├── stores/         # InMemoryEventStore, SQLiteEventStore
+│   │   │       │   ├── server/         # WsServer
+│   │   │       │   └── client/         # WsClient
+│   │   │       └── ledger/         # Canonical transcripts + run lifecycle
+│   │   │           ├── types.ts        # RunRecord, RunStatus (canonical msg types re-exported from ../../canonical.ts)
+│   │   │           ├── ulid.ts         # Self-contained ULID generator
+│   │   │           ├── accumulator.ts  # StreamEvent[] → CanonicalMessage[] reducer
+│   │   │           ├── run-manager.ts  # Run lifecycle orchestration
+│   │   │           ├── reconciliation.ts # Stale-run detection/recovery
+│   │   │           └── stores/         # ILedgerStore, InMemoryLedgerStore, SQLiteLedgerStore
 │   │   └── tests/
-│   │
-│   └── agent-threads/              # @lleverage-ai/agent-threads
-│       ├── src/
-│       │   ├── index.ts            # Unified barrel (stream + ledger)
-│       │   ├── stream/
-│       │   │   ├── index.ts        # Stream-only barrel
-│       │   │   ├── types.ts        # IEventStore, StoredEvent, ProjectorConfig
-│       │   │   ├── projector.ts    # Projector class
-│       │   │   ├── stream-event.ts # Event kinds, EventKindRegistry
-│       │   │   ├── stores/         # InMemoryEventStore, SQLiteEventStore
-│       │   │   ├── server/         # WsServer
-│       │   │   └── client/         # WsClient
-│       │   └── ledger/
-│       │       ├── index.ts        # Ledger-only barrel
-│       │       ├── types.ts        # CanonicalMessage, RunRecord, RunStatus
-│       │       ├── ulid.ts         # Self-contained ULID generator
-│       │       ├── accumulator.ts  # StreamEvent[] → CanonicalMessage[] reducer
-│       │       ├── run-manager.ts  # Run lifecycle orchestration
-│       │       ├── reconciliation.ts # Stale-run detection/recovery
-│       │       ├── context-builder.ts # IContextBuilder + FullContextBuilder
-│       │       └── stores/         # ILedgerStore, InMemoryLedgerStore, SQLiteLedgerStore
-│       └── tests/
-│           ├── stream/             # Stream layer tests
-│           └── ledger/             # Ledger layer tests
+│   │       └── threads/            # Folded stream + ledger test suites
 │
 ├── docs/
 │   └── architecture/               # Architecture specs (#50-53)
@@ -638,9 +630,10 @@ Key points:
 - `createCoreTools()` automatically detects bash capability and includes the bash tool
 - Note: The tool is called `bash` (what users interact with), while the backend interface method is called `execute()` (more general-purpose)
 
-## AI SDK v6 Notes
+## AI SDK v7 Notes
 
-The project uses Vercel AI SDK v6 which has breaking changes from v4/v5:
+The project targets Vercel AI SDK v7. Carried over from v6 (and still breaking
+relative to v4/v5):
 
 - `LanguageModelV1` → `LanguageModel`
 - Tool definitions use `inputSchema` instead of `parameters`
@@ -648,6 +641,21 @@ The project uses Vercel AI SDK v6 which has breaking changes from v4/v5:
 - Tool results have `output` instead of `result`
 - Usage has `inputTokens`/`outputTokens` instead of `promptTokens`/`completionTokens`
 - Use `stopWhen: stepCountIs(n)` instead of `maxSteps`
+
+v7-specific notes (see [docs/migration/ai-sdk-7.md](./docs/migration/ai-sdk-7.md)
+for the full audit):
+
+- `ToolExecutionOptions` is now generic (`ToolExecutionOptions<CONTEXT>`); the SDK
+  uses `ToolExecutionOptions<unknown>` for its untyped inline tools.
+- The call-level `experimental_context` passthrough was removed. The SDK injects
+  per-call execution context via `wrapToolsWithExecutionContext` instead, so inline
+  tools keep reading `options.experimental_context`.
+- System-role messages in `messages` are rejected by default; the SDK opts back in
+  with `allowSystemInMessages: true` to preserve v6 message-history behavior.
+- Telemetry: `experimental_telemetry`'s type moved from `TelemetrySettings` to
+  `TelemetryOptions` (no more `metadata`/`tracer`); a `telemetry` option is the
+  forward-looking name. `recordInputs`/`recordOutputs` redaction still apply.
+- Requires Node.js 22+.
 
 ## Core Tools
 

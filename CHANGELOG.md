@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING**: Upgraded the AI SDK peer dependency from `ai@^6` to `ai@^7`. The
+  SDK now targets AI SDK 7 only; `ai@6` is no longer supported. Update the
+  matching providers (`@ai-sdk/anthropic@^4`, `@ai-sdk/gateway@^4`) when adopting
+  this release. See [docs/migration/ai-sdk-7.md](./docs/migration/ai-sdk-7.md)
+  for the full compatibility audit and migration notes.
+- **BREAKING**: Raised the minimum Node.js version from 18 to 22, as required by
+  AI SDK 7.
+- **BREAKING**: `GenerateOptions.experimental_telemetry` is now typed as the
+  AI SDK 7 `TelemetryOptions` type instead of the removed `TelemetrySettings`.
+  The v6 `metadata` and `tracer` fields are no longer part of the type; provide
+  custom attributes via a registered telemetry integration instead. The
+  `recordInputs`/`recordOutputs` redaction controls are unchanged and still
+  default to `true`.
+- Folded the `@lleverage-ai/agent-threads` package into `@lleverage-ai/agent-sdk`.
+  Its stream + ledger transport, replay, and durable-transcript primitives are
+  now published from `@lleverage-ai/agent-sdk` under `./threads` subpath exports
+  (`@lleverage-ai/agent-sdk/threads`, `/threads/stream`, `/threads/ledger`,
+  `/threads/server`, `/threads/client`, `/threads/stores/*`). The internal
+  cross-package re-export layer is gone — the canonical transcript primitives are
+  imported directly from the SDK's own modules.
+
+### Added
+
+- Added `createLedgerCheckpointer`, an event-sourced checkpoint saver that
+  reconstructs message history from a transcript ledger (`ILedgerStore`) on
+  `load()` and persists only the resume delta (step, agent state, pending
+  interrupt) to an inner saver on `save()` — it never re-writes the message blob,
+  so the ledger stays the single source of truth. This makes the projection
+  pattern (previously hand-rolled as no-op `save()` implementations on
+  event-sourced platforms) a first-class SDK primitive. Also added the supporting
+  `canonicalMessagesToModelMessages` projection (exported from the root and from
+  `@lleverage-ai/agent-sdk/threads/ledger`).
+- Added a forward-looking `GenerateOptions.telemetry?: TelemetryOptions` option
+  (the AI SDK 7 name). `experimental_telemetry` remains supported as a deprecated
+  alias; when both are set, `telemetry` takes precedence.
+- Generation now passes `allowSystemInMessages: true` to every model invocation,
+  preserving AI SDK 6 behavior where system-role messages may appear inside the
+  message history (AI SDK 7 rejects them by default).
+
+### Removed
+
+- **BREAKING**: Removed the standalone `@lleverage-ai/agent-threads` package. Its
+  code now ships inside `@lleverage-ai/agent-sdk` under the `./threads` subpaths.
+  Migrate imports by replacing the package name, e.g.
+  `@lleverage-ai/agent-threads` → `@lleverage-ai/agent-sdk/threads`,
+  `@lleverage-ai/agent-threads/stream` → `@lleverage-ai/agent-sdk/threads/stream`,
+  `@lleverage-ai/agent-threads/stores/event-memory` →
+  `@lleverage-ai/agent-sdk/threads/stores/event-memory`, etc. The exported symbols
+  are unchanged.
+
+### Internal
+
+- Replaced the AI SDK 6 call-level `experimental_context` passthrough (removed in
+  AI SDK 7) with an internal `wrapToolsWithExecutionContext` wrapper that injects
+  the per-call execution context into tool execution options, preserving inline
+  tools' model-capability awareness.
+- Annotated the core tool factories (`createBashTool`, `createReadTool`,
+  `createWriteTool`, `createEditTool`, `createGlobTool`, `createGrepTool`,
+  `createSkillTool`, `createTodoWriteTool`) with explicit `Tool` return types so
+  the emitted declarations stay portable under AI SDK 7's tool typing.
+
 ## [0.1.0-alpha.8] - 2026-06-01
 
 ### Added
