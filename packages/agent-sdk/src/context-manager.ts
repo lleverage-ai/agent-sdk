@@ -133,6 +133,18 @@ export function createApproximateTokenCounter(): TokenCounter {
       for (const part of message.content) {
         if ("text" in part && typeof part.text === "string") {
           total += count(part.text);
+        } else if ("result" in part || "output" in part) {
+          // Tool result - count output. Checked BEFORE the toolName branch:
+          // tool-result parts also carry `toolName`, so matching on toolName
+          // first counted a tool result as just its tool name and silently
+          // dropped the (usually dominant) output — undercounting tool-heavy
+          // transcripts ~4-5x and preventing compaction from ever triggering
+          // (LLE-11630).
+          const output = "result" in part ? part.result : part.output;
+          total += count(typeof output === "string" ? output : JSON.stringify(output));
+          if ("toolName" in part && typeof part.toolName === "string") {
+            total += count(part.toolName);
+          }
         } else if ("toolName" in part) {
           // Tool call - count name and args
           total += count(part.toolName);
@@ -142,10 +154,6 @@ export function createApproximateTokenCounter(): TokenCounter {
           if ("input" in part) {
             total += count(JSON.stringify(part.input));
           }
-        } else if ("result" in part || "output" in part) {
-          // Tool result - count output
-          const output = "result" in part ? part.result : part.output;
-          total += count(typeof output === "string" ? output : JSON.stringify(output));
         } else if ("image" in part) {
           // Image part - count ~1000 tokens for image (approximate vision model cost)
           // Images are expensive in terms of tokens, varies by size and model

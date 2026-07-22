@@ -151,6 +151,46 @@ describe("createApproximateTokenCounter", () => {
       expect(tokens).toBeGreaterThan(4);
     });
 
+    it("should count tool-result outputs at their full size (LLE-11630 regression)", () => {
+      // Tool-result parts carry BOTH toolName and output. The counter used to
+      // match the toolName branch first and count a 50KB output as ~5 tokens,
+      // undercounting tool-heavy transcripts ~4-5x so compaction never fired.
+      const output = "x".repeat(50_000); // ~12.5K tokens at 4 chars/token
+      const messages: ModelMessage[] = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "bash",
+              output: { type: "text", value: output },
+            },
+          ],
+        } as unknown as ModelMessage,
+      ];
+      const tokens = counter.countMessages(messages);
+      expect(tokens).toBeGreaterThan(12_000);
+    });
+
+    it("should count v4-shaped tool results carrying result alongside toolName", () => {
+      const messages: ModelMessage[] = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "search",
+              result: { data: "y".repeat(4_000) },
+            },
+          ],
+        } as unknown as ModelMessage,
+      ];
+      const tokens = counter.countMessages(messages);
+      expect(tokens).toBeGreaterThan(1_000);
+    });
+
     it("should handle empty message array", () => {
       expect(counter.countMessages([])).toBe(0);
     });
