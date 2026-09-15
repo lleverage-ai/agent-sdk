@@ -92,6 +92,10 @@ no longer need to patch `dist/`.
 - Token-counter cache keys for tool results and tool calls now include the
   payload. They were keyed on the tool name alone, so a large result from a
   tool reused the cached count of an earlier small result from the same tool.
+- `createApproximateTokenCounter()` and `createCustomTokenCounter()` no longer
+  throw on a tool result or tool call whose payload is `undefined` (a tool that
+  returns nothing). `JSON.stringify(undefined)` is `undefined`, which reached
+  the character counter.
 - `generate()` now builds checkpoints from every step's response messages
   rather than the top-level `response.messages`, which the AI SDK populates
   with only the *final* step. Multi-step tool runs no longer lose their

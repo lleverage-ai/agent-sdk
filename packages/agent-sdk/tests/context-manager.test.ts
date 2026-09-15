@@ -261,6 +261,29 @@ describe("createApproximateTokenCounter", () => {
       expect(large).toBeGreaterThan(small + 900);
     });
 
+    it("should not throw when a tool result or call payload is undefined", () => {
+      // A tool that returns nothing produces `output: undefined` before the
+      // AI SDK normalises it. JSON.stringify(undefined) is undefined, which
+      // must not reach `count()`.
+      const messages = [
+        {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: "c1", toolName: "noop", output: undefined }],
+        },
+        {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: "c2", toolName: "noop", result: undefined }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "c3", toolName: "noop", input: undefined }],
+        },
+      ] as unknown as ModelMessage[];
+
+      expect(() => counter.countMessages(messages)).not.toThrow();
+      expect(counter.countMessages(messages)).toBeGreaterThan(0);
+    });
+
     it("should handle empty message array", () => {
       expect(counter.countMessages([])).toBe(0);
     });
@@ -279,6 +302,27 @@ describe("createCustomTokenCounter", () => {
     const result = counter.count("test");
     expect(customFn).toHaveBeenCalledWith("test");
     expect(result).toBe(10);
+  });
+
+  it("should always pass a string to countFn for undefined tool payloads", () => {
+    const customFn = vi.fn((text: string) => text.length);
+    const counter = createCustomTokenCounter({ countFn: customFn });
+
+    const messages = [
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "c1", toolName: "noop", output: undefined }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "c2", toolName: "noop", input: undefined }],
+      },
+    ] as unknown as ModelMessage[];
+
+    expect(() => counter.countMessages(messages)).not.toThrow();
+    for (const call of customFn.mock.calls) {
+      expect(typeof call[0]).toBe("string");
+    }
   });
 
   it("should use default message overhead", () => {
