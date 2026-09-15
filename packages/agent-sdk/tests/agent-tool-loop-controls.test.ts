@@ -3,7 +3,7 @@
  *
  * - `transformToolError` boundary for tool execute() rejections
  * - `tool-error` / `tool-output-denied` stream parts
- * - discovered-tool-call repair (`experimental_repairToolCall` → `call_tool`)
+ * - discovered-tool-call repair (`repairToolCall` → `call_tool`)
  * - `options.stop()` for tools and `GenerateOptions.shouldStopAfterStep`
  * - mid-run streaming compaction via `prepareStep`
  * - checkpoints built from every step (not just the final step's response)
@@ -30,11 +30,13 @@ import { generateText, streamText } from "ai";
 type GenerateTextArgs = {
   tools?: ToolSet;
   stopWhen?: Array<(opts: { steps: unknown[] }) => boolean | PromiseLike<boolean>>;
-  experimental_repairToolCall?: (params: {
+  repairToolCall?: (params: {
     error: unknown;
     toolCall: { toolCallId: string; toolName: string; input: string; type: "tool-call" };
     tools: ToolSet;
   }) => Promise<unknown>;
+  /** Pre-7.0.20 name; the SDK passes the same function under both. */
+  experimental_repairToolCall?: GenerateTextArgs["repairToolCall"];
   prepareStep?: (opts: {
     messages: unknown[];
     stepNumber: number;
@@ -217,10 +219,12 @@ describe("discovered tool call repair", () => {
     await agent.generate({ prompt: "pay" });
 
     const args = lastGenerateArgs();
-    expect(args.experimental_repairToolCall).toBeDefined();
+    expect(args.repairToolCall).toBeDefined();
+    // ai < 7.0.20 only reads the experimental_ name; both must be wired.
+    expect(args.experimental_repairToolCall).toBe(args.repairToolCall);
     expect(args.tools).toHaveProperty("call_tool");
 
-    const repaired = await args.experimental_repairToolCall!({
+    const repaired = await args.repairToolCall!({
       error: noSuchTool("stripe__create_payment"),
       toolCall: {
         type: "tool-call",
@@ -245,7 +249,7 @@ describe("discovered tool call repair", () => {
     await agent.generate({ prompt: "pay" });
     const args = lastGenerateArgs();
 
-    const repaired = (await args.experimental_repairToolCall!({
+    const repaired = (await args.repairToolCall!({
       error: noSuchTool("stripe__create_payment"),
       toolCall: {
         type: "tool-call",
@@ -267,7 +271,7 @@ describe("discovered tool call repair", () => {
     const agent = createProxyAgent();
     await agent.generate({ prompt: "pay" });
     const args = lastGenerateArgs();
-    const repair = args.experimental_repairToolCall!;
+    const repair = args.repairToolCall!;
 
     await expect(
       repair({
@@ -316,7 +320,7 @@ describe("discovered tool call repair", () => {
     const args = lastGenerateArgs();
 
     await expect(
-      args.experimental_repairToolCall!({
+      args.repairToolCall!({
         error: noSuchTool("stripe__create_payment"),
         toolCall: {
           type: "tool-call",
@@ -336,7 +340,7 @@ describe("discovered tool call repair", () => {
     const args = lastGenerateArgs();
 
     await expect(
-      args.experimental_repairToolCall!({
+      args.repairToolCall!({
         error: noSuchTool("stripe__create_payment"),
         toolCall: {
           type: "tool-call",
@@ -363,7 +367,7 @@ describe("discovered tool call repair", () => {
     await disabledByEnv.generate({ prompt: "pay" });
     let args = lastGenerateArgs();
     await expect(
-      args.experimental_repairToolCall!({
+      args.repairToolCall!({
         error: noSuchTool(toolCall.toolName),
         toolCall,
         tools: args.tools!,
@@ -375,7 +379,7 @@ describe("discovered tool call repair", () => {
     await forcedOn.generate({ prompt: "pay" });
     args = lastGenerateArgs();
     await expect(
-      args.experimental_repairToolCall!({
+      args.repairToolCall!({
         error: noSuchTool(toolCall.toolName),
         toolCall,
         tools: args.tools!,
@@ -393,7 +397,7 @@ describe("discovered tool call repair", () => {
     const args = lastGenerateArgs();
 
     await expect(
-      args.experimental_repairToolCall!({
+      args.repairToolCall!({
         error: noSuchTool("totally_unknown"),
         toolCall: {
           type: "tool-call",

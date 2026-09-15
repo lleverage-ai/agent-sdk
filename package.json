@@ -14,10 +14,10 @@
     "clean": "bun run --filter '@lleverage-ai/agent-sdk' clean"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.4",
-    "@tsconfig/node22": "^22.0.2",
+    "@biomejs/biome": "2.5.13",
+    "@tsconfig/node22": "^22.0.6",
     "@types/json-schema": "^7.0.15",
-    "@types/node": "^25.1.0",
+    "@types/node": "^22.20.2",
     "typescript": "^5.9.2"
   }
 }

@@ -81,6 +81,13 @@ no longer need to patch `dist/`.
   is also cleared after a successful compaction so the next budget check
   estimates the compacted transcript rather than comparing against the
   pre-compaction total.
+- Dependencies refreshed to current releases: `ai` ^7.0.101,
+  `@ai-sdk/anthropic` ^4.0.53, `@ai-sdk/gateway` ^4.0.81, `zod` ^4.6.5,
+  `@modelcontextprotocol/sdk` ^1.30.0, `ajv` ^8.20.0, `yaml` ^2.9.1; dev
+  tooling to Vitest 4.1.11, Biome 2.5.13, `@types/node` 22 (matching
+  `engines.node >=22`). The `ai` peer range stays `^7.0.0`; the tool-call
+  repair hook is passed as both `repairToolCall` (stable since 7.0.20) and
+  `experimental_repairToolCall` (the only name older 7.0.x reads).
 
 ### Fixed
 
