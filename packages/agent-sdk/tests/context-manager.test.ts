@@ -191,6 +191,42 @@ describe("createApproximateTokenCounter", () => {
       expect(tokens).toBeGreaterThan(1_000);
     });
 
+    it("should not share cached counts between same-name tool results of different sizes", () => {
+      // The cache key used to be `tool:<toolName>` for tool-result parts, so a
+      // large `bash` result reused the count of an earlier small `bash` result
+      // and the output-counting branch never ran for it.
+      const toolResult = (toolCallId: string, value: string): ModelMessage =>
+        ({
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId, toolName: "bash", output: { type: "text", value } },
+          ],
+        }) as unknown as ModelMessage;
+
+      const small = counter.countMessages([toolResult("call-1", "ok")]);
+      const large = counter.countMessages([toolResult("call-2", "x".repeat(4_000))]);
+      const largeFresh = createApproximateTokenCounter().countMessages([
+        toolResult("call-2", "x".repeat(4_000)),
+      ]);
+
+      expect(large).toBe(largeFresh);
+      expect(large).toBeGreaterThan(small + 900);
+    });
+
+    it("should not share cached counts between same-name tool calls with different inputs", () => {
+      const toolCall = (input: string): ModelMessage =>
+        ({
+          role: "assistant",
+          content: [
+            { type: "tool-call", toolCallId: "c", toolName: "write", input: { content: input } },
+          ],
+        }) as unknown as ModelMessage;
+
+      const small = counter.countMessages([toolCall("ok")]);
+      const large = counter.countMessages([toolCall("x".repeat(4_000))]);
+      expect(large).toBeGreaterThan(small + 900);
+    });
+
     it("should handle empty message array", () => {
       expect(counter.countMessages([])).toBe(0);
     });

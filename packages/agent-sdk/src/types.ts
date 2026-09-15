@@ -453,7 +453,7 @@ export interface AgentOptions {
    * Whether to re-route direct calls to discoverable proxy tools through
    * `call_tool`.
    *
-   * When `toolLoading` defers tools behind `search_tools` / `call_tool`, models
+   * When `pluginLoading` defers tools behind `search_tools` / `call_tool`, models
    * sometimes emit the deferred tool's qualified name directly instead of
    * calling `call_tool`. By default the SDK repairs such calls (via the AI
    * SDK's `repairToolCall` hook) into an equivalent `call_tool` invocation so

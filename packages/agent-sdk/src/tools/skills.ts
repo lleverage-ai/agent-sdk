@@ -9,8 +9,8 @@
  */
 
 import * as path from "node:path";
-import type { ToolSet } from "ai";
-import { type Tool, tool } from "ai";
+import type { Schema, ToolSet } from "ai";
+import { type Tool, tool, zodSchema } from "ai";
 import { z } from "zod";
 
 // =============================================================================
@@ -655,6 +655,12 @@ export class SkillRegistry {
 // Skill Tool
 // =============================================================================
 
+/** Input accepted by the `skill` tool. `args` is only advertised when a skill consumes it. */
+interface SkillToolInput {
+  skill_name: string;
+  args?: string;
+}
+
 /**
  * Options for creating the skill loading tool.
  *
@@ -844,19 +850,29 @@ export function createSkillTool(options: SkillToolOptions): Tool {
   // commit to a framing of the task in the same call that loads the
   // instructions, so the framing lands in context before the instructions it
   // is supposed to follow.
-  const inputSchema = registry.anySkillConsumesArgs()
-    ? z.object({
-        skill_name: z.string().describe("Name of the skill to load"),
-        args: z.string().optional().describe("Optional arguments to pass to the skill"),
-      })
-    : z.object({
-        skill_name: z.string().describe("Name of the skill to load"),
-      });
+  //
+  // The schema is a lazy `() => Schema` rather than a fixed zod object so the
+  // AI SDK re-evaluates it on every request (both when preparing the tool
+  // list for the model and when validating a tool call). `registry.register()`
+  // can add a function-instruction skill after this tool is created, and a
+  // schema captured at creation time would then strip the `args` the model
+  // supplies for it.
+  const inputSchema = (): Schema<SkillToolInput> =>
+    zodSchema<SkillToolInput>(
+      registry.anySkillConsumesArgs()
+        ? z.object({
+            skill_name: z.string().describe("Name of the skill to load"),
+            args: z.string().optional().describe("Optional arguments to pass to the skill"),
+          })
+        : z.object({
+            skill_name: z.string().describe("Name of the skill to load"),
+          }),
+    );
 
   return tool({
     description: buildDescription(),
     inputSchema,
-    execute: async ({ skill_name, args }: { skill_name: string; args?: string }) => {
+    execute: async ({ skill_name, args }: SkillToolInput) => {
       const result = registry.load(skill_name, args);
 
       if (!result.success) {

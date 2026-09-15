@@ -68,9 +68,20 @@ function hashMessage(message: ModelMessage): string {
         if ("text" in part) return `text:${part.text}`;
         if ("image" in part) return `image:${part.type}`;
         if ("data" in part && part.type === "file") return `file:${part.type}`;
-        if ("toolName" in part) return `tool:${part.toolName}`;
-        if ("result" in part) return `result:${JSON.stringify(part.result)}`;
-        if ("output" in part) return `output:${JSON.stringify(part.output)}`;
+        // Tool results carry `toolName` too, so match them BEFORE the bare
+        // toolName branch and key on the payload: otherwise two results from
+        // the same tool share one cache entry and a large result reuses the
+        // count of an earlier small one.
+        if ("result" in part || "output" in part) {
+          const output = "result" in part ? part.result : part.output;
+          const toolName = "toolName" in part ? part.toolName : "";
+          return `tool-result:${toolName}:${JSON.stringify(output)}`;
+        }
+        if ("toolName" in part) {
+          // Tool call - include the input so different calls do not collide.
+          const input = "input" in part ? part.input : undefined;
+          return `tool:${part.toolName}:${JSON.stringify(input)}`;
+        }
         return JSON.stringify(part);
       })
       .join("|");

@@ -4,7 +4,7 @@
  * @packageDocumentation
  */
 
-import { tool } from "ai";
+import { asSchema, tool } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -545,19 +545,23 @@ describe("createSkillTool", () => {
   });
 
   describe("args input schema", () => {
-    const schemaKeys = (skillTool: ReturnType<typeof createSkillTool>): string[] => {
-      const schema = skillTool.inputSchema as z.ZodObject<z.ZodRawShape>;
-      return Object.keys(schema.shape);
+    // The tool uses a lazy `() => Schema` so the AI SDK re-evaluates it per
+    // request; resolve it the same way the SDK does.
+    const schemaKeys = async (skillTool: ReturnType<typeof createSkillTool>): Promise<string[]> => {
+      const json = (await asSchema(skillTool.inputSchema).jsonSchema) as {
+        properties?: Record<string, unknown>;
+      };
+      return Object.keys(json.properties ?? {});
     };
 
-    it("does not advertise args when no skill consumes them", () => {
+    it("does not advertise args when no skill consumes them", async () => {
       // Both test skills have static string instructions.
       const skillTool = createSkillTool({ registry });
 
-      expect(schemaKeys(skillTool)).toEqual(["skill_name"]);
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name"]);
     });
 
-    it("advertises args when at least one skill has function instructions", () => {
+    it("advertises args when at least one skill has function instructions", async () => {
       registry.register({
         name: "review",
         description: "Code review",
@@ -566,7 +570,37 @@ describe("createSkillTool", () => {
 
       const skillTool = createSkillTool({ registry });
 
-      expect(schemaKeys(skillTool)).toEqual(["skill_name", "args"]);
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name", "args"]);
+    });
+
+    it("reflects skills registered after the tool was created", async () => {
+      const skillTool = createSkillTool({ registry });
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name"]);
+
+      registry.register({
+        name: "review",
+        description: "Code review",
+        instructions: (args) => `Review target: ${args}`,
+      });
+
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name", "args"]);
+
+      // Validation goes through the same lazy schema, so the late-registered
+      // skill receives its args instead of having them stripped.
+      const validated = await asSchema(skillTool.inputSchema).validate?.({
+        skill_name: "review",
+        args: "src/agent.ts",
+      });
+      expect(validated).toEqual({
+        success: true,
+        value: { skill_name: "review", args: "src/agent.ts" },
+      });
+
+      const result = (await skillTool.execute?.(
+        { skill_name: "review", args: "src/agent.ts" },
+        { toolCallId: "c", messages: [] },
+      )) as { instructions?: string };
+      expect(result.instructions).toBe("Review target: src/agent.ts");
     });
   });
 

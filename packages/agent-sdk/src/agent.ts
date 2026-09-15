@@ -4652,6 +4652,7 @@ export function createAgent(options: AgentOptions): Agent {
               const streamingTools = wrapToolsWithSignalCatching(
                 requestScopedStreamingTools,
                 signalState,
+                options.transformToolError,
               );
 
               // Build prompt context and generate system prompt

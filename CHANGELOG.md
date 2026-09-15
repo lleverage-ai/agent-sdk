@@ -19,10 +19,11 @@ no longer need to patch `dist/`.
   input), so consumers can sanitise what the model sees and what checkpoints
   persist without losing the original in-process error. Exported the
   `ToolErrorTransform` type.
-- Added `tool-error` and `tool-output-denied` variants to `StreamPart`.
-  `agent.stream()` previously dropped these AI SDK parts, leaving the matching
-  `tool-call` permanently unresolved for consumers, who then had to synthesise
-  misleading terminal errors at end of stream.
+- **BREAKING**: Added `tool-error` and `tool-output-denied` variants to
+  `StreamPart`. `agent.stream()` previously dropped these AI SDK parts, leaving
+  the matching `tool-call` permanently unresolved for consumers, who then had to
+  synthesise misleading terminal errors at end of stream. Consumers that switch
+  exhaustively on `StreamPart["type"]` need cases for the new variants.
 - Added automatic repair of direct calls to discoverable proxy tools. When a
   model emits a deferred tool's qualified name instead of calling `call_tool`,
   the SDK now re-routes the call through `call_tool` (via the AI SDK
@@ -82,6 +83,9 @@ no longer need to patch `dist/`.
   branch, so tool results were counted as just their tool name and the output
   was dropped, undercounting tool-heavy transcripts several-fold and preventing
   compaction from ever triggering.
+- Token-counter cache keys for tool results and tool calls now include the
+  payload. They were keyed on the tool name alone, so a large result from a
+  tool reused the cached count of an earlier small result from the same tool.
 - `generate()` now builds checkpoints from every step's response messages
   rather than the top-level `response.messages`, which the AI SDK populates
   with only the *final* step. Multi-step tool runs no longer lose their

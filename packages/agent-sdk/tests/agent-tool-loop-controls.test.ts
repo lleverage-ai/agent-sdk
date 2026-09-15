@@ -102,7 +102,9 @@ describe("transformToolError", () => {
 
     await expect(boom!.execute!({}, execOpts)).rejects.toThrow("sanitised:boom");
     expect(transform).toHaveBeenCalledWith(expect.any(Error), { toolName: "boom" });
-    expect((transform.mock.calls[0]?.[0] as Error).message).toBe("secret internal details");
+    const originalError = transform.mock.calls[0]?.[0];
+    expect(originalError).toBeInstanceOf(Error);
+    expect((originalError as Error).message).toBe("secret internal details");
   });
 
   it("does not transform interrupt signals", async () => {
