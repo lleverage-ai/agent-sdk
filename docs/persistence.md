@@ -188,9 +188,13 @@ interface Checkpoint {
 
 Checkpoint message history preserves tool-call and tool-result transcript entries, not just plain assistant text.
 
-- When providers return structured `response.messages`, those messages are saved directly
+- Messages are collected from every step's `response.messages`, so multi-step
+  tool runs keep their intermediate tool calls and results (the AI SDK's
+  top-level `response.messages` only carries the final step)
 - This includes assistant `tool-call` blocks and tool `tool-result` blocks
 - If structured messages are unavailable, the SDK falls back to text-based assistant messages
+- When mid-run context compaction fires during a streaming run, the
+  checkpoint persists the compacted transcript rather than the original history
 
 ### Resuming Conversations
 
@@ -227,6 +231,39 @@ for await (const _part of agent.stream({
   // consume stream
 }
 ```
+
+### Pausing at a Step Boundary
+
+`shouldStopAfterStep` is evaluated after every completed step. When it returns
+`true`, the loop stops before the next model call. With
+`checkpointAfterToolCall` enabled, the last step is already persisted, so a
+later call on the same `threadId` picks up where the run left off. This is
+the primitive for draining in-flight runs before a process exits.
+
+```typescript
+let draining = false;
+process.on("SIGTERM", () => {
+  draining = true;
+});
+
+for await (const _part of agent.stream({
+  threadId: "conversation-1",
+  prompt: "Continue",
+  checkpointAfterToolCall: true,
+  shouldStopAfterStep: () => draining,
+})) {
+  // consume stream
+}
+```
+
+A paused run reports `finishReason: "tool-calls"` on its last step; a run
+that finished naturally reports `"stop"`.
+
+Tools can also end the turn from the inside by calling `options.stop()` in
+their `execute()`. The current step's tool results are recorded, no further
+model call is made, and the background-task follow-up loop is skipped. Use it
+for terminal presentation tools (rendering a set of buttons, for example)
+where another model call would only add redundant text.
 
 ### Checkpoint Hooks
 

@@ -79,6 +79,29 @@ prompt budget after reservation via `effectiveMaxTokens`, along with a `state` o
 `outputReserveTokens` is not an independent compaction trigger. It reduces `effectiveMaxTokens`,
 which changes when the threshold and hard-cap triggers fire.
 
+### When compaction runs
+
+Compaction is checked at two points:
+
+1. **Before the run starts** (`generate()` and all streaming entry points),
+   after checkpoint messages and the new prompt have been assembled.
+2. **Before every subsequent model call within a streaming run**
+   (`stream()`, `streamResponse()`, `streamDataResponse()` and their
+   background-task follow-ups), via the AI SDK `prepareStep` hook. This is
+   what keeps long tool loops inside the budget: a run that starts well under
+   the threshold can accumulate large tool results across many steps, and the
+   run-boundary check alone would never see them.
+
+`PreCompact`/`PostCompact` hooks and `onCompact` fire for both. Checkpoints
+written after a mid-run compaction persist the compacted transcript, not the
+original history.
+
+`getBudget()` combines the last reported model usage with a fresh estimate
+and uses whichever is larger. Reported usage describes the *previous* model
+input, so it cannot account for tool results appended since; the estimate
+can. After a successful compaction the reported usage is cleared until the
+next model call.
+
 ## Custom Compaction Policy
 
 Override the default policy logic with custom rules:

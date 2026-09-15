@@ -321,6 +321,52 @@ The `skill` tool result includes:
 - `newTools`: names of tools provided by the loaded skill
 - `content`: XML-style payload wrapped in `<skill_content ...>` tags for deterministic context injection
 - `skillPath`: optional absolute path for file-based skills
+- `message`: a human-readable status line. On success it ends with a
+  continuation instruction (`DEFAULT_SKILL_CONTINUATION_INSTRUCTION`) that
+  tells the model to keep working on the task instead of stopping after the
+  load. Override it with `continuationInstruction: "..."` or disable it with
+  `continuationInstruction: false`.
+
+The tool only advertises an `args` input when at least one registered skill
+has function-based instructions (`registry.anySkillConsumesArgs()`), so
+models are not tempted to invent arguments for skills that ignore them.
+
+### Explicit-only (non-discoverable) skills
+
+Set `discoverable: false` on a skill to keep it registered but hidden from
+the `skill` tool's catalogue. Such skills can still be loaded by name, which
+is useful when the host decides which skills to activate (for example from a
+workflow definition) rather than letting the model browse.
+
+```typescript
+const registry = new SkillRegistry({
+  skills: [
+    defineSkill({ name: "git", description: "...", instructions: "..." }),
+    defineSkill({
+      name: "internal-billing",
+      description: "...",
+      instructions: "...",
+      discoverable: false, // hidden from listAvailable() / the skill tool
+    }),
+  ],
+});
+
+registry.listAvailable(); // [git]
+registry.load("internal-billing"); // still works
+registry.hasUnloadedExplicitOnlySkills(); // true
+```
+
+When every discoverable skill is loaded but explicit-only skills remain, the
+`skill` tool description says so instead of claiming there are no skills.
+
+### Runtime names
+
+Skill names can contain spaces or punctuation that models struggle to echo
+back exactly. `toSkillRuntimeName(name)` slugs a name into a stable, tool-safe
+identifier (`"PDF Processing"` → `"pdf-processing"`, falling back to
+`skill--<hash>` for names with no usable characters). `registry.get()` and
+`registry.load()` accept either the registered name or its slug, as long as
+the slug is unambiguous.
 
 Example `content` payload:
 

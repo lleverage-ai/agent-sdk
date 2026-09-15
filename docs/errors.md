@@ -278,6 +278,35 @@ const result = await retryIf(
 );
 ```
 
+## Sanitising Tool Errors for the Model
+
+When a tool fails, the AI SDK turns the error into a tool-error result whose
+message is fed back to the model on the next step and persisted in
+checkpoints. That is usually what you want, but the raw message may contain
+stack traces, internal hostnames or other details that should not reach the
+model or the transcript.
+
+`transformToolError` is a boundary that runs first. It receives the original
+error (still available in-process for logging) and returns whatever should be
+recorded instead:
+
+```typescript
+const agent = createAgent({
+  model,
+  transformToolError: (error, { toolName }) => {
+    logger.error("tool failed", { toolName, error });
+    return new Error(`Tool '${toolName}' failed. Try a different approach.`);
+  },
+});
+```
+
+It applies to `execute()` rejections and to calls that fail before execution
+(unknown tool name, invalid input). Interrupt signals are never transformed.
+
+On the streaming side, `agent.stream()` forwards these failures as
+`tool-error` parts (and denied approvals as `tool-output-denied`), so
+consumers can resolve the matching `tool-call` instead of treating it as lost.
+
 ## Error Hooks
 
 Handle errors at the agent level with hooks:

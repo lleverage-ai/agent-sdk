@@ -133,6 +133,18 @@ export function createApproximateTokenCounter(): TokenCounter {
       for (const part of message.content) {
         if ("text" in part && typeof part.text === "string") {
           total += count(part.text);
+        } else if ("result" in part || "output" in part) {
+          // Tool result - count output. Checked BEFORE the toolName branch:
+          // tool-result parts also carry `toolName`, so matching on toolName
+          // first counted a tool result as just its tool name and silently
+          // dropped the (usually dominant) output — undercounting tool-heavy
+          // transcripts ~4-5x and preventing compaction from ever triggering
+          // (LLE-11630).
+          const output = "result" in part ? part.result : part.output;
+          total += count(typeof output === "string" ? output : JSON.stringify(output));
+          if ("toolName" in part && typeof part.toolName === "string") {
+            total += count(part.toolName);
+          }
         } else if ("toolName" in part) {
           // Tool call - count name and args
           total += count(part.toolName);
@@ -142,10 +154,6 @@ export function createApproximateTokenCounter(): TokenCounter {
           if ("input" in part) {
             total += count(JSON.stringify(part.input));
           }
-        } else if ("result" in part || "output" in part) {
-          // Tool result - count output
-          const output = "result" in part ? part.result : part.output;
-          total += count(typeof output === "string" ? output : JSON.stringify(output));
         } else if ("image" in part) {
           // Image part - count ~1000 tokens for image (approximate vision model cost)
           // Images are expensive in terms of tokens, varies by size and model
@@ -1346,17 +1354,16 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
   }
 
   const getBudget = (messages: ModelMessage[]): TokenBudget => {
-    let currentTokens: number;
-    let isActual = false;
+    const estimatedTokens = tokenCounter.countMessages(messages);
+    const actualTokens = lastActualUsage?.totalTokens;
 
-    // If we have actual usage data from the last generation, use it
-    if (lastActualUsage && lastActualUsage.totalTokens !== undefined) {
-      currentTokens = lastActualUsage.totalTokens;
-      isActual = true;
-    } else {
-      // Fall back to estimation
-      currentTokens = tokenCounter.countMessages(messages);
-    }
+    // Actual usage describes the *last* model input, while the current message
+    // list may already include newer tool results appended since that call.
+    // Use the larger of the two so stale usage cannot hide growth between model
+    // generations (which is exactly when mid-run compaction needs to fire).
+    const currentTokens =
+      actualTokens === undefined ? estimatedTokens : Math.max(actualTokens, estimatedTokens);
+    const isActual = actualTokens !== undefined && actualTokens >= estimatedTokens;
 
     const budget = createTokenBudget(maxTokens, currentTokens, isActual, {
       outputReserveTokens: policy.outputReserveTokens,
@@ -1638,6 +1645,12 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         structuredSummary,
         summaryTier,
       };
+
+      // Compaction replaces the model input, so usage captured before or during
+      // summarisation no longer describes the active context. Clear it so the
+      // next budget check falls back to estimating the compacted messages
+      // instead of comparing against the pre-compaction total.
+      lastActualUsage = null;
 
       recordCompactionSuccess();
 

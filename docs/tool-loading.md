@@ -80,6 +80,34 @@ const plugin = definePlugin({
 });
 ```
 
+### Direct calls to proxied tools
+
+Models sometimes emit a proxied tool's qualified name directly
+(`github__list_issues`) instead of going through `call_tool`. Because that
+name is not in the active tool set, the AI SDK would raise `NoSuchToolError`
+and the model would have to retry.
+
+By default the SDK repairs such calls into the equivalent `call_tool`
+invocation, keeping the original tool call id so the transcript stays
+consistent and the call still passes through the normal validation and
+approval pipeline. Only exact, currently discoverable names whose input
+parses to a JSON object are repaired; anything else falls through to the
+normal error path.
+
+```typescript
+const agent = createAgent({
+  model,
+  plugins: [githubPlugin],
+  pluginLoading: "proxy",
+  repairDiscoveredToolCalls: false, // opt out
+});
+```
+
+Setting `AGENT_SDK_DISABLE_TOOL_CALL_REPAIR=true` disables the repair for
+every agent in the process (useful in tests that assert the unrepaired error);
+an explicit `repairDiscoveredToolCalls` option takes precedence over the
+environment variable.
+
 ## External MCP Servers
 
 External servers are searchable through the same mechanism:

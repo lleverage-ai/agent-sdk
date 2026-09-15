@@ -151,6 +151,46 @@ describe("createApproximateTokenCounter", () => {
       expect(tokens).toBeGreaterThan(4);
     });
 
+    it("should count tool-result outputs at their full size (LLE-11630 regression)", () => {
+      // Tool-result parts carry BOTH toolName and output. The counter used to
+      // match the toolName branch first and count a 50KB output as ~5 tokens,
+      // undercounting tool-heavy transcripts ~4-5x so compaction never fired.
+      const output = "x".repeat(50_000); // ~12.5K tokens at 4 chars/token
+      const messages: ModelMessage[] = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "bash",
+              output: { type: "text", value: output },
+            },
+          ],
+        } as unknown as ModelMessage,
+      ];
+      const tokens = counter.countMessages(messages);
+      expect(tokens).toBeGreaterThan(12_000);
+    });
+
+    it("should count v4-shaped tool results carrying result alongside toolName", () => {
+      const messages: ModelMessage[] = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "search",
+              result: { data: "y".repeat(4_000) },
+            },
+          ],
+        } as unknown as ModelMessage,
+      ];
+      const tokens = counter.countMessages(messages);
+      expect(tokens).toBeGreaterThan(1_000);
+    });
+
     it("should handle empty message array", () => {
       expect(counter.countMessages([])).toBe(0);
     });
@@ -358,6 +398,69 @@ describe("createContextManager", () => {
       expect(budget.currentTokens).toBe(34);
       expect(budget.remaining).toBe(46);
       expect(budget.state).toBe("normal");
+    });
+
+    describe("actual usage vs estimate", () => {
+      const countFn = () => 10; // every string counts as 10 tokens
+
+      it("uses actual usage when it exceeds the estimate", () => {
+        const manager = createContextManager({
+          maxTokens: 1000,
+          tokenCounter: createCustomTokenCounter({ countFn }),
+        });
+        const messages: ModelMessage[] = [{ role: "user", content: "hi" }];
+        const estimate = manager.tokenCounter.countMessages(messages);
+
+        manager.updateUsage?.({ inputTokens: 500, outputTokens: 0, totalTokens: 500 });
+        const budget = manager.getBudget(messages);
+
+        expect(estimate).toBeLessThan(500);
+        expect(budget.currentTokens).toBe(500);
+        expect(budget.isActual).toBe(true);
+      });
+
+      it("does not let stale actual usage hide growth since the last model call", () => {
+        const manager = createContextManager({
+          maxTokens: 1000,
+          tokenCounter: createCustomTokenCounter({ countFn }),
+        });
+
+        // Usage from the previous generation was small...
+        manager.updateUsage?.({ inputTokens: 20, outputTokens: 0, totalTokens: 20 });
+
+        // ...but tool results have been appended since then.
+        const grown: ModelMessage[] = Array.from({ length: 30 }, (_, i) => ({
+          role: "user" as const,
+          content: `tool result ${i}`,
+        }));
+        const estimate = manager.tokenCounter.countMessages(grown);
+        const budget = manager.getBudget(grown);
+
+        expect(estimate).toBeGreaterThan(20);
+        expect(budget.currentTokens).toBe(estimate);
+        expect(budget.isActual).toBe(false);
+      });
+
+      it("clears actual usage after a successful compaction", async () => {
+        const manager = createContextManager({
+          maxTokens: 1000,
+          tokenCounter: createCustomTokenCounter({ countFn }),
+          summarization: { keepMessageCount: 2 },
+        });
+        const messages = createTestMessages(20);
+
+        manager.updateUsage?.({ inputTokens: 900, outputTokens: 0, totalTokens: 900 });
+        expect(manager.getBudget(messages).currentTokens).toBe(900);
+
+        const result = await manager.compact(messages, createMockAgent());
+        expect(result.newMessages.length).toBeLessThan(messages.length);
+
+        // The pre-compaction usage must not be applied to the compacted list.
+        const after = manager.getBudget(result.newMessages);
+        expect(after.currentTokens).toBe(manager.tokenCounter.countMessages(result.newMessages));
+        expect(after.currentTokens).toBeLessThan(900);
+        expect(after.isActual).toBe(false);
+      });
     });
   });
 

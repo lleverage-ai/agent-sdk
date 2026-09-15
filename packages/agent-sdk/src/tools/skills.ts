@@ -86,6 +86,19 @@ export interface SkillDefinition {
   description: string;
 
   /**
+   * Whether the skill is included in model-facing discovery catalogues.
+   *
+   * Non-discoverable skills remain registered and can still be loaded by name
+   * (for example when the user invokes them explicitly), but they are omitted
+   * from {@link SkillRegistry.listAvailable} and from the `skill` tool's
+   * description. Use this to keep rarely-needed or user-triggered skills out of
+   * the agent's context budget.
+   *
+   * @defaultValue true
+   */
+  discoverable?: boolean;
+
+  /**
    * License for this skill.
    * Can be a license name or reference to a bundled license file.
    *
@@ -237,6 +250,68 @@ export interface SkillRegistryOptions {
 }
 
 // =============================================================================
+// Skill Runtime Names
+// =============================================================================
+
+/**
+ * A short, stable, dependency-free digest of a display name (FNV-1a 32-bit).
+ * Only ever used to keep distinct un-sluggable names distinct — never for
+ * anything security bearing.
+ */
+function fingerprintSkillName(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * Normalise a skill display name into its runtime name.
+ *
+ * The Agent Skills specification requires skill names to be 1-64 lowercase
+ * alphanumeric characters and hyphens. Skills authored with a human-friendly
+ * display name ("Email Summariser") are addressed at runtime by the slug this
+ * function produces ("email-summariser"). {@link SkillRegistry.get} and
+ * {@link SkillRegistry.load} accept either form, so a model that echoes the
+ * slug still resolves the registered skill.
+ *
+ * Names with no ASCII alphanumerics fall back to `skill--<fnv1a>` so two
+ * different un-sluggable names never collapse into one skill. A run of
+ * separators always collapses to a single dash, so no ordinary display name
+ * can normalise into that double-dash shape and alias a fallback.
+ *
+ * @param name - The skill name as registered or as requested by the model
+ * @returns The normalised runtime name
+ *
+ * @example
+ * ```typescript
+ * toSkillRuntimeName("Email Summariser"); // "email-summariser"
+ * toSkillRuntimeName("pdf-processing");   // "pdf-processing"
+ * ```
+ *
+ * @category Tools
+ */
+export function toSkillRuntimeName(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64)
+    // Truncation can land on a separator; the slug never ends in one.
+    .replace(/-+$/g, "");
+  return slug.length > 0 ? slug : `skill--${fingerprintSkillName(name)}`;
+}
+
+function matchesRuntimeName(registeredName: string, requestedRuntimeName: string): boolean {
+  return (
+    registeredName === requestedRuntimeName ||
+    toSkillRuntimeName(registeredName) === requestedRuntimeName
+  );
+}
+
+// =============================================================================
 // Skill Registry
 // =============================================================================
 
@@ -344,13 +419,36 @@ export class SkillRegistry {
   }
 
   /**
+   * Resolve a requested name to a registered skill.
+   *
+   * Exact matches win. Otherwise the request is normalised with
+   * {@link toSkillRuntimeName} and matched against the normalised registered
+   * names; the match is only accepted when it is unambiguous.
+   */
+  private resolve(name: string): [string, SkillDefinition] | undefined {
+    const exact = this.skills.get(name);
+    if (exact) {
+      return [name, exact];
+    }
+
+    const requestedRuntimeName = toSkillRuntimeName(name);
+    const matches = Array.from(this.skills.entries()).filter(([registeredName]) =>
+      matchesRuntimeName(registeredName, requestedRuntimeName),
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  }
+
+  /**
    * Get a registered skill definition.
+   *
+   * Accepts either the registered name or its runtime slug (see
+   * {@link toSkillRuntimeName}). Slug matches must be unambiguous.
    *
    * @param name - The name of the skill
    * @returns The skill definition or undefined if not found
    */
   get(name: string): SkillDefinition | undefined {
-    return this.skills.get(name);
+    return this.resolve(name)?.[1];
   }
 
   /**
@@ -384,19 +482,9 @@ export class SkillRegistry {
    * ```
    */
   load(name: string, args?: string): SkillLoadResult {
-    // Check if already loaded
-    if (this.loadedSkills.has(name)) {
-      return {
-        success: true,
-        tools: {},
-        instructions: "",
-        error: `Skill '${name}' is already loaded`,
-      };
-    }
-
-    // Check if skill exists
-    const skill = this.skills.get(name);
-    if (!skill) {
+    // Check if skill exists (accepting either the registered name or its slug)
+    const resolved = this.resolve(name);
+    if (!resolved) {
       return {
         success: false,
         tools: {},
@@ -407,6 +495,18 @@ export class SkillRegistry {
       };
     }
 
+    const [resolvedName, skill] = resolved;
+
+    // Check if already loaded
+    if (this.loadedSkills.has(resolvedName)) {
+      return {
+        success: true,
+        tools: {},
+        instructions: "",
+        error: `Skill '${resolvedName}' is already loaded`,
+      };
+    }
+
     // Get the instructions (may be undefined for file-based skills)
     const instructions = skill.instructions
       ? typeof skill.instructions === "function"
@@ -414,8 +514,8 @@ export class SkillRegistry {
         : skill.instructions
       : "";
 
-    this.loadedSkills.set(name, {
-      name,
+    this.loadedSkills.set(resolvedName, {
+      name: resolvedName,
       description: skill.description,
       instructions,
     });
@@ -429,14 +529,17 @@ export class SkillRegistry {
 
     // Notify callback
     if (this.onSkillLoaded) {
-      this.onSkillLoaded(name, result);
+      this.onSkillLoaded(resolvedName, result);
     }
 
     return result;
   }
 
   /**
-   * List skills that are available but not yet loaded.
+   * List skills that are available for discovery but not yet loaded.
+   *
+   * Skills registered with `discoverable: false` are omitted even when
+   * unloaded; they can still be loaded by name.
    *
    * @returns Array of skill summaries (name and description)
    */
@@ -444,7 +547,7 @@ export class SkillRegistry {
     const available: Array<{ name: string; description: string }> = [];
 
     for (const [name, skill] of this.skills) {
-      if (!this.loadedSkills.has(name)) {
+      if (!this.loadedSkills.has(name) && skill.discoverable !== false) {
         available.push({
           name,
           description: skill.description,
@@ -490,6 +593,38 @@ export class SkillRegistry {
     }
 
     return all;
+  }
+
+  /**
+   * Whether any registered skill is hidden from discovery and not yet loaded.
+   *
+   * Used by the skill tool to explain, when the discoverable catalogue is
+   * empty, that explicitly named skills may still be loadable.
+   *
+   * @returns True if at least one unloaded skill has `discoverable: false`
+   */
+  hasUnloadedExplicitOnlySkills(): boolean {
+    for (const [name, skill] of this.skills) {
+      if (!this.loadedSkills.has(name) && skill.discoverable === false) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether any registered skill has function-backed instructions that can
+   * consume a caller-supplied argument string.
+   *
+   * @returns True if at least one skill's `instructions` is a function
+   */
+  anySkillConsumesArgs(): boolean {
+    for (const skill of this.skills.values()) {
+      if (typeof skill.instructions === "function") {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -540,7 +675,32 @@ export interface SkillToolOptions {
    * The list of available skills is appended automatically.
    */
   descriptionPrefix?: string;
+
+  /**
+   * Instruction appended to every successful load result's `message`, telling
+   * the model to keep working on the original request rather than stopping at
+   * an acknowledgement that the skill loaded.
+   *
+   * Some models treat a successful `skill` tool result as a natural end of
+   * turn and reply with "I've loaded the skill, I'll do X next" without doing
+   * X. Appending an explicit continuation instruction to the result reliably
+   * keeps them going.
+   *
+   * Pass `false` to omit the instruction entirely.
+   *
+   * @defaultValue {@link DEFAULT_SKILL_CONTINUATION_INSTRUCTION}
+   */
+  continuationInstruction?: string | false;
 }
+
+/**
+ * Default continuation instruction appended to successful skill load results.
+ *
+ * @see {@link SkillToolOptions.continuationInstruction}
+ * @category Tools
+ */
+export const DEFAULT_SKILL_CONTINUATION_INSTRUCTION =
+  "Treat this result as internal execution context, not as completion or a user-visible answer. Continue the original request now. Your next response must do one of the following: take the next concrete action; provide the complete answer if no action remains; ask only for genuinely missing input, access, approval, or a user choice; state a real blocker; or preserve a safety refusal. Never stop at an acknowledgement, readiness statement, or plan.";
 
 /**
  * Creates a tool that allows agents to load skills on-demand.
@@ -573,6 +733,12 @@ export interface SkillToolOptions {
  */
 export function createSkillTool(options: SkillToolOptions): Tool {
   const { registry, descriptionPrefix } = options;
+  const continuationInstruction =
+    options.continuationInstruction === undefined
+      ? DEFAULT_SKILL_CONTINUATION_INSTRUCTION
+      : options.continuationInstruction;
+  const withContinuation = (message: string): string =>
+    continuationInstruction ? `${message}. ${continuationInstruction}` : message;
 
   const escapeXml = (value: string): string =>
     value
@@ -654,25 +820,42 @@ export function createSkillTool(options: SkillToolOptions): Tool {
   const buildDescription = () => {
     const available = registry.listAvailable();
 
-    if (available.length === 0) {
-      return "No skills available to load.";
-    }
-
     const prefix =
       descriptionPrefix ??
       "Load a skill to gain additional capabilities. After loading, new tools and instructions become available.";
+
+    if (available.length === 0) {
+      // Non-discoverable skills are hidden from the catalogue but still
+      // loadable by name, so tell the model the tool is not a dead end.
+      return registry.hasUnloadedExplicitOnlySkills()
+        ? `${prefix}\n\nNo skills are listed for automatic discovery. Skills explicitly invoked by the user can still be loaded by name.`
+        : "No skills available to load.";
+    }
 
     const skillList = available.map((s) => `- ${s.name}: ${s.description}`).join("\n");
 
     return `${prefix}\n\nAvailable skills:\n${skillList}`;
   };
 
+  // Only advertise `args` when a registered skill can actually consume it.
+  // `load()` forwards args to `instructions` only when that is a function;
+  // skills authored with static instructions discard it silently. Advertising
+  // a field that does nothing still costs something: it invites the model to
+  // commit to a framing of the task in the same call that loads the
+  // instructions, so the framing lands in context before the instructions it
+  // is supposed to follow.
+  const inputSchema = registry.anySkillConsumesArgs()
+    ? z.object({
+        skill_name: z.string().describe("Name of the skill to load"),
+        args: z.string().optional().describe("Optional arguments to pass to the skill"),
+      })
+    : z.object({
+        skill_name: z.string().describe("Name of the skill to load"),
+      });
+
   return tool({
     description: buildDescription(),
-    inputSchema: z.object({
-      skill_name: z.string().describe("Name of the skill to load"),
-      args: z.string().optional().describe("Optional arguments to pass to the skill"),
-    }),
+    inputSchema,
     execute: async ({ skill_name, args }: { skill_name: string; args?: string }) => {
       const result = registry.load(skill_name, args);
 
@@ -697,9 +880,13 @@ export function createSkillTool(options: SkillToolOptions): Tool {
       };
 
       if (toolNames.length === 0) {
-        response.message = `Loaded skill '${skill_name}' (provides instructions only, no new tools)`;
+        response.message = withContinuation(
+          `Loaded skill '${skill_name}' (provides instructions only, no new tools)`,
+        );
       } else {
-        response.message = `Loaded skill '${skill_name}'. New tools available: ${toolNames.join(", ")}`;
+        response.message = withContinuation(
+          `Loaded skill '${skill_name}'. New tools available: ${toolNames.join(", ")}`,
+        );
       }
 
       return response;

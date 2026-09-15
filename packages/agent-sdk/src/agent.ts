@@ -4,11 +4,12 @@
  * @packageDocumentation
  */
 
-import type { ModelMessage, Tool, ToolExecutionOptions, ToolSet } from "ai";
+import type { ModelMessage, Tool, ToolCallRepairFunction, ToolExecutionOptions, ToolSet } from "ai";
 import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateText,
+  NoSuchToolError,
   stepCountIs,
   streamText,
 } from "ai";
@@ -103,6 +104,7 @@ import type {
   StreamPart,
   SubagentDefinition,
   ToolCallResult,
+  ToolErrorTransform,
   ToolResultPart,
 } from "./types.js";
 
@@ -382,6 +384,33 @@ function isInterruptSignal(error: unknown): error is InterruptSignal {
  */
 interface GenerateSignalState {
   interrupt?: InterruptSignal;
+  /**
+   * Set when a tool called `options.stop()`. Ends the generation after the
+   * current step and skips the background-task follow-up loop, without
+   * creating resumable interrupt state.
+   */
+  stop?: boolean;
+}
+
+/**
+ * Build the `stopWhen` conditions shared by every generation mode.
+ *
+ * Stops when a flow-control signal (interrupt or stop) was caught, when the
+ * caller's cooperative `shouldStopAfterStep` pause hook returns true, or when
+ * the step count reaches `maxSteps` — whichever comes first.
+ *
+ * @internal
+ */
+function buildStopConditions(
+  signalState: GenerateSignalState,
+  genOptions: GenerateOptions,
+  maxSteps: number,
+) {
+  return [
+    () => signalState.interrupt != null || signalState.stop === true,
+    () => genOptions.shouldStopAfterStep?.() === true,
+    stepCountIs(maxSteps),
+  ];
 }
 
 /**
@@ -393,9 +422,17 @@ interface GenerateSignalState {
  * generation and allows `generate()` to inspect `signalState` in the normal
  * return path (not the catch block).
  *
+ * It also injects `options.stop()` so a tool can end the turn after its step,
+ * and applies the optional `transformToolError` boundary to any other
+ * rejection before the AI SDK converts it into a tool-error result.
+ *
  * @internal
  */
-function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignalState): ToolSet {
+function wrapToolsWithSignalCatching(
+  tools: ToolSet,
+  signalState: GenerateSignalState,
+  transformToolError?: ToolErrorTransform,
+): ToolSet {
   const wrapped: ToolSet = {};
 
   for (const [name, toolDef] of Object.entries(tools)) {
@@ -410,7 +447,12 @@ function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignal
       ...toolDef,
       execute: async (input: unknown, options: ToolExecutionOptions<unknown>) => {
         try {
-          return await originalExecute.call(toolDef, input, options);
+          return await originalExecute.call(toolDef, input, {
+            ...options,
+            stop: () => {
+              signalState.stop = true;
+            },
+          });
         } catch (error) {
           if (isInterruptSignal(error)) {
             if (signalState.interrupt) {
@@ -418,6 +460,9 @@ function wrapToolsWithSignalCatching(tools: ToolSet, signalState: GenerateSignal
             }
             signalState.interrupt = error;
             return "[Interrupt requested]";
+          }
+          if (transformToolError) {
+            throw transformToolError(error, { toolName: name });
           }
           throw error;
         }
@@ -1384,6 +1429,84 @@ export function createAgent(options: AgentOptions): Agent {
   }
 
   /**
+   * Route exact, currently discoverable proxy targets through `call_tool` when
+   * a model emits their qualified name directly. The AI SDK reparses the
+   * returned call against the active ToolSet, preserving the original call ID
+   * and sending execution through the normal validation/approval pipeline.
+   *
+   * Returns `null` (no repair) unless every precondition holds: repair is
+   * enabled, the failure is `NoSuchToolError`, `call_tool` is active, the
+   * requested name is a known discoverable tool, and the raw input parses to a
+   * plain JSON object.
+   *
+   * Repair is enabled by default. It can be disabled per agent via
+   * `repairDiscoveredToolCalls: false`, or globally (e.g. in tests that assert
+   * the unrepaired error path) with `AGENT_SDK_DISABLE_TOOL_CALL_REPAIR=true`.
+   * The explicit option wins over the environment variable.
+   */
+  const isDiscoveredToolCallRepairEnabled = (): boolean => {
+    if (options.repairDiscoveredToolCalls !== undefined) {
+      return options.repairDiscoveredToolCalls;
+    }
+    return process.env.AGENT_SDK_DISABLE_TOOL_CALL_REPAIR !== "true";
+  };
+
+  const repairDiscoveredToolCall: ToolCallRepairFunction<ToolSet> = async ({
+    error,
+    toolCall,
+    tools,
+  }) => {
+    if (
+      !isDiscoveredToolCallRepairEnabled() ||
+      !NoSuchToolError.isInstance(error) ||
+      !Object.hasOwn(tools, "call_tool") ||
+      !mcpManager.getToolMetadata(toolCall.toolName)
+    ) {
+      return null;
+    }
+
+    const rawInput = toolCall.input.trim();
+    let parsedInput: unknown;
+    try {
+      parsedInput = rawInput.length === 0 ? {} : JSON.parse(rawInput);
+    } catch {
+      return null;
+    }
+    if (typeof parsedInput !== "object" || parsedInput === null || Array.isArray(parsedInput)) {
+      return null;
+    }
+
+    return {
+      ...toolCall,
+      toolName: "call_tool",
+      input: JSON.stringify({
+        tool_name: toolCall.toolName,
+        arguments: parsedInput,
+      }),
+    };
+  };
+
+  /**
+   * AI SDK `repairToolCall` hook.
+   *
+   * Invalid-input / unknown-tool failures happen before `execute()`, so the
+   * execute wrapper cannot sanitise them. First try the discovered-tool routing
+   * above; if it does not apply, route the parse failure through the configured
+   * `transformToolError` and deliberately throw the transformed value so the AI
+   * SDK records only that in the next model step and checkpoint.
+   */
+  const repairToolCall: ToolCallRepairFunction<ToolSet> = async (params) => {
+    const repaired = await repairDiscoveredToolCall(params);
+    if (repaired) {
+      return repaired;
+    }
+    if (options.transformToolError) {
+      throw options.transformToolError(params.error, { toolName: params.toolCall.toolName });
+    }
+    return null;
+  };
+
+  /**
    * Filter a tool set by the allowedTools and disallowedTools restrictions.
    * If neither is set, returns all tools.
    *
@@ -1564,10 +1687,20 @@ export function createAgent(options: AgentOptions): Agent {
       : baseMessages;
   };
 
+  /**
+   * Build the full transcript for persistence from a multi-step result.
+   *
+   * The AI SDK's top-level `response.messages` only holds the FINAL step's
+   * messages, so a run that called tools in earlier steps would lose those
+   * tool calls/results if we used it directly. Prefer the per-step response
+   * messages; fall back to `fallbackResponseMessages` (the top-level
+   * `response.messages`) and finally to the assistant text.
+   */
   const buildMessagesFromStepResponses = (
     baseMessages: ModelMessage[],
     steps: Array<{ text?: string; response?: { messages?: unknown[] } }>,
     fallbackAssistantText?: string,
+    fallbackResponseMessages?: unknown[],
   ): ModelMessage[] => {
     const stepResponseMessages = steps.flatMap((step) =>
       responseMessagesToModelMessages(step.response?.messages),
@@ -1576,12 +1709,8 @@ export function createAgent(options: AgentOptions): Agent {
       return [...baseMessages, ...stepResponseMessages];
     }
 
-    // Fallback for providers that do not populate response.messages.
-    const lastText = steps.at(-1)?.text ?? fallbackAssistantText;
-    return [
-      ...baseMessages,
-      ...(lastText ? [{ role: "assistant" as const, content: lastText }] : []),
-    ];
+    const lastText = steps.at(-1)?.text || fallbackAssistantText;
+    return appendResponseMessages(baseMessages, fallbackResponseMessages, lastText);
   };
 
   // Runtime tools added/removed dynamically by plugins at runtime
@@ -1926,6 +2055,151 @@ export function createAgent(options: AgentOptions): Agent {
   }
 
   /**
+   * Compact a message list when the configured context policy requires it.
+   *
+   * Shared by the run-boundary load (`buildMessages`) and the streaming tool
+   * loop (`createStreamingCompactionState`) so long runs cannot grow past the
+   * compaction threshold between model generations. Emits the PreCompact and
+   * PostCompact hooks around the compaction.
+   *
+   * @returns The (possibly compacted) messages and whether compaction ran
+   */
+  async function compactMessagesIfNeeded(
+    messages: ModelMessage[],
+    genOptions: GenerateOptions,
+    threadId: string | undefined,
+  ): Promise<{ compacted: boolean; messages: ModelMessage[] }> {
+    // Skip compaction if _skipCompaction flag is set (used during summary generation)
+    if (!options.contextManager || genOptions._skipCompaction) {
+      return { compacted: false, messages };
+    }
+
+    const contextManager = options.contextManager;
+    const { trigger, reason } = contextManager.shouldCompact(messages);
+    if (!trigger || !reason) {
+      return { compacted: false, messages };
+    }
+
+    const compactionTelemetry = buildExecutionTelemetryFromIds({
+      runId: genOptions._runId ?? createRunId(),
+      threadId,
+      requestedModel: options.model,
+    });
+    // Calculate token count before compaction
+    const tokensBefore = contextManager.tokenCounter.countMessages(messages);
+    const messagesBefore = messages.length;
+
+    // Emit PreCompact hook
+    const preCompactHooks = effectiveHooks?.PreCompact ?? [];
+    if (preCompactHooks.length > 0) {
+      const preCompactInput: import("./types.js").PreCompactInput = {
+        hook_event_name: "PreCompact",
+        session_id: genOptions.threadId ?? "default",
+        cwd: process.cwd(),
+        telemetry: compactionTelemetry,
+        message_count: messagesBefore,
+        tokens_before: tokensBefore,
+      };
+      await invokeHooksWithTimeout(preCompactHooks, preCompactInput, null, agent);
+    }
+
+    // Perform compaction
+    const compactionResult = await contextManager.compact(messages, agent, reason);
+
+    // Emit PostCompact hook with metrics
+    const postCompactHooks = effectiveHooks?.PostCompact ?? [];
+    if (postCompactHooks.length > 0) {
+      const postCompactInput: import("./types.js").PostCompactInput = {
+        hook_event_name: "PostCompact",
+        session_id: genOptions.threadId ?? "default",
+        cwd: process.cwd(),
+        telemetry: compactionTelemetry,
+        messages_before: compactionResult.messagesBefore,
+        messages_after: compactionResult.messagesAfter,
+        tokens_before: compactionResult.tokensBefore,
+        tokens_after: compactionResult.tokensAfter,
+        tokens_saved: compactionResult.tokensBefore - compactionResult.tokensAfter,
+      };
+      await invokeHooksWithTimeout(postCompactHooks, postCompactInput, null, agent);
+    }
+
+    return { compacted: true, messages: compactionResult.newMessages };
+  }
+
+  /**
+   * Tracks the durable message base for a streaming tool loop and compacts it
+   * before each model generation that does not have a run-boundary check.
+   *
+   * `buildMessages` already compacts before step 0, so by default the first
+   * step is skipped. Follow-up generations (background-task loops) build their
+   * own message list without going through `buildMessages`, so they pass
+   * `compactFirstStep = true`.
+   *
+   * The tracked `messages` are authoritative for checkpointing: once
+   * `prepareStep` has discarded earlier history, re-deriving the transcript
+   * from `response.messages` would resurrect it. `finalize()` falls back to
+   * the step responses only when no step was ever appended (e.g. a provider
+   * or test double that never invokes `onStepFinish`).
+   */
+  function createStreamingCompactionState(
+    initialMessages: ModelMessage[],
+    genOptions: GenerateOptions,
+    threadId: string | undefined,
+    compactFirstStep = false,
+  ) {
+    let currentMessages: ModelMessage[] = [...initialMessages];
+    let appendedSteps = 0;
+
+    return {
+      prepareStep: async ({
+        messages,
+        stepNumber,
+      }: {
+        messages: ModelMessage[];
+        stepNumber: number;
+      }): Promise<{ messages: ModelMessage[] } | undefined> => {
+        if (stepNumber === 0 && !compactFirstStep) {
+          return undefined;
+        }
+        const compaction = await compactMessagesIfNeeded(messages, genOptions, threadId);
+        if (!compaction.compacted) {
+          return undefined;
+        }
+        currentMessages = compaction.messages;
+        return { messages: compaction.messages };
+      },
+      appendStep(stepResult: {
+        text?: string;
+        response?: { messages?: unknown[] };
+      }): ModelMessage[] {
+        appendedSteps++;
+        currentMessages = appendResponseMessages(
+          currentMessages,
+          stepResult.response?.messages,
+          stepResult.text,
+        );
+        return currentMessages;
+      },
+      /**
+       * Final transcript for persistence. Uses the tracked messages when steps
+       * were appended via `onStepFinish`; otherwise derives them from `steps`.
+       */
+      finalize(
+        steps: Array<{ text?: string; response?: { messages?: unknown[] } }>,
+        fallbackAssistantText?: string,
+      ): ModelMessage[] {
+        if (appendedSteps > 0 || steps.length === 0) {
+          return [...currentMessages];
+        }
+        return buildMessagesFromStepResponses(currentMessages, steps, fallbackAssistantText);
+      },
+      get messages(): ModelMessage[] {
+        return [...currentMessages];
+      },
+    };
+  }
+
+  /**
    * Build the messages array for AI SDK from GenerateOptions.
    * If a checkpoint exists for the threadId, prepends checkpoint messages.
    * If forkSession is specified, creates a new session from the source.
@@ -1968,63 +2242,13 @@ export function createAgent(options: AgentOptions): Agent {
     }
 
     // Apply context compaction if contextManager is configured
-    // Skip compaction if _skipCompaction flag is set (used during summary generation)
-    if (options.contextManager && !genOptions._skipCompaction) {
-      const contextManager = options.contextManager;
+    const compaction = await compactMessagesIfNeeded(
+      messages,
+      genOptions,
+      forkedSessionId ?? genOptions.threadId,
+    );
 
-      // Check if compaction is needed
-      const { trigger, reason } = contextManager.shouldCompact(messages);
-      if (trigger && reason) {
-        const compactionTelemetry = buildExecutionTelemetryFromIds({
-          runId: genOptions._runId ?? createRunId(),
-          threadId: forkedSessionId ?? genOptions.threadId,
-          requestedModel: options.model,
-        });
-        // Calculate token count before compaction
-        const tokensBefore = contextManager.tokenCounter.countMessages(messages);
-        const messagesBefore = messages.length;
-
-        // Emit PreCompact hook
-        const preCompactHooks = effectiveHooks?.PreCompact ?? [];
-        if (preCompactHooks.length > 0) {
-          const preCompactInput: import("./types.js").PreCompactInput = {
-            hook_event_name: "PreCompact",
-            session_id: genOptions.threadId ?? "default",
-            cwd: process.cwd(),
-            telemetry: compactionTelemetry,
-            message_count: messagesBefore,
-            tokens_before: tokensBefore,
-          };
-          await invokeHooksWithTimeout(preCompactHooks, preCompactInput, null, agent);
-        }
-
-        // Perform compaction
-        const compactionResult = await contextManager.compact(messages, agent, reason);
-
-        // Replace messages with compacted version
-        messages.length = 0;
-        messages.push(...compactionResult.newMessages);
-
-        // Emit PostCompact hook with metrics
-        const postCompactHooks = effectiveHooks?.PostCompact ?? [];
-        if (postCompactHooks.length > 0) {
-          const postCompactInput: import("./types.js").PostCompactInput = {
-            hook_event_name: "PostCompact",
-            session_id: genOptions.threadId ?? "default",
-            cwd: process.cwd(),
-            telemetry: compactionTelemetry,
-            messages_before: compactionResult.messagesBefore,
-            messages_after: compactionResult.messagesAfter,
-            tokens_before: compactionResult.tokensBefore,
-            tokens_after: compactionResult.tokensAfter,
-            tokens_saved: compactionResult.tokensBefore - compactionResult.tokensAfter,
-          };
-          await invokeHooksWithTimeout(postCompactHooks, postCompactInput, null, agent);
-        }
-      }
-    }
-
-    return { messages, checkpoint, forkedSessionId };
+    return { messages: compaction.messages, checkpoint, forkedSessionId };
   }
 
   /**
@@ -2602,7 +2826,11 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
             executionBaseTelemetry,
           );
-          const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
+          const activeTools = wrapToolsWithSignalCatching(
+            hookedTools,
+            signalState,
+            options.transformToolError,
+          );
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(
@@ -2625,16 +2853,13 @@ export function createAgent(options: AgentOptions): Agent {
             telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
           };
 
-          // Stop condition: stop when an interrupt signal was caught, OR when
-          // the step count reaches maxSteps (whichever comes first).
-          const signalStopCondition = () => signalState.interrupt != null;
-
           const generationStartTime = Date.now();
           const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
 
           // Execute generation
           const response = await generateText({
             model: retryState.currentModel,
+            experimental_repairToolCall: repairToolCall,
             system: initialParams.system,
             messages: projectMessagesForModel(
               initialParams.messages,
@@ -2648,7 +2873,7 @@ export function createAgent(options: AgentOptions): Agent {
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
             abortSignal: initialParams.abortSignal,
-            stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+            stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
             // Passthrough AI SDK options
             output: effectiveGenOptions.output,
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -2677,11 +2902,15 @@ export function createAgent(options: AgentOptions): Agent {
             // The normal completion path saves messages at the end of generate(),
             // but when interrupted we return early. Without saving here, resume()
             // cannot find the checkpoint (or finds one without messages/interrupt).
+            //
+            // `response.response.messages` only holds the FINAL step's messages;
+            // build from every step so intermediate tool calls/results survive.
             if (checkpointThreadId && options.checkpointer) {
-              const finalMessages = appendResponseMessages(
+              const finalMessages = buildMessagesFromStepResponses(
                 messages,
-                response.response?.messages,
+                response.steps,
                 response.text,
+                response.response?.messages,
               );
               const savedCheckpoint = await saveCheckpoint(
                 checkpointThreadId,
@@ -2774,12 +3003,15 @@ export function createAgent(options: AgentOptions): Agent {
             });
           }
 
-          // Save checkpoint - use forked session ID if forking, otherwise use original threadId
+          // Save checkpoint - use forked session ID if forking, otherwise use original threadId.
+          // `response.response.messages` only holds the FINAL step's messages;
+          // build from every step so intermediate tool calls/results survive.
           if (checkpointThreadId && options.checkpointer) {
-            const finalMessages = appendResponseMessages(
+            const finalMessages = buildMessagesFromStepResponses(
               messages,
-              response.response?.messages,
+              response.steps,
               response.text,
+              response.response?.messages,
             );
             await saveCheckpoint(
               checkpointThreadId,
@@ -2817,7 +3049,7 @@ export function createAgent(options: AgentOptions): Agent {
           }
 
           // --- Background task completion loop ---
-          if (!waitForBackgroundTasks) {
+          if (!waitForBackgroundTasks || signalState.stop) {
             return finalResult;
           }
 
@@ -2829,7 +3061,12 @@ export function createAgent(options: AgentOptions): Agent {
           let lastResult: GenerateResult = finalResult;
           let runningMessages: ModelMessage[] = hasCheckpointing
             ? []
-            : appendResponseMessages(messages, response.response?.messages, finalResult.text);
+            : buildMessagesFromStepResponses(
+                messages,
+                response.steps,
+                finalResult.text,
+                response.response?.messages,
+              );
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
@@ -3173,7 +3410,11 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
             executionBaseTelemetry,
           );
-          const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
+          const activeTools = wrapToolsWithSignalCatching(
+            hookedTools,
+            signalState,
+            options.transformToolError,
+          );
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(
@@ -3196,16 +3437,19 @@ export function createAgent(options: AgentOptions): Agent {
             telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
           };
 
-          // Stop condition: stop when an interrupt signal was caught, OR when
-          // the step count reaches maxSteps.
-          const signalStopCondition = () => signalState.interrupt != null;
           const generationStartTime = Date.now();
           let firstTextDeltaAt: number | undefined;
           const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
+          const streamingCompaction = createStreamingCompactionState(
+            initialParams.messages,
+            effectiveGenOptions,
+            checkpointThreadId,
+          );
 
           // Execute stream
           const response = streamText({
             model: retryState.currentModel,
+            experimental_repairToolCall: repairToolCall,
             system: initialParams.system,
             messages: projectMessagesForModel(
               initialParams.messages,
@@ -3215,11 +3459,15 @@ export function createAgent(options: AgentOptions): Agent {
               initialParams.tools as ToolSet,
               toolExecutionContext,
             ),
+            prepareStep: streamingCompaction.prepareStep,
+            onStepFinish: (stepResult) => {
+              streamingCompaction.appendStep(stepResult);
+            },
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
             abortSignal: initialParams.abortSignal,
-            stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+            stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
             // Passthrough AI SDK options
             output: genOptions.output,
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -3384,6 +3632,26 @@ export function createAgent(options: AgentOptions): Agent {
                 toolName: part.toolName,
                 output: part.output,
               };
+            } else if (part.type === "tool-output-denied") {
+              yield {
+                type: "tool-output-denied",
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+              };
+            } else if (part.type === "tool-error") {
+              // Forward tool failures instead of dropping them. The AI SDK emits
+              // `tool-error` both for invalid tool calls (unknown tool name /
+              // malformed input) and for tool execute() rejections. Swallowing
+              // them left those tool calls permanently unresolved for stream
+              // consumers, which then had to synthesise misleading terminal
+              // errors at end of stream.
+              yield {
+                type: "tool-error",
+                toolCallId: part.toolCallId,
+                toolName: part.toolName,
+                input: part.input,
+                error: part.error,
+              };
             } else if (part.type === "finish") {
               yield {
                 type: "finish",
@@ -3439,16 +3707,13 @@ export function createAgent(options: AgentOptions): Agent {
             steps: mapSteps(steps),
           };
 
-          // Save checkpoint if threadId is provided
+          // Save checkpoint if threadId is provided. The streaming compaction
+          // state is authoritative because prepareStep may have discarded
+          // earlier history mid-run.
           if (checkpointThreadId && options.checkpointer) {
-            const responseMessages = responseMessagesToModelMessages(responseMeta?.messages);
-            const finalMessages =
-              responseMessages.length > 0
-                ? [...messages, ...responseMessages]
-                : buildMessagesFromStepResponses(messages, steps, text);
             await saveCheckpoint(
               checkpointThreadId,
-              finalMessages,
+              streamingCompaction.finalize(steps, text),
               startStep + steps.length,
               telemetry.runId,
             );
@@ -3500,17 +3765,14 @@ export function createAgent(options: AgentOptions): Agent {
           }
 
           // --- Background task completion loop ---
-          if (!waitForBackgroundTasks || signalState.interrupt) {
+          if (!waitForBackgroundTasks || signalState.interrupt || signalState.stop) {
             return;
           }
 
           const hasCheckpointing = !!(effectiveGenOptions.threadId && options.checkpointer);
-          const initialResponseMessages = responseMessagesToModelMessages(responseMeta?.messages);
           let currentMessages: ModelMessage[] = hasCheckpointing
             ? []
-            : initialResponseMessages.length > 0
-              ? [...messages, ...initialResponseMessages]
-              : buildMessagesFromStepResponses(messages, steps, text);
+            : streamingCompaction.finalize(steps, text);
 
           let followUpPrompt = await getNextTaskPrompt();
           while (followUpPrompt !== null) {
@@ -3667,7 +3929,11 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
             executionBaseTelemetry,
           );
-          const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
+          const activeTools = wrapToolsWithSignalCatching(
+            hookedTools,
+            signalState,
+            options.transformToolError,
+          );
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(
@@ -3694,20 +3960,22 @@ export function createAgent(options: AgentOptions): Agent {
           const modelToUse = retryState.currentModel;
           const toolExecutionContext = createToolExecutionContext(options, modelToUse);
 
-          // Stop condition: stop when an interrupt signal was caught, OR when
-          // the step count reaches maxSteps.
-          const signalStopCondition = () => signalState.interrupt != null;
           const generationStartTime = Date.now();
 
-          // Track step count for incremental checkpointing
+          // Track step count and the durable message base for checkpointing.
           let currentStepCount = 0;
-          let streamedMessages: ModelMessage[] = [...initialParams.messages];
+          const streamingCompaction = createStreamingCompactionState(
+            initialParams.messages,
+            effectiveGenOptions,
+            effectiveGenOptions.threadId,
+          );
 
           // Execute streamText OUTSIDE createUIMessageStream so errors propagate
           // to the retry loop (if streamText throws synchronously on creation,
           // e.g. rate limit, the catch block handles retry/fallback).
           const result = streamText({
             model: modelToUse,
+            experimental_repairToolCall: repairToolCall,
             system: initialParams.system,
             messages: projectMessagesForModel(
               initialParams.messages,
@@ -3717,11 +3985,12 @@ export function createAgent(options: AgentOptions): Agent {
               initialParams.tools as ToolSet,
               toolExecutionContext,
             ),
+            prepareStep: streamingCompaction.prepareStep,
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
             abortSignal: initialParams.abortSignal,
-            stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+            stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
             // Passthrough AI SDK options
             output: effectiveGenOptions.output,
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -3731,32 +4000,24 @@ export function createAgent(options: AgentOptions): Agent {
             // Preserve AI SDK 6 behavior: allow system-role messages within the
             // message history (AI SDK 7 rejects them by default).
             allowSystemInMessages: true,
-            // Incremental checkpointing: save after each step if enabled
-            onStepFinish: effectiveGenOptions.checkpointAfterToolCall
-              ? async (stepResult) => {
-                  if (effectiveGenOptions.threadId && options.checkpointer) {
-                    currentStepCount++;
-                    const stepResponseMessages = responseMessagesToModelMessages(
-                      stepResult.response?.messages,
-                    );
-                    streamedMessages =
-                      stepResponseMessages.length > 0
-                        ? [...streamedMessages, ...stepResponseMessages]
-                        : stepResult.text
-                          ? [
-                              ...streamedMessages,
-                              { role: "assistant" as const, content: stepResult.text },
-                            ]
-                          : streamedMessages;
-                    await saveCheckpoint(
-                      effectiveGenOptions.threadId!,
-                      streamedMessages,
-                      startStep + currentStepCount,
-                      effectiveGenOptions._runId,
-                    );
-                  }
-                }
-              : undefined,
+            // Keep the message base current for final persistence, and save
+            // intermediate tool steps when requested.
+            onStepFinish: async (stepResult) => {
+              currentStepCount++;
+              const currentMessages = streamingCompaction.appendStep(stepResult);
+              if (
+                effectiveGenOptions.checkpointAfterToolCall &&
+                effectiveGenOptions.threadId &&
+                options.checkpointer
+              ) {
+                await saveCheckpoint(
+                  effectiveGenOptions.threadId,
+                  currentMessages,
+                  startStep + currentStepCount,
+                  effectiveGenOptions._runId,
+                );
+              }
+            },
             // Save checkpoint and emit PostGenerate hook after completion
             onFinish: async (finishResult) => {
               // Update context manager with actual usage if available
@@ -3768,15 +4029,12 @@ export function createAgent(options: AgentOptions): Agent {
                 });
               }
 
+              // The streaming state is authoritative: prepareStep may have
+              // discarded earlier history mid-run.
               if (effectiveGenOptions.threadId && options.checkpointer) {
-                const finalMessages = buildMessagesFromStepResponses(
-                  initialParams.messages,
-                  finishResult.steps,
-                  finishResult.text,
-                );
                 await saveCheckpoint(
-                  effectiveGenOptions.threadId!,
-                  finalMessages,
+                  effectiveGenOptions.threadId,
+                  streamingCompaction.finalize(finishResult.steps, finishResult.text),
                   startStep + finishResult.steps.length,
                   effectiveGenOptions._runId,
                 );
@@ -3824,19 +4082,18 @@ export function createAgent(options: AgentOptions): Agent {
 
               // Wait for initial generation to complete
               await result.text;
-              const resultResponse = await (result.response ?? Promise.resolve(undefined));
 
               // --- Background task completion loop ---
-              if (waitForBackgroundTasks) {
+              if (waitForBackgroundTasks && !signalState.stop) {
                 // Track accumulated steps for checkpoint saves
                 const initialSteps = await result.steps;
                 let accumulatedStepCount = initialSteps.length;
                 let followUpBaseOptions = effectiveGenOptions;
 
-                let currentMessages: ModelMessage[] = [
-                  ...messages,
-                  ...responseMessagesToModelMessages(resultResponse?.messages),
-                ];
+                let currentMessages: ModelMessage[] = streamingCompaction.finalize(
+                  initialSteps,
+                  await result.text,
+                );
 
                 let followUpPrompt = await getNextTaskPrompt();
                 while (followUpPrompt !== null) {
@@ -3849,6 +4106,9 @@ export function createAgent(options: AgentOptions): Agent {
                       { role: "user" as const, content: followUpPrompt },
                     ],
                   };
+                  let followUpStreamingCompaction:
+                    | ReturnType<typeof createStreamingCompactionState>
+                    | undefined;
                   const {
                     result: followUpResult,
                     effectiveOptions: followUpEffectiveOptions,
@@ -3857,6 +4117,15 @@ export function createAgent(options: AgentOptions): Agent {
                     followUpRequestOptions,
                     (requestOptions, currentModel) => {
                       const followUpMessages = requestOptions.messages ?? [];
+                      // Follow-ups build their own message list without going
+                      // through buildMessages, so compact before the first step.
+                      const compaction = createStreamingCompactionState(
+                        followUpMessages,
+                        requestOptions,
+                        requestOptions.threadId,
+                        true,
+                      );
+                      followUpStreamingCompaction = compaction;
                       const followUpTelemetry = buildExecutionTelemetryFromIds({
                         runId: requestOptions._runId ?? executionBaseTelemetry.runId,
                         threadId: requestOptions.threadId,
@@ -3870,6 +4139,7 @@ export function createAgent(options: AgentOptions): Agent {
                       const activeFollowUpTools = wrapToolsWithSignalCatching(
                         followUpTools,
                         signalState,
+                        options.transformToolError,
                       );
                       const followUpPromptContext = buildPromptContext(
                         requestOptions,
@@ -3883,6 +4153,7 @@ export function createAgent(options: AgentOptions): Agent {
 
                       return streamText({
                         model: currentModel,
+                        experimental_repairToolCall: repairToolCall,
                         system: getSystemPrompt(followUpPromptContext),
                         messages: projectMessagesForModel(
                           followUpMessages,
@@ -3892,11 +4163,15 @@ export function createAgent(options: AgentOptions): Agent {
                           activeFollowUpTools as ToolSet,
                           toolExecutionContext,
                         ),
+                        prepareStep: compaction.prepareStep,
+                        onStepFinish: (stepResult) => {
+                          compaction.appendStep(stepResult);
+                        },
                         maxOutputTokens: requestOptions.maxTokens,
                         temperature: requestOptions.temperature,
                         stopSequences: requestOptions.stopSequences,
                         abortSignal: requestOptions.signal,
-                        stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                        stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
                         output: requestOptions.output,
                         // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                         providerOptions: requestOptions.providerOptions as any,
@@ -3918,18 +4193,22 @@ export function createAgent(options: AgentOptions): Agent {
                   const followUpResponse = await (followUpResult.response ??
                     Promise.resolve(undefined));
 
-                  currentMessages = [
-                    ...currentMessages,
-                    { role: "user" as const, content: followUpPrompt },
-                    ...(responseMessagesToModelMessages(followUpResponse?.messages).length > 0
-                      ? responseMessagesToModelMessages(followUpResponse?.messages)
-                      : followUpText
-                        ? [{ role: "assistant" as const, content: followUpText }]
-                        : []),
-                  ];
-
+                  // The follow-up's compaction state is authoritative for the
+                  // transcript (it may have compacted mid-run).
                   // --- Post-completion bookkeeping for follow-ups ---
                   const followUpSteps = await followUpResult.steps;
+
+                  // The follow-up's compaction state is authoritative for the
+                  // transcript (it may have compacted mid-run).
+                  currentMessages = followUpStreamingCompaction
+                    ? followUpStreamingCompaction.finalize(followUpSteps, followUpText)
+                    : [
+                        ...currentMessages,
+                        { role: "user" as const, content: followUpPrompt },
+                        ...(followUpText
+                          ? [{ role: "assistant" as const, content: followUpText }]
+                          : []),
+                      ];
                   accumulatedStepCount += followUpSteps.length;
 
                   // Checkpoint save
@@ -4095,7 +4374,11 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
             executionBaseTelemetry,
           );
-          const activeTools = wrapToolsWithSignalCatching(hookedTools, signalState);
+          const activeTools = wrapToolsWithSignalCatching(
+            hookedTools,
+            signalState,
+            options.transformToolError,
+          );
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(
@@ -4118,19 +4401,21 @@ export function createAgent(options: AgentOptions): Agent {
             telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
           };
 
-          // Track step count for incremental checkpointing
+          // Track step count and the durable message base for checkpointing.
           let currentStepCount = 0;
-          let streamedMessages: ModelMessage[] = [...initialParams.messages];
+          const streamingCompaction = createStreamingCompactionState(
+            initialParams.messages,
+            effectiveGenOptions,
+            effectiveGenOptions.threadId,
+          );
 
-          // Stop condition: stop when an interrupt signal was caught, OR when
-          // the step count reaches maxSteps.
-          const signalStopCondition = () => signalState.interrupt != null;
           const generationStartTime = Date.now();
           const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
 
           // Execute stream
           const result = streamText({
             model: retryState.currentModel,
+            experimental_repairToolCall: repairToolCall,
             system: initialParams.system,
             messages: projectMessagesForModel(
               initialParams.messages,
@@ -4140,11 +4425,12 @@ export function createAgent(options: AgentOptions): Agent {
               initialParams.tools as ToolSet,
               toolExecutionContext,
             ),
+            prepareStep: streamingCompaction.prepareStep,
             maxOutputTokens: initialParams.maxTokens,
             temperature: initialParams.temperature,
             stopSequences: initialParams.stopSequences,
             abortSignal: initialParams.abortSignal,
-            stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+            stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
             // Passthrough AI SDK options
             output: effectiveGenOptions.output,
             // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -4154,32 +4440,24 @@ export function createAgent(options: AgentOptions): Agent {
             // Preserve AI SDK 6 behavior: allow system-role messages within the
             // message history (AI SDK 7 rejects them by default).
             allowSystemInMessages: true,
-            // Incremental checkpointing: save after each step if enabled
-            onStepFinish: effectiveGenOptions.checkpointAfterToolCall
-              ? async (stepResult) => {
-                  if (effectiveGenOptions.threadId && options.checkpointer) {
-                    currentStepCount++;
-                    const stepResponseMessages = responseMessagesToModelMessages(
-                      stepResult.response?.messages,
-                    );
-                    streamedMessages =
-                      stepResponseMessages.length > 0
-                        ? [...streamedMessages, ...stepResponseMessages]
-                        : stepResult.text
-                          ? [
-                              ...streamedMessages,
-                              { role: "assistant" as const, content: stepResult.text },
-                            ]
-                          : streamedMessages;
-                    await saveCheckpoint(
-                      effectiveGenOptions.threadId!,
-                      streamedMessages,
-                      startStep + currentStepCount,
-                      effectiveGenOptions._runId,
-                    );
-                  }
-                }
-              : undefined,
+            // Keep the message base current for final persistence, and save
+            // intermediate tool steps when requested.
+            onStepFinish: async (stepResult) => {
+              currentStepCount++;
+              const currentMessages = streamingCompaction.appendStep(stepResult);
+              if (
+                effectiveGenOptions.checkpointAfterToolCall &&
+                effectiveGenOptions.threadId &&
+                options.checkpointer
+              ) {
+                await saveCheckpoint(
+                  effectiveGenOptions.threadId,
+                  currentMessages,
+                  startStep + currentStepCount,
+                  effectiveGenOptions._runId,
+                );
+              }
+            },
             // Save checkpoint and invoke unified PostGenerate hook after completion
             onFinish: async (finishResult) => {
               // Update context manager with actual usage if available
@@ -4191,15 +4469,12 @@ export function createAgent(options: AgentOptions): Agent {
                 });
               }
 
+              // The streaming state is authoritative: prepareStep may have
+              // discarded earlier history mid-run.
               if (effectiveGenOptions.threadId && options.checkpointer) {
-                const finalMessages = buildMessagesFromStepResponses(
-                  initialParams.messages,
-                  finishResult.steps,
-                  finishResult.text,
-                );
                 await saveCheckpoint(
-                  effectiveGenOptions.threadId!,
-                  finalMessages,
+                  effectiveGenOptions.threadId,
+                  streamingCompaction.finalize(finishResult.steps, finishResult.text),
                   startStep + finishResult.steps.length,
                   effectiveGenOptions._runId,
                 );
@@ -4402,19 +4677,21 @@ export function createAgent(options: AgentOptions): Agent {
                   effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
               };
 
-              // Track step count for incremental checkpointing
+              // Track step count and the durable message base for checkpointing.
               let currentStepCount = 0;
-              let streamedMessages: ModelMessage[] = [...initialParams.messages];
+              const streamingCompaction = createStreamingCompactionState(
+                initialParams.messages,
+                effectiveGenOptions,
+                effectiveGenOptions.threadId,
+              );
 
-              // Stop condition: stop when a flow-control signal was caught, OR when
-              // the step count reaches maxSteps.
-              const signalStopCondition = () => signalState.interrupt != null;
               const generationStartTime = Date.now();
               const toolExecutionContext = createToolExecutionContext(options, modelToUse);
 
               // Execute stream
               const result = streamText({
                 model: modelToUse,
+                experimental_repairToolCall: repairToolCall,
                 system: initialParams.system,
                 messages: projectMessagesForModel(
                   initialParams.messages,
@@ -4424,11 +4701,12 @@ export function createAgent(options: AgentOptions): Agent {
                   initialParams.tools as ToolSet,
                   toolExecutionContext,
                 ),
+                prepareStep: streamingCompaction.prepareStep,
                 maxOutputTokens: initialParams.maxTokens,
                 temperature: initialParams.temperature,
                 stopSequences: initialParams.stopSequences,
                 abortSignal: initialParams.abortSignal,
-                stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
                 // Passthrough AI SDK options
                 output: effectiveGenOptions.output,
                 // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
@@ -4438,32 +4716,24 @@ export function createAgent(options: AgentOptions): Agent {
                 // Preserve AI SDK 6 behavior: allow system-role messages within the
                 // message history (AI SDK 7 rejects them by default).
                 allowSystemInMessages: true,
-                // Incremental checkpointing: save after each step if enabled
-                onStepFinish: effectiveGenOptions.checkpointAfterToolCall
-                  ? async (stepResult) => {
-                      if (effectiveGenOptions.threadId && options.checkpointer) {
-                        currentStepCount++;
-                        const stepResponseMessages = responseMessagesToModelMessages(
-                          stepResult.response?.messages,
-                        );
-                        streamedMessages =
-                          stepResponseMessages.length > 0
-                            ? [...streamedMessages, ...stepResponseMessages]
-                            : stepResult.text
-                              ? [
-                                  ...streamedMessages,
-                                  { role: "assistant" as const, content: stepResult.text },
-                                ]
-                              : streamedMessages;
-                        await saveCheckpoint(
-                          effectiveGenOptions.threadId!,
-                          streamedMessages,
-                          startStep + currentStepCount,
-                          effectiveGenOptions._runId,
-                        );
-                      }
-                    }
-                  : undefined,
+                // Keep the message base current for final persistence, and save
+                // intermediate tool steps when requested.
+                onStepFinish: async (stepResult) => {
+                  currentStepCount++;
+                  const currentMessages = streamingCompaction.appendStep(stepResult);
+                  if (
+                    effectiveGenOptions.checkpointAfterToolCall &&
+                    effectiveGenOptions.threadId &&
+                    options.checkpointer
+                  ) {
+                    await saveCheckpoint(
+                      effectiveGenOptions.threadId,
+                      currentMessages,
+                      startStep + currentStepCount,
+                      effectiveGenOptions._runId,
+                    );
+                  }
+                },
                 // Save checkpoint and invoke unified PostGenerate hook after completion
                 onFinish: async (finishResult) => {
                   // Update context manager with actual usage if available
@@ -4475,15 +4745,12 @@ export function createAgent(options: AgentOptions): Agent {
                     });
                   }
 
+                  // The streaming state is authoritative: prepareStep may have
+                  // discarded earlier history mid-run.
                   if (effectiveGenOptions.threadId && options.checkpointer) {
-                    const finalMessages = buildMessagesFromStepResponses(
-                      initialParams.messages,
-                      finishResult.steps,
-                      finishResult.text,
-                    );
                     await saveCheckpoint(
-                      effectiveGenOptions.threadId!,
-                      finalMessages,
+                      effectiveGenOptions.threadId,
+                      streamingCompaction.finalize(finishResult.steps, finishResult.text),
                       startStep + finishResult.steps.length,
                       effectiveGenOptions._runId,
                     );
@@ -4529,7 +4796,6 @@ export function createAgent(options: AgentOptions): Agent {
 
               // Wait for initial generation to complete
               await result.text;
-              const resultResponse = await (result.response ?? Promise.resolve(undefined));
 
               // Save pending interrupt to checkpoint (mirrors stream() pattern)
               if (signalState.interrupt && effectiveGenOptions.threadId && options.checkpointer) {
@@ -4566,16 +4832,16 @@ export function createAgent(options: AgentOptions): Agent {
               }
 
               // --- Background task completion loop (streamDataResponse) ---
-              if (waitForBackgroundTasks && !signalState.interrupt) {
+              if (waitForBackgroundTasks && !signalState.interrupt && !signalState.stop) {
                 // Track accumulated steps for checkpoint saves
                 const initialSteps = await result.steps;
                 let accumulatedStepCount = initialSteps.length;
                 let followUpBaseOptions = effectiveGenOptions;
 
-                let currentMessages: ModelMessage[] = [
-                  ...messages,
-                  ...responseMessagesToModelMessages(resultResponse?.messages),
-                ];
+                let currentMessages: ModelMessage[] = streamingCompaction.finalize(
+                  initialSteps,
+                  await result.text,
+                );
 
                 let followUpPrompt = await getNextTaskPrompt();
                 while (followUpPrompt !== null) {
@@ -4588,6 +4854,9 @@ export function createAgent(options: AgentOptions): Agent {
                       { role: "user" as const, content: followUpPrompt },
                     ],
                   };
+                  let followUpStreamingCompaction:
+                    | ReturnType<typeof createStreamingCompactionState>
+                    | undefined;
                   const {
                     result: followUpResult,
                     effectiveOptions: followUpEffectiveOptions,
@@ -4596,6 +4865,15 @@ export function createAgent(options: AgentOptions): Agent {
                     followUpRequestOptions,
                     (requestOptions, currentModel) => {
                       const followUpMessages = requestOptions.messages ?? [];
+                      // Follow-ups build their own message list without going
+                      // through buildMessages, so compact before the first step.
+                      const compaction = createStreamingCompactionState(
+                        followUpMessages,
+                        requestOptions,
+                        requestOptions.threadId,
+                        true,
+                      );
+                      followUpStreamingCompaction = compaction;
                       const followUpTelemetry = buildExecutionTelemetryFromIds({
                         runId: requestOptions._runId ?? executionBaseTelemetry.runId,
                         threadId: requestOptions.threadId,
@@ -4616,6 +4894,7 @@ export function createAgent(options: AgentOptions): Agent {
                       const activeFollowUpTools = wrapToolsWithSignalCatching(
                         requestScopedFollowUpTools,
                         signalState,
+                        options.transformToolError,
                       );
                       const followUpPromptContext = buildPromptContext(
                         requestOptions,
@@ -4629,6 +4908,7 @@ export function createAgent(options: AgentOptions): Agent {
 
                       return streamText({
                         model: currentModel,
+                        experimental_repairToolCall: repairToolCall,
                         system: getSystemPrompt(followUpPromptContext),
                         messages: projectMessagesForModel(
                           followUpMessages,
@@ -4638,11 +4918,15 @@ export function createAgent(options: AgentOptions): Agent {
                           activeFollowUpTools as ToolSet,
                           toolExecutionContext,
                         ),
+                        prepareStep: compaction.prepareStep,
+                        onStepFinish: (stepResult) => {
+                          compaction.appendStep(stepResult);
+                        },
                         maxOutputTokens: requestOptions.maxTokens,
                         temperature: requestOptions.temperature,
                         stopSequences: requestOptions.stopSequences,
                         abortSignal: requestOptions.signal,
-                        stopWhen: [signalStopCondition, stepCountIs(maxSteps)],
+                        stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
                         output: requestOptions.output,
                         // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
                         providerOptions: requestOptions.providerOptions as any,
@@ -4664,18 +4948,22 @@ export function createAgent(options: AgentOptions): Agent {
                   const followUpResponse = await (followUpResult.response ??
                     Promise.resolve(undefined));
 
-                  currentMessages = [
-                    ...currentMessages,
-                    { role: "user" as const, content: followUpPrompt },
-                    ...(responseMessagesToModelMessages(followUpResponse?.messages).length > 0
-                      ? responseMessagesToModelMessages(followUpResponse?.messages)
-                      : followUpText
-                        ? [{ role: "assistant" as const, content: followUpText }]
-                        : []),
-                  ];
-
+                  // The follow-up's compaction state is authoritative for the
+                  // transcript (it may have compacted mid-run).
                   // --- Post-completion bookkeeping for follow-ups ---
                   const followUpSteps = await followUpResult.steps;
+
+                  // The follow-up's compaction state is authoritative for the
+                  // transcript (it may have compacted mid-run).
+                  currentMessages = followUpStreamingCompaction
+                    ? followUpStreamingCompaction.finalize(followUpSteps, followUpText)
+                    : [
+                        ...currentMessages,
+                        { role: "user" as const, content: followUpPrompt },
+                        ...(followUpText
+                          ? [{ role: "assistant" as const, content: followUpText }]
+                          : []),
+                      ];
                   accumulatedStepCount += followUpSteps.length;
 
                   // Checkpoint save

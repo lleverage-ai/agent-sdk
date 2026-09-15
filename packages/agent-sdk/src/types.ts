@@ -181,12 +181,44 @@ export interface ExtendedToolExecutionOptions extends ToolExecutionOptions<unkno
   interrupt: InterruptFunction;
 
   /**
+   * Stop the current generation after this tool step completes.
+   *
+   * Unlike {@link ExtendedToolExecutionOptions.interrupt}, this does not create
+   * resumable state or request user input; the turn simply ends once the
+   * current step's tool results are recorded, and any pending background-task
+   * follow-up loop is skipped. Use it for terminal presentation tools (for
+   * example rendering a set of buttons) whose result completes the turn and
+   * where another model call would only produce redundant text.
+   *
+   * Always available when the tool runs inside an agent generation.
+   */
+  stop?: () => void;
+
+  /**
    * Task manager for background task tracking.
    * Available when running within an agent context.
    * Used by bash tool for run_in_background support.
    */
   taskManager?: import("./task-manager.js").TaskManager;
 }
+
+/**
+ * Transform applied to tool failures before the AI SDK records them.
+ *
+ * Receives the original error thrown by a tool's `execute()` (or, for tool
+ * calls that fail before execution, the AI SDK's `NoSuchToolError` /
+ * `InvalidToolInputError`) and returns the value that should be fed to the
+ * model in the next step and persisted in checkpoints. The original error is
+ * still available in-process for logging.
+ *
+ * @param error - The original tool failure
+ * @param context - The tool the failure belongs to
+ * @returns The sanitised error (or any value) to surface to the model
+ *
+ * @see {@link AgentOptions.transformToolError}
+ * @category Types
+ */
+export type ToolErrorTransform = (error: unknown, context: { toolName: string }) => unknown;
 
 // =============================================================================
 // Streaming Types
@@ -388,6 +420,53 @@ export type AgentUIMessage = UIMessage<AgentDataTypes>;
 export interface AgentOptions {
   /** The AI model to use for generation */
   model: LanguageModel;
+
+  /**
+   * Optional boundary transform for tool failures.
+   *
+   * When a tool's `execute()` rejects, or a tool call fails before execution
+   * (unknown tool name, invalid input), the AI SDK converts the error into a
+   * tool-error result whose message is fed to the model on the next step and
+   * stored in checkpoints. This hook runs first, so consumers can apply their
+   * own sanitisation policy (strip stack traces, internal hostnames, secrets)
+   * without losing the original in-process cause for logging.
+   *
+   * The returned value replaces the error. Return the input unchanged to keep
+   * the default behaviour for a given tool.
+   *
+   * @example
+   * ```typescript
+   * const agent = createAgent({
+   *   model,
+   *   transformToolError: (error, { toolName }) => {
+   *     logger.error("tool failed", { toolName, error });
+   *     return new Error(`Tool '${toolName}' failed. Please try a different approach.`);
+   *   },
+   * });
+   * ```
+   *
+   * @defaultValue undefined (errors are surfaced unchanged)
+   */
+  transformToolError?: ToolErrorTransform;
+
+  /**
+   * Whether to re-route direct calls to discoverable proxy tools through
+   * `call_tool`.
+   *
+   * When `toolLoading` defers tools behind `search_tools` / `call_tool`, models
+   * sometimes emit the deferred tool's qualified name directly instead of
+   * calling `call_tool`. By default the SDK repairs such calls (via the AI
+   * SDK's `repairToolCall` hook) into an equivalent `call_tool` invocation so
+   * they pass through the normal validation and approval pipeline instead of
+   * failing with `NoSuchToolError`. Only exact, currently discoverable tool
+   * names with object-shaped JSON input are repaired.
+   *
+   * Set to `false` to disable the repair and let the model see the original
+   * unknown-tool error.
+   *
+   * @defaultValue true
+   */
+  repairDiscoveredToolCalls?: boolean;
 
   /**
    * Declares multimodal input support for the active model.
@@ -1923,6 +2002,39 @@ export interface GenerateOptions {
   checkpointAfterToolCall?: boolean;
 
   /**
+   * Cooperative pause hook evaluated as a stop condition after each completed
+   * step (model generation + tool executions).
+   *
+   * When it returns `true`, the generation loop stops cleanly at the step
+   * boundary instead of starting the next model call. Combined with
+   * {@link GenerateOptions.checkpointAfterToolCall}, the last completed step is
+   * already durably checkpointed when the stream ends, so a later call for the
+   * same `threadId` continues from that boundary. This is the primitive for
+   * draining in-flight runs before a process shuts down, or for bounding a run
+   * to a fixed number of steps.
+   *
+   * The final step's `finishReason` distinguishes the two stop cases: a paused
+   * boundary reports `tool-calls` (the model still wanted tools), while a
+   * naturally finished turn reports `stop`.
+   *
+   * @defaultValue undefined (never pause)
+   *
+   * @example
+   * ```typescript
+   * let draining = false;
+   * process.on("SIGTERM", () => { draining = true; });
+   *
+   * const stream = await agent.stream({
+   *   prompt,
+   *   threadId,
+   *   checkpointAfterToolCall: true,
+   *   shouldStopAfterStep: () => draining,
+   * });
+   * ```
+   */
+  shouldStopAfterStep?: () => boolean;
+
+  /**
    * Per-generation instruction layers to expose to the prompt builder.
    *
    * These are appended after any agent-level `instructionLayers`, while still
@@ -2392,6 +2504,13 @@ export type StreamPart =
   | { type: "tool-input-end"; toolCallId: string; toolName?: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
   | { type: "tool-result"; toolCallId: string; toolName: string; output: unknown }
+  // Emitted when a tool call fails: either `execute()` rejected, or the call
+  // was invalid before execution (unknown tool name, malformed input). The
+  // model still receives the failure and may continue; consumers need this
+  // part to resolve the matching `tool-call` instead of treating it as lost.
+  | { type: "tool-error"; toolCallId: string; toolName: string; input?: unknown; error: unknown }
+  // Emitted when a tool call that required approval was denied.
+  | { type: "tool-output-denied"; toolCallId: string; toolName: string }
   | { type: "finish"; finishReason: FinishReason; usage?: LanguageModelUsage }
   | { type: "error"; error: Error }
   // Lifecycle events. A "turn" is one round-trip to the model (one assistant

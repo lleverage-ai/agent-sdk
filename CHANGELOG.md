@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+This release upstreams the behaviour the Lleverage platform had been carrying
+as a `pnpm patch` against the published `0.1.0-alpha.9` build, so consumers
+no longer need to patch `dist/`.
+
+### Added
+
+- Added `AgentOptions.transformToolError`, a boundary hook applied to tool
+  failures before the AI SDK records them. It runs for `execute()` rejections
+  and for tool calls that fail before execution (unknown tool name, invalid
+  input), so consumers can sanitise what the model sees and what checkpoints
+  persist without losing the original in-process error. Exported the
+  `ToolErrorTransform` type.
+- Added `tool-error` and `tool-output-denied` variants to `StreamPart`.
+  `agent.stream()` previously dropped these AI SDK parts, leaving the matching
+  `tool-call` permanently unresolved for consumers, who then had to synthesise
+  misleading terminal errors at end of stream.
+- Added automatic repair of direct calls to discoverable proxy tools. When a
+  model emits a deferred tool's qualified name instead of calling `call_tool`,
+  the SDK now re-routes the call through `call_tool` (via the AI SDK
+  `repairToolCall` hook), preserving the tool call id and sending it through
+  the normal validation/approval pipeline. Only exact, currently discoverable
+  names with object-shaped JSON input are repaired. Disable per agent with
+  `AgentOptions.repairDiscoveredToolCalls: false` or globally with
+  `AGENT_SDK_DISABLE_TOOL_CALL_REPAIR=true` (the option wins).
+- Added `ExtendedToolExecutionOptions.stop()`. A tool can call it to end the
+  turn cleanly after its step completes (no further model call, background
+  follow-up loop skipped), for terminal presentation tools such as rendering
+  buttons.
+- Added `GenerateOptions.shouldStopAfterStep`, a cooperative pause hook
+  evaluated as a stop condition after every completed step. Combined with
+  `checkpointAfterToolCall`, it lets a host drain in-flight runs at a durable
+  step boundary (e.g. on `SIGTERM`) and resume them later on the same
+  `threadId`.
+- Added mid-run context compaction for streaming generations. `stream()`,
+  `streamResponse()`, `streamDataResponse()` and their background-task
+  follow-ups now pass a `prepareStep` hook that re-checks the context budget
+  before every model call after the first, so long tool loops compact
+  mid-run instead of only at run boundaries. `PreCompact`/`PostCompact` hooks
+  and `onCompact` fire for mid-run compactions too.
+- Added `SkillDefinition.discoverable` (default `true`). Skills registered
+  with `discoverable: false` are hidden from the `skill` tool catalogue but can
+  still be loaded by name (explicit-only skills). Added
+  `SkillRegistry.hasUnloadedExplicitOnlySkills()` and
+  `SkillRegistry.anySkillConsumesArgs()`.
+- Added `toSkillRuntimeName()`, which slugs arbitrary skill names into a stable
+  tool-safe identifier (with an FNV-1a `skill--<hash>` fallback for names that
+  contain no usable characters). `SkillRegistry.get()`/`load()` accept either
+  the registered name or its unambiguous slug, so models can use the name they
+  see in the catalogue.
+- Added `SkillToolOptions.continuationInstruction` (default
+  `DEFAULT_SKILL_CONTINUATION_INSTRUCTION`, pass `false` to disable). The
+  `skill` tool appends it to successful load results so the model continues the
+  task instead of stopping after loading a skill.
+
+### Changed
+
+- The `skill` tool only advertises an `args` input when at least one
+  registered skill has function-based instructions that consume arguments, and
+  its description explains that explicit-only skills are still loadable when
+  the discoverable catalogue is empty.
+- `ContextManager.getBudget()` now uses `max(actual usage, estimate)` instead
+  of trusting the last reported usage outright. Actual usage describes the
+  *previous* model input; the current message list may already contain newer
+  tool results, so stale usage could hide growth between generations. Usage
+  is also cleared after a successful compaction so the next budget check
+  estimates the compacted transcript rather than comparing against the
+  pre-compaction total.
+
+### Fixed
+
+- `createApproximateTokenCounter()` now counts tool result outputs. The
+  `toolName` branch matched tool-result parts before the `output`/`result`
+  branch, so tool results were counted as just their tool name and the output
+  was dropped, undercounting tool-heavy transcripts several-fold and preventing
+  compaction from ever triggering.
+- `generate()` now builds checkpoints from every step's response messages
+  rather than the top-level `response.messages`, which the AI SDK populates
+  with only the *final* step. Multi-step tool runs no longer lose their
+  intermediate tool calls and results from persisted transcripts.
+- Streaming checkpoints (`stream()`, `streamResponse()`, `streamDataResponse()`)
+  are now built from the tracked, possibly compacted, message base instead of
+  being re-derived from the response, which would resurrect history that
+  mid-run compaction had discarded.
+
 ## [0.1.0-alpha.9] - 2026-06-30
 
 ### Changed
