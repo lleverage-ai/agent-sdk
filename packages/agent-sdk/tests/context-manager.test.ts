@@ -284,6 +284,26 @@ describe("createApproximateTokenCounter", () => {
       expect(counter.countMessages(messages)).toBeGreaterThan(0);
     });
 
+    it("should not throw on bigint or cyclic tool payloads", () => {
+      // JSON.stringify throws for both. Tool payloads are `unknown`, and the
+      // cache-key hash runs before counting, so neither path may throw.
+      const cyclic: Record<string, unknown> = { name: "loop" };
+      cyclic.self = cyclic;
+      const messages = [
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "c1", toolName: "big", input: { n: 10n } }],
+        },
+        {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: "c1", toolName: "big", output: cyclic }],
+        },
+      ] as unknown as ModelMessage[];
+
+      expect(() => counter.countMessages(messages)).not.toThrow();
+      expect(counter.countMessages(messages)).toBeGreaterThan(0);
+    });
+
     it("should handle empty message array", () => {
       expect(counter.countMessages([])).toBe(0);
     });
@@ -316,6 +336,48 @@ describe("createCustomTokenCounter", () => {
       {
         role: "assistant",
         content: [{ type: "tool-call", toolCallId: "c2", toolName: "noop", input: undefined }],
+      },
+    ] as unknown as ModelMessage[];
+
+    expect(() => counter.countMessages(messages)).not.toThrow();
+    for (const call of customFn.mock.calls) {
+      expect(typeof call[0]).toBe("string");
+    }
+  });
+
+  it("should count tool-result outputs at their full size", () => {
+    // Same shape as the LLE-11630 regression for the approximate counter:
+    // tool-result parts carry BOTH toolName and output, and matching on
+    // toolName first drops the output.
+    const customFn = vi.fn((text: string) => text.length);
+    const counter = createCustomTokenCounter({ countFn: customFn, messageOverhead: 0 });
+
+    const output = "x".repeat(50_000);
+    const messages = [
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "c1", toolName: "bash", output }],
+      },
+    ] as unknown as ModelMessage[];
+
+    expect(counter.countMessages(messages)).toBeGreaterThanOrEqual(50_000);
+    expect(customFn).toHaveBeenCalledWith(output);
+  });
+
+  it("should not throw on bigint or cyclic tool payloads", () => {
+    const customFn = vi.fn((text: string) => text.length);
+    const counter = createCustomTokenCounter({ countFn: customFn });
+
+    const cyclic: Record<string, unknown> = { name: "loop" };
+    cyclic.self = cyclic;
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "c1", toolName: "big", input: { n: 10n } }],
+      },
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "c1", toolName: "big", output: cyclic }],
       },
     ] as unknown as ModelMessage[];
 

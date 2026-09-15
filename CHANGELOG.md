@@ -93,9 +93,15 @@ no longer need to patch `dist/`.
   payload. They were keyed on the tool name alone, so a large result from a
   tool reused the cached count of an earlier small result from the same tool.
 - `createApproximateTokenCounter()` and `createCustomTokenCounter()` no longer
-  throw on a tool result or tool call whose payload is `undefined` (a tool that
-  returns nothing). `JSON.stringify(undefined)` is `undefined`, which reached
-  the character counter.
+  throw when a tool result `output`/`result` or tool-call `input`/legacy `args`
+  is `undefined` (a tool that returns no value, or a call with no arguments),
+  or when a payload holds a `bigint` or a cyclic reference.
+  `JSON.stringify` returns `undefined` for the former and throws for the
+  latter, and both reached the character counter.
+- `createCustomTokenCounter()` counted a tool result as just its tool name and
+  dropped the output, the same branch-ordering bug fixed for
+  `createApproximateTokenCounter()` above. The summarization prompt had the
+  same ordering and rendered tool results as `[Tool call: …]`.
 - `generate()` now builds checkpoints from every step's response messages
   rather than the top-level `response.messages`, which the AI SDK populates
   with only the *final* step. Multi-step tool runs no longer lose their

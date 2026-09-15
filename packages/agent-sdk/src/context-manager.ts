@@ -53,14 +53,19 @@ export interface TokenCounter {
  * counting.
  *
  * `JSON.stringify` returns `undefined` (not a string) for `undefined`,
- * functions, and symbols. A tool that returns nothing is a normal shape, so
- * this must not propagate `undefined` into a counter that reads `.length`.
+ * functions, and symbols, and throws for `bigint` and cyclic values. Tool
+ * payloads are `unknown`, so none of those may propagate into a counter that
+ * reads `.length` or abort compaction before it evaluates the transcript.
  */
 function serializeForCounting(value: unknown): string {
   if (typeof value === "string") {
     return value;
   }
-  return JSON.stringify(value) ?? "";
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return String(value);
+  }
 }
 
 /**
@@ -90,13 +95,13 @@ function hashMessage(message: ModelMessage): string {
         if ("result" in part || "output" in part) {
           const output = "result" in part ? part.result : part.output;
           const toolName = "toolName" in part ? part.toolName : "";
-          return `tool-result:${toolName}:${JSON.stringify(output)}`;
+          return `tool-result:${toolName}:${serializeForCounting(output)}`;
         }
         if ("toolName" in part) {
           // Tool call - key on every field countSingleMessage counts (`input`
           // and legacy `args`) so different calls do not collide.
           const call = part as { input?: unknown; args?: unknown };
-          return `tool:${part.toolName}:${JSON.stringify(call.input)}:${JSON.stringify(call.args)}`;
+          return `tool:${part.toolName}:${serializeForCounting(call.input)}:${serializeForCounting(call.args)}`;
         }
         return JSON.stringify(part);
       })
@@ -275,6 +280,15 @@ export function createCustomTokenCounter(options: CustomTokenCounterOptions): To
       for (const part of message.content) {
         if ("text" in part && typeof part.text === "string") {
           total += countFn(part.text);
+        } else if ("result" in part || "output" in part) {
+          // Tool result - checked BEFORE the toolName branch for the same
+          // reason as in createApproximateTokenCounter: tool-result parts also
+          // carry `toolName`, and matching on it first drops the output.
+          const output = "result" in part ? part.result : part.output;
+          total += countFn(serializeForCounting(output));
+          if ("toolName" in part && typeof part.toolName === "string") {
+            total += countFn(part.toolName);
+          }
         } else if ("toolName" in part) {
           total += countFn(part.toolName);
           if ("args" in part) {
@@ -283,9 +297,6 @@ export function createCustomTokenCounter(options: CustomTokenCounterOptions): To
           if ("input" in part) {
             total += countFn(serializeForCounting(part.input));
           }
-        } else if ("result" in part || "output" in part) {
-          const output = "result" in part ? part.result : part.output;
-          total += countFn(serializeForCounting(output));
         } else if ("image" in part) {
           // Image part - count ~1000 tokens for image (approximate vision model cost)
           // Images are expensive in terms of tokens, varies by size and model
@@ -2084,15 +2095,15 @@ function formatMessagesForSummary(messages: ModelMessage[]): string {
       for (const part of message.content) {
         if ("text" in part && typeof part.text === "string") {
           parts.push(part.text);
+        } else if ("result" in part || "output" in part) {
+          // Checked before the toolName branch: tool-result parts also carry
+          // `toolName`, and the summarizer should see the result, not just
+          // a second "[Tool call: …]" marker.
+          const output = "result" in part ? part.result : part.output;
+          const outputStr = serializeForCounting(output).slice(0, 200);
+          parts.push(`[Tool result: ${outputStr}...]`);
         } else if ("toolName" in part) {
           parts.push(`[Tool call: ${part.toolName}]`);
-        } else if ("result" in part || "output" in part) {
-          const output = "result" in part ? part.result : part.output;
-          const outputStr =
-            typeof output === "string"
-              ? output.slice(0, 200)
-              : JSON.stringify(output).slice(0, 200);
-          parts.push(`[Tool result: ${outputStr}...]`);
         } else if ("image" in part && part.type === "image") {
           parts.push(extractImageMetadata(part as { type: "image"; image: unknown }));
         } else if ("data" in part && part.type === "file") {
