@@ -595,59 +595,58 @@ export function createFilesystemToolsOnly(options: FilesystemToolsOptions): File
   return createFilesystemTools(options);
 }
 
-// Re-export individual tool creators for maximum flexibility
-export {
-  // Filesystem
-  createReadTool,
-  createWriteTool,
-  createEditTool,
-  createGlobTool,
-  createGrepTool,
-  createFilesystemTools,
-  // Todos
-  createTodoWriteTool,
-  // Bash
-  createBashTool,
-  // Skills
-  SkillRegistry,
-  createSkillTool,
-  createSkillRegistry,
-  // Tasks
-  createTaskOutputTool,
-  createTaskTool,
-  getBackgroundTask,
-  listBackgroundTasks,
-  clearCompletedTasks,
-  // Task Management
-  createKillTaskTool,
-  createListTasksTool,
-  // Search
-  createSearchToolsTool,
-  // Call Tool (Proxy)
-  createCallToolTool,
-};
-
 // Re-export types
 export type {
+  // Bash
+  BashToolOptions,
+  // Call Tool (Proxy)
+  CallToolOptions,
   // Filesystem
   FilesystemTools,
   FilesystemToolsOptions,
-  // Todos
-  TodoWriteToolOptions,
-  // Bash
-  BashToolOptions,
-  // Skills
-  SkillDefinition,
-  SkillToolOptions,
-  // Tasks
-  TaskOutputToolOptions,
-  TaskToolOptions,
-  TaskStatus,
   // Task Management
   KillTaskToolOptions,
   ListTasksToolOptions,
   // Search
   SearchToolsOptions,
+  // Skills
+  SkillDefinition,
+  SkillToolOptions,
+  // Tasks
+  TaskOutputToolOptions,
+  TaskStatus,
+  TaskToolOptions,
+  // Todos
+  TodoWriteToolOptions,
+};
+// Re-export individual tool creators for maximum flexibility
+export {
+  clearCompletedTasks,
+  // Bash
+  createBashTool,
   // Call Tool (Proxy)
-  CallToolOptions,
+  createCallToolTool,
+  createEditTool,
+  createFilesystemTools,
+  createGlobTool,
+  createGrepTool,
+  // Task Management
+  createKillTaskTool,
+  createListTasksTool,
+  // Filesystem
+  createReadTool,
+  // Search
+  createSearchToolsTool,
+  createSkillRegistry,
+  createSkillTool,
+  // Tasks
+  createTaskOutputTool,
+  createTaskTool,
+  // Todos
+  createTodoWriteTool,
+  createWriteTool,
+  getBackgroundTask,
+  listBackgroundTasks,
+  // Skills
+  SkillRegistry,
 };

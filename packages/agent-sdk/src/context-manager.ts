@@ -1070,7 +1070,7 @@ export function createCompactionScheduler(
 
   const cancel = (id: string): boolean => {
     const task = tasks.get(id);
-    if (!task || task.status !== "pending") {
+    if (task?.status !== "pending") {
       return false;
     }
 

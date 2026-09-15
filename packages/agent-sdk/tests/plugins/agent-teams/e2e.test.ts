@@ -115,120 +115,118 @@ describeE2E("Agent Teams E2E Tests", () => {
   // Test 1: Full team lifecycle
   // ===========================================================================
 
-  it(
-    "full lifecycle: start_team → spawn teammate → teammate completes task → end_team",
-    { timeout: 120_000 },
-    async () => {
-      const coordinator = new InMemoryTeamCoordinator();
-      const teammateOutput: string[] = [];
-      const teammateErrors: string[] = [];
+  it("full lifecycle: start_team → spawn teammate → teammate completes task → end_team", {
+    timeout: 120_000,
+  }, async () => {
+    const coordinator = new InMemoryTeamCoordinator();
+    const teammateOutput: string[] = [];
+    const teammateErrors: string[] = [];
 
-      const plugin = createAgentTeamsPlugin({
-        teammates: [
-          {
-            ...teammates[0]!,
-            agentOptions: {
-              ...teammates[0]!.agentOptions,
-            },
+    const plugin = createAgentTeamsPlugin({
+      teammates: [
+        {
+          ...teammates[0]!,
+          agentOptions: {
+            ...teammates[0]!.agentOptions,
           },
-        ],
-        coordinator,
-        idleTimeoutMs: 15_000,
-        onError: (id, error) => {
-          teammateErrors.push(`${id}: ${error.message}`);
-          console.error(`[E2E lifecycle] Teammate error: ${id}:`, error.message);
         },
-      });
+      ],
+      coordinator,
+      idleTimeoutMs: 15_000,
+      onError: (id, error) => {
+        teammateErrors.push(`${id}: ${error.message}`);
+        console.error(`[E2E lifecycle] Teammate error: ${id}:`, error.message);
+      },
+    });
 
-      const agent = createAgent({
-        model,
-        systemPrompt:
-          "You are a team lead. Follow instructions EXACTLY as given.\n" +
-          "Only call the tools you are instructed to call.\n" +
-          "Do not add extra tools or steps beyond what is requested.",
-        plugins: [plugin],
-        permissionMode: "bypassPermissions",
-      });
+    const agent = createAgent({
+      model,
+      systemPrompt:
+        "You are a team lead. Follow instructions EXACTLY as given.\n" +
+        "Only call the tools you are instructed to call.\n" +
+        "Do not add extra tools or steps beyond what is requested.",
+      plugins: [plugin],
+      permissionMode: "bypassPermissions",
+    });
 
-      await agent.ready;
-      agentsToDispose.push(agent);
+    await agent.ready;
+    agentsToDispose.push(agent);
 
-      // Verify start_team is visible, team tools are not
-      expect(agent.getActiveTools()["agent-teams__start_team"]).toBeDefined();
-      expect(agent.getActiveTools().team_spawn).toBeUndefined();
+    // Verify start_team is visible, team tools are not
+    expect(agent.getActiveTools()["agent-teams__start_team"]).toBeDefined();
+    expect(agent.getActiveTools().team_spawn).toBeUndefined();
 
-      // Step 1: Start the team with one initial task
-      console.log("[E2E lifecycle] Step 1: Starting team...");
-      const result1 = await agent.generate({
-        prompt:
-          "Call start_team with reason 'Research task' and initial_tasks containing one task: " +
-          'subject "TypeScript benefits", description "List 3 key benefits of TypeScript".',
-        maxSteps: 3,
-      });
+    // Step 1: Start the team with one initial task
+    console.log("[E2E lifecycle] Step 1: Starting team...");
+    const result1 = await agent.generate({
+      prompt:
+        "Call start_team with reason 'Research task' and initial_tasks containing one task: " +
+        'subject "TypeScript benefits", description "List 3 key benefits of TypeScript".',
+      maxSteps: 3,
+    });
 
-      expect(result1.status).toBe("complete");
-      console.log("[E2E lifecycle] Team started. Tasks:", coordinator.listTasks().length);
+    expect(result1.status).toBe("complete");
+    console.log("[E2E lifecycle] Team started. Tasks:", coordinator.listTasks().length);
 
-      // Team tools should now be available (for the next generate call)
-      expect(agent.getActiveTools().team_spawn).toBeDefined();
-      expect(coordinator.listTasks().length).toBeGreaterThanOrEqual(1);
+    // Team tools should now be available (for the next generate call)
+    expect(agent.getActiveTools().team_spawn).toBeDefined();
+    expect(coordinator.listTasks().length).toBeGreaterThanOrEqual(1);
 
-      // Step 2: Spawn a researcher (separate generate call so team tools are visible)
-      console.log("[E2E lifecycle] Step 2: Spawning teammate...");
-      const result2 = await agent.generate({
-        prompt:
-          "Call team_spawn with role 'researcher' and initial_prompt " +
-          "'You have tasks waiting. Call team_task_list, claim a task, complete it, " +
-          "then message the lead with your results.'",
-        maxSteps: 3,
-      });
+    // Step 2: Spawn a researcher (separate generate call so team tools are visible)
+    console.log("[E2E lifecycle] Step 2: Spawning teammate...");
+    const result2 = await agent.generate({
+      prompt:
+        "Call team_spawn with role 'researcher' and initial_prompt " +
+        "'You have tasks waiting. Call team_task_list, claim a task, complete it, " +
+        "then message the lead with your results.'",
+      maxSteps: 3,
+    });
 
-      expect(result2.status).toBe("complete");
+    expect(result2.status).toBe("complete");
 
-      // Verify teammate was registered
-      const mates = coordinator.listTeammates();
-      console.log(
-        "[E2E lifecycle] Teammates:",
-        mates.map((m) => `${m.id} (${m.role})`),
-      );
-      expect(mates.length).toBeGreaterThanOrEqual(1);
+    // Verify teammate was registered
+    const mates = coordinator.listTeammates();
+    console.log(
+      "[E2E lifecycle] Teammates:",
+      mates.map((m) => `${m.id} (${m.role})`),
+    );
+    expect(mates.length).toBeGreaterThanOrEqual(1);
 
-      // Step 3: Wait for the teammate to complete the task
-      console.log("[E2E lifecycle] Step 3: Waiting for task completion...");
-      await waitFor(
-        "teammate completes task",
-        () => coordinator.listTasks({ status: "completed" }).length > 0,
-        { timeoutMs: 60_000 },
-      );
+    // Step 3: Wait for the teammate to complete the task
+    console.log("[E2E lifecycle] Step 3: Waiting for task completion...");
+    await waitFor(
+      "teammate completes task",
+      () => coordinator.listTasks({ status: "completed" }).length > 0,
+      { timeoutMs: 60_000 },
+    );
 
-      const completedTasks = coordinator.listTasks({ status: "completed" });
-      console.log(
-        "[E2E lifecycle] Completed:",
-        completedTasks.map((t) => t.subject),
-      );
-      expect(completedTasks.length).toBeGreaterThanOrEqual(1);
-      expect(completedTasks[0]?.result).toBeTruthy();
+    const completedTasks = coordinator.listTasks({ status: "completed" });
+    console.log(
+      "[E2E lifecycle] Completed:",
+      completedTasks.map((t) => t.subject),
+    );
+    expect(completedTasks.length).toBeGreaterThanOrEqual(1);
+    expect(completedTasks[0]?.result).toBeTruthy();
 
-      // Step 4: Lead reads messages and ends team
-      console.log("[E2E lifecycle] Step 4: Ending team...");
-      const result3 = await agent.generate({
-        prompt: "Call team_read_messages, then call end_team with a summary of the results.",
-        maxSteps: 6,
-      });
+    // Step 4: Lead reads messages and ends team
+    console.log("[E2E lifecycle] Step 4: Ending team...");
+    const result3 = await agent.generate({
+      prompt: "Call team_read_messages, then call end_team with a summary of the results.",
+      maxSteps: 6,
+    });
 
-      expect(result3.status).toBe("complete");
+    expect(result3.status).toBe("complete");
 
-      // Team tools should be removed
-      expect(agent.getActiveTools().team_spawn).toBeUndefined();
-      expect(agent.getActiveTools().end_team).toBeUndefined();
+    // Team tools should be removed
+    expect(agent.getActiveTools().team_spawn).toBeUndefined();
+    expect(agent.getActiveTools().end_team).toBeUndefined();
 
-      // start_team should still be available
-      expect(agent.getActiveTools()["agent-teams__start_team"]).toBeDefined();
+    // start_team should still be available
+    expect(agent.getActiveTools()["agent-teams__start_team"]).toBeDefined();
 
-      console.log("[E2E lifecycle] Teammate errors:", teammateErrors);
-      console.log("[E2E lifecycle] PASSED");
-    },
-  );
+    console.log("[E2E lifecycle] Teammate errors:", teammateErrors);
+    console.log("[E2E lifecycle] PASSED");
+  });
 
   // ===========================================================================
   // Test 2: start_team injects tools, end_team removes them
@@ -307,92 +305,90 @@ describeE2E("Agent Teams E2E Tests", () => {
   // Test 3: Teammate task coordination via coordinator state
   // ===========================================================================
 
-  it(
-    "teammate claims, works on, and completes tasks observable via coordinator",
-    { timeout: 90_000 },
-    async () => {
-      const coordinator = new InMemoryTeamCoordinator();
+  it("teammate claims, works on, and completes tasks observable via coordinator", {
+    timeout: 90_000,
+  }, async () => {
+    const coordinator = new InMemoryTeamCoordinator();
 
-      const plugin = createAgentTeamsPlugin({
-        teammates,
-        coordinator,
-        idleTimeoutMs: 15_000,
-        onError: (id, err) => console.error(`[E2E coord] ${id} error:`, err.message),
-      });
+    const plugin = createAgentTeamsPlugin({
+      teammates,
+      coordinator,
+      idleTimeoutMs: 15_000,
+      onError: (id, err) => console.error(`[E2E coord] ${id} error:`, err.message),
+    });
 
-      const agent = createAgent({
-        model,
-        systemPrompt:
-          "You are a team lead. Follow instructions exactly.\n" +
-          "Only call the tools you are instructed to call.",
-        plugins: [plugin],
-        permissionMode: "bypassPermissions",
-      });
+    const agent = createAgent({
+      model,
+      systemPrompt:
+        "You are a team lead. Follow instructions exactly.\n" +
+        "Only call the tools you are instructed to call.",
+      plugins: [plugin],
+      permissionMode: "bypassPermissions",
+    });
 
-      await agent.ready;
-      agentsToDispose.push(agent);
+    await agent.ready;
+    agentsToDispose.push(agent);
 
-      // Step 1: Start team with two tasks
-      console.log("[E2E coord] Starting team with tasks...");
-      await agent.generate({
-        prompt:
-          "Call start_team with reason 'Research task' and initial_tasks:\n" +
-          '- subject: "Benefits of Rust", description: "List 3 benefits of Rust"\n' +
-          '- subject: "Benefits of Go", description: "List 3 benefits of Go"',
-        maxSteps: 3,
-      });
+    // Step 1: Start team with two tasks
+    console.log("[E2E coord] Starting team with tasks...");
+    await agent.generate({
+      prompt:
+        "Call start_team with reason 'Research task' and initial_tasks:\n" +
+        '- subject: "Benefits of Rust", description: "List 3 benefits of Rust"\n' +
+        '- subject: "Benefits of Go", description: "List 3 benefits of Go"',
+      maxSteps: 3,
+    });
 
-      const allTasks = coordinator.listTasks();
-      console.log(
-        "[E2E coord] Tasks:",
-        allTasks.map((t) => `${t.id}: ${t.subject} [${t.status}]`),
-      );
-      expect(allTasks.length).toBeGreaterThanOrEqual(2);
+    const allTasks = coordinator.listTasks();
+    console.log(
+      "[E2E coord] Tasks:",
+      allTasks.map((t) => `${t.id}: ${t.subject} [${t.status}]`),
+    );
+    expect(allTasks.length).toBeGreaterThanOrEqual(2);
 
-      // Step 2: Spawn a researcher (separate generate call)
-      console.log("[E2E coord] Spawning teammate...");
-      await agent.generate({
-        prompt:
-          "Call team_spawn with role 'researcher' and initial_prompt " +
-          "'Check tasks and start working. Claim each pending task, complete it, then check for more.'",
-        maxSteps: 3,
-      });
+    // Step 2: Spawn a researcher (separate generate call)
+    console.log("[E2E coord] Spawning teammate...");
+    await agent.generate({
+      prompt:
+        "Call team_spawn with role 'researcher' and initial_prompt " +
+        "'Check tasks and start working. Claim each pending task, complete it, then check for more.'",
+      maxSteps: 3,
+    });
 
-      const mates = coordinator.listTeammates();
-      console.log(
-        "[E2E coord] Teammates:",
-        mates.map((m) => `${m.id} (${m.role}): ${m.status}`),
-      );
-      expect(mates.length).toBeGreaterThanOrEqual(1);
-      expect(mates[0]?.role).toBe("researcher");
+    const mates = coordinator.listTeammates();
+    console.log(
+      "[E2E coord] Teammates:",
+      mates.map((m) => `${m.id} (${m.role}): ${m.status}`),
+    );
+    expect(mates.length).toBeGreaterThanOrEqual(1);
+    expect(mates[0]?.role).toBe("researcher");
 
-      // Wait for at least one task to be completed
-      console.log("[E2E coord] Waiting for task completion...");
-      await waitFor(
-        "at least one task completed",
-        () => coordinator.listTasks({ status: "completed" }).length >= 1,
-        { timeoutMs: 60_000 },
-      );
+    // Wait for at least one task to be completed
+    console.log("[E2E coord] Waiting for task completion...");
+    await waitFor(
+      "at least one task completed",
+      () => coordinator.listTasks({ status: "completed" }).length >= 1,
+      { timeoutMs: 60_000 },
+    );
 
-      const completed = coordinator.listTasks({ status: "completed" });
-      console.log(
-        "[E2E coord] Completed tasks:",
-        completed.map((t) => `${t.subject}: ${t.result?.slice(0, 80)}`),
-      );
-      expect(completed.length).toBeGreaterThanOrEqual(1);
+    const completed = coordinator.listTasks({ status: "completed" });
+    console.log(
+      "[E2E coord] Completed tasks:",
+      completed.map((t) => `${t.subject}: ${t.result?.slice(0, 80)}`),
+    );
+    expect(completed.length).toBeGreaterThanOrEqual(1);
 
-      for (const task of completed) {
-        expect(task.result).toBeTruthy();
-        expect(task.assignee).toBeTruthy();
-      }
+    for (const task of completed) {
+      expect(task.result).toBeTruthy();
+      expect(task.assignee).toBeTruthy();
+    }
 
-      // Clean up
-      await agent.generate({
-        prompt: "Call end_team with summary: coordination test complete.",
-        maxSteps: 3,
-      });
-    },
-  );
+    // Clean up
+    await agent.generate({
+      prompt: "Call end_team with summary: coordination test complete.",
+      maxSteps: 3,
+    });
+  });
 
   // ===========================================================================
   // Test 4: Hook observability with real LLM
@@ -547,163 +543,161 @@ describeE2E("Agent Teams E2E Tests", () => {
   // Test 6: Bidirectional message coordination
   // ===========================================================================
 
-  it(
-    "lead sends message to idle teammate, teammate wakes up and replies",
-    { timeout: 120_000 },
-    async () => {
-      const coordinator = new InMemoryTeamCoordinator();
-      const teammateErrors: string[] = [];
+  it("lead sends message to idle teammate, teammate wakes up and replies", {
+    timeout: 120_000,
+  }, async () => {
+    const coordinator = new InMemoryTeamCoordinator();
+    const teammateErrors: string[] = [];
 
-      // Architecture note: HeadlessSessionRunner yields `waiting_for_input`
-      // before processing the queued initial prompt. The teammate immediately
-      // blocks on `coordinator.waitForMessage()`. If the timeout expires,
-      // `session.stop()` is called and the teammate processes only ONE
-      // generation cycle (the initial prompt) before stopping.
-      //
-      // To test bidirectional messaging, the lead must send a coordinator
-      // message WHILE the teammate is in the first `waitForMessage` call —
-      // before the idle timeout. This wakes the teammate, which then
-      // processes both the initial prompt AND the lead's injected message
-      // in separate generation cycles.
+    // Architecture note: HeadlessSessionRunner yields `waiting_for_input`
+    // before processing the queued initial prompt. The teammate immediately
+    // blocks on `coordinator.waitForMessage()`. If the timeout expires,
+    // `session.stop()` is called and the teammate processes only ONE
+    // generation cycle (the initial prompt) before stopping.
+    //
+    // To test bidirectional messaging, the lead must send a coordinator
+    // message WHILE the teammate is in the first `waitForMessage` call —
+    // before the idle timeout. This wakes the teammate, which then
+    // processes both the initial prompt AND the lead's injected message
+    // in separate generation cycles.
 
-      const plugin = createAgentTeamsPlugin({
-        teammates: [
-          {
-            role: "researcher",
-            description: "Researches topics and provides concise summaries",
-            agentOptions: {
-              systemPrompt:
-                "You are a researcher on a team. Follow this workflow exactly:\n" +
-                "1. Call team_task_list to see available tasks\n" +
-                "2. If there are pending tasks, call team_task_claim to claim one\n" +
-                "3. Do the research (you can use your knowledge)\n" +
-                "4. Call team_task_complete with your result\n" +
-                "5. Call team_message with to='lead' to report your findings\n" +
-                "6. Check for more tasks. If none, stop.\n\n" +
-                "IMPORTANT: When you receive a message from the lead, respond by calling " +
-                "team_message with to='lead' and your answer. Always respond to messages.\n\n" +
-                "Be concise. Complete tasks quickly.",
-            },
-            maxTurns: 20,
+    const plugin = createAgentTeamsPlugin({
+      teammates: [
+        {
+          role: "researcher",
+          description: "Researches topics and provides concise summaries",
+          agentOptions: {
+            systemPrompt:
+              "You are a researcher on a team. Follow this workflow exactly:\n" +
+              "1. Call team_task_list to see available tasks\n" +
+              "2. If there are pending tasks, call team_task_claim to claim one\n" +
+              "3. Do the research (you can use your knowledge)\n" +
+              "4. Call team_task_complete with your result\n" +
+              "5. Call team_message with to='lead' to report your findings\n" +
+              "6. Check for more tasks. If none, stop.\n\n" +
+              "IMPORTANT: When you receive a message from the lead, respond by calling " +
+              "team_message with to='lead' and your answer. Always respond to messages.\n\n" +
+              "Be concise. Complete tasks quickly.",
           },
-        ],
-        coordinator,
-        // Long timeout — the lead will wake the teammate via sendMessage
-        // before this expires. After processing, the second idle period
-        // will use this same timeout before the teammate stops.
-        idleTimeoutMs: 15_000,
-        onError: (id, error) => {
-          teammateErrors.push(`${id}: ${error.message}`);
-          console.error(`[E2E bidirectional] Teammate error: ${id}:`, error.message);
+          maxTurns: 20,
         },
-      });
+      ],
+      coordinator,
+      // Long timeout — the lead will wake the teammate via sendMessage
+      // before this expires. After processing, the second idle period
+      // will use this same timeout before the teammate stops.
+      idleTimeoutMs: 15_000,
+      onError: (id, error) => {
+        teammateErrors.push(`${id}: ${error.message}`);
+        console.error(`[E2E bidirectional] Teammate error: ${id}:`, error.message);
+      },
+    });
 
-      const agent = createAgent({
-        model,
-        systemPrompt:
-          "You are a team lead. Follow instructions EXACTLY as given.\n" +
-          "Only call the tools you are instructed to call.\n" +
-          "Do not add extra tools or steps beyond what is requested.",
-        plugins: [plugin],
-        permissionMode: "bypassPermissions",
-      });
+    const agent = createAgent({
+      model,
+      systemPrompt:
+        "You are a team lead. Follow instructions EXACTLY as given.\n" +
+        "Only call the tools you are instructed to call.\n" +
+        "Do not add extra tools or steps beyond what is requested.",
+      plugins: [plugin],
+      permissionMode: "bypassPermissions",
+    });
 
-      await agent.ready;
-      agentsToDispose.push(agent);
+    await agent.ready;
+    agentsToDispose.push(agent);
 
-      // Step 1: Start team with a task
-      console.log("[E2E bidirectional] Step 1: Starting team...");
-      await agent.generate({
-        prompt:
-          "Call start_team with reason 'Bidirectional messaging test' and initial_tasks " +
-          'containing one task: subject "AI Safety", description "Summarize key AI safety concerns in 2-3 sentences".',
-        maxSteps: 3,
-      });
+    // Step 1: Start team with a task
+    console.log("[E2E bidirectional] Step 1: Starting team...");
+    await agent.generate({
+      prompt:
+        "Call start_team with reason 'Bidirectional messaging test' and initial_tasks " +
+        'containing one task: subject "AI Safety", description "Summarize key AI safety concerns in 2-3 sentences".',
+      maxSteps: 3,
+    });
 
-      expect(coordinator.listTasks().length).toBeGreaterThanOrEqual(1);
+    expect(coordinator.listTasks().length).toBeGreaterThanOrEqual(1);
 
-      // Step 2: Spawn researcher
-      console.log("[E2E bidirectional] Step 2: Spawning teammate...");
-      await agent.generate({
-        prompt:
-          "Call team_spawn with role 'researcher' and initial_prompt " +
-          "'Check for tasks. Claim and complete any pending tasks, then message the lead with your results. " +
-          "Also respond to any messages from the lead.'",
-        maxSteps: 3,
-      });
+    // Step 2: Spawn researcher
+    console.log("[E2E bidirectional] Step 2: Spawning teammate...");
+    await agent.generate({
+      prompt:
+        "Call team_spawn with role 'researcher' and initial_prompt " +
+        "'Check for tasks. Claim and complete any pending tasks, then message the lead with your results. " +
+        "Also respond to any messages from the lead.'",
+      maxSteps: 3,
+    });
 
-      const mates = coordinator.listTeammates();
-      expect(mates.length).toBe(1);
-      const teammateId = mates[0].id;
-      console.log(`[E2E bidirectional] Teammate spawned: ${teammateId}`);
+    const mates = coordinator.listTeammates();
+    expect(mates.length).toBe(1);
+    const teammateId = mates[0].id;
+    console.log(`[E2E bidirectional] Teammate spawned: ${teammateId}`);
 
-      // Step 3: Wait for teammate to go idle (happens immediately — the
-      // HeadlessSessionRunner blocks on waitForMessage before processing
-      // the initial prompt). Then send a message to wake the teammate.
-      console.log("[E2E bidirectional] Step 3: Waiting for teammate to go idle...");
-      await waitFor(
-        "teammate is idle",
-        () => {
-          const tm = coordinator.getTeammate(teammateId);
-          return tm?.status === "idle";
-        },
-        { timeoutMs: 10_000 },
-      );
+    // Step 3: Wait for teammate to go idle (happens immediately — the
+    // HeadlessSessionRunner blocks on waitForMessage before processing
+    // the initial prompt). Then send a message to wake the teammate.
+    console.log("[E2E bidirectional] Step 3: Waiting for teammate to go idle...");
+    await waitFor(
+      "teammate is idle",
+      () => {
+        const tm = coordinator.getTeammate(teammateId);
+        return tm?.status === "idle";
+      },
+      { timeoutMs: 10_000 },
+    );
 
-      // Step 4: Lead sends a message to the teammate. This wakes the
-      // teammate's waitForMessage. The teammate then processes:
-      //   1) The initial prompt (queued session event — processed first)
-      //   2) The lead's message (injected by HeadlessSessionRunner via
-      //      session.sendMessage after waitForMessage resolves)
-      console.log("[E2E bidirectional] Step 4: Lead sends message to teammate...");
-      await agent.generate({
-        prompt:
-          `Call team_message with to='${teammateId}' and ` +
-          "content='After completing the AI Safety task, please also answer: What is the single most important AI safety concern? Reply with a brief answer.'",
-        maxSteps: 3,
-      });
+    // Step 4: Lead sends a message to the teammate. This wakes the
+    // teammate's waitForMessage. The teammate then processes:
+    //   1) The initial prompt (queued session event — processed first)
+    //   2) The lead's message (injected by HeadlessSessionRunner via
+    //      session.sendMessage after waitForMessage resolves)
+    console.log("[E2E bidirectional] Step 4: Lead sends message to teammate...");
+    await agent.generate({
+      prompt:
+        `Call team_message with to='${teammateId}' and ` +
+        "content='After completing the AI Safety task, please also answer: What is the single most important AI safety concern? Reply with a brief answer.'",
+      maxSteps: 3,
+    });
 
-      // Verify the lead's message was sent
-      const msgsForTeammate = coordinator.getMessages(teammateId, false);
-      expect(msgsForTeammate.some((m) => m.from === "lead")).toBe(true);
-      console.log("[E2E bidirectional] Lead message sent to teammate");
+    // Verify the lead's message was sent
+    const msgsForTeammate = coordinator.getMessages(teammateId, false);
+    expect(msgsForTeammate.some((m) => m.from === "lead")).toBe(true);
+    console.log("[E2E bidirectional] Lead message sent to teammate");
 
-      // Step 5: Wait for the teammate to complete the task (from initial prompt)
-      console.log("[E2E bidirectional] Step 5: Waiting for task completion...");
-      await waitFor(
-        "teammate completes task",
-        () => coordinator.listTasks({ status: "completed" }).length >= 1,
-        { timeoutMs: 60_000 },
-      );
-      console.log("[E2E bidirectional] Task completed");
+    // Step 5: Wait for the teammate to complete the task (from initial prompt)
+    console.log("[E2E bidirectional] Step 5: Waiting for task completion...");
+    await waitFor(
+      "teammate completes task",
+      () => coordinator.listTasks({ status: "completed" }).length >= 1,
+      { timeoutMs: 60_000 },
+    );
+    console.log("[E2E bidirectional] Task completed");
 
-      // Step 6: Wait for at least 2 messages from teammate to lead:
-      //   1) Task completion report (from initial prompt processing)
-      //   2) Reply to the lead's follow-up question (from injected message)
-      console.log("[E2E bidirectional] Step 6: Waiting for teammate replies...");
-      await waitFor(
-        "teammate sends at least 2 messages to lead",
-        () => coordinator.getMessages("lead", false).length >= 2,
-        { timeoutMs: 60_000 },
-      );
+    // Step 6: Wait for at least 2 messages from teammate to lead:
+    //   1) Task completion report (from initial prompt processing)
+    //   2) Reply to the lead's follow-up question (from injected message)
+    console.log("[E2E bidirectional] Step 6: Waiting for teammate replies...");
+    await waitFor(
+      "teammate sends at least 2 messages to lead",
+      () => coordinator.getMessages("lead", false).length >= 2,
+      { timeoutMs: 60_000 },
+    );
 
-      const allMsgsForLead = coordinator.getMessages("lead", false);
-      console.log(
-        "[E2E bidirectional] Messages from teammate to lead:",
-        allMsgsForLead.map((m) => `[${m.from}]: ${m.content.slice(0, 80)}`),
-      );
-      expect(allMsgsForLead.length).toBeGreaterThanOrEqual(2);
+    const allMsgsForLead = coordinator.getMessages("lead", false);
+    console.log(
+      "[E2E bidirectional] Messages from teammate to lead:",
+      allMsgsForLead.map((m) => `[${m.from}]: ${m.content.slice(0, 80)}`),
+    );
+    expect(allMsgsForLead.length).toBeGreaterThanOrEqual(2);
 
-      // Step 7: Lead reads messages and ends team
-      console.log("[E2E bidirectional] Step 7: Ending team...");
-      await agent.generate({
-        prompt: "Call team_read_messages, then call end_team with a summary of the conversation.",
-        maxSteps: 6,
-      });
+    // Step 7: Lead reads messages and ends team
+    console.log("[E2E bidirectional] Step 7: Ending team...");
+    await agent.generate({
+      prompt: "Call team_read_messages, then call end_team with a summary of the conversation.",
+      maxSteps: 6,
+    });
 
-      expect(agent.getActiveTools().team_spawn).toBeUndefined();
-      console.log("[E2E bidirectional] Teammate errors:", teammateErrors);
-      console.log("[E2E bidirectional] PASSED");
-    },
-  );
+    expect(agent.getActiveTools().team_spawn).toBeUndefined();
+    console.log("[E2E bidirectional] Teammate errors:", teammateErrors);
+    console.log("[E2E bidirectional] PASSED");
+  });
 });

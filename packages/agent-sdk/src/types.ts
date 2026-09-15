@@ -35,9 +35,9 @@ import type { BaseCheckpointSaver, Interrupt } from "./checkpointer/types.js";
  * Users can import these directly from this package instead of 'ai'.
  */
 export type {
-  ModelMessage,
   LanguageModel,
   LanguageModelUsage,
+  ModelMessage,
   Tool,
   ToolExecutionOptions,
   ToolSet,
