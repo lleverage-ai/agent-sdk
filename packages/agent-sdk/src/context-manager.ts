@@ -49,6 +49,26 @@ export interface TokenCounter {
 }
 
 /**
+ * Serialize a tool payload (input, args, or output) to a string for token
+ * counting.
+ *
+ * `JSON.stringify` returns `undefined` (not a string) for `undefined`,
+ * functions, and symbols, and throws for `bigint` and cyclic values. Tool
+ * payloads are `unknown`, so none of those may propagate into a counter that
+ * reads `.length` or abort compaction before it evaluates the transcript.
+ */
+function serializeForCounting(value: unknown): string {
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return String(value);
+  }
+}
+
+/**
  * Helper function to create a hash for a message for caching purposes.
  * Uses a simple hash of the serialized message content.
  *
@@ -68,9 +88,21 @@ function hashMessage(message: ModelMessage): string {
         if ("text" in part) return `text:${part.text}`;
         if ("image" in part) return `image:${part.type}`;
         if ("data" in part && part.type === "file") return `file:${part.type}`;
-        if ("toolName" in part) return `tool:${part.toolName}`;
-        if ("result" in part) return `result:${JSON.stringify(part.result)}`;
-        if ("output" in part) return `output:${JSON.stringify(part.output)}`;
+        // Tool results carry `toolName` too, so match them BEFORE the bare
+        // toolName branch and key on the payload: otherwise two results from
+        // the same tool share one cache entry and a large result reuses the
+        // count of an earlier small one.
+        if ("result" in part || "output" in part) {
+          const output = "result" in part ? part.result : part.output;
+          const toolName = "toolName" in part ? part.toolName : "";
+          return `tool-result:${toolName}:${serializeForCounting(output)}`;
+        }
+        if ("toolName" in part) {
+          // Tool call - key on every field countSingleMessage counts (`input`
+          // and legacy `args`) so different calls do not collide.
+          const call = part as { input?: unknown; args?: unknown };
+          return `tool:${part.toolName}:${serializeForCounting(call.input)}:${serializeForCounting(call.args)}`;
+        }
         return JSON.stringify(part);
       })
       .join("|");
@@ -133,19 +165,27 @@ export function createApproximateTokenCounter(): TokenCounter {
       for (const part of message.content) {
         if ("text" in part && typeof part.text === "string") {
           total += count(part.text);
+        } else if ("result" in part || "output" in part) {
+          // Tool result - count output. Checked BEFORE the toolName branch:
+          // tool-result parts also carry `toolName`, so matching on toolName
+          // first counted a tool result as just its tool name and silently
+          // dropped the (usually dominant) output — undercounting tool-heavy
+          // transcripts ~4-5x and preventing compaction from ever triggering
+          // (LLE-11630).
+          const output = "result" in part ? part.result : part.output;
+          total += count(serializeForCounting(output));
+          if ("toolName" in part && typeof part.toolName === "string") {
+            total += count(part.toolName);
+          }
         } else if ("toolName" in part) {
           // Tool call - count name and args
           total += count(part.toolName);
           if ("args" in part) {
-            total += count(JSON.stringify(part.args));
+            total += count(serializeForCounting(part.args));
           }
           if ("input" in part) {
-            total += count(JSON.stringify(part.input));
+            total += count(serializeForCounting(part.input));
           }
-        } else if ("result" in part || "output" in part) {
-          // Tool result - count output
-          const output = "result" in part ? part.result : part.output;
-          total += count(typeof output === "string" ? output : JSON.stringify(output));
         } else if ("image" in part) {
           // Image part - count ~1000 tokens for image (approximate vision model cost)
           // Images are expensive in terms of tokens, varies by size and model
@@ -240,17 +280,23 @@ export function createCustomTokenCounter(options: CustomTokenCounterOptions): To
       for (const part of message.content) {
         if ("text" in part && typeof part.text === "string") {
           total += countFn(part.text);
+        } else if ("result" in part || "output" in part) {
+          // Tool result - checked BEFORE the toolName branch for the same
+          // reason as in createApproximateTokenCounter: tool-result parts also
+          // carry `toolName`, and matching on it first drops the output.
+          const output = "result" in part ? part.result : part.output;
+          total += countFn(serializeForCounting(output));
+          if ("toolName" in part && typeof part.toolName === "string") {
+            total += countFn(part.toolName);
+          }
         } else if ("toolName" in part) {
           total += countFn(part.toolName);
           if ("args" in part) {
-            total += countFn(JSON.stringify(part.args));
+            total += countFn(serializeForCounting(part.args));
           }
           if ("input" in part) {
-            total += countFn(JSON.stringify(part.input));
+            total += countFn(serializeForCounting(part.input));
           }
-        } else if ("result" in part || "output" in part) {
-          const output = "result" in part ? part.result : part.output;
-          total += countFn(typeof output === "string" ? output : JSON.stringify(output));
         } else if ("image" in part) {
           // Image part - count ~1000 tokens for image (approximate vision model cost)
           // Images are expensive in terms of tokens, varies by size and model
@@ -1346,17 +1392,16 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
   }
 
   const getBudget = (messages: ModelMessage[]): TokenBudget => {
-    let currentTokens: number;
-    let isActual = false;
+    const estimatedTokens = tokenCounter.countMessages(messages);
+    const actualTokens = lastActualUsage?.totalTokens;
 
-    // If we have actual usage data from the last generation, use it
-    if (lastActualUsage && lastActualUsage.totalTokens !== undefined) {
-      currentTokens = lastActualUsage.totalTokens;
-      isActual = true;
-    } else {
-      // Fall back to estimation
-      currentTokens = tokenCounter.countMessages(messages);
-    }
+    // Actual usage describes the *last* model input, while the current message
+    // list may already include newer tool results appended since that call.
+    // Use the larger of the two so stale usage cannot hide growth between model
+    // generations (which is exactly when mid-run compaction needs to fire).
+    const currentTokens =
+      actualTokens === undefined ? estimatedTokens : Math.max(actualTokens, estimatedTokens);
+    const isActual = actualTokens !== undefined && actualTokens >= estimatedTokens;
 
     const budget = createTokenBudget(maxTokens, currentTokens, isActual, {
       outputReserveTokens: policy.outputReserveTokens,
@@ -1638,6 +1683,12 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         structuredSummary,
         summaryTier,
       };
+
+      // Compaction replaces the model input, so usage captured before or during
+      // summarisation no longer describes the active context. Clear it so the
+      // next budget check falls back to estimating the compacted messages
+      // instead of comparing against the pre-compaction total.
+      lastActualUsage = null;
 
       recordCompactionSuccess();
 
@@ -2044,15 +2095,15 @@ function formatMessagesForSummary(messages: ModelMessage[]): string {
       for (const part of message.content) {
         if ("text" in part && typeof part.text === "string") {
           parts.push(part.text);
+        } else if ("result" in part || "output" in part) {
+          // Checked before the toolName branch: tool-result parts also carry
+          // `toolName`, and the summarizer should see the result, not just
+          // a second "[Tool call: …]" marker.
+          const output = "result" in part ? part.result : part.output;
+          const outputStr = serializeForCounting(output).slice(0, 200);
+          parts.push(`[Tool result: ${outputStr}...]`);
         } else if ("toolName" in part) {
           parts.push(`[Tool call: ${part.toolName}]`);
-        } else if ("result" in part || "output" in part) {
-          const output = "result" in part ? part.result : part.output;
-          const outputStr =
-            typeof output === "string"
-              ? output.slice(0, 200)
-              : JSON.stringify(output).slice(0, 200);
-          parts.push(`[Tool result: ${outputStr}...]`);
         } else if ("image" in part && part.type === "image") {
           parts.push(extractImageMetadata(part as { type: "image"; image: unknown }));
         } else if ("data" in part && part.type === "file") {

@@ -151,6 +151,159 @@ describe("createApproximateTokenCounter", () => {
       expect(tokens).toBeGreaterThan(4);
     });
 
+    it("should count tool-result outputs at their full size (LLE-11630 regression)", () => {
+      // Tool-result parts carry BOTH toolName and output. The counter used to
+      // match the toolName branch first and count a 50KB output as ~5 tokens,
+      // undercounting tool-heavy transcripts ~4-5x so compaction never fired.
+      const output = "x".repeat(50_000); // ~12.5K tokens at 4 chars/token
+      const messages: ModelMessage[] = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "bash",
+              output: { type: "text", value: output },
+            },
+          ],
+        } as unknown as ModelMessage,
+      ];
+      const tokens = counter.countMessages(messages);
+      expect(tokens).toBeGreaterThan(12_000);
+    });
+
+    it("should count v4-shaped tool results carrying result alongside toolName", () => {
+      const messages: ModelMessage[] = [
+        {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "call-1",
+              toolName: "search",
+              result: { data: "y".repeat(4_000) },
+            },
+          ],
+        } as unknown as ModelMessage,
+      ];
+      const tokens = counter.countMessages(messages);
+      expect(tokens).toBeGreaterThan(1_000);
+    });
+
+    it("should not share cached counts between same-name tool results of different sizes", () => {
+      // The cache key used to be `tool:<toolName>` for tool-result parts, so a
+      // large `bash` result reused the count of an earlier small `bash` result
+      // and the output-counting branch never ran for it.
+      const toolResult = (toolCallId: string, value: string): ModelMessage =>
+        ({
+          role: "tool",
+          content: [
+            { type: "tool-result", toolCallId, toolName: "bash", output: { type: "text", value } },
+          ],
+        }) as unknown as ModelMessage;
+
+      const small = counter.countMessages([toolResult("call-1", "ok")]);
+      const large = counter.countMessages([toolResult("call-2", "x".repeat(4_000))]);
+      const largeFresh = createApproximateTokenCounter().countMessages([
+        toolResult("call-2", "x".repeat(4_000)),
+      ]);
+
+      expect(large).toBe(largeFresh);
+      expect(large).toBeGreaterThan(small + 900);
+    });
+
+    it("should not share cached counts between same-name tool calls with different inputs", () => {
+      const toolCall = (input: string): ModelMessage =>
+        ({
+          role: "assistant",
+          content: [
+            { type: "tool-call", toolCallId: "c", toolName: "write", input: { content: input } },
+          ],
+        }) as unknown as ModelMessage;
+
+      const small = counter.countMessages([toolCall("ok")]);
+      const large = counter.countMessages([toolCall("x".repeat(4_000))]);
+      expect(large).toBeGreaterThan(small + 900);
+    });
+
+    it("should not share cached counts between legacy tool calls carrying args", () => {
+      const legacyCall = (args: string): ModelMessage =>
+        ({
+          role: "assistant",
+          content: [
+            { type: "tool-call", toolCallId: "c", toolName: "write", args: { content: args } },
+          ],
+        }) as unknown as ModelMessage;
+
+      const small = counter.countMessages([legacyCall("ok")]);
+      const large = counter.countMessages([legacyCall("x".repeat(4_000))]);
+      expect(large).toBeGreaterThan(small + 900);
+    });
+
+    it("should key tool calls on both input and args when both are present", () => {
+      const mixedCall = (args: string): ModelMessage =>
+        ({
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "c",
+              toolName: "write",
+              input: { path: "a.txt" },
+              args: { content: args },
+            },
+          ],
+        }) as unknown as ModelMessage;
+
+      const small = counter.countMessages([mixedCall("ok")]);
+      const large = counter.countMessages([mixedCall("x".repeat(4_000))]);
+      expect(large).toBeGreaterThan(small + 900);
+    });
+
+    it("should not throw when a tool result or call payload is undefined", () => {
+      // A tool that returns nothing produces `output: undefined` before the
+      // AI SDK normalises it. JSON.stringify(undefined) is undefined, which
+      // must not reach `count()`.
+      const messages = [
+        {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: "c1", toolName: "noop", output: undefined }],
+        },
+        {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: "c2", toolName: "noop", result: undefined }],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "c3", toolName: "noop", input: undefined }],
+        },
+      ] as unknown as ModelMessage[];
+
+      expect(() => counter.countMessages(messages)).not.toThrow();
+      expect(counter.countMessages(messages)).toBeGreaterThan(0);
+    });
+
+    it("should not throw on bigint or cyclic tool payloads", () => {
+      // JSON.stringify throws for both. Tool payloads are `unknown`, and the
+      // cache-key hash runs before counting, so neither path may throw.
+      const cyclic: Record<string, unknown> = { name: "loop" };
+      cyclic.self = cyclic;
+      const messages = [
+        {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "c1", toolName: "big", input: { n: 10n } }],
+        },
+        {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: "c1", toolName: "big", output: cyclic }],
+        },
+      ] as unknown as ModelMessage[];
+
+      expect(() => counter.countMessages(messages)).not.toThrow();
+      expect(counter.countMessages(messages)).toBeGreaterThan(0);
+    });
+
     it("should handle empty message array", () => {
       expect(counter.countMessages([])).toBe(0);
     });
@@ -169,6 +322,69 @@ describe("createCustomTokenCounter", () => {
     const result = counter.count("test");
     expect(customFn).toHaveBeenCalledWith("test");
     expect(result).toBe(10);
+  });
+
+  it("should always pass a string to countFn for undefined tool payloads", () => {
+    const customFn = vi.fn((text: string) => text.length);
+    const counter = createCustomTokenCounter({ countFn: customFn });
+
+    const messages = [
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "c1", toolName: "noop", output: undefined }],
+      },
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "c2", toolName: "noop", input: undefined }],
+      },
+    ] as unknown as ModelMessage[];
+
+    expect(() => counter.countMessages(messages)).not.toThrow();
+    for (const call of customFn.mock.calls) {
+      expect(typeof call[0]).toBe("string");
+    }
+  });
+
+  it("should count tool-result outputs at their full size", () => {
+    // Same shape as the LLE-11630 regression for the approximate counter:
+    // tool-result parts carry BOTH toolName and output, and matching on
+    // toolName first drops the output.
+    const customFn = vi.fn((text: string) => text.length);
+    const counter = createCustomTokenCounter({ countFn: customFn, messageOverhead: 0 });
+
+    const output = "x".repeat(50_000);
+    const messages = [
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "c1", toolName: "bash", output }],
+      },
+    ] as unknown as ModelMessage[];
+
+    expect(counter.countMessages(messages)).toBeGreaterThanOrEqual(50_000);
+    expect(customFn).toHaveBeenCalledWith(output);
+  });
+
+  it("should not throw on bigint or cyclic tool payloads", () => {
+    const customFn = vi.fn((text: string) => text.length);
+    const counter = createCustomTokenCounter({ countFn: customFn });
+
+    const cyclic: Record<string, unknown> = { name: "loop" };
+    cyclic.self = cyclic;
+    const messages = [
+      {
+        role: "assistant",
+        content: [{ type: "tool-call", toolCallId: "c1", toolName: "big", input: { n: 10n } }],
+      },
+      {
+        role: "tool",
+        content: [{ type: "tool-result", toolCallId: "c1", toolName: "big", output: cyclic }],
+      },
+    ] as unknown as ModelMessage[];
+
+    expect(() => counter.countMessages(messages)).not.toThrow();
+    for (const call of customFn.mock.calls) {
+      expect(typeof call[0]).toBe("string");
+    }
   });
 
   it("should use default message overhead", () => {
@@ -358,6 +574,69 @@ describe("createContextManager", () => {
       expect(budget.currentTokens).toBe(34);
       expect(budget.remaining).toBe(46);
       expect(budget.state).toBe("normal");
+    });
+
+    describe("actual usage vs estimate", () => {
+      const countFn = () => 10; // every string counts as 10 tokens
+
+      it("uses actual usage when it exceeds the estimate", () => {
+        const manager = createContextManager({
+          maxTokens: 1000,
+          tokenCounter: createCustomTokenCounter({ countFn }),
+        });
+        const messages: ModelMessage[] = [{ role: "user", content: "hi" }];
+        const estimate = manager.tokenCounter.countMessages(messages);
+
+        manager.updateUsage?.({ inputTokens: 500, outputTokens: 0, totalTokens: 500 });
+        const budget = manager.getBudget(messages);
+
+        expect(estimate).toBeLessThan(500);
+        expect(budget.currentTokens).toBe(500);
+        expect(budget.isActual).toBe(true);
+      });
+
+      it("does not let stale actual usage hide growth since the last model call", () => {
+        const manager = createContextManager({
+          maxTokens: 1000,
+          tokenCounter: createCustomTokenCounter({ countFn }),
+        });
+
+        // Usage from the previous generation was small...
+        manager.updateUsage?.({ inputTokens: 20, outputTokens: 0, totalTokens: 20 });
+
+        // ...but tool results have been appended since then.
+        const grown: ModelMessage[] = Array.from({ length: 30 }, (_, i) => ({
+          role: "user" as const,
+          content: `tool result ${i}`,
+        }));
+        const estimate = manager.tokenCounter.countMessages(grown);
+        const budget = manager.getBudget(grown);
+
+        expect(estimate).toBeGreaterThan(20);
+        expect(budget.currentTokens).toBe(estimate);
+        expect(budget.isActual).toBe(false);
+      });
+
+      it("clears actual usage after a successful compaction", async () => {
+        const manager = createContextManager({
+          maxTokens: 1000,
+          tokenCounter: createCustomTokenCounter({ countFn }),
+          summarization: { keepMessageCount: 2 },
+        });
+        const messages = createTestMessages(20);
+
+        manager.updateUsage?.({ inputTokens: 900, outputTokens: 0, totalTokens: 900 });
+        expect(manager.getBudget(messages).currentTokens).toBe(900);
+
+        const result = await manager.compact(messages, createMockAgent());
+        expect(result.newMessages.length).toBeLessThan(messages.length);
+
+        // The pre-compaction usage must not be applied to the compacted list.
+        const after = manager.getBudget(result.newMessages);
+        expect(after.currentTokens).toBe(manager.tokenCounter.countMessages(result.newMessages));
+        expect(after.currentTokens).toBeLessThan(900);
+        expect(after.isActual).toBe(false);
+      });
     });
   });
 

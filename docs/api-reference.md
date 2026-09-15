@@ -35,6 +35,8 @@ const agent = createAgent({
   mcpManager?: MCPManager,
   mcpEagerLoad?: boolean,
   toolSearch?: ToolSearchOptions,
+  transformToolError?: (error: unknown, ctx: { toolName: string }) => unknown,
+  repairDiscoveredToolCalls?: boolean, // default true
 });
 ```
 
@@ -47,6 +49,8 @@ const result = await agent.generate({
   messages?: Message[],
   threadId?: string,
   tools?: Record<string, Tool>,
+  checkpointAfterToolCall?: boolean,
+  shouldStopAfterStep?: () => boolean, // cooperative pause at a step boundary
 });
 
 // Stream a response (AsyncIterator)
@@ -445,6 +449,8 @@ type StreamPart =
   | { type: "text-delta"; text: string }
   | { type: "tool-call"; toolCallId: string; toolName: string; input: any }
   | { type: "tool-result"; toolCallId: string; toolName: string; output: any }
+  | { type: "tool-error"; toolCallId: string; toolName: string; input?: any; error: unknown }
+  | { type: "tool-output-denied"; toolCallId: string; toolName: string }
   | { type: "finish"; finishReason: string }
   | { type: "error"; error: Error };
 ```

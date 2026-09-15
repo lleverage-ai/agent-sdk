@@ -47,7 +47,9 @@ export type {
 export {
   createSkillRegistry,
   createSkillTool,
+  DEFAULT_SKILL_CONTINUATION_INSTRUCTION,
   SkillRegistry,
+  toSkillRuntimeName,
 } from "./skills.js";
 export type {
   TaskOutputToolOptions,

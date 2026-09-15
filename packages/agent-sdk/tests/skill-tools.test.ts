@@ -4,19 +4,33 @@
  * @packageDocumentation
  */
 
-import { tool } from "ai";
+import { asSchema, tool } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   createSkillRegistry,
   createSkillTool,
+  DEFAULT_SKILL_CONTINUATION_INSTRUCTION,
   type SkillDefinition,
   SkillRegistry,
+  toSkillRuntimeName,
 } from "../src/tools/skills.js";
 
 // =============================================================================
 // Test Utilities
 // =============================================================================
+
+/**
+ * Resolve the skill tool's description the way the AI SDK does when it
+ * prepares a request. The tool uses a function description so registry
+ * changes after creation are reflected.
+ */
+function describeTool(skillTool: ReturnType<typeof createSkillTool>): string {
+  const { description } = skillTool;
+  return typeof description === "function"
+    ? description({ context: undefined })
+    : (description ?? "");
+}
 
 /**
  * Create a simple test skill.
@@ -415,9 +429,9 @@ describe("createSkillTool", () => {
   it("should have description listing available skills", () => {
     const skillTool = createSkillTool({ registry });
 
-    expect(skillTool.description).toContain("git");
-    expect(skillTool.description).toContain("docker");
-    expect(skillTool.description).toContain("Git version control");
+    expect(describeTool(skillTool)).toContain("git");
+    expect(describeTool(skillTool)).toContain("docker");
+    expect(describeTool(skillTool)).toContain("Git version control");
   });
 
   it("should load skill when executed", async () => {
@@ -478,7 +492,7 @@ describe("createSkillTool", () => {
       descriptionPrefix: "Custom prefix for loading skills.",
     });
 
-    expect(skillTool.description).toContain("Custom prefix");
+    expect(describeTool(skillTool)).toContain("Custom prefix");
   });
 
   it("should handle skills with no tools", async () => {
@@ -496,6 +510,273 @@ describe("createSkillTool", () => {
     };
 
     expect(result.message).toContain("instructions only, no new tools");
+  });
+
+  describe("continuation instruction", () => {
+    it("appends the default continuation instruction to load results", async () => {
+      const skillTool = createSkillTool({ registry });
+      const result = (await skillTool.execute({ skill_name: "git" })) as { message: string };
+
+      expect(result.message).toContain("New tools available: git_tool.");
+      expect(result.message).toContain(DEFAULT_SKILL_CONTINUATION_INSTRUCTION);
+    });
+
+    it("appends the continuation instruction to instructions-only load results", async () => {
+      registry.register({
+        name: "guidelines",
+        description: "Coding guidelines",
+        instructions: "Follow these guidelines...",
+      });
+
+      const skillTool = createSkillTool({ registry });
+      const result = (await skillTool.execute({ skill_name: "guidelines" })) as {
+        message: string;
+      };
+
+      expect(result.message).toContain("(provides instructions only, no new tools).");
+      expect(result.message).toContain(DEFAULT_SKILL_CONTINUATION_INSTRUCTION);
+    });
+
+    it("uses a custom continuation instruction", async () => {
+      const skillTool = createSkillTool({
+        registry,
+        continuationInstruction: "Keep going.",
+      });
+      const result = (await skillTool.execute({ skill_name: "git" })) as { message: string };
+
+      expect(result.message).toBe("Loaded skill 'git'. New tools available: git_tool. Keep going.");
+    });
+
+    it("omits the continuation instruction when disabled", async () => {
+      const skillTool = createSkillTool({ registry, continuationInstruction: false });
+      const result = (await skillTool.execute({ skill_name: "git" })) as { message: string };
+
+      expect(result.message).toBe("Loaded skill 'git'. New tools available: git_tool");
+      expect(result.message).not.toContain(DEFAULT_SKILL_CONTINUATION_INSTRUCTION);
+    });
+  });
+
+  describe("args input schema", () => {
+    // The tool uses a lazy `() => Schema` so the AI SDK re-evaluates it per
+    // request; resolve it the same way the SDK does.
+    const schemaKeys = async (skillTool: ReturnType<typeof createSkillTool>): Promise<string[]> => {
+      const json = (await asSchema(skillTool.inputSchema).jsonSchema) as {
+        properties?: Record<string, unknown>;
+      };
+      return Object.keys(json.properties ?? {});
+    };
+
+    it("does not advertise args when no skill consumes them", async () => {
+      // Both test skills have static string instructions.
+      const skillTool = createSkillTool({ registry });
+
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name"]);
+    });
+
+    it("advertises args when at least one skill has function instructions", async () => {
+      registry.register({
+        name: "review",
+        description: "Code review",
+        instructions: (args) => `Review target: ${args}`,
+      });
+
+      const skillTool = createSkillTool({ registry });
+
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name", "args"]);
+    });
+
+    it("reflects skills registered after the tool was created", async () => {
+      const skillTool = createSkillTool({ registry });
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name"]);
+
+      registry.register({
+        name: "review",
+        description: "Code review",
+        instructions: (args) => `Review target: ${args}`,
+      });
+
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name", "args"]);
+
+      // Validation goes through the same lazy schema, so the late-registered
+      // skill receives its args instead of having them stripped.
+      const validated = await asSchema(skillTool.inputSchema).validate?.({
+        skill_name: "review",
+        args: "src/agent.ts",
+      });
+      expect(validated).toEqual({
+        success: true,
+        value: { skill_name: "review", args: "src/agent.ts" },
+      });
+
+      const result = (await skillTool.execute?.(
+        { skill_name: "review", args: "src/agent.ts" },
+        { toolCallId: "c", messages: [] },
+      )) as { instructions?: string };
+      expect(result.instructions).toBe("Review target: src/agent.ts");
+    });
+  });
+
+  describe("discoverable", () => {
+    it("hides non-discoverable skills from the tool description", () => {
+      registry.register({
+        name: "hidden",
+        description: "Only when the user asks",
+        discoverable: false,
+        instructions: "Hidden instructions",
+      });
+
+      const skillTool = createSkillTool({ registry });
+
+      expect(describeTool(skillTool)).toContain("git");
+      expect(describeTool(skillTool)).not.toContain("hidden");
+      expect(describeTool(skillTool)).not.toContain("Only when the user asks");
+    });
+
+    it("re-evaluates the description per request as the registry changes", () => {
+      const skillTool = createSkillTool({ registry });
+      expect(typeof skillTool.description).toBe("function");
+
+      // A skill registered after the tool was created is advertised.
+      registry.register({
+        name: "kubernetes",
+        description: "Kubernetes cluster operations",
+        instructions: "Use kubectl carefully.",
+      });
+      expect(describeTool(skillTool)).toContain("kubernetes: Kubernetes cluster operations");
+
+      // A loaded skill drops out of the catalogue.
+      registry.load("git");
+      expect(describeTool(skillTool)).not.toContain("- git:");
+      expect(describeTool(skillTool)).toContain("docker");
+    });
+
+    it("still loads non-discoverable skills by name", async () => {
+      registry.register({
+        name: "hidden",
+        description: "Only when the user asks",
+        discoverable: false,
+        instructions: "Hidden instructions",
+      });
+
+      const skillTool = createSkillTool({ registry });
+      const result = (await skillTool.execute({ skill_name: "hidden" })) as {
+        success: boolean;
+        instructions: string;
+      };
+
+      expect(result.success).toBe(true);
+      expect(result.instructions).toBe("Hidden instructions");
+    });
+
+    it("explains that explicit-only skills remain loadable when nothing is discoverable", () => {
+      const explicitOnly = new SkillRegistry({
+        skills: [
+          {
+            name: "hidden",
+            description: "Only when the user asks",
+            discoverable: false,
+            instructions: "Hidden instructions",
+          },
+        ],
+      });
+
+      const skillTool = createSkillTool({ registry: explicitOnly });
+
+      expect(describeTool(skillTool)).toContain("No skills are listed for automatic discovery");
+      expect(describeTool(skillTool)).toContain("can still be loaded by name");
+      expect(describeTool(skillTool)).not.toBe("No skills available to load.");
+    });
+
+    it("reports no skills when the registry is empty", () => {
+      const skillTool = createSkillTool({ registry: new SkillRegistry() });
+
+      expect(describeTool(skillTool)).toBe("No skills available to load.");
+    });
+  });
+});
+
+// =============================================================================
+// Runtime Name Tests
+// =============================================================================
+
+describe("toSkillRuntimeName", () => {
+  it("slugifies display names", () => {
+    expect(toSkillRuntimeName("Email Summariser")).toBe("email-summariser");
+    expect(toSkillRuntimeName("  PDF / Processing!  ")).toBe("pdf-processing");
+  });
+
+  it("returns spec-compliant names unchanged", () => {
+    expect(toSkillRuntimeName("pdf-processing")).toBe("pdf-processing");
+  });
+
+  it("truncates to 64 characters without a trailing separator", () => {
+    const long = `${"a".repeat(63)} b`;
+    const slug = toSkillRuntimeName(long);
+
+    expect(slug.length).toBeLessThanOrEqual(64);
+    expect(slug.endsWith("-")).toBe(false);
+  });
+
+  it("falls back to a stable fingerprint for un-sluggable names", () => {
+    const a = toSkillRuntimeName("---");
+    const b = toSkillRuntimeName("\u{1F600}");
+
+    expect(a).toMatch(/^skill--[0-9a-f]{8}$/);
+    expect(b).toMatch(/^skill--[0-9a-f]{8}$/);
+    expect(a).not.toBe(b);
+    expect(toSkillRuntimeName("---")).toBe(a);
+  });
+});
+
+describe("SkillRegistry runtime-name resolution", () => {
+  let registry: SkillRegistry;
+
+  beforeEach(() => {
+    registry = new SkillRegistry({
+      skills: [createTestSkill("Email Summariser", "Summarise emails")],
+    });
+  });
+
+  it("resolves get() by runtime slug", () => {
+    expect(registry.get("email-summariser")?.name).toBe("Email Summariser");
+    expect(registry.get("Email Summariser")?.name).toBe("Email Summariser");
+  });
+
+  it("loads by runtime slug and records the registered name", () => {
+    const onSkillLoaded = vi.fn();
+    registry = new SkillRegistry({
+      skills: [createTestSkill("Email Summariser", "Summarise emails")],
+      onSkillLoaded,
+    });
+
+    const result = registry.load("email-summariser");
+
+    expect(result.success).toBe(true);
+    expect(registry.isLoaded("Email Summariser")).toBe(true);
+    expect(registry.listLoaded()).toEqual(["Email Summariser"]);
+    expect(onSkillLoaded).toHaveBeenCalledWith("Email Summariser", result);
+  });
+
+  it("treats a slug load after an exact load as already loaded", () => {
+    registry.load("Email Summariser");
+    const result = registry.load("email-summariser");
+
+    expect(result.success).toBe(true);
+    expect(result.error).toContain("already loaded");
+    expect(registry.loadedCount).toBe(1);
+  });
+
+  it("prefers an exact match over a slug match", () => {
+    registry.register(createTestSkill("email-summariser", "Exact name"));
+
+    expect(registry.get("email-summariser")?.description).toBe("Exact name");
+  });
+
+  it("refuses ambiguous slug matches", () => {
+    registry.register(createTestSkill("email summariser", "Same slug, different name"));
+
+    expect(registry.get("email-summariser")).toBeUndefined();
+    expect(registry.load("email-summariser").success).toBe(false);
   });
 });
 
@@ -561,7 +842,7 @@ describe("Skill Tool Integration", () => {
     const registry = new SkillRegistry();
     const skillTool = createSkillTool({ registry });
 
-    expect(skillTool.description).toBe("No skills available to load.");
+    expect(describeTool(skillTool)).toBe("No skills available to load.");
   });
 
   it("should load file-based skill with skillPath and no tools", async () => {
@@ -577,8 +858,8 @@ describe("Skill Tool Integration", () => {
     const skillTool = createSkillTool({ registry });
 
     // Should appear in description
-    expect(skillTool.description).toContain("file-skill");
-    expect(skillTool.description).toContain("A file-based skill loaded from disk");
+    expect(describeTool(skillTool)).toContain("file-skill");
+    expect(describeTool(skillTool)).toContain("A file-based skill loaded from disk");
 
     // Should load successfully and return instructions
     const result = (await skillTool.execute({ skill_name: "file-skill" })) as {

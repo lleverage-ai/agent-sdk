@@ -660,6 +660,7 @@ export {
   // Todo tool
   createTodoWriteTool,
   createWriteTool,
+  DEFAULT_SKILL_CONTINUATION_INSTRUCTION,
   getBackgroundTask,
   listBackgroundTasks,
   // Tool utilities (DX helpers)
@@ -673,6 +674,7 @@ export {
   SkillRegistry,
   toolsFrom,
   toolsFromPlugin,
+  toSkillRuntimeName,
 } from "./tools/index.js";
 // Skills (tools use AI SDK's tool() directly)
 export { defineSkill } from "./tools.js";
@@ -774,6 +776,7 @@ export type {
   TaskToolOptions,
   Tool,
   ToolCallResult,
+  ToolErrorTransform,
   ToolExecutionOptions,
   ToolLoadErrorInput,
   ToolRegisteredInput,

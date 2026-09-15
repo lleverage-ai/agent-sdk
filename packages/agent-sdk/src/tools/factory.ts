@@ -460,6 +460,7 @@ export function createCoreTools(options: CoreToolsOptions): CreateCoreToolsResul
         skills.map((s) => ({
           name: s.name,
           description: s.description,
+          discoverable: s.discoverable,
           instructions: s.instructions,
           tools: s.tools,
           skillPath: s.skillPath,
