@@ -9,7 +9,7 @@
 
 import type { Tool, ToolSet } from "ai";
 import { asSchema } from "ai";
-import { formatPluginToolName } from "../tool-names.js";
+import { formatPluginToolName, resolveStaticToolDescription } from "../tool-names.js";
 import type { StreamingContext, StreamingToolsFactory } from "../types.js";
 import {
   createInlineToolExecutionOptions,
@@ -103,7 +103,7 @@ export class VirtualMCPServer {
 
       metadata.push({
         name: qualifiedName,
-        description: typeof tool.description === "string" ? tool.description : "",
+        description: resolveStaticToolDescription(tool.description),
         inputSchema,
         source: this.name,
         sourceType: "inline",

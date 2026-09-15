@@ -851,12 +851,14 @@ export function createSkillTool(options: SkillToolOptions): Tool {
   // instructions, so the framing lands in context before the instructions it
   // is supposed to follow.
   //
-  // The schema is a lazy `() => Schema` rather than a fixed zod object so the
-  // AI SDK re-evaluates it on every request (both when preparing the tool
-  // list for the model and when validating a tool call). `registry.register()`
-  // can add a function-instruction skill after this tool is created, and a
-  // schema captured at creation time would then strip the `args` the model
-  // supplies for it.
+  // Both the description and the schema are evaluated lazily so the AI SDK
+  // re-reads them on every request (when preparing the tool list for the
+  // model and when validating a tool call). `registry.register()` and
+  // `registry.load()` mutate the registry after this tool is created; a
+  // description captured at creation time would keep advertising loaded
+  // skills and omit newly registered ones, and a fixed schema would strip the
+  // `args` the model supplies for a late-registered function-instruction
+  // skill.
   const inputSchema = (): Schema<SkillToolInput> =>
     zodSchema<SkillToolInput>(
       registry.anySkillConsumesArgs()
@@ -870,7 +872,7 @@ export function createSkillTool(options: SkillToolOptions): Tool {
     );
 
   return tool({
-    description: buildDescription(),
+    description: buildDescription,
     inputSchema,
     execute: async ({ skill_name, args }: SkillToolInput) => {
       const result = registry.load(skill_name, args);

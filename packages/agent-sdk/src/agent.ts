@@ -68,7 +68,7 @@ import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
 import { createSubagent } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
-import { formatPluginToolName } from "./tool-names.js";
+import { formatPluginToolName, resolveStaticToolDescription } from "./tool-names.js";
 import { createCallToolTool } from "./tools/call-tool.js";
 import {
   coreToolsToToolSet,
@@ -1597,9 +1597,9 @@ export function createAgent(options: AgentOptions): Agent {
     // Extract tool metadata for context
     const toolsMetadata = Object.entries(filteredTools).map(([name, tool]) => ({
       name,
-      // AI SDK 7 allows a dynamic (function) description; metadata only needs
-      // the static string form, so non-string descriptions fall back to "".
-      description: typeof tool.description === "string" ? tool.description : "",
+      // AI SDK 7 allows a dynamic (function) description (the skill tool uses
+      // one); evaluate it so the prompt listing matches what the model sees.
+      description: resolveStaticToolDescription(tool.description),
     }));
 
     // Extract skills metadata — exclude skills in the registry (accessible via skill tool)

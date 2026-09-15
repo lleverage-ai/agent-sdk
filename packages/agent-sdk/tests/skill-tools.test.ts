@@ -21,6 +21,18 @@ import {
 // =============================================================================
 
 /**
+ * Resolve the skill tool's description the way the AI SDK does when it
+ * prepares a request. The tool uses a function description so registry
+ * changes after creation are reflected.
+ */
+function describeTool(skillTool: ReturnType<typeof createSkillTool>): string {
+  const { description } = skillTool;
+  return typeof description === "function"
+    ? description({ context: undefined })
+    : (description ?? "");
+}
+
+/**
  * Create a simple test skill.
  */
 function createTestSkill(
@@ -417,9 +429,9 @@ describe("createSkillTool", () => {
   it("should have description listing available skills", () => {
     const skillTool = createSkillTool({ registry });
 
-    expect(skillTool.description).toContain("git");
-    expect(skillTool.description).toContain("docker");
-    expect(skillTool.description).toContain("Git version control");
+    expect(describeTool(skillTool)).toContain("git");
+    expect(describeTool(skillTool)).toContain("docker");
+    expect(describeTool(skillTool)).toContain("Git version control");
   });
 
   it("should load skill when executed", async () => {
@@ -480,7 +492,7 @@ describe("createSkillTool", () => {
       descriptionPrefix: "Custom prefix for loading skills.",
     });
 
-    expect(skillTool.description).toContain("Custom prefix");
+    expect(describeTool(skillTool)).toContain("Custom prefix");
   });
 
   it("should handle skills with no tools", async () => {
@@ -615,9 +627,27 @@ describe("createSkillTool", () => {
 
       const skillTool = createSkillTool({ registry });
 
-      expect(skillTool.description).toContain("git");
-      expect(skillTool.description).not.toContain("hidden");
-      expect(skillTool.description).not.toContain("Only when the user asks");
+      expect(describeTool(skillTool)).toContain("git");
+      expect(describeTool(skillTool)).not.toContain("hidden");
+      expect(describeTool(skillTool)).not.toContain("Only when the user asks");
+    });
+
+    it("re-evaluates the description per request as the registry changes", () => {
+      const skillTool = createSkillTool({ registry });
+      expect(typeof skillTool.description).toBe("function");
+
+      // A skill registered after the tool was created is advertised.
+      registry.register({
+        name: "kubernetes",
+        description: "Kubernetes cluster operations",
+        instructions: "Use kubectl carefully.",
+      });
+      expect(describeTool(skillTool)).toContain("kubernetes: Kubernetes cluster operations");
+
+      // A loaded skill drops out of the catalogue.
+      registry.load("git");
+      expect(describeTool(skillTool)).not.toContain("- git:");
+      expect(describeTool(skillTool)).toContain("docker");
     });
 
     it("still loads non-discoverable skills by name", async () => {
@@ -652,15 +682,15 @@ describe("createSkillTool", () => {
 
       const skillTool = createSkillTool({ registry: explicitOnly });
 
-      expect(skillTool.description).toContain("No skills are listed for automatic discovery");
-      expect(skillTool.description).toContain("can still be loaded by name");
-      expect(skillTool.description).not.toBe("No skills available to load.");
+      expect(describeTool(skillTool)).toContain("No skills are listed for automatic discovery");
+      expect(describeTool(skillTool)).toContain("can still be loaded by name");
+      expect(describeTool(skillTool)).not.toBe("No skills available to load.");
     });
 
     it("reports no skills when the registry is empty", () => {
       const skillTool = createSkillTool({ registry: new SkillRegistry() });
 
-      expect(skillTool.description).toBe("No skills available to load.");
+      expect(describeTool(skillTool)).toBe("No skills available to load.");
     });
   });
 });
@@ -812,7 +842,7 @@ describe("Skill Tool Integration", () => {
     const registry = new SkillRegistry();
     const skillTool = createSkillTool({ registry });
 
-    expect(skillTool.description).toBe("No skills available to load.");
+    expect(describeTool(skillTool)).toBe("No skills available to load.");
   });
 
   it("should load file-based skill with skillPath and no tools", async () => {
@@ -828,8 +858,8 @@ describe("Skill Tool Integration", () => {
     const skillTool = createSkillTool({ registry });
 
     // Should appear in description
-    expect(skillTool.description).toContain("file-skill");
-    expect(skillTool.description).toContain("A file-based skill loaded from disk");
+    expect(describeTool(skillTool)).toContain("file-skill");
+    expect(describeTool(skillTool)).toContain("A file-based skill loaded from disk");
 
     // Should load successfully and return instructions
     const result = (await skillTool.execute({ skill_name: "file-skill" })) as {

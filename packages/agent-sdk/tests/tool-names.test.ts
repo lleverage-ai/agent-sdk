@@ -4,6 +4,7 @@ import {
   formatPluginToolName,
   isMcpToolName,
   MCP_TOOL_PREFIX,
+  resolveStaticToolDescription,
 } from "../src/tool-names.js";
 
 describe("tool name helpers", () => {
@@ -24,5 +25,32 @@ describe("tool name helpers", () => {
     expect(() => formatPluginToolName("mcp", "tool")).toThrow(/reserved/);
     expect(() => formatPluginToolName("mcp_", "tool")).toThrow(/reserved/);
     expect(() => formatPluginToolName(`${MCP_TOOL_PREFIX}shadow`, "tool")).toThrow(/reserved/);
+  });
+});
+
+describe("resolveStaticToolDescription", () => {
+  it("returns string descriptions as-is", () => {
+    expect(resolveStaticToolDescription("Reads a file")).toBe("Reads a file");
+  });
+
+  it("evaluates AI SDK 7 function descriptions", () => {
+    let calls = 0;
+    const description = () => {
+      calls++;
+      return `dynamic ${calls}`;
+    };
+    expect(resolveStaticToolDescription(description)).toBe("dynamic 1");
+    expect(resolveStaticToolDescription(description)).toBe("dynamic 2");
+  });
+
+  it("falls back to an empty string for missing, non-string, or throwing descriptions", () => {
+    expect(resolveStaticToolDescription(undefined)).toBe("");
+    expect(resolveStaticToolDescription(42)).toBe("");
+    expect(resolveStaticToolDescription(() => 42)).toBe("");
+    expect(
+      resolveStaticToolDescription(() => {
+        throw new Error("boom");
+      }),
+    ).toBe("");
   });
 });

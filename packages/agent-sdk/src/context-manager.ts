@@ -78,8 +78,10 @@ function hashMessage(message: ModelMessage): string {
           return `tool-result:${toolName}:${JSON.stringify(output)}`;
         }
         if ("toolName" in part) {
-          // Tool call - include the input so different calls do not collide.
-          const input = "input" in part ? part.input : undefined;
+          // Tool call - include the input (or legacy `args`, which
+          // countSingleMessage also counts) so different calls do not collide.
+          const call = part as { input?: unknown; args?: unknown };
+          const input = call.input !== undefined ? call.input : call.args;
           return `tool:${part.toolName}:${JSON.stringify(input)}`;
         }
         return JSON.stringify(part);

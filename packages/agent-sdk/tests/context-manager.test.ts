@@ -227,6 +227,20 @@ describe("createApproximateTokenCounter", () => {
       expect(large).toBeGreaterThan(small + 900);
     });
 
+    it("should not share cached counts between legacy tool calls carrying args", () => {
+      const legacyCall = (args: string): ModelMessage =>
+        ({
+          role: "assistant",
+          content: [
+            { type: "tool-call", toolCallId: "c", toolName: "write", args: { content: args } },
+          ],
+        }) as unknown as ModelMessage;
+
+      const small = counter.countMessages([legacyCall("ok")]);
+      const large = counter.countMessages([legacyCall("x".repeat(4_000))]);
+      expect(large).toBeGreaterThan(small + 900);
+    });
+
     it("should handle empty message array", () => {
       expect(counter.countMessages([])).toBe(0);
     });

@@ -68,6 +68,12 @@ no longer need to patch `dist/`.
   registered skill has function-based instructions that consume arguments, and
   its description explains that explicit-only skills are still loadable when
   the discoverable catalogue is empty.
+- The `skill` tool's `description` and `inputSchema` are now evaluated lazily
+  (AI SDK 7 function description and `() => Schema`), so skills registered or
+  loaded after `createSkillTool()` are reflected on the next request without
+  recreating the tool. Code that reads `tool.description` as a string should
+  handle the function form; the SDK's own prompt builder and
+  `VirtualMCPServer` do.
 - `ContextManager.getBudget()` now uses `max(actual usage, estimate)` instead
   of trusting the last reported usage outright. Actual usage describes the
   *previous* model input; the current message list may already contain newer
