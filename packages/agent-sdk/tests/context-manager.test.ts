@@ -241,6 +241,26 @@ describe("createApproximateTokenCounter", () => {
       expect(large).toBeGreaterThan(small + 900);
     });
 
+    it("should key tool calls on both input and args when both are present", () => {
+      const mixedCall = (args: string): ModelMessage =>
+        ({
+          role: "assistant",
+          content: [
+            {
+              type: "tool-call",
+              toolCallId: "c",
+              toolName: "write",
+              input: { path: "a.txt" },
+              args: { content: args },
+            },
+          ],
+        }) as unknown as ModelMessage;
+
+      const small = counter.countMessages([mixedCall("ok")]);
+      const large = counter.countMessages([mixedCall("x".repeat(4_000))]);
+      expect(large).toBeGreaterThan(small + 900);
+    });
+
     it("should handle empty message array", () => {
       expect(counter.countMessages([])).toBe(0);
     });
