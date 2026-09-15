@@ -27,8 +27,8 @@ call sites. Install the matching providers:
 {
   "peerDependencies": { "ai": "^7.0.0", "zod": "^4.0.0" },
   "devDependencies": {
-    "@ai-sdk/anthropic": "^4.0.3",
-    "@ai-sdk/gateway": "^4.0.6"
+    "@ai-sdk/anthropic": "^4.0.53",
+    "@ai-sdk/gateway": "^4.0.81"
   }
 }
 ```

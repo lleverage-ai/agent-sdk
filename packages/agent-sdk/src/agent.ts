@@ -1507,6 +1507,18 @@ export function createAgent(options: AgentOptions): Agent {
   };
 
   /**
+   * `repairToolCall` under both names the AI SDK accepts. Versions before
+   * 7.0.20 only read `experimental_repairToolCall` (the stable name is bound
+   * from it with a default); newer versions prefer the stable name. Passing
+   * both keeps the `ai` peer range at `^7.0.0` without silently losing repair
+   * on older installs.
+   */
+  const repairToolCallOptions = {
+    repairToolCall,
+    experimental_repairToolCall: repairToolCall,
+  } as const;
+
+  /**
    * Filter a tool set by the allowedTools and disallowedTools restrictions.
    * If neither is set, returns all tools.
    *
@@ -2541,7 +2553,7 @@ export function createAgent(options: AgentOptions): Agent {
         const unwrappedTools = collectAllTools();
 
         const tool = unwrappedTools[interrupt.toolName];
-        if (!tool || !tool.execute) {
+        if (!tool?.execute) {
           throw new Error(
             `Cannot resume: tool "${interrupt.toolName}" not found or has no execute function`,
           );
@@ -2642,7 +2654,7 @@ export function createAgent(options: AgentOptions): Agent {
     const customTools = collectAllTools();
 
     const customTool = customTools[customToolName];
-    if (!customTool || !customTool.execute) {
+    if (!customTool?.execute) {
       throw new Error(
         `Cannot resume: tool "${customToolName}" not found or has no execute function`,
       );
@@ -2859,7 +2871,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Execute generation
           const response = await generateText({
             model: retryState.currentModel,
-            experimental_repairToolCall: repairToolCall,
+            ...repairToolCallOptions,
             system: initialParams.system,
             messages: projectMessagesForModel(
               initialParams.messages,
@@ -3449,7 +3461,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Execute stream
           const response = streamText({
             model: retryState.currentModel,
-            experimental_repairToolCall: repairToolCall,
+            ...repairToolCallOptions,
             system: initialParams.system,
             messages: projectMessagesForModel(
               initialParams.messages,
@@ -3975,7 +3987,7 @@ export function createAgent(options: AgentOptions): Agent {
           // e.g. rate limit, the catch block handles retry/fallback).
           const result = streamText({
             model: modelToUse,
-            experimental_repairToolCall: repairToolCall,
+            ...repairToolCallOptions,
             system: initialParams.system,
             messages: projectMessagesForModel(
               initialParams.messages,
@@ -4153,7 +4165,7 @@ export function createAgent(options: AgentOptions): Agent {
 
                       return streamText({
                         model: currentModel,
-                        experimental_repairToolCall: repairToolCall,
+                        ...repairToolCallOptions,
                         system: getSystemPrompt(followUpPromptContext),
                         messages: projectMessagesForModel(
                           followUpMessages,
@@ -4415,7 +4427,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Execute stream
           const result = streamText({
             model: retryState.currentModel,
-            experimental_repairToolCall: repairToolCall,
+            ...repairToolCallOptions,
             system: initialParams.system,
             messages: projectMessagesForModel(
               initialParams.messages,
@@ -4692,7 +4704,7 @@ export function createAgent(options: AgentOptions): Agent {
               // Execute stream
               const result = streamText({
                 model: modelToUse,
-                experimental_repairToolCall: repairToolCall,
+                ...repairToolCallOptions,
                 system: initialParams.system,
                 messages: projectMessagesForModel(
                   initialParams.messages,
@@ -4909,7 +4921,7 @@ export function createAgent(options: AgentOptions): Agent {
 
                       return streamText({
                         model: currentModel,
-                        experimental_repairToolCall: repairToolCall,
+                        ...repairToolCallOptions,
                         system: getSystemPrompt(followUpPromptContext),
                         messages: projectMessagesForModel(
                           followUpMessages,
