@@ -87,6 +87,8 @@ interface RunSink {
     forkFromMessageId?: string;
     /** The turn's user/system input as canonical messages, so the sink can make it durable before generation starts. */
     inputMessages: CanonicalMessage[];
+    /** Agent state the run starts from (what `source.load` returned, or fresh). Persisted so a run that dies before its first step still has a state record. */
+    state: AgentState;
   }): Promise<void>;
 
   /** Ordered stream events for the run. Called with batches; may be called many times. Must resolve before the runner continues. */
@@ -131,9 +133,14 @@ Rules:
 - `beginRun` must make `inputMessages` durable before returning. This is the
   contract's answer to LLE-10407: a retry that reloads the transcript sees the
   user turn even if the first model call never produced an `append`.
-- Every call is awaited. A sink that wants fire-and-forget does it internally
-  and returns a resolved promise. This gives the "next step cannot flow until
-  the boundary is durable" guarantee that lleverage's drain-pause and
+- Every call is awaited, and a resolved promise means the sink's storage has
+  accepted the write at that storage's durability tier: the ledger runtime
+  resolves when `IEventStore.append` resolves; `sinkFromSaver` resolves when
+  `save()` resolves; lleverage's publisher resolves when the outbox has the
+  row (see open question 1). A sink that resolves before its storage accepts
+  the write is choosing to lose that boundary on crash; the contract does not
+  forbid it but the runner will not know. This is the "next step cannot flow
+  until the boundary is durable" guarantee that lleverage's drain-pause and
   continue-from-checkpoint logic assume today.
 - A sink failure fails the run with the sink error as `cause`. There is no
   silent fallback to in-memory state.
@@ -180,13 +187,13 @@ set. In step 1 `sinkFromSaver` honours the option exactly as today, so the
 swap-test sees identical `save()` calls. From step 4 (option removed)
 `stepFinished` always saves: an N-step run produces N+1 `save()` calls. For
 `MemorySaver`/`FileSaver` this is free (ledger append). A third-party saver
-that cannot afford per-step writes debounces internally; the contract only
-requires the promise to resolve.
+that cannot afford per-step writes can coalesce them, at the cost of the
+durability guarantee above for the steps it coalesces.
 
 `MemorySaver` and `FileSaver` keep their constructors and their
 `BaseCheckpointSaver` shape — the retained-surface table below promises
 unchanged tests — but their **implementation** moves onto the ledger: each
-holds a `createLedgerRuntime(store)` internally and forwards `save()` to the
+holds a `createLedgerRuntime(...)` internally and forwards `save()` to the
 sink and `load()` to the source. Passing one to `createAgent({ checkpointer })`
 is detected and short-circuits the `sinkFromSaver` wrapper, so the runner
 talks to the ledger directly. `createAgent({ ledger })` is the same thing
@@ -208,16 +215,24 @@ state, pending interrupt) to an inner saver. It is unused by lleverage and
 untested against `createAgent` end to end, but it is the right read side. This
 proposal completes it with the write side.
 
-`createLedgerRuntime(store)` returns `{ sink: RunSink, source: CheckpointSource }`:
+`createLedgerRuntime({ ledgerStore, eventStore })` takes the same pair
+`RunManager` does (`ILedgerStore` for runs and transcripts,
+`IEventStore<StreamEvent>` for raw events) and returns
+`{ sink: RunSink, source: CheckpointSource }`. `MemorySaver` pairs
+`InMemoryLedgerStore` + `InMemoryEventStore`; `FileSaver` pairs
+`SQLiteLedgerStore` + `SQLiteEventStore` on one database.
 
 - `sink.beginRun` → `RunManager.beginRun` (with `forkFromMessageId`; exposed
   as a new `GenerateOptions.forkFromMessageId`, replacing `forkSession`),
-  then `appendEvents` with one `input-message` event (new core kind) per
-  entry in `inputMessages`, in the same call, before returning. The
-  accumulator materialises `input-message` into the corresponding user/system
-  `CanonicalMessage`, so a run that fails before its first model part still
-  leaves the user turn in the transcript. `BeginRunOptions` gains no field;
-  the durability comes from the events.
+  then `appendEvents` with a `run-state` event carrying `state` followed by
+  one `input-message` event (new core kind) per entry in `inputMessages`, in
+  the same call, before returning. The accumulator materialises
+  `input-message` into the corresponding user/system `CanonicalMessage`, so a
+  run that fails before its first model part still leaves the user turn in
+  the transcript, and the leading `run-state` means every run — including a
+  fork, whose `state` is whatever the runner loaded before branching — has a
+  state record from its first event. `BeginRunOptions` gains no field; the
+  durability comes from the events.
 - `sink.append` → `RunManager.appendEvents`.
 - `sink.stepFinished` → appends a `step-finished` event carrying `step`,
   `usage` and a `state` snapshot (todos, files). The transcript itself is
@@ -232,13 +247,18 @@ proposal completes it with the write side.
   raised the interrupt, before the resumed run's `beginRun`.
 - `sink.finalizeRun` → appends a `run-state` event carrying the final `state`,
   then `RunManager.finalizeRun`.
-- `source.load` → `getTranscript({ threadId, branch: "active" })` →
-  `canonicalMessagesToModelMessages` (existing) → `Checkpoint` with:
+- `source.load` performs two reads. Messages:
+  `getTranscript({ threadId, branch: "active" })` →
+  `canonicalMessagesToModelMessages` (existing). Lifecycle: `listRuns(threadId)`
+  → leaf run on the active branch (the run `getThreadTree` reports as the
+  active tip) → `eventStore.replay(leaf.streamId)`. The replayed events give
+  `Checkpoint`:
   - `step` = number of `step-finished` events on the leaf run;
   - `pendingInterrupt` = the last `interrupt-requested` on the leaf run with
     no later `interrupt-resolved` carrying the same `interruptId`;
-  - `state` = payload of the last `run-state` event on the leaf run, else the
-    last `step-finished.state` on the leaf run, else `createAgentState()`;
+  - `state` = payload of the last `run-state` or `step-finished.state` event
+    on the leaf run, whichever is later. Always present because `beginRun`
+    writes one first; `createAgentState()` only when the thread has no runs;
   - `metadata.lastRunUsage` from the leaf run's finalize record.
 
   **Branch rule.** `load(threadId)` is always the active branch, and "leaf
