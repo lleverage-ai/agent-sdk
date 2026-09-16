@@ -126,6 +126,13 @@ no longer need to patch `dist/`.
   they were previously hand-assembled in at seven call sites is now a single
   `createToolPipeline().buildTools()` with a documented layer diagram and
   ordering tests. No public API or behaviour change.
+- Extracted the checkpoint runtime from `agent.ts` into
+  `src/agent/checkpoint-runtime.ts`. `loadCheckpoint` / `saveCheckpoint` /
+  `forkCheckpoint` and the per-thread cache moved verbatim; the pending
+  interrupt stamping that was hand-written at five call sites, the run-id
+  continuation preamble duplicated across all five generation modes, and
+  the save-then-cache pattern on the resume path are now single runtime
+  methods. No public API or behaviour change.
 
 ## [0.1.0-alpha.9] - 2026-06-30
 

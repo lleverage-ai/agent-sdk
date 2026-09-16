@@ -12,6 +12,7 @@ import {
   NoSuchToolError,
   streamText,
 } from "ai";
+import { createCheckpointRuntime, getCheckpointRunId } from "./agent/checkpoint-runtime.js";
 import {
   buildStopConditions,
   createToolPipeline,
@@ -37,7 +38,7 @@ import {
   isApprovalInterrupt,
   updateCheckpoint,
 } from "./checkpointer/types.js";
-import { type AgentError, CheckpointError } from "./errors/index.js";
+import type { AgentError } from "./errors/index.js";
 import {
   createRetryLoopState,
   handleGenerationError,
@@ -124,27 +125,6 @@ function isToolContentOutput(output: unknown): output is ToolContentOutput {
     (output as { type?: unknown }).type === "content" &&
     Array.isArray((output as { value?: unknown }).value)
   );
-}
-
-/** @internal */
-function getCheckpointRunId(checkpoint: Checkpoint | undefined): string | undefined {
-  return typeof checkpoint?.metadata?.runId === "string" ? checkpoint.metadata.runId : undefined;
-}
-
-/** @internal */
-function withCheckpointRunId(
-  checkpoint: Checkpoint,
-  runId: string | undefined,
-  updates?: Partial<Omit<Checkpoint, "threadId" | "createdAt">>,
-): Checkpoint {
-  return updateCheckpoint(checkpoint, {
-    ...(updates ?? {}),
-    metadata: {
-      ...(checkpoint.metadata ?? {}),
-      ...(updates?.metadata ?? {}),
-      ...(runId ? { runId } : {}),
-    },
-  });
 }
 
 /** @internal */
@@ -1001,155 +981,11 @@ export function createAgent(options: AgentOptions): Agent {
     subagents: allSubagents,
   });
 
-  // Track current checkpoint state per thread
-  const threadCheckpoints = new Map<string, Checkpoint>();
-
   /**
-   * Load checkpoint for a thread if checkpointer is configured.
-   * Returns the loaded checkpoint or undefined.
+   * Checkpoint cache and persistence; see `./agent/checkpoint-runtime.ts`.
    */
-  async function loadCheckpoint(threadId: string): Promise<Checkpoint | undefined> {
-    if (!options.checkpointer) {
-      return undefined;
-    }
-
-    // Check if we already have it cached
-    const cached = threadCheckpoints.get(threadId);
-    if (cached) {
-      return cached;
-    }
-
-    try {
-      // Load from checkpointer
-      const checkpoint = await options.checkpointer.load(threadId);
-      if (checkpoint) {
-        threadCheckpoints.set(threadId, checkpoint);
-
-        // Restore agent state from checkpoint
-        state.todos = [...checkpoint.state.todos];
-        state.files = { ...checkpoint.state.files };
-      }
-
-      return checkpoint;
-    } catch (error) {
-      // Wrap checkpoint load errors with CheckpointError
-      throw new CheckpointError(`Failed to load checkpoint for thread ${threadId}`, {
-        operation: "load",
-        threadId,
-        cause: error instanceof Error ? error : undefined,
-        metadata: { threadId },
-      });
-    }
-  }
-
-  /**
-   * Save checkpoint for a thread if checkpointer is configured.
-   */
-  async function saveCheckpoint(
-    threadId: string,
-    messages: ModelMessage[],
-    step: number,
-    runId?: string,
-  ): Promise<Checkpoint | undefined> {
-    if (!options.checkpointer) {
-      return undefined;
-    }
-
-    const existingCheckpoint = threadCheckpoints.get(threadId);
-    let checkpoint: Checkpoint;
-
-    if (existingCheckpoint) {
-      // Update existing checkpoint
-      checkpoint = updateCheckpoint(existingCheckpoint, {
-        messages,
-        step,
-        state: {
-          todos: [...state.todos],
-          files: { ...state.files },
-        },
-        metadata: {
-          ...(existingCheckpoint.metadata ?? {}),
-          ...(runId ? { runId } : {}),
-        },
-      });
-    } else {
-      // Create new checkpoint
-      checkpoint = createCheckpoint({
-        threadId,
-        messages,
-        step,
-        state: {
-          todos: [...state.todos],
-          files: { ...state.files },
-        },
-        metadata: runId ? { runId } : undefined,
-      });
-    }
-
-    try {
-      // Save to checkpointer
-      await options.checkpointer.save(checkpoint);
-      threadCheckpoints.set(threadId, checkpoint);
-
-      return checkpoint;
-    } catch (error) {
-      // Wrap checkpoint save errors with CheckpointError
-      throw new CheckpointError(`Failed to save checkpoint for thread ${threadId}`, {
-        operation: "save",
-        threadId,
-        cause: error instanceof Error ? error : undefined,
-        metadata: { threadId, step },
-      });
-    }
-  }
-
-  /**
-   * Fork an existing checkpoint to a new thread ID.
-   * Copies all checkpoint data including messages and state.
-   */
-  async function forkCheckpoint(
-    sourceThreadId: string,
-    targetThreadId: string,
-  ): Promise<Checkpoint | undefined> {
-    if (!options.checkpointer) {
-      return undefined;
-    }
-
-    // Load the source checkpoint
-    const sourceCheckpoint = await loadCheckpoint(sourceThreadId);
-    if (!sourceCheckpoint) {
-      return undefined;
-    }
-
-    // Create a new checkpoint with the target threadId
-    const forkedCheckpoint = createCheckpoint({
-      threadId: targetThreadId,
-      messages: [...sourceCheckpoint.messages],
-      step: sourceCheckpoint.step,
-      state: {
-        todos: [...sourceCheckpoint.state.todos],
-        files: { ...sourceCheckpoint.state.files },
-      },
-    });
-
-    try {
-      // Save the forked checkpoint
-      await options.checkpointer.save(forkedCheckpoint);
-      threadCheckpoints.set(targetThreadId, forkedCheckpoint);
-
-      return forkedCheckpoint;
-    } catch (error) {
-      throw new CheckpointError(
-        `Failed to fork checkpoint from ${sourceThreadId} to ${targetThreadId}`,
-        {
-          operation: "fork",
-          threadId: targetThreadId,
-          cause: error instanceof Error ? error : undefined,
-          metadata: { sourceThreadId, targetThreadId },
-        },
-      );
-    }
-  }
+  const checkpoints = createCheckpointRuntime({ checkpointer: options.checkpointer, state });
+  const { load: loadCheckpoint, save: saveCheckpoint, fork: forkCheckpoint } = checkpoints;
 
   /**
    * Compact a message list when the configured context policy requires it.
@@ -1694,8 +1530,7 @@ export function createAgent(options: AgentOptions): Agent {
         pendingInterrupt: undefined,
         step: checkpoint.step + 1,
       });
-      await options.checkpointer.save(updatedCheckpoint);
-      threadCheckpoints.set(threadId, updatedCheckpoint);
+      await checkpoints.commit(threadId, updatedCheckpoint);
 
       // Clean up the response from our maps
       pendingResponses.delete(interrupt.id);
@@ -1784,18 +1619,16 @@ export function createAgent(options: AgentOptions): Agent {
       if (isInterruptSignal(executeError)) {
         // Tool threw another interrupt — persist it and return re-interrupted
         const newInterrupt = executeError.interrupt;
-        const reInterruptCheckpoint = withCheckpointRunId(
-          updateCheckpoint(checkpoint, {
-            pendingInterrupt: newInterrupt,
-          }),
+        const reInterruptCheckpoint = await checkpoints.markPendingInterrupt(
+          threadId,
+          newInterrupt,
           resumeTelemetry.runId,
+          checkpoint,
         );
-        await options.checkpointer.save(reInterruptCheckpoint);
-        threadCheckpoints.set(threadId, reInterruptCheckpoint);
         return {
           type: "re-interrupted",
           interrupt: newInterrupt,
-          checkpoint: reInterruptCheckpoint,
+          checkpoint: reInterruptCheckpoint ?? checkpoint,
         };
       }
       customToolResult = `Tool execution failed: ${executeError instanceof Error ? executeError.message : String(executeError)}`;
@@ -1832,8 +1665,7 @@ export function createAgent(options: AgentOptions): Agent {
       pendingInterrupt: undefined,
       step: checkpoint.step + 1,
     });
-    await options.checkpointer.save(customUpdatedCheckpoint);
-    threadCheckpoints.set(threadId, customUpdatedCheckpoint);
+    await checkpoints.commit(threadId, customUpdatedCheckpoint);
 
     // Clean up
     pendingResponses.delete(interrupt.id);
@@ -1857,14 +1689,7 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async generate(genOptions: GenerateOptions): Promise<GenerateResult> {
-      let runId = genOptions._runId;
-      if (!runId && genOptions.threadId && !genOptions.forkSession) {
-        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
-        if (existingCheckpoint?.pendingInterrupt) {
-          runId = getCheckpointRunId(existingCheckpoint);
-        }
-      }
-      runId ??= createRunId();
+      const runId = await checkpoints.resolveRunId(genOptions);
 
       // Invoke unified PreGenerate hooks
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
@@ -2005,17 +1830,12 @@ export function createAgent(options: AgentOptions): Agent {
                 startStep + response.steps.length,
                 interruptTelemetry.runId,
               );
-              if (savedCheckpoint) {
-                const withInterrupt = withCheckpointRunId(
-                  savedCheckpoint,
-                  interruptTelemetry.runId,
-                  {
-                    pendingInterrupt: interrupt,
-                  },
-                );
-                await options.checkpointer.save(withInterrupt);
-                threadCheckpoints.set(checkpointThreadId, withInterrupt);
-              }
+              await checkpoints.markPendingInterrupt(
+                checkpointThreadId,
+                interrupt,
+                interruptTelemetry.runId,
+                savedCheckpoint,
+              );
             }
 
             // Emit InterruptRequested hook
@@ -2216,17 +2036,12 @@ export function createAgent(options: AgentOptions): Agent {
                 0,
                 interruptTelemetry.runId,
               );
-              if (savedCheckpoint) {
-                const withInterrupt = withCheckpointRunId(
-                  savedCheckpoint,
-                  interruptTelemetry.runId,
-                  {
-                    pendingInterrupt: interrupt,
-                  },
-                );
-                await options.checkpointer.save(withInterrupt);
-                threadCheckpoints.set(effectiveGenOptions.threadId, withInterrupt);
-              }
+              await checkpoints.markPendingInterrupt(
+                effectiveGenOptions.threadId,
+                interrupt,
+                interruptTelemetry.runId,
+                savedCheckpoint,
+              );
             }
 
             // Emit InterruptRequested hook
@@ -2309,9 +2124,7 @@ export function createAgent(options: AgentOptions): Agent {
                     const updatedCheckpoint = updateCheckpoint(existingCheckpoint, {
                       messages: compactionResult.newMessages,
                     });
-                    await options.checkpointer.save(updatedCheckpoint);
-                    // Update cache
-                    threadCheckpoints.set(effectiveGenOptions.threadId, updatedCheckpoint);
+                    await checkpoints.commit(effectiveGenOptions.threadId, updatedCheckpoint);
                   } else {
                     // Create a new checkpoint with compacted messages
                     const newCheckpoint = createCheckpoint({
@@ -2323,8 +2136,7 @@ export function createAgent(options: AgentOptions): Agent {
                         files: { ...state.files },
                       },
                     });
-                    await options.checkpointer.save(newCheckpoint);
-                    threadCheckpoints.set(effectiveGenOptions.threadId, newCheckpoint);
+                    await checkpoints.commit(effectiveGenOptions.threadId, newCheckpoint);
                   }
                   // Clear messages from effectiveGenOptions to prevent duplication
                   // The retry will use checkpoint messages only
@@ -2382,14 +2194,7 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async *stream(genOptions: GenerateOptions): AsyncGenerator<StreamPart> {
-      let runId = genOptions._runId;
-      if (!runId && genOptions.threadId && !genOptions.forkSession) {
-        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
-        if (existingCheckpoint?.pendingInterrupt) {
-          runId = getCheckpointRunId(existingCheckpoint);
-        }
-      }
-      runId ??= createRunId();
+      const runId = await checkpoints.resolveRunId(genOptions);
 
       // Invoke unified PreGenerate hooks
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
@@ -2801,14 +2606,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Save pending interrupt to checkpoint (mirrors generate() pattern)
           if (signalState.interrupt && checkpointThreadId && options.checkpointer) {
             const interrupt = signalState.interrupt.interrupt;
-            const savedCheckpoint = threadCheckpoints.get(checkpointThreadId);
-            if (savedCheckpoint) {
-              const withInterrupt = withCheckpointRunId(savedCheckpoint, telemetry.runId, {
-                pendingInterrupt: interrupt,
-              });
-              await options.checkpointer.save(withInterrupt);
-              threadCheckpoints.set(checkpointThreadId, withInterrupt);
-            }
+            await checkpoints.markPendingInterrupt(checkpointThreadId, interrupt, telemetry.runId);
 
             // Emit InterruptRequested hook
             const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
@@ -2942,14 +2740,7 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamResponse(genOptions: GenerateOptions): Promise<Response> {
-      let runId = genOptions._runId;
-      if (!runId && genOptions.threadId && !genOptions.forkSession) {
-        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
-        if (existingCheckpoint?.pendingInterrupt) {
-          runId = getCheckpointRunId(existingCheckpoint);
-        }
-      }
-      runId ??= createRunId();
+      const runId = await checkpoints.resolveRunId(genOptions);
 
       // Invoke unified PreGenerate hooks
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
@@ -3389,14 +3180,7 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamRaw(genOptions: GenerateOptions) {
-      let runId = genOptions._runId;
-      if (!runId && genOptions.threadId && !genOptions.forkSession) {
-        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
-        if (existingCheckpoint?.pendingInterrupt) {
-          runId = getCheckpointRunId(existingCheckpoint);
-        }
-      }
-      runId ??= createRunId();
+      const runId = await checkpoints.resolveRunId(genOptions);
 
       // Invoke unified PreGenerate hooks
       // Note: respondWith cache short-circuit is NOT supported for streamRaw()
@@ -3620,14 +3404,7 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamDataResponse(genOptions: GenerateOptions): Promise<Response> {
-      let runId = genOptions._runId;
-      if (!runId && genOptions.threadId && !genOptions.forkSession) {
-        const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
-        if (existingCheckpoint?.pendingInterrupt) {
-          runId = getCheckpointRunId(existingCheckpoint);
-        }
-      }
-      runId ??= createRunId();
+      const runId = await checkpoints.resolveRunId(genOptions);
 
       // Invoke unified PreGenerate hooks
       const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
@@ -3845,18 +3622,11 @@ export function createAgent(options: AgentOptions): Agent {
               // Save pending interrupt to checkpoint (mirrors stream() pattern)
               if (signalState.interrupt && effectiveGenOptions.threadId && options.checkpointer) {
                 const interrupt = signalState.interrupt.interrupt;
-                const savedCheckpoint = threadCheckpoints.get(effectiveGenOptions.threadId);
-                if (savedCheckpoint) {
-                  const withInterrupt = withCheckpointRunId(
-                    savedCheckpoint,
-                    executionBaseTelemetry.runId,
-                    {
-                      pendingInterrupt: interrupt,
-                    },
-                  );
-                  await options.checkpointer.save(withInterrupt);
-                  threadCheckpoints.set(effectiveGenOptions.threadId, withInterrupt);
-                }
+                await checkpoints.markPendingInterrupt(
+                  effectiveGenOptions.threadId,
+                  interrupt,
+                  executionBaseTelemetry.runId,
+                );
 
                 // Emit InterruptRequested hook
                 const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
