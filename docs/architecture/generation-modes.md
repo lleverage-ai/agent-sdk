@@ -90,5 +90,8 @@ The runner takes the differences as inputs rather than hiding them:
 
 The checkpoint-related rows above (fork target, `updateUsage`, interrupt
 persistence, `checkpointAfterToolCall`) are addressed structurally by the
-proposed [checkpoint contract](./checkpoint-contract.md) rather than by
-per-mode fixes.
+[checkpoint contract](./checkpoint-contract.md) rather than by per-mode
+fixes. That contract also removes `streamResponse()`, `streamRaw()` and
+`forkSession` for 1.0 (its "Removed" table). This document describes the code
+as it is on `main`; the rows for those surfaces are deleted in the same PR
+that deletes the code (migration plan step 4), not before.

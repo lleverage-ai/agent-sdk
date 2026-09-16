@@ -106,11 +106,15 @@ interface RunSink {
   /** A tool raised an interrupt. Replaces `markPendingInterrupt`. */
   interruptRequested(input: { threadId: string; runId: string; interrupt: Interrupt }): Promise<void>;
 
-  /** Terminal. `messages` is the final transcript the agent would previously have saved. */
+  /** `agent.resume()` accepted a response for the interrupt. Called before the resumed run's `beginRun`. */
+  interruptResolved(input: { threadId: string; runId: string; interruptId: string; response: unknown }): Promise<void>;
+
+  /** Terminal. `messages` is the final transcript the agent would previously have saved; `state` is the agent's todos/files at that point. */
   finalizeRun(input: {
     runId: string;
     status: "committed" | "failed" | "cancelled";
     messages: ModelMessage[];
+    state: AgentState;
     usage?: LanguageModelUsage;
     error?: unknown;
   }): Promise<void>;
@@ -120,8 +124,12 @@ interface RunSink {
 Rules:
 
 - The runner calls these in exactly this order for every mode:
-  `beginRun` → (`append`* | `stepFinished` | `compaction` | `interruptRequested`)* → `finalizeRun`.
+  `beginRun` → (`append`* | `stepFinished` | `compaction` | `interruptRequested`)* → `finalizeRun`,
+  with `interruptResolved` preceding the `beginRun` of a resumed run.
   This resolves `generation-modes.md` rows 2, 3, 4, 5 and 6 by construction.
+- `beginRun` must make `inputMessages` durable before returning. This is the
+  contract's answer to LLE-10407: a retry that reloads the transcript sees the
+  user turn even if the first model call never produced an `append`.
 - Every call is awaited. A sink that wants fire-and-forget does it internally
   and returns a resolved promise. This gives the "next step cannot flow until
   the boundary is durable" guarantee that lleverage's drain-pause and
@@ -143,7 +151,12 @@ interface CheckpointSource {
 `Checkpoint` is unchanged except:
 
 - `pendingInterrupt` is populated by the source from whatever it recorded on
-  `interruptRequested`; the agent never writes it.
+  `interruptRequested` and not yet seen an `interruptResolved` for; the agent
+  never writes it.
+- `state` is populated by the source from the last `finalizeRun` (or, for a
+  run that never finalised, the last `stepFinished`). Sources that don't
+  track it return `createAgentState()`, as `createLedgerCheckpointer` does
+  today.
 - `metadata.lastRunUsage?: { inputTokens?, outputTokens?, totalTokens? }` is
   read by the runner after `load()` and passed to `contextManager.updateUsage()`
   before the compaction check. Sources that want usage-seeded compaction set it;
@@ -151,14 +164,23 @@ interface CheckpointSource {
 
 ### `BaseCheckpointSaver` compatibility
 
-`BaseCheckpointSaver` keeps its current shape for one minor cycle as
+`BaseCheckpointSaver` keeps its current shape as
 `CheckpointSource & { save(checkpoint): Promise<void> }`. The SDK provides
 `sinkFromSaver(saver)`: a `RunSink` whose `finalizeRun` and `stepFinished`
 call `saver.save()` with a `Checkpoint` built the way the agent builds one
-today, and whose `interruptRequested` stamps `pendingInterrupt` the way
-`markPendingInterrupt` does. `createAgent({ checkpointer })` wraps
-automatically. Existing savers keep working unchanged; the wrapper is the
-migration path, not the destination.
+today, whose `interruptRequested` stamps `pendingInterrupt` the way
+`markPendingInterrupt` does, and whose `interruptResolved` clears it the way
+`agent.resume()` does today. `createAgent({ checkpointer })` wraps
+automatically. Third-party savers keep working unchanged.
+
+`MemorySaver` and `FileSaver` keep their constructors and their
+`BaseCheckpointSaver` shape — the retained-surface table below promises
+unchanged tests — but their **implementation** moves onto the ledger: each
+holds a `createLedgerRuntime(store)` internally and forwards `save()` to the
+sink and `load()` to the source. Passing one to `createAgent({ checkpointer })`
+is detected and short-circuits the `sinkFromSaver` wrapper, so the runner
+talks to the ledger directly. `createAgent({ ledger })` is the same thing
+without the class.
 
 ### Ledger-backed default
 
@@ -177,27 +199,45 @@ proposal completes it with the write side.
 
 `createLedgerRuntime(store)` returns `{ sink: RunSink, source: CheckpointSource }`:
 
-- `sink.beginRun` → `RunManager.beginRun` (with `forkFromMessageId`; exposed as a new `GenerateOptions.forkFromMessageId`, replacing `forkSession`).
+- `sink.beginRun` → `RunManager.beginRun` (with `forkFromMessageId`; exposed
+  as a new `GenerateOptions.forkFromMessageId`, replacing `forkSession`),
+  then `appendEvents` with one `input-message` event (new core kind) per
+  entry in `inputMessages`, in the same call, before returning. The
+  accumulator materialises `input-message` into the corresponding user/system
+  `CanonicalMessage`, so a run that fails before its first model part still
+  leaves the user turn in the transcript. `BeginRunOptions` gains no field;
+  the durability comes from the events.
 - `sink.append` → `RunManager.appendEvents`.
-- `sink.stepFinished` → appends a `step-finished` event carrying `step` and
-  `usage`; nothing else, the transcript is already in the events.
+- `sink.stepFinished` → appends a `step-finished` event carrying `step`,
+  `usage` and a `state` snapshot (todos, files). The transcript itself is
+  already in the events.
 - `sink.compaction` → appends a `compaction` event (new core kind) carrying the
   `CompactionSummaryPart` so the projection can render it; `canonical-schema.md`
   already defines the carrier message.
 - `sink.interruptRequested` → appends an `interrupt-requested` event (new core
-  kind).
-- `sink.finalizeRun` → `RunManager.finalizeRun`.
+  kind) carrying the `Interrupt`.
+- `sink.interruptResolved` → appends an `interrupt-resolved` event (new core
+  kind) carrying `interruptId` and the response. Appended to the run that
+  raised the interrupt, before the resumed run's `beginRun`.
+- `sink.finalizeRun` → appends a `run-state` event carrying the final `state`,
+  then `RunManager.finalizeRun`.
 - `source.load` → `getTranscript` → `canonicalMessagesToModelMessages`
-  (existing) → `Checkpoint` with `step` = number of `step-finished` events on
-  the leaf run, `pendingInterrupt` = last unresolved `interrupt-requested`,
-  `metadata.lastRunUsage` from the last committed run's finalize record. The
-  resume-delta inner saver in today's `createLedgerCheckpointer` goes away:
-  everything it stored is derivable from events.
+  (existing) → `Checkpoint` with:
+  - `step` = number of `step-finished` events on the leaf run;
+  - `pendingInterrupt` = the last `interrupt-requested` on the thread with no
+    later `interrupt-resolved` carrying the same `interruptId`;
+  - `state` = payload of the last `run-state` event on the leaf run, else the
+    last `step-finished.state`, else `createAgentState()`;
+  - `metadata.lastRunUsage` from the last committed run's finalize record.
 
-`MemorySaver` becomes `createLedgerRuntime(new InMemoryLedgerStore())` and
-`FileSaver` becomes `createLedgerRuntime(new SQLiteLedgerStore(path))`, exported
-under their current names. `createLedgerCheckpointer` is folded into
-`createLedgerRuntime`.
+  The resume-delta inner saver in today's `createLedgerCheckpointer` goes
+  away: everything it stored is now derivable from events. Test: raise an
+  interrupt, `resume()`, `load()` again → `pendingInterrupt` is `undefined`
+  and `state` round-trips.
+
+`createLedgerCheckpointer` is folded into `createLedgerRuntime`; `MemorySaver`
+and `FileSaver` are re-implemented on it as described under
+[compatibility](#basecheckpointsaver-compatibility).
 
 ### `StreamPart` → `StreamEvent`
 
@@ -302,9 +342,11 @@ step. Steps 1–3 are additive.
    `metadata.lastRunUsage` after `load()`; `contextManager.onCompact` is
    routed through `sink.compaction`.
 3. **Ledger runtime.** `createLedgerRuntime` (absorbing
-   `createLedgerCheckpointer`), new core event kinds, `createAgent({ ledger })`.
-   `MemorySaver`/`FileSaver` re-implemented on top; their test suites must
-   pass unchanged.
+   `createLedgerCheckpointer`), new core event kinds (`input-message`,
+   `compaction`, `interrupt-requested`, `interrupt-resolved`, `run-state`),
+   `createAgent({ ledger })`. `MemorySaver`/`FileSaver` re-implemented on top;
+   their test suites must pass unchanged. Includes the interrupt-resolution
+   and state round-trip tests from [Ledger-backed default](#ledger-backed-default).
 4. **Remove per the surface rule**: `checkpointAfterToolCall`, `forkSession` /
    `forkedSessionId`, `KeyValueStoreSaver`, `streamResponse()`, `streamRaw()`,
    and the internal `CheckpointRuntime` write methods. `stepFinished` becomes
