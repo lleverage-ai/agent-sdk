@@ -85,3 +85,10 @@ The runner takes the differences as inputs rather than hiding them:
   modes that support them.
 - Emergency compaction and the thrown-`InterruptSignal` path stay in
   `generate()`.
+
+## Related
+
+The checkpoint-related rows above (fork target, `updateUsage`, interrupt
+persistence, `checkpointAfterToolCall`) are addressed structurally by the
+proposed [checkpoint contract](./checkpoint-contract.md) rather than by
+per-mode fixes.
