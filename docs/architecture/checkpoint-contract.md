@@ -97,6 +97,7 @@ interface RunSink {
     runId: string;
     step: number;
     messages: ModelMessage[];   // transcript through this step, post-compaction
+    state: AgentState;          // todos/files after this step's tool calls
     usage?: LanguageModelUsage;
   }): Promise<void>;
 
@@ -173,6 +174,15 @@ today, whose `interruptRequested` stamps `pendingInterrupt` the way
 `agent.resume()` does today. `createAgent({ checkpointer })` wraps
 automatically. Third-party savers keep working unchanged.
 
+Call cardinality is the one visible difference. Today a saver sees one
+`save()` per run, plus one per step only when `checkpointAfterToolCall` is
+set. In step 1 `sinkFromSaver` honours the option exactly as today, so the
+swap-test sees identical `save()` calls. From step 4 (option removed)
+`stepFinished` always saves: an N-step run produces N+1 `save()` calls. For
+`MemorySaver`/`FileSaver` this is free (ledger append). A third-party saver
+that cannot afford per-step writes debounces internally; the contract only
+requires the promise to resolve.
+
 `MemorySaver` and `FileSaver` keep their constructors and their
 `BaseCheckpointSaver` shape — the retained-surface table below promises
 unchanged tests — but their **implementation** moves onto the ledger: each
@@ -185,8 +195,9 @@ without the class.
 ### Ledger-backed default
 
 ```ts
-createAgent({ ledger: ILedgerStore })            // explicit
-createAgent({ checkpointer: new MemorySaver() })   // legacy, wrapped by sinkFromSaver
+createAgent({ ledger: ILedgerStore })              // explicit
+createAgent({ checkpointer: new MemorySaver() })   // ledger-backed saver; talks to the ledger directly
+createAgent({ checkpointer: myThirdPartySaver })   // wrapped by sinkFromSaver
 createAgent({})                                    // in-memory ledger
 ```
 
@@ -221,14 +232,23 @@ proposal completes it with the write side.
   raised the interrupt, before the resumed run's `beginRun`.
 - `sink.finalizeRun` → appends a `run-state` event carrying the final `state`,
   then `RunManager.finalizeRun`.
-- `source.load` → `getTranscript` → `canonicalMessagesToModelMessages`
-  (existing) → `Checkpoint` with:
+- `source.load` → `getTranscript({ threadId, branch: "active" })` →
+  `canonicalMessagesToModelMessages` (existing) → `Checkpoint` with:
   - `step` = number of `step-finished` events on the leaf run;
-  - `pendingInterrupt` = the last `interrupt-requested` on the thread with no
-    later `interrupt-resolved` carrying the same `interruptId`;
+  - `pendingInterrupt` = the last `interrupt-requested` on the leaf run with
+    no later `interrupt-resolved` carrying the same `interruptId`;
   - `state` = payload of the last `run-state` event on the leaf run, else the
-    last `step-finished.state`, else `createAgentState()`;
-  - `metadata.lastRunUsage` from the last committed run's finalize record.
+    last `step-finished.state` on the leaf run, else `createAgentState()`;
+  - `metadata.lastRunUsage` from the leaf run's finalize record.
+
+  **Branch rule.** `load(threadId)` is always the active branch, and "leaf
+  run" means the last run on that branch. A `forkFromMessageId` run
+  supersedes the old tail (`run-lifecycle.md`), so an interrupt raised on an
+  abandoned branch is never reported as pending: it belongs to a run that is
+  no longer on the active path. Reading another branch is a ledger query
+  (`getTranscript({ branch: { selections } })`), not a checkpoint operation;
+  `CheckpointSource.load` deliberately has no branch parameter, matching
+  today's `createLedgerCheckpointer` default of `"active"`.
 
   The resume-delta inner saver in today's `createLedgerCheckpointer` goes
   away: everything it stored is now derivable from events. Test: raise an
