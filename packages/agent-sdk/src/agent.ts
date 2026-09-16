@@ -13,6 +13,7 @@ import {
   streamText,
 } from "ai";
 import { createCheckpointRuntime, getCheckpointRunId } from "./agent/checkpoint-runtime.js";
+import { buildMessagesFromStepResponses, createMessageRuntime } from "./agent/messages.js";
 import {
   buildStopConditions,
   createToolPipeline,
@@ -914,50 +915,6 @@ export function createAgent(options: AgentOptions): Agent {
     return promptBuilder!.build(context);
   };
 
-  const responseMessagesToModelMessages = (messages: unknown[] | undefined): ModelMessage[] =>
-    Array.isArray(messages) ? (messages as ModelMessage[]) : [];
-
-  const appendResponseMessages = (
-    baseMessages: ModelMessage[],
-    responseMessages: unknown[] | undefined,
-    fallbackAssistantText?: string,
-  ): ModelMessage[] => {
-    const normalized = responseMessagesToModelMessages(responseMessages);
-    if (normalized.length > 0) {
-      return [...baseMessages, ...normalized];
-    }
-
-    return fallbackAssistantText
-      ? [...baseMessages, { role: "assistant" as const, content: fallbackAssistantText }]
-      : baseMessages;
-  };
-
-  /**
-   * Build the full transcript for persistence from a multi-step result.
-   *
-   * The AI SDK's top-level `response.messages` only holds the FINAL step's
-   * messages, so a run that called tools in earlier steps would lose those
-   * tool calls/results if we used it directly. Prefer the per-step response
-   * messages; fall back to `fallbackResponseMessages` (the top-level
-   * `response.messages`) and finally to the assistant text.
-   */
-  const buildMessagesFromStepResponses = (
-    baseMessages: ModelMessage[],
-    steps: Array<{ text?: string; response?: { messages?: unknown[] } }>,
-    fallbackAssistantText?: string,
-    fallbackResponseMessages?: unknown[],
-  ): ModelMessage[] => {
-    const stepResponseMessages = steps.flatMap((step) =>
-      responseMessagesToModelMessages(step.response?.messages),
-    );
-    if (stepResponseMessages.length > 0) {
-      return [...baseMessages, ...stepResponseMessages];
-    }
-
-    const lastText = steps.at(-1)?.text || fallbackAssistantText;
-    return appendResponseMessages(baseMessages, fallbackResponseMessages, lastText);
-  };
-
   // Runtime tools added/removed dynamically by plugins at runtime
   const runtimeTools: ToolSet = {};
 
@@ -985,204 +942,19 @@ export function createAgent(options: AgentOptions): Agent {
    * Checkpoint cache and persistence; see `./agent/checkpoint-runtime.ts`.
    */
   const checkpoints = createCheckpointRuntime({ checkpointer: options.checkpointer, state });
-  const { load: loadCheckpoint, save: saveCheckpoint, fork: forkCheckpoint } = checkpoints;
+  const { save: saveCheckpoint } = checkpoints;
 
   /**
-   * Compact a message list when the configured context policy requires it.
-   *
-   * Shared by the run-boundary load (`buildMessages`) and the streaming tool
-   * loop (`createStreamingCompactionState`) so long runs cannot grow past the
-   * compaction threshold between model generations. Emits the PreCompact and
-   * PostCompact hooks around the compaction.
-   *
-   * @returns The (possibly compacted) messages and whether compaction ran
+   * Message assembly and compaction; see `./agent/messages.ts`.
    */
-  async function compactMessagesIfNeeded(
-    messages: ModelMessage[],
-    genOptions: GenerateOptions,
-    threadId: string | undefined,
-  ): Promise<{ compacted: boolean; messages: ModelMessage[] }> {
-    // Skip compaction if _skipCompaction flag is set (used during summary generation)
-    if (!options.contextManager || genOptions._skipCompaction) {
-      return { compacted: false, messages };
-    }
-
-    const contextManager = options.contextManager;
-    const { trigger, reason } = contextManager.shouldCompact(messages);
-    if (!trigger || !reason) {
-      return { compacted: false, messages };
-    }
-
-    const compactionTelemetry = buildExecutionTelemetryFromIds({
-      runId: genOptions._runId ?? createRunId(),
-      threadId,
-      requestedModel: options.model,
-    });
-    // Calculate token count before compaction
-    const tokensBefore = contextManager.tokenCounter.countMessages(messages);
-    const messagesBefore = messages.length;
-
-    // Emit PreCompact hook
-    const preCompactHooks = effectiveHooks?.PreCompact ?? [];
-    if (preCompactHooks.length > 0) {
-      const preCompactInput: import("./types.js").PreCompactInput = {
-        hook_event_name: "PreCompact",
-        session_id: genOptions.threadId ?? "default",
-        cwd: process.cwd(),
-        telemetry: compactionTelemetry,
-        message_count: messagesBefore,
-        tokens_before: tokensBefore,
-      };
-      await invokeHooksWithTimeout(preCompactHooks, preCompactInput, null, agent);
-    }
-
-    // Perform compaction
-    const compactionResult = await contextManager.compact(messages, agent, reason);
-
-    // Emit PostCompact hook with metrics
-    const postCompactHooks = effectiveHooks?.PostCompact ?? [];
-    if (postCompactHooks.length > 0) {
-      const postCompactInput: import("./types.js").PostCompactInput = {
-        hook_event_name: "PostCompact",
-        session_id: genOptions.threadId ?? "default",
-        cwd: process.cwd(),
-        telemetry: compactionTelemetry,
-        messages_before: compactionResult.messagesBefore,
-        messages_after: compactionResult.messagesAfter,
-        tokens_before: compactionResult.tokensBefore,
-        tokens_after: compactionResult.tokensAfter,
-        tokens_saved: compactionResult.tokensBefore - compactionResult.tokensAfter,
-      };
-      await invokeHooksWithTimeout(postCompactHooks, postCompactInput, null, agent);
-    }
-
-    return { compacted: true, messages: compactionResult.newMessages };
-  }
-
-  /**
-   * Tracks the durable message base for a streaming tool loop and compacts it
-   * before each model generation that does not have a run-boundary check.
-   *
-   * `buildMessages` already compacts before step 0, so by default the first
-   * step is skipped. Follow-up generations (background-task loops) build their
-   * own message list without going through `buildMessages`, so they pass
-   * `compactFirstStep = true`.
-   *
-   * The tracked `messages` are authoritative for checkpointing: once
-   * `prepareStep` has discarded earlier history, re-deriving the transcript
-   * from `response.messages` would resurrect it. `finalize()` falls back to
-   * the step responses only when no step was ever appended (e.g. a provider
-   * or test double that never invokes `onStepFinish`).
-   */
-  function createStreamingCompactionState(
-    initialMessages: ModelMessage[],
-    genOptions: GenerateOptions,
-    threadId: string | undefined,
-    compactFirstStep = false,
-  ) {
-    let currentMessages: ModelMessage[] = [...initialMessages];
-    let appendedSteps = 0;
-
-    return {
-      prepareStep: async ({
-        messages,
-        stepNumber,
-      }: {
-        messages: ModelMessage[];
-        stepNumber: number;
-      }): Promise<{ messages: ModelMessage[] } | undefined> => {
-        if (stepNumber === 0 && !compactFirstStep) {
-          return undefined;
-        }
-        const compaction = await compactMessagesIfNeeded(messages, genOptions, threadId);
-        if (!compaction.compacted) {
-          return undefined;
-        }
-        currentMessages = compaction.messages;
-        return { messages: compaction.messages };
-      },
-      appendStep(stepResult: {
-        text?: string;
-        response?: { messages?: unknown[] };
-      }): ModelMessage[] {
-        appendedSteps++;
-        currentMessages = appendResponseMessages(
-          currentMessages,
-          stepResult.response?.messages,
-          stepResult.text,
-        );
-        return currentMessages;
-      },
-      /**
-       * Final transcript for persistence. Uses the tracked messages when steps
-       * were appended via `onStepFinish`; otherwise derives them from `steps`.
-       */
-      finalize(
-        steps: Array<{ text?: string; response?: { messages?: unknown[] } }>,
-        fallbackAssistantText?: string,
-      ): ModelMessage[] {
-        if (appendedSteps > 0 || steps.length === 0) {
-          return [...currentMessages];
-        }
-        return buildMessagesFromStepResponses(currentMessages, steps, fallbackAssistantText);
-      },
-      get messages(): ModelMessage[] {
-        return [...currentMessages];
-      },
-    };
-  }
-
-  /**
-   * Build the messages array for AI SDK from GenerateOptions.
-   * If a checkpoint exists for the threadId, prepends checkpoint messages.
-   * If forkSession is specified, creates a new session from the source.
-   * If contextManager is provided, applies automatic compaction if needed.
-   */
-  async function buildMessages(genOptions: GenerateOptions): Promise<{
-    messages: ModelMessage[];
-    checkpoint?: Checkpoint;
-    forkedSessionId?: string;
-  }> {
-    const messages: ModelMessage[] = [];
-    let checkpoint: Checkpoint | undefined;
-    let forkedSessionId: string | undefined;
-
-    // Handle session forking
-    if (genOptions.forkSession && genOptions.threadId) {
-      forkedSessionId = genOptions.forkSession;
-      checkpoint = await forkCheckpoint(genOptions.threadId, forkedSessionId);
-      if (checkpoint) {
-        // Prepend forked checkpoint messages
-        messages.push(...checkpoint.messages);
-      }
-    } else if (genOptions.threadId) {
-      // Normal checkpoint loading
-      checkpoint = await loadCheckpoint(genOptions.threadId);
-      if (checkpoint) {
-        // Prepend checkpoint messages
-        messages.push(...checkpoint.messages);
-      }
-    }
-
-    // Add conversation history if provided
-    if (genOptions.messages) {
-      messages.push(...genOptions.messages);
-    }
-
-    // Add user prompt if provided
-    if (genOptions.prompt) {
-      messages.push({ role: "user" as const, content: genOptions.prompt });
-    }
-
-    // Apply context compaction if contextManager is configured
-    const compaction = await compactMessagesIfNeeded(
-      messages,
-      genOptions,
-      forkedSessionId ?? genOptions.threadId,
-    );
-
-    return { messages: compaction.messages, checkpoint, forkedSessionId };
-  }
+  const messageRuntime = createMessageRuntime({
+    contextManager: options.contextManager,
+    model: options.model,
+    hooks: effectiveHooks,
+    getAgent: () => agent,
+    checkpoints,
+  });
+  const { buildMessages, createStreamingCompactionState } = messageRuntime;
 
   /**
    * Map AI SDK steps to our GenerateStep format.

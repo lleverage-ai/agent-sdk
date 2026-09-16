@@ -133,6 +133,11 @@ no longer need to patch `dist/`.
   continuation preamble duplicated across all five generation modes, and
   the save-then-cache pattern on the resume path are now single runtime
   methods. No public API or behaviour change.
+- Extracted message assembly from `agent.ts` into `src/agent/messages.ts`:
+  `buildMessages`, `compactMessagesIfNeeded`, `createStreamingCompactionState`
+  (behind `createMessageRuntime()`), and the pure `appendResponseMessages` /
+  `buildMessagesFromStepResponses` transcript helpers. No public API or
+  behaviour change.
 
 ## [0.1.0-alpha.9] - 2026-06-30
 
