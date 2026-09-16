@@ -118,6 +118,15 @@ no longer need to patch `dist/`.
   being re-derived from the response, which would resurrect history that
   mid-run compaction had discarded.
 
+### Internal
+
+- Extracted the tool execution pipeline from `agent.ts` into
+  `src/agent/tool-pipeline.ts`. The permission, task-manager, hook, streaming
+  context and signal-catching wrappers moved verbatim; the composition order
+  they were previously hand-assembled in at seven call sites is now a single
+  `createToolPipeline().buildTools()` with a documented layer diagram and
+  ordering tests. No public API or behaviour change.
+
 ## [0.1.0-alpha.9] - 2026-06-30
 
 ### Changed

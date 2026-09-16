@@ -10,9 +10,17 @@ import {
   createUIMessageStreamResponse,
   generateText,
   NoSuchToolError,
-  stepCountIs,
   streamText,
 } from "ai";
+import {
+  buildStopConditions,
+  createToolPipeline,
+  filterToolsByAllowed,
+  type GenerateSignalState,
+  InterruptSignal,
+  isInterruptSignal,
+  wrapToolsWithExecutionContext,
+} from "./agent/tool-pipeline.js";
 import type { BackendProtocol, ExecutableBackend } from "./backend.js";
 import { hasExecuteCapability } from "./backend.js";
 import { CommandBlockedError } from "./backends/filesystem.js";
@@ -22,19 +30,14 @@ import {
   formatDefaultTaskCompletionPrompt,
   formatDefaultTaskFailurePrompt,
 } from "./background-task-formatting.js";
-import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
+import type { Checkpoint, Interrupt } from "./checkpointer/types.js";
 import {
   createCheckpoint,
   createInterrupt,
   isApprovalInterrupt,
   updateCheckpoint,
 } from "./checkpointer/types.js";
-import {
-  type AgentError,
-  CheckpointError,
-  ToolExecutionError,
-  ToolPermissionDeniedError,
-} from "./errors/index.js";
+import { type AgentError, CheckpointError } from "./errors/index.js";
 import {
   createRetryLoopState,
   handleGenerationError,
@@ -43,14 +46,7 @@ import {
   updateRetryLoopState,
   waitForRetryDelay,
 } from "./generation-helpers.js";
-import {
-  aggregatePermissionDecisions,
-  extractRespondWith,
-  extractUpdatedInput,
-  extractUpdatedResult,
-  invokeHooksWithTimeout,
-  invokeMatchingHooks,
-} from "./hooks.js";
+import { extractUpdatedResult, invokeHooksWithTimeout } from "./hooks.js";
 import { MCPManager } from "./mcp/manager.js";
 import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index.js";
 import {
@@ -70,41 +66,27 @@ import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
 import { formatPluginToolName, resolveStaticToolDescription } from "./tool-names.js";
 import { createCallToolTool } from "./tools/call-tool.js";
-import {
-  coreToolsToToolSet,
-  createCoreTools,
-  createSearchToolsTool,
-  createTaskOutputTool,
-  createTaskTool,
-} from "./tools/factory.js";
+import { coreToolsToToolSet, createCoreTools, createSearchToolsTool } from "./tools/factory.js";
 import type { SkillDefinition } from "./tools/skills.js";
 import type {
   Agent,
   AgentOptions,
   BackendFactory,
-  ExecutionTelemetry,
   GenerateOptions,
   GenerateResult,
   GenerateResultComplete,
   GenerateResultInterrupted,
   GenerateStep,
-  HookRegistration,
   InterruptRequestedInput,
   InterruptResolvedInput,
   MCPConnectionFailedInput,
   MCPConnectionRestoredInput,
   ModelInputCapabilities,
-  PermissionDecision,
-  PermissionMode,
   PostGenerateInput,
-  PostToolUseFailureInput,
-  PostToolUseInput,
-  PreToolUseInput,
   StreamingContext,
   StreamPart,
   SubagentDefinition,
   ToolCallResult,
-  ToolErrorTransform,
   ToolResultPart,
 } from "./types.js";
 
@@ -142,24 +124,6 @@ function isToolContentOutput(output: unknown): output is ToolContentOutput {
     (output as { type?: unknown }).type === "content" &&
     Array.isArray((output as { value?: unknown }).value)
   );
-}
-
-/**
- * Internal signal for interrupt flow control.
- *
- * This is thrown when a tool requires user approval or an interrupt is requested.
- * It's caught by the generate() function and converted to an interrupted result.
- *
- * @internal
- */
-class InterruptSignal extends Error {
-  readonly interrupt: Interrupt;
-
-  constructor(interrupt: Interrupt) {
-    super(`Interrupt: ${interrupt.type}`);
-    this.name = "InterruptSignal";
-    this.interrupt = interrupt;
-  }
 }
 
 /** @internal */
@@ -364,127 +328,6 @@ class NestedBackgroundGenerationError extends Error {
 }
 
 /**
- * Check if an error is an InterruptSignal.
- * @internal
- */
-function isInterruptSignal(error: unknown): error is InterruptSignal {
-  return error instanceof InterruptSignal;
-}
-
-/**
- * Shared state for intercepting flow-control signals thrown by tools.
- *
- * AI SDK v6's `generateText` catches all errors from tool execution and converts
- * them to tool-result messages. To work around this, our outermost tool wrapper
- * (`wrapToolsWithSignalCatching`) intercepts InterruptSignal before the AI SDK
- * sees them, stores them here, and returns a placeholder result. A custom
- * `stopWhen` condition then stops generation after the current step.
- *
- * @internal
- */
-interface GenerateSignalState {
-  interrupt?: InterruptSignal;
-  /**
-   * Set when a tool called `options.stop()`. Ends the generation after the
-   * current step and skips the background-task follow-up loop, without
-   * creating resumable interrupt state.
-   */
-  stop?: boolean;
-}
-
-/**
- * Build the `stopWhen` conditions shared by every generation mode.
- *
- * Stops when a flow-control signal (interrupt or stop) was caught, when the
- * caller's cooperative `shouldStopAfterStep` pause hook returns true, or when
- * the step count reaches `maxSteps` — whichever comes first.
- *
- * @internal
- */
-function buildStopConditions(
-  signalState: GenerateSignalState,
-  genOptions: GenerateOptions,
-  maxSteps: number,
-) {
-  return [
-    () => signalState.interrupt != null || signalState.stop === true,
-    () => genOptions.shouldStopAfterStep?.() === true,
-    stepCountIs(maxSteps),
-  ];
-}
-
-/**
- * Outermost tool wrapper that intercepts flow-control signals.
- *
- * When a tool throws `InterruptSignal`, this wrapper catches it before the AI
- * SDK can, stores it in the shared `signalState`, and returns a placeholder
- * string. Combined with a custom `stopWhen` condition, this cleanly stops
- * generation and allows `generate()` to inspect `signalState` in the normal
- * return path (not the catch block).
- *
- * It also injects `options.stop()` so a tool can end the turn after its step,
- * and applies the optional `transformToolError` boundary to any other
- * rejection before the AI SDK converts it into a tool-error result.
- *
- * @internal
- */
-function wrapToolsWithSignalCatching(
-  tools: ToolSet,
-  signalState: GenerateSignalState,
-  transformToolError?: ToolErrorTransform,
-): ToolSet {
-  const wrapped: ToolSet = {};
-
-  for (const [name, toolDef] of Object.entries(tools)) {
-    if (!toolDef.execute) {
-      wrapped[name] = toolDef;
-      continue;
-    }
-
-    const originalExecute = toolDef.execute;
-
-    wrapped[name] = {
-      ...toolDef,
-      execute: async (input: unknown, options: ToolExecutionOptions<unknown>) => {
-        try {
-          return await originalExecute.call(toolDef, input, {
-            ...options,
-            stop: () => {
-              signalState.stop = true;
-            },
-          });
-        } catch (error) {
-          if (isInterruptSignal(error)) {
-            if (signalState.interrupt) {
-              throw error; // Already have a signal — let AI SDK handle this one
-            }
-            signalState.interrupt = error;
-            return "[Interrupt requested]";
-          }
-          if (transformToolError) {
-            throw transformToolError(error, { toolName: name });
-          }
-          throw error;
-        }
-      },
-    } as Tool;
-  }
-
-  return wrapped;
-}
-
-/**
- * File edit tool names that get auto-approved in acceptEdits mode.
- * @internal
- */
-const FILE_EDIT_TOOLS = new Set([
-  "write",
-  "edit",
-  // Bash commands that perform file operations (if we ever add them)
-  // For now, bash is not auto-approved even in acceptEdits mode
-]);
-
-/**
  * Wraps a backend with execute capability to add additional blocked command patterns.
  * This creates a proxy that intercepts execute() calls and validates
  * commands against the additional patterns before delegating.
@@ -541,558 +384,6 @@ function isContextLengthError(error: AgentError): boolean {
   return contextErrorPatterns.some(
     (pattern) => message.includes(pattern) || causeMessage.includes(pattern),
   );
-}
-
-/**
- * Check if a tool should be allowed based on permission mode.
- * Returns "allow" or "deny" for definitive decisions, or undefined to defer to canUseTool callback.
- * @internal
- */
-function checkPermissionMode(toolName: string, mode: PermissionMode): "allow" | "deny" | undefined {
-  switch (mode) {
-    case "plan":
-      // Block all tool execution in plan mode
-      return "deny";
-    case "bypassPermissions":
-      // Allow all tools (dangerous - use only for testing/demos)
-      return "allow";
-    case "acceptEdits":
-      // Auto-approve file edit operations
-      return FILE_EDIT_TOOLS.has(toolName) ? "allow" : undefined;
-    default:
-      // Defer to canUseTool callback
-      return undefined;
-  }
-}
-
-/**
- * Wrap tools with permission mode checking and canUseTool callback.
- * @internal
- */
-function wrapToolsWithPermissionMode(
-  tools: ToolSet,
-  getPermissionMode: () => PermissionMode,
-  canUseTool?: (
-    toolName: string,
-    input: unknown,
-  ) => Promise<PermissionDecision> | PermissionDecision,
-  approvalState?: {
-    approvalDecisions: Map<string, boolean>;
-    pendingResponses: Map<string, unknown>;
-    checkpointSaver?: BaseCheckpointSaver;
-    threadId?: string;
-    step?: number;
-  },
-): ToolSet {
-  const wrapped: ToolSet = {};
-
-  for (const [name, tool] of Object.entries(tools)) {
-    const originalExecute = tool.execute;
-    if (!originalExecute) {
-      // Skip tools without execute function
-      wrapped[name] = tool;
-      continue;
-    }
-
-    // Create needsApproval function that bridges canUseTool to AI SDK's approval flow
-    // This allows the AI SDK to handle approval UI natively when canUseTool returns "ask"
-    const needsApproval = canUseTool
-      ? async (input: unknown): Promise<boolean> => {
-          const mode = getPermissionMode();
-          const modeDecision = checkPermissionMode(name, mode);
-
-          // If permission mode denies, don't show approval UI (execute will throw)
-          if (modeDecision === "deny") {
-            return false;
-          }
-
-          // If permission mode allows, no approval needed
-          if (modeDecision === "allow") {
-            return false;
-          }
-
-          // Defer to canUseTool callback
-          const decision = await canUseTool(name, input);
-          return decision === "ask";
-        }
-      : tool.needsApproval; // Preserve original needsApproval if no canUseTool
-
-    wrapped[name] = {
-      ...tool,
-      needsApproval,
-      execute: async (input: unknown, options?: import("ai").ToolExecutionOptions<unknown>) => {
-        const mode = getPermissionMode();
-        const modeDecision = checkPermissionMode(name, mode);
-
-        // Create the interrupt function for tool execution
-        const toolCallId =
-          options?.toolCallId ?? `call_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
-        const threadId = approvalState?.threadId ?? "unknown";
-        const step = approvalState?.step ?? 0;
-
-        const interrupt = async <TRequest = unknown, TResponse = unknown>(
-          request: TRequest,
-          interruptOptions?: { type?: string },
-        ): Promise<TResponse> => {
-          const interruptType = interruptOptions?.type ?? "custom";
-          const interruptId = `int_${toolCallId}`;
-
-          // Check if we have a pending response for this interrupt
-          if (approvalState?.pendingResponses.has(interruptId)) {
-            const response = approvalState.pendingResponses.get(interruptId);
-            // Clear the response after use
-            approvalState.pendingResponses.delete(interruptId);
-            return response as TResponse;
-          }
-
-          // No response yet - create and throw an interrupt
-          if (!approvalState?.checkpointSaver) {
-            throw new ToolExecutionError(
-              `Tool "${name}" called interrupt() but no checkpointer is configured`,
-              {
-                toolName: name,
-                toolInput: input,
-                metadata: { interruptType, request },
-              },
-            );
-          }
-
-          const interruptData = createInterrupt({
-            id: interruptId,
-            threadId,
-            type: interruptType,
-            toolCallId,
-            toolName: name,
-            request,
-            step,
-          });
-
-          throw new InterruptSignal(interruptData);
-        };
-
-        // Create extended options with the interrupt function
-        const extendedOptions = {
-          ...options,
-          interrupt,
-        };
-
-        // If permission mode gives a definitive answer, use it
-        if (modeDecision === "allow") {
-          // Execute the original tool
-          // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-          return originalExecute.call(tool, input, extendedOptions as any);
-        }
-
-        if (modeDecision === "deny") {
-          // Denied by permission mode
-          const errorMessage =
-            mode === "plan"
-              ? `Tool "${name}" is blocked in plan mode (planning/analysis only)`
-              : `Tool "${name}" requires permission approval`;
-          throw new ToolExecutionError(errorMessage, {
-            toolName: name,
-            toolInput: input,
-            metadata: { permissionMode: mode },
-          });
-        }
-
-        // Permission mode deferred to canUseTool callback
-        if (canUseTool) {
-          const callbackDecision = await canUseTool(name, input);
-
-          if (callbackDecision === "allow") {
-            // Execute the original tool
-            // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-            return originalExecute.call(tool, input, extendedOptions as any);
-          }
-
-          if (callbackDecision === "deny") {
-            throw new ToolExecutionError(`Tool "${name}" was denied by canUseTool callback`, {
-              toolName: name,
-              toolInput: input,
-              metadata: { permissionMode: mode, decision: callbackDecision },
-            });
-          }
-
-          if (callbackDecision === "ask") {
-            // When canUseTool returns "ask", we need to determine the execution path:
-            // 1. AI SDK streaming: needsApproval (set above) triggers approval UI,
-            //    and execute() is only called after user approves
-            // 2. Direct tool execution: execute() is called directly without AI SDK,
-            //    so we need to throw an error to require approval
-            const toolUseId = options?.toolCallId;
-
-            if (toolUseId && approvalState) {
-              // Check for explicit denial in pending responses
-              const pendingResponse = approvalState.pendingResponses.get(toolUseId);
-              if (pendingResponse !== undefined) {
-                const response = pendingResponse as { approved?: boolean; reason?: string };
-                if (response.approved === false) {
-                  throw new ToolExecutionError(
-                    `Tool "${name}" was denied by user${response.reason ? `: ${response.reason}` : ""}`,
-                    {
-                      toolName: name,
-                      toolInput: input,
-                      metadata: {
-                        permissionMode: mode,
-                        decision: "deny",
-                        toolUseId,
-                        reason: response.reason,
-                      },
-                    },
-                  );
-                }
-                // Has approval response - user approved, continue to execution
-                if (response.approved === true) {
-                  // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                  return originalExecute.call(tool, input, extendedOptions as any);
-                }
-              }
-
-              // Check legacy approval system
-              const decision = approvalState.approvalDecisions.get(toolUseId);
-              if (decision === false) {
-                throw new ToolExecutionError(`Tool "${name}" was denied by user`, {
-                  toolName: name,
-                  toolInput: input,
-                  metadata: {
-                    permissionMode: mode,
-                    decision: "deny",
-                    toolUseId,
-                  },
-                });
-              }
-              if (decision === true) {
-                // Explicitly approved via legacy system
-                // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                return originalExecute.call(tool, input, extendedOptions as any);
-              }
-            }
-
-            // No approval decision exists yet.
-            // For AI SDK streaming, this path shouldn't be reached because
-            // needsApproval returned true and AI SDK won't call execute.
-            // For direct calls without AI SDK, we throw an error.
-            throw new ToolExecutionError(
-              `Tool "${name}" requires user approval but no checkpointer is configured`,
-              {
-                toolName: name,
-                toolInput: input,
-                metadata: {
-                  permissionMode: mode,
-                  decision: "ask",
-                  reason:
-                    "Direct tool call requires approval - use AI SDK streaming for approval UI",
-                },
-              },
-            );
-          }
-        }
-
-        // No canUseTool callback - default to allow in default mode
-        // This preserves backward compatibility where tools work by default
-        // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-        return originalExecute.call(tool, input, extendedOptions as any);
-      },
-    };
-  }
-
-  return wrapped;
-}
-
-/**
- * Wraps tools to inject TaskManager into execution options.
- *
- * @param tools - The tools to wrap
- * @param taskManager - The TaskManager instance to inject
- * @returns Wrapped tools with TaskManager in execution context
- *
- * @internal
- */
-function wrapToolsWithTaskManager(
-  tools: ToolSet,
-  taskManager: TaskManager,
-  telemetry?: ExecutionTelemetry,
-): ToolSet {
-  const wrapped: ToolSet = {};
-
-  for (const [name, tool] of Object.entries(tools)) {
-    if (!tool.execute) {
-      wrapped[name] = tool;
-      continue;
-    }
-
-    const originalExecute = tool.execute;
-
-    wrapped[name] = {
-      ...tool,
-      execute: async (input: unknown, options?: ToolExecutionOptions<unknown>) => {
-        // Inject taskManager into execution options
-        const extendedOptions = {
-          ...options,
-          taskManager,
-          executionTelemetry: telemetry,
-        } as ToolExecutionOptions<unknown>;
-        return originalExecute(input, extendedOptions);
-      },
-    };
-  }
-
-  return wrapped;
-}
-
-/**
- * Wraps tools to inject the SDK's per-call execution context into tool
- * execution options.
- *
- * AI SDK 7 removed the call-level `experimental_context` passthrough that
- * previously forwarded an opaque object to every tool's execution options.
- * The SDK now injects that context here, preserving the `experimental_context`
- * field that inline tools (e.g. the read tool) read for model-capability
- * awareness.
- *
- * @param tools - The tools to wrap
- * @param executionContext - The per-call execution context to inject
- * @returns Wrapped tools that receive the execution context in their options
- *
- * @internal
- */
-function wrapToolsWithExecutionContext(tools: ToolSet, executionContext: unknown): ToolSet {
-  const wrapped: ToolSet = {};
-
-  for (const [name, tool] of Object.entries(tools)) {
-    if (!tool.execute) {
-      wrapped[name] = tool;
-      continue;
-    }
-
-    const originalExecute = tool.execute;
-
-    wrapped[name] = {
-      ...tool,
-      execute: async (input: unknown, options?: ToolExecutionOptions<unknown>) => {
-        const extendedOptions = {
-          ...options,
-          experimental_context: executionContext,
-        } as ToolExecutionOptions<unknown>;
-        return originalExecute(input, extendedOptions);
-      },
-    };
-  }
-
-  return wrapped;
-}
-
-/**
- * Wraps tools to emit PreToolUse/PostToolUse/PostToolUseFailure hooks.
- *
- * This enables observability hooks (logging, metrics, tracing) and guardrails
- * (rate-limiting, audit, permission checks) to fire during tool execution.
- *
- * @param tools - The tools to wrap
- * @param hookRegistration - The hook registration containing tool hook matchers
- * @param agent - The agent instance
- * @param sessionId - The session ID for hook input
- * @returns Wrapped tools that emit hooks
- *
- * @internal
- */
-function wrapToolsWithHooks(
-  tools: ToolSet,
-  hookRegistration: HookRegistration | undefined,
-  agent: Agent,
-  sessionId: string,
-  telemetry?: ExecutionTelemetry,
-): ToolSet {
-  // If no tool hooks are registered, return tools unchanged
-  if (
-    !hookRegistration?.PreToolUse?.length &&
-    !hookRegistration?.PostToolUse?.length &&
-    !hookRegistration?.PostToolUseFailure?.length
-  ) {
-    return tools;
-  }
-
-  const wrapped: ToolSet = {};
-
-  for (const [name, tool] of Object.entries(tools)) {
-    if (!tool.execute) {
-      // Tool has no execute function (e.g., client-side only tool)
-      wrapped[name] = tool;
-      continue;
-    }
-
-    const originalExecute = tool.execute;
-
-    wrapped[name] = {
-      ...tool,
-      execute: async (input: unknown, options?: ToolExecutionOptions<unknown>) => {
-        const toolUseId = options?.toolCallId ?? `tool-${Date.now()}`;
-
-        // Create PreToolUse input
-        const preToolUseInput: PreToolUseInput = {
-          hook_event_name: "PreToolUse",
-          session_id: sessionId,
-          cwd: process.cwd(),
-          telemetry,
-          tool_name: name,
-          tool_input: input as Record<string, unknown>,
-        };
-
-        // Invoke PreToolUse hooks
-        if (hookRegistration?.PreToolUse?.length) {
-          const preHookOutputs = await invokeMatchingHooks(
-            hookRegistration.PreToolUse,
-            name,
-            preToolUseInput,
-            toolUseId,
-            agent,
-          );
-
-          // Check permission decisions
-          const permissionDecision = aggregatePermissionDecisions(preHookOutputs);
-
-          if (permissionDecision === "deny") {
-            // Find the reason from hook outputs
-            const reason = preHookOutputs.find(
-              (o) => o.hookSpecificOutput?.permissionDecisionReason,
-            )?.hookSpecificOutput?.permissionDecisionReason;
-
-            const error = new ToolPermissionDeniedError(`Tool '${name}' execution denied by hook`, {
-              toolName: name,
-              toolInput: input,
-              reason,
-            });
-
-            // Emit PostToolUseFailure for denied tools
-            if (hookRegistration?.PostToolUseFailure?.length) {
-              const failureInput: PostToolUseFailureInput = {
-                hook_event_name: "PostToolUseFailure",
-                session_id: sessionId,
-                cwd: process.cwd(),
-                telemetry,
-                tool_name: name,
-                tool_input: input as Record<string, unknown>,
-                error,
-              };
-
-              await invokeMatchingHooks(
-                hookRegistration.PostToolUseFailure,
-                name,
-                failureInput,
-                toolUseId,
-                agent,
-              );
-            }
-
-            throw error;
-          }
-
-          // Check for input transformation
-          const updatedInput = extractUpdatedInput(preHookOutputs);
-          if (updatedInput !== undefined) {
-            input = updatedInput;
-          }
-
-          // Check for short-circuit via respondWith (skips tool execution)
-          const respondWithValue = extractRespondWith(preHookOutputs);
-          if (respondWithValue !== undefined) {
-            if (hookRegistration?.PostToolUse?.length) {
-              const syntheticPostInput: PostToolUseInput = {
-                hook_event_name: "PostToolUse",
-                session_id: sessionId,
-                cwd: process.cwd(),
-                telemetry,
-                tool_name: name,
-                tool_input: input as Record<string, unknown>,
-                tool_response: respondWithValue,
-                tool_result_synthetic: true,
-              };
-
-              const postHookOutputs = await invokeMatchingHooks(
-                hookRegistration.PostToolUse,
-                name,
-                syntheticPostInput,
-                toolUseId,
-                agent,
-              );
-
-              const updatedResult = extractUpdatedResult(postHookOutputs);
-              if (updatedResult !== undefined) {
-                return updatedResult;
-              }
-            }
-
-            return respondWithValue;
-          }
-        }
-
-        try {
-          // Execute the original tool with (potentially modified) input
-          // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-          const output = await originalExecute.call(tool, input, options as any);
-
-          // Invoke PostToolUse hooks
-          if (hookRegistration?.PostToolUse?.length) {
-            const postToolUseInput: PostToolUseInput = {
-              hook_event_name: "PostToolUse",
-              session_id: sessionId,
-              cwd: process.cwd(),
-              telemetry,
-              tool_name: name,
-              tool_input: input as Record<string, unknown>,
-              tool_response: output,
-            };
-
-            const postHookOutputs = await invokeMatchingHooks(
-              hookRegistration.PostToolUse,
-              name,
-              postToolUseInput,
-              toolUseId,
-              agent,
-            );
-
-            // Check for output transformation
-            const updatedResult = extractUpdatedResult(postHookOutputs);
-            if (updatedResult !== undefined) {
-              return updatedResult;
-            }
-          }
-
-          return output;
-        } catch (error) {
-          // Skip PostToolUseFailure for flow-control signals — these are not
-          // actual failures but intentional control flow (interrupt).
-          if (!isInterruptSignal(error)) {
-            // Invoke PostToolUseFailure hooks
-            if (hookRegistration?.PostToolUseFailure?.length) {
-              const failureInput: PostToolUseFailureInput = {
-                hook_event_name: "PostToolUseFailure",
-                session_id: sessionId,
-                cwd: process.cwd(),
-                telemetry,
-                tool_name: name,
-                tool_input: input as Record<string, unknown>,
-                error: error instanceof Error ? error : new Error(String(error)),
-              };
-
-              await invokeMatchingHooks(
-                hookRegistration.PostToolUseFailure,
-                name,
-                failureInput,
-                toolUseId,
-                agent,
-              );
-            }
-          }
-
-          throw error;
-        }
-      },
-    } as Tool;
-  }
-
-  return wrapped;
 }
 
 /**
@@ -1422,7 +713,7 @@ export function createAgent(options: AgentOptions): Agent {
       autoLoad: !isProxyMode,
       includeSchema: isProxyMode,
       onToolsLoaded: (toolNames) => {
-        // Tools are now loaded in MCPManager and will be included in getActiveToolSet()
+        // Tools are now loaded in MCPManager and will be included by the tool pipeline
         // This callback can be used for logging/notifications
       },
     });
@@ -1518,46 +809,6 @@ export function createAgent(options: AgentOptions): Agent {
     experimental_repairToolCall: repairToolCall,
   } as const;
 
-  /**
-   * Filter a tool set by the allowedTools and disallowedTools restrictions.
-   * If neither is set, returns all tools.
-   *
-   * Priority: disallowedTools takes precedence over allowedTools.
-   * If a tool is in both lists, it is blocked.
-   */
-  const filterToolsByAllowed = (toolSet: ToolSet): ToolSet => {
-    const allowed = options.allowedTools;
-    const disallowed = options.disallowedTools;
-
-    // If neither restriction is set, return all tools
-    if ((!allowed || allowed.length === 0) && (!disallowed || disallowed.length === 0)) {
-      return toolSet;
-    }
-
-    const allowedSet = allowed ? new Set(allowed) : null;
-    const disallowedSet = disallowed ? new Set(disallowed) : null;
-    const filtered: ToolSet = {};
-
-    for (const [name, tool] of Object.entries(toolSet)) {
-      // If disallowedTools is set and tool is in it, skip
-      if (disallowedSet?.has(name)) {
-        continue;
-      }
-
-      // If allowedTools is set, only include if in the list
-      if (allowedSet) {
-        if (allowedSet.has(name)) {
-          filtered[name] = tool;
-        }
-      } else {
-        // No allowedTools restriction, include if not disallowed
-        filtered[name] = tool;
-      }
-    }
-
-    return filtered;
-  };
-
   const mergeInstructionLayers = (
     ...layerSets: Array<PromptInstructionLayer[] | undefined>
   ): PromptInstructionLayer[] | undefined => {
@@ -1604,6 +855,8 @@ export function createAgent(options: AgentOptions): Agent {
         Object.assign(allTools, mcpManager.getToolSet());
         return allTools;
       })(),
+      options.allowedTools,
+      options.disallowedTools,
     );
 
     // Extract tool metadata for context
@@ -1728,193 +981,25 @@ export function createAgent(options: AgentOptions): Agent {
   // Runtime tools added/removed dynamically by plugins at runtime
   const runtimeTools: ToolSet = {};
 
-  // Helper to get current active tools (core + runtime + MCP + dynamically loaded from registry)
-  const getActiveToolSet = (threadId?: string): ToolSet => {
-    // Start with core tools
-    const allTools: ToolSet = { ...coreTools };
-
-    // Add runtime tools (added by plugins at runtime)
-    Object.assign(allTools, runtimeTools);
-
-    // Add MCP tools from plugin registrations
-    const mcpTools = mcpManager.getToolSet();
-    Object.assign(allTools, mcpTools);
-
-    // Apply allowedTools filtering
-    const filtered = filterToolsByAllowed(allTools);
-
-    // Apply permission mode wrapping with canUseTool callback and approval state
-    const withPermissions = wrapToolsWithPermissionMode(
-      filtered,
-      () => permissionMode,
-      options.canUseTool,
-      {
-        approvalDecisions,
-        pendingResponses,
-        checkpointSaver: options.checkpointer,
-        threadId,
-      },
-    );
-
-    // Note: Tool hooks are NOT applied here - they are applied at usage sites
-    // AFTER the task tool is added via addTaskToolIfConfigured. This ensures
-    // the task tool is also wrapped with hooks for logging/metrics.
-    return withPermissions;
-  };
-
   /**
-   * Rebuild tools with streaming context for plugins with function-based tools.
-   * This enables tools to stream custom data to the client via ctx.writer.write().
+   * Tool execution pipeline. Composes permission mode, task tools, task
+   * manager injection, hooks, streaming context and signal catching in a
+   * fixed order; see `./agent/tool-pipeline.ts` for the layer diagram.
    */
-  const getActiveToolSetWithStreaming = (
-    streamingContext: StreamingContext,
-    threadId?: string,
-    step?: number,
-  ): ToolSet => {
-    // Start with core tools
-    const allTools: ToolSet = { ...coreTools };
-
-    if (allTools.call_tool) {
-      allTools.call_tool = createCallToolTool({
-        mcpManager,
-        streamingContext,
-      });
-    }
-
-    // Add runtime tools (added by plugins at runtime)
-    Object.assign(allTools, runtimeTools);
-
-    // Add MCP tools from plugin registrations
-    const mcpTools = mcpManager.getToolSet(undefined, streamingContext);
-    Object.assign(allTools, mcpTools);
-
-    // Apply allowedTools filtering
-    const filtered = filterToolsByAllowed(allTools);
-
-    // Apply permission mode wrapping with canUseTool callback and approval state
-    const withPermissions = wrapToolsWithPermissionMode(
-      filtered,
-      () => permissionMode,
-      options.canUseTool,
-      {
-        approvalDecisions,
-        pendingResponses,
-        checkpointSaver: options.checkpointer,
-        threadId,
-        step,
-      },
-    );
-
-    // Note: Tool hooks are NOT applied here - they are applied at usage sites
-    // AFTER the task tool is added via addTaskToolIfConfigured. This ensures
-    // the task tool is also wrapped with hooks for logging/metrics.
-    return withPermissions;
-  };
-
-  /**
-   * Wraps all tools with TaskManager injection and hooks.
-   * Call this AFTER addTaskToolIfConfigured to ensure task tool is also wrapped.
-   *
-   * This applies two layers of wrapping:
-   * 1. TaskManager injection - makes taskManager available in execution options
-   * 2. Hook wrapping - enables PreToolUse/PostToolUse hooks for observability
-   */
-  const applyToolHooks = (
-    tools: ToolSet,
-    threadId?: string,
-    telemetry?: ExecutionTelemetry,
-  ): ToolSet => {
-    // First inject TaskManager into execution context
-    const withTaskManager = wrapToolsWithTaskManager(tools, taskManager, telemetry);
-    // Then apply hooks for observability
-    return wrapToolsWithHooks(
-      withTaskManager,
-      effectiveHooks,
-      agent,
-      threadId ?? "default",
-      telemetry,
-    );
-  };
-
-  /**
-   * Injects request-local streaming context into tool execution options.
-   *
-   * This keeps deferred streaming tools isolated per request instead of
-   * relying on mutable MCPManager state shared across concurrent generations.
-   */
-  const wrapToolsWithStreamingContext = (
-    tools: ToolSet,
-    streamingContext: StreamingContext,
-  ): ToolSet => {
-    const wrapped: ToolSet = {};
-
-    for (const [name, tool] of Object.entries(tools)) {
-      if (!tool.execute) {
-        wrapped[name] = tool;
-        continue;
-      }
-
-      const originalExecute = tool.execute;
-      wrapped[name] = {
-        ...tool,
-        execute: async (input: unknown, toolOptions?: ToolExecutionOptions<unknown>) => {
-          const extendedOptions = {
-            ...toolOptions,
-            streamingContext,
-          } as ToolExecutionOptions<unknown>;
-          return originalExecute(input, extendedOptions);
-        },
-      };
-    }
-
-    return wrapped;
-  };
-
-  /**
-   * Adds the task and task_output tools to a toolset.
-   *
-   * This enables the agent to delegate work to specialized subagents via the
-   * task tool, and retrieve results via the task_output tool. A general-purpose
-   * subagent is always included by default, allowing any agent to spawn
-   * subagents for parallel or delegated work.
-   *
-   * The streaming context is only passed when using streamDataResponse(),
-   * allowing streaming subagents to write to the parent's data stream.
-   *
-   * @param tools - The base toolset to augment
-   * @param streamingContext - Optional streaming context for streaming subagents
-   * @returns The toolset with task and task_output tools added
-   */
-  const addTaskToolIfConfigured = (
-    tools: ToolSet,
-    streamingContext?: StreamingContext,
-  ): ToolSet => {
-    // Respect disabledCoreTools setting for task tool
-    if (options.disabledCoreTools?.includes("task")) {
-      return tools;
-    }
-
-    const result: ToolSet = {
-      ...tools,
-      task: createTaskTool({
-        subagents: allSubagents,
-        defaultModel: options.model,
-        parentAgent: agent,
-        // Always include general-purpose subagent so agents can delegate tasks
-        includeGeneralPurpose: true,
-        // Only pass streaming context when provided (streamDataResponse)
-        streamingContext,
-        taskManager,
-      }),
-    };
-
-    // Add task_output tool unless disabled
-    if (!options.disabledCoreTools?.includes("task_output")) {
-      result.task_output = createTaskOutputTool({ taskManager });
-    }
-
-    return result;
-  };
+  const toolPipeline = createToolPipeline({
+    options,
+    // `agent` is assigned below; the pipeline only dereferences it per call.
+    getAgent: () => agent,
+    coreTools,
+    runtimeTools,
+    mcpManager,
+    taskManager,
+    hooks: effectiveHooks,
+    getPermissionMode: () => permissionMode,
+    approvalDecisions,
+    pendingResponses,
+    subagents: allSubagents,
+  });
 
   // Track current checkpoint state per thread
   const threadCheckpoints = new Map<string, Checkpoint>();
@@ -2828,21 +1913,11 @@ export function createAgent(options: AgentOptions): Agent {
           // stopWhen condition stops generation after the current step completes.
           const signalState: GenerateSignalState = {};
 
-          // Build initial params - use active tools (core + dynamically loaded + task)
-          // Apply hooks AFTER adding task tool so task tool is also wrapped.
-          // Then wrap with signal catching as the outermost layer so that
-          // InterruptSignal is intercepted before the AI SDK can catch it and
-          // convert it to a tool-error result.
-          const hookedTools = applyToolHooks(
-            addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
-            effectiveGenOptions.threadId,
-            executionBaseTelemetry,
-          );
-          const activeTools = wrapToolsWithSignalCatching(
-            hookedTools,
+          const activeTools = toolPipeline.buildTools({
+            threadId: effectiveGenOptions.threadId,
+            telemetry: executionBaseTelemetry,
             signalState,
-            options.transformToolError,
-          );
+          });
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(
@@ -3414,19 +2489,11 @@ export function createAgent(options: AgentOptions): Agent {
           // Signal state for cooperative signal catching in streaming mode
           const signalState: GenerateSignalState = {};
 
-          // Build initial params - use active tools (core + dynamically loaded + task)
-          // Apply hooks AFTER adding task tool so task tool is also wrapped.
-          // Then wrap with signal catching as the outermost layer.
-          const hookedTools = applyToolHooks(
-            addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
-            effectiveGenOptions.threadId,
-            executionBaseTelemetry,
-          );
-          const activeTools = wrapToolsWithSignalCatching(
-            hookedTools,
+          const activeTools = toolPipeline.buildTools({
+            threadId: effectiveGenOptions.threadId,
+            telemetry: executionBaseTelemetry,
             signalState,
-            options.transformToolError,
-          );
+          });
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(
@@ -3933,19 +3000,11 @@ export function createAgent(options: AgentOptions): Agent {
           // Signal state for cooperative signal catching in streaming mode
           const signalState: GenerateSignalState = {};
 
-          // Build initial params - use active tools (core + dynamically loaded + task)
-          // Apply hooks AFTER adding task tool so task tool is also wrapped.
-          // Then wrap with signal catching as the outermost layer.
-          const hookedTools = applyToolHooks(
-            addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
-            effectiveGenOptions.threadId,
-            executionBaseTelemetry,
-          );
-          const activeTools = wrapToolsWithSignalCatching(
-            hookedTools,
+          const activeTools = toolPipeline.buildTools({
+            threadId: effectiveGenOptions.threadId,
+            telemetry: executionBaseTelemetry,
             signalState,
-            options.transformToolError,
-          );
+          });
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(
@@ -4143,16 +3202,11 @@ export function createAgent(options: AgentOptions): Agent {
                         threadId: requestOptions.threadId,
                         requestedModel: currentModel,
                       });
-                      const followUpTools = applyToolHooks(
-                        addTaskToolIfConfigured(getActiveToolSet(requestOptions.threadId)),
-                        requestOptions.threadId,
-                        followUpTelemetry,
-                      );
-                      const activeFollowUpTools = wrapToolsWithSignalCatching(
-                        followUpTools,
+                      const activeFollowUpTools = toolPipeline.buildTools({
+                        threadId: requestOptions.threadId,
+                        telemetry: followUpTelemetry,
                         signalState,
-                        options.transformToolError,
-                      );
+                      });
                       const followUpPromptContext = buildPromptContext(
                         requestOptions,
                         followUpMessages,
@@ -4378,19 +3432,11 @@ export function createAgent(options: AgentOptions): Agent {
           // Signal state for cooperative signal catching in streaming mode
           const signalState: GenerateSignalState = {};
 
-          // Build initial params - use active tools (core + dynamically loaded + task)
-          // Apply hooks AFTER adding task tool so task tool is also wrapped.
-          // Then wrap with signal catching as the outermost layer.
-          const hookedTools = applyToolHooks(
-            addTaskToolIfConfigured(getActiveToolSet(effectiveGenOptions.threadId)),
-            effectiveGenOptions.threadId,
-            executionBaseTelemetry,
-          );
-          const activeTools = wrapToolsWithSignalCatching(
-            hookedTools,
+          const activeTools = toolPipeline.buildTools({
+            threadId: effectiveGenOptions.threadId,
+            telemetry: executionBaseTelemetry,
             signalState,
-            options.transformToolError,
-          );
+          });
 
           // Build prompt context and generate system prompt
           const promptContext = buildPromptContext(
@@ -4646,26 +3692,12 @@ export function createAgent(options: AgentOptions): Agent {
               // Signal state for cooperative signal catching in streaming mode
               const signalState: GenerateSignalState = {};
 
-              // Build tools with streaming context and task tool
-              // Apply hooks AFTER adding task tool so task tool is also wrapped.
-              // Then wrap with signal catching as the outermost layer.
-              const hookedStreamingTools = applyToolHooks(
-                addTaskToolIfConfigured(
-                  getActiveToolSetWithStreaming(streamingContext, effectiveGenOptions.threadId),
-                  streamingContext, // Pass streaming context for streaming subagents
-                ),
-                effectiveGenOptions.threadId,
-                executionBaseTelemetry,
-              );
-              const requestScopedStreamingTools = wrapToolsWithStreamingContext(
-                hookedStreamingTools,
-                streamingContext,
-              );
-              const streamingTools = wrapToolsWithSignalCatching(
-                requestScopedStreamingTools,
+              const streamingTools = toolPipeline.buildTools({
+                threadId: effectiveGenOptions.threadId,
+                telemetry: executionBaseTelemetry,
                 signalState,
-                options.transformToolError,
-              );
+                streamingContext,
+              });
 
               // Build prompt context and generate system prompt
               const promptContext = buildPromptContext(
@@ -4892,23 +3924,12 @@ export function createAgent(options: AgentOptions): Agent {
                         threadId: requestOptions.threadId,
                         requestedModel: currentModel,
                       });
-                      const hookedFollowUpTools = applyToolHooks(
-                        addTaskToolIfConfigured(
-                          getActiveToolSetWithStreaming(streamingContext, requestOptions.threadId),
-                          streamingContext,
-                        ),
-                        requestOptions.threadId,
-                        followUpTelemetry,
-                      );
-                      const requestScopedFollowUpTools = wrapToolsWithStreamingContext(
-                        hookedFollowUpTools,
-                        streamingContext,
-                      );
-                      const activeFollowUpTools = wrapToolsWithSignalCatching(
-                        requestScopedFollowUpTools,
+                      const activeFollowUpTools = toolPipeline.buildTools({
+                        threadId: requestOptions.threadId,
+                        telemetry: followUpTelemetry,
                         signalState,
-                        options.transformToolError,
-                      );
+                        streamingContext,
+                      });
                       const followUpPromptContext = buildPromptContext(
                         requestOptions,
                         followUpMessages,
@@ -5091,7 +4112,7 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     getActiveTools() {
-      return getActiveToolSet();
+      return toolPipeline.getPermissionWrappedTools();
     },
 
     addRuntimeTools(tools: ToolSet) {
