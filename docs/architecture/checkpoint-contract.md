@@ -64,6 +64,13 @@ port of `run-executor`: retry budgets, drain-pause handover, user-turn
 re-supply, truncation classification and gateway routing stay in the platform.
 The boundary is listed in [What stays in lleverage](#what-stays-in-lleverage).
 
+### Surface rule
+
+lleverage is the canonical implementation. Any checkpoint-adjacent surface it
+does not use stays in 1.0 only if it is fundamental to the generic case — a
+single-process agent with no session service. "Someone might want it" is not
+enough. Applied below in [Removed](#removed) and [Kept](#kept-and-why).
+
 ## Contract
 
 ### `RunSink` — the lifecycle observer
@@ -72,13 +79,10 @@ The boundary is listed in [What stays in lleverage](#what-stays-in-lleverage).
 interface RunSink {
   /** A run is starting. Called once per public-method invocation, after PreGenerate. */
   beginRun(input: {
-    /** Thread the run writes to. Differs from the request's threadId when `forkSession` cloned it. */
     threadId: string;
     runId: string;
-    /** Set when `forkSession` cloned `forkedFrom` into `threadId`; the sink performs the clone. */
-    forkedFrom?: string;
-    /** In-thread branch point (ledger semantics, see open question 2). */
-    forkFrom?: { messageId: string };
+    /** In-thread branch point (ledger semantics, `run-lifecycle.md`). */
+    forkFromMessageId?: string;
     /** The turn's user/system input as canonical messages, so the sink can make it durable before generation starts. */
     inputMessages: CanonicalMessage[];
   }): Promise<void>;
@@ -162,9 +166,16 @@ createAgent({ checkpointer: new MemorySaver() })   // legacy, wrapped by sinkFro
 createAgent({})                                    // in-memory ledger
 ```
 
+The SDK already has half of this: `createLedgerCheckpointer(ledgerStore)`
+(#149) reconstructs `load()` from `ILedgerStore.getTranscript` via
+`canonicalMessagesToModelMessages`, and persists only a resume delta (step,
+state, pending interrupt) to an inner saver. It is unused by lleverage and
+untested against `createAgent` end to end, but it is the right read side. This
+proposal completes it with the write side.
+
 `createLedgerRuntime(store)` returns `{ sink: RunSink, source: CheckpointSource }`:
 
-- `sink.beginRun` → `RunManager.beginRun` (with `forkFromMessageId`).
+- `sink.beginRun` → `RunManager.beginRun` (with `forkFromMessageId`; exposed as a new `GenerateOptions.forkFromMessageId`, replacing `forkSession`).
 - `sink.append` → `RunManager.appendEvents`.
 - `sink.stepFinished` → appends a `step-finished` event carrying `step` and
   `usage`; nothing else, the transcript is already in the events.
@@ -174,16 +185,17 @@ createAgent({})                                    // in-memory ledger
 - `sink.interruptRequested` → appends an `interrupt-requested` event (new core
   kind).
 - `sink.finalizeRun` → `RunManager.finalizeRun`.
-- `source.load` → `getTranscript` → `canonicalToModelMessages` (new, the inverse
-  of the accumulator's mapping) → `Checkpoint` with `step` = number of
-  `step-finished` events on the leaf run, `pendingInterrupt` = last unresolved
-  `interrupt-requested`, `metadata.lastRunUsage` from the last committed run's
-  finalize record.
+- `source.load` → `getTranscript` → `canonicalMessagesToModelMessages`
+  (existing) → `Checkpoint` with `step` = number of `step-finished` events on
+  the leaf run, `pendingInterrupt` = last unresolved `interrupt-requested`,
+  `metadata.lastRunUsage` from the last committed run's finalize record. The
+  resume-delta inner saver in today's `createLedgerCheckpointer` goes away:
+  everything it stored is derivable from events.
 
-`MemorySaver` and `FileSaver` become `createLedgerRuntime(new InMemoryLedgerStore())`
-and `createLedgerRuntime(new SQLiteLedgerStore(path))` respectively, exported under
-their current names. `KeyValueStoreSaver` is wrapped by `sinkFromSaver` and
-deprecated.
+`MemorySaver` becomes `createLedgerRuntime(new InMemoryLedgerStore())` and
+`FileSaver` becomes `createLedgerRuntime(new SQLiteLedgerStore(path))`, exported
+under their current names. `createLedgerCheckpointer` is folded into
+`createLedgerRuntime`.
 
 ### `StreamPart` → `StreamEvent`
 
@@ -194,24 +206,42 @@ only the lleverage-specific kinds it appends on top.
 
 ### Removed
 
-- `GenerateOptions.checkpointAfterToolCall` — replaced by `stepFinished`,
-  which always fires. Deprecated for one cycle with a warning; no-op.
-- `CheckpointRuntime.save / commit / markPendingInterrupt` (internal).
-- `agent.resume()`'s dependence on `pendingInterrupt` having been written by
-  the agent. It reads it from the source; sources that don't record interrupts
-  make `resume()` throw `NoPendingInterruptError`.
+Per the surface rule. Each of these is unused by lleverage and not fundamental
+to the generic single-process case.
+
+| Surface | Why it goes |
+| --- | --- |
+| `GenerateOptions.checkpointAfterToolCall` | Replaced by `stepFinished`, which always fires. lleverage passes `true` and gets nothing; the generic case gets the same guarantee without the flag. |
+| `GenerateOptions.forkSession` + `GenerateResultComplete.forkedSessionId` | Clones a thread's checkpoint to a fresh threadId. lleverage branches *within* a thread (branch ids, `forkFromEntryId`), which the ledger already models as `forkFromMessageId`. Thread cloning is a consumer-side copy of a transcript; nothing in the runner needs to know about it. Removing it deletes `generation-modes.md` row 2 and `CheckpointRuntime.fork()`. |
+| `KeyValueStoreSaver` | A blob store abstraction over a blob store. `MemorySaver`/`FileSaver` cover the generic case; anyone with a KV store has a ledger store in ten lines. |
+| `createLedgerCheckpointer`'s `resumeSaver` inner saver | Folded into the ledger; the resume delta is derivable. |
+| `CheckpointRuntime.save / commit / fork / markPendingInterrupt` (internal) | Replaced by sink calls. |
+| `streamResponse()`, `streamRaw()` | No consumer. `generate()`, `stream()` and `streamDataResponse()` cover the three real shapes (result, parts, UI-stream `Response`). Note `streamDataResponse()` is dead in lleverage too (`AgentService.chat()`/`resume()` have no callers); it survives only because a UI-stream `Response` is the generic Next.js/Hono case. |
+
+### Kept, and why
+
+| Surface | lleverage uses it? | Kept because |
+| --- | --- | --- |
+| `agent.resume()` | No — `executeResumeRun` builds the tool-result message and calls `stream()`. | It is the generic single-process interrupt story (`AgentSession`, agent-teams `session-runner`, every doc example). It reads `pendingInterrupt` from the source; a source that doesn't record interrupts makes it throw `NoPendingInterruptError`. |
+| `AgentSession` | No. | Generic REPL/CLI loop; agent-teams depends on it. |
+| `MemorySaver` | Yes (subagents, `createMemorySaver()`). | Re-implemented on the in-memory ledger; same name, same tests. |
+| `FileSaver` | No. | The generic single-process durable case (CLI, local tools). Re-implemented on `SQLiteLedgerStore`. |
+| `CheckpointSource.delete` | Yes (`clearCheckpoint`). | — |
+| `CheckpointSource.list` | No (lleverage's `list()` hits are on other types). | Optional; needed by `FileSaver`-style tooling. |
+| `PreGenerate.respondWith` cache short-circuit | Yes (skill-eval interception plugin). | — |
 
 ## What this resolves in `generation-modes.md`
 
 | Row | Today | After |
 | --- | --- | --- |
-| Checkpoint thread when `forkSession` is set | 2 of 5 modes fork-aware | `beginRun.forkFrom` in the runner, all modes |
+| Checkpoint thread when `forkSession` is set | 2 of 5 modes fork-aware | row deleted: `forkSession` removed |
 | `contextManager.updateUsage` after run | `stream()` skips it | runner, all modes, plus pre-run seeding from `lastRunUsage` |
 | Pending interrupt persisted + `InterruptRequested` | 3 of 5 | `sink.interruptRequested` + hook, all modes |
 | Thrown `InterruptSignal` caught | `generate()` only | runner catch path, all modes |
 | `checkpointAfterToolCall` | 3 of 5, ignored by the production caller | retired; `stepFinished` always |
-| Emergency compaction on context overflow | `generate()` only | stays `generate()`-only in this proposal; see open question 3 |
-| Follow-up turns bypass the public method | Response modes | follow-ups run through the same runner and sink; unchanged externally |
+| Emergency compaction on context overflow | `generate()` only | stays `generate()`-only in this proposal; see open question 2 |
+| Follow-up turns bypass the public method | Response modes | `streamResponse`/`streamRaw` removed; `streamDataResponse` follow-ups run through the same runner and sink |
+| `respondWith` cache replay, TTFT telemetry, `providerMetadata` telemetry | per-mode | unchanged; three modes, each with a documented output shape |
 
 ## lleverage migration
 
@@ -224,7 +254,7 @@ become a `RunSink` + `CheckpointSource` pair with no casts and no `save()`.
 | `SessionServiceCheckpointSaver.load()` | Unchanged, now typed as `CheckpointSource.load`. Sets `metadata.lastRunUsage` (it already parses it). |
 | `setResumeUsageListener` / `usageSeedingCheckpointer` cast | Deleted; the runner reads `lastRunUsage`. |
 | `persistCompactionSnapshot` / `persistingCheckpointer` cast in `contextManager.onCompact` | Becomes `sink.compaction`. |
-| `createCompactingCheckpointSaver` (agent-core) save path | Deleted. Its `load()` half stays as a `CheckpointSource` decorator. Candidate for upstreaming as a projection step; see open question 4. |
+| `createCompactingCheckpointSaver` (agent-core) save path | Deleted. Its `load()` half stays as a `CheckpointSource` decorator. Candidate for upstreaming as a projection step; see open question 3. |
 | `createInterruptedAssistantCheckpointer` | `load()` half stays as a source decorator; `save()` half deleted. |
 | `createToolResultOrderingRepairCheckpointer` | Same split. The repair is a read-time fix for a write-time bug the SDK should not be able to produce once tool-result adjacency is enforced in the accumulator. Track separately. |
 | `createCheckpointBreakdownMetricSaver` | Becomes a `RunSink` decorator on `finalizeRun` (same data, same `setImmediate` deferral). |
@@ -269,17 +299,22 @@ step. Steps 1–3 are additive.
 2. **`lastRunUsage` seeding and `compaction` events.** Runner reads
    `metadata.lastRunUsage` after `load()`; `contextManager.onCompact` is
    routed through `sink.compaction`.
-3. **Ledger runtime.** `createLedgerRuntime`, `canonicalToModelMessages`, new
-   core event kinds, `createAgent({ ledger })`. `MemorySaver`/`FileSaver`
-   re-implemented on top; their test suites must pass unchanged.
-4. **Retire `checkpointAfterToolCall`** (deprecation warning, no-op) and make
-   `stepFinished` unconditional.
-5. **1.0.0**: `BaseCheckpointSaver.save` marked `@deprecated`; `KeyValueStoreSaver`
-   deprecated; docs (`persistence.md`, `checkpointer/README`) rewritten around
-   the sink/source pair.
+3. **Ledger runtime.** `createLedgerRuntime` (absorbing
+   `createLedgerCheckpointer`), new core event kinds, `createAgent({ ledger })`.
+   `MemorySaver`/`FileSaver` re-implemented on top; their test suites must
+   pass unchanged.
+4. **Remove per the surface rule**: `checkpointAfterToolCall`, `forkSession` /
+   `forkedSessionId`, `KeyValueStoreSaver`, `streamResponse()`, `streamRaw()`,
+   and the internal `CheckpointRuntime` write methods. `stepFinished` becomes
+   unconditional. One PR, one `**BREAKING**` CHANGELOG block, one migration
+   note per removal in `docs/migration/1.0.md`. No deprecation cycle — there is
+   no released 1.x to be compatible with, and the alpha line has one consumer.
+5. **1.0.0**: `BaseCheckpointSaver.save` marked `@deprecated` (kept for
+   third-party savers via `sinkFromSaver`); docs (`persistence.md`,
+   `checkpointer/README`) rewritten around the sink/source pair.
 
-lleverage adopts after step 3 lands in a release; steps 1–2 are invisible to
-it beyond the swap-test.
+lleverage adopts after step 4 lands in a release; steps 1–2 are invisible to
+it beyond the swap-test, and step 4 only removes things it doesn't call.
 
 ## Open questions
 
@@ -288,31 +323,20 @@ it beyond the swap-test.
    uses an outbox with a ~1s flush; the sink can resolve on enqueue rather
    than flush, which is what it effectively does today. Needs a number from
    the swap-test before adoption.
-2. **`forkSession` vs ledger forks are different operations.** Today
-   `forkSession: true` copies the source thread's checkpoint to a **new
-   threadId** and the run continues there (`checkpoints.fork()`). The ledger's
-   `forkFromMessageId` branches **within** a thread and supersedes the old
-   tail (`run-lifecycle.md`). Both are legitimate; lleverage uses the
-   in-thread kind (branch ids, `forkFromEntryId`) and never `forkSession`.
-   Proposal: `beginRun` carries both — `threadId` (may differ from the
-   request's when `forkSession` is set; the sink is told `forkedFrom:
-   sourceThreadId`) and `forkFrom?: { messageId }` for in-thread branching,
-   exposed as a new `GenerateOptions.forkFromMessageId`. The runner never
-   copies messages itself; a sink that supports thread cloning does it in
-   `beginRun`. Whether `forkSession` survives 1.0 at all is worth asking —
-   it is the only reason `generation-modes.md` row 2 exists.
-3. **Emergency compaction on context overflow** (`generate()` only). Porting
-   it to `stream()` today would drop the user turn lleverage re-supplies
-   (LLE-10407). With `beginRun.inputMessages` making the turn durable first,
-   the hazard goes away — but the compaction itself should then be a normal
-   `sink.compaction` + retry, not a checkpoint rewrite. Decide after step 2.
-4. **Tool-result compaction as a projection step.** lleverage's
+2. **Emergency compaction on context overflow** (`generate()` only,
+   `enableErrorFallback`). lleverage sets the flag but never benefits because
+   it uses `stream()`. Porting it to `stream()` today would drop the user turn
+   lleverage re-supplies (LLE-10407). With `beginRun.inputMessages` making the
+   turn durable first, the hazard goes away — but the compaction itself should
+   then be a normal `sink.compaction` + retry, not a checkpoint rewrite. Under
+   the surface rule it either becomes a runner-level behaviour lleverage
+   actually gets, or it goes. Decide after step 2, with lleverage.
+3. **Tool-result compaction as a projection step.** lleverage's
    `tool-result-compaction.ts` (1.9k lines, depends only on the SDK) is
    general. Upstreaming it as a `CheckpointSource` decorator in the SDK is
    attractive but is its own PR series; not blocking.
-5. **Five modes.** With the lifecycle in one place, `streamResponse` and
-   `streamRaw` have no known consumer and `streamDataResponse` is dead in
-   lleverage. Deprecating two of them for 1.0 is an API-shape decision
-   alongside #142/#139, not part of this contract.
-6. **Session (`AgentSession`)** uses `agent.generate()` + `agent.resume()`.
-   It stays on the built-in ledger path and needs no change beyond step 3.
+4. **`streamDataResponse()` is dead in lleverage.** It is kept only for the
+   generic HTTP case. If the surface rule is applied strictly it goes too,
+   and the SDK ships `generate()` + `stream()` with a documented recipe for
+   turning `stream()` into a UI-message `Response`. Worth a deliberate call
+   rather than a default.
