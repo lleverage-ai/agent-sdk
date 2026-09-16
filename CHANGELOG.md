@@ -138,6 +138,16 @@ no longer need to patch `dist/`.
   (behind `createMessageRuntime()`), and the pure `appendResponseMessages` /
   `buildMessagesFromStepResponses` transcript helpers. No public API or
   behaviour change.
+- Extracted the generation lifecycle shared by `generate()`, `stream()`,
+  `streamResponse()`, `streamRaw()` and `streamDataResponse()` into
+  `src/agent/generation-runner.ts` (`createGenerationRunner()`): PreGenerate
+  and cache handling, per-attempt message/tool/prompt setup, the AI SDK call
+  params, context-usage updates, `InterruptRequested` / `PostGenerate` hook
+  emission, the streaming `onStepFinish` / `onFinish` callbacks, the UI-stream
+  background follow-up loop, and the retry decision. Each mode keeps only its
+  output shape. The model-capability projection helpers and `mapSteps` moved
+  with it. Documented the remaining behaviour differences between the modes in
+  `docs/architecture/generation-modes.md`; none were changed. Closes #140.
 
 ## [0.1.0-alpha.9] - 2026-06-30
 

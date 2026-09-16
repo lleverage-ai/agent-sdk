@@ -4,7 +4,7 @@
  * @packageDocumentation
  */
 
-import type { ModelMessage, Tool, ToolCallRepairFunction, ToolExecutionOptions, ToolSet } from "ai";
+import type { ModelMessage, ToolCallRepairFunction, ToolExecutionOptions, ToolSet } from "ai";
 import {
   createUIMessageStream,
   createUIMessageStreamResponse,
@@ -13,15 +13,19 @@ import {
   streamText,
 } from "ai";
 import { createCheckpointRuntime, getCheckpointRunId } from "./agent/checkpoint-runtime.js";
+import {
+  cachedTextResponse,
+  createGenerationRunner,
+  createToolExecutionContext,
+  createToolModelOutput,
+  mapSteps,
+} from "./agent/generation-runner.js";
 import { buildMessagesFromStepResponses, createMessageRuntime } from "./agent/messages.js";
 import {
-  buildStopConditions,
   createToolPipeline,
   filterToolsByAllowed,
-  type GenerateSignalState,
   InterruptSignal,
   isInterruptSignal,
-  wrapToolsWithExecutionContext,
 } from "./agent/tool-pipeline.js";
 import type { BackendProtocol, ExecutableBackend } from "./backend.js";
 import { hasExecuteCapability } from "./backend.js";
@@ -40,15 +44,8 @@ import {
   updateCheckpoint,
 } from "./checkpointer/types.js";
 import type { AgentError } from "./errors/index.js";
-import {
-  createRetryLoopState,
-  handleGenerationError,
-  invokePreGenerateHooks,
-  normalizeError,
-  updateRetryLoopState,
-  waitForRetryDelay,
-} from "./generation-helpers.js";
-import { extractUpdatedResult, invokeHooksWithTimeout } from "./hooks.js";
+import { normalizeError } from "./generation-helpers.js";
+import { invokeHooksWithTimeout } from "./hooks.js";
 import { MCPManager } from "./mcp/manager.js";
 import { applyMiddleware, mergeHooks, setupMiddleware } from "./middleware/index.js";
 import {
@@ -78,216 +75,15 @@ import type {
   GenerateResult,
   GenerateResultComplete,
   GenerateResultInterrupted,
-  GenerateStep,
-  InterruptRequestedInput,
   InterruptResolvedInput,
   MCPConnectionFailedInput,
   MCPConnectionRestoredInput,
-  ModelInputCapabilities,
-  PostGenerateInput,
   StreamingContext,
   StreamPart,
   SubagentDefinition,
-  ToolCallResult,
-  ToolResultPart,
 } from "./types.js";
 
 let agentIdCounter = 0;
-
-type ToolContentOutputPart =
-  | { type: "text"; text: string; [key: string]: unknown }
-  | { type: "media"; data: string; mediaType: string; [key: string]: unknown }
-  | { type: "image-data"; data: string; mediaType: string; [key: string]: unknown }
-  | { type: "image-url"; url: string; [key: string]: unknown }
-  | { type: "image-file-id"; fileId: string | Record<string, string>; [key: string]: unknown }
-  | {
-      type: "file-data";
-      data: string;
-      mediaType: string;
-      filename?: string;
-      [key: string]: unknown;
-    }
-  | { type: "file-url"; url: string; [key: string]: unknown }
-  | { type: "file-id"; fileId: string | Record<string, string>; [key: string]: unknown }
-  | { type: "custom"; [key: string]: unknown }
-  | { type: string; [key: string]: unknown };
-
-type ToolContentOutput = {
-  type: "content";
-  value: ToolContentOutputPart[];
-  [key: string]: unknown;
-};
-
-/** @internal */
-function isToolContentOutput(output: unknown): output is ToolContentOutput {
-  return (
-    typeof output === "object" &&
-    output !== null &&
-    (output as { type?: unknown }).type === "content" &&
-    Array.isArray((output as { value?: unknown }).value)
-  );
-}
-
-/** @internal */
-function resolveModelInputCapabilities(
-  options: AgentOptions,
-  model: AgentOptions["model"],
-): ModelInputCapabilities | undefined {
-  const resolver = options.modelCapabilities;
-
-  if (!resolver) {
-    return undefined;
-  }
-
-  return typeof resolver === "function" ? resolver(model) : resolver;
-}
-
-/** @internal */
-function createToolExecutionContext(
-  options: AgentOptions,
-  model: AgentOptions["model"],
-): {
-  agentSdk: { currentModel: AgentOptions["model"]; modelCapabilities?: ModelInputCapabilities };
-} {
-  const modelCapabilities = resolveModelInputCapabilities(options, model);
-
-  return {
-    agentSdk: {
-      currentModel: model,
-      ...(modelCapabilities ? { modelCapabilities } : {}),
-    },
-  };
-}
-
-/** @internal */
-async function createToolModelOutput({
-  tool,
-  toolCallId,
-  input,
-  output,
-}: {
-  tool: Tool | undefined;
-  toolCallId: string;
-  input: unknown;
-  output: unknown;
-}): Promise<unknown> {
-  const toolWithModelOutput = tool as
-    | {
-        toModelOutput?: (options: {
-          toolCallId: string;
-          input: unknown;
-          output: unknown;
-        }) => unknown | PromiseLike<unknown>;
-      }
-    | undefined;
-
-  if (toolWithModelOutput?.toModelOutput) {
-    return toolWithModelOutput.toModelOutput({ toolCallId, input, output });
-  }
-
-  return typeof output === "string"
-    ? { type: "text" as const, value: output }
-    : { type: "json" as const, value: output ?? null };
-}
-
-/** @internal */
-function downgradeToolContentOutput(
-  output: unknown,
-  capabilities: ModelInputCapabilities | undefined,
-): unknown {
-  if (
-    typeof output === "object" &&
-    output !== null &&
-    (output as { type?: unknown }).type === "json" &&
-    "value" in output
-  ) {
-    return {
-      ...output,
-      value: downgradeToolContentOutput((output as { value: unknown }).value, capabilities),
-    };
-  }
-
-  if (!isToolContentOutput(output)) {
-    return output;
-  }
-
-  const value: ToolContentOutputPart[] = [];
-
-  for (const part of output.value) {
-    switch (part.type) {
-      case "text":
-        value.push(part);
-        break;
-      case "image-data":
-      case "image-url":
-      case "image-file-id":
-      case "media":
-        value.push(
-          capabilities?.imageInput === false
-            ? {
-                type: "text",
-                text: "[Image omitted: active model does not support image input.]",
-              }
-            : part,
-        );
-        break;
-      case "file-data":
-      case "file-url":
-      case "file-id":
-        value.push(
-          capabilities?.fileInput === false
-            ? {
-                type: "text",
-                text: "[File omitted: active model does not support file input.]",
-              }
-            : part,
-        );
-        break;
-      case "custom":
-        value.push(part);
-        break;
-      default:
-        value.push(part);
-        break;
-    }
-  }
-
-  return { ...output, value };
-}
-
-/** @internal */
-function projectMessagesForModel(
-  messages: ModelMessage[],
-  capabilities: ModelInputCapabilities | undefined,
-): ModelMessage[] {
-  if (capabilities?.imageInput !== false && capabilities?.fileInput !== false) {
-    return messages;
-  }
-
-  return messages.map((message) => {
-    if (message.role !== "tool" || !Array.isArray(message.content)) {
-      return message;
-    }
-
-    return {
-      ...message,
-      content: message.content.map((part) => {
-        if (part.type !== "tool-result") {
-          return part;
-        }
-
-        const output = "output" in part ? part.output : undefined;
-        const result = "result" in part ? (part as { result?: unknown }).result : undefined;
-
-        return {
-          ...part,
-          ...("output" in part ? { output: downgradeToolContentOutput(output, capabilities) } : {}),
-          ...("result" in part ? { result: downgradeToolContentOutput(result, capabilities) } : {}),
-        };
-      }),
-    };
-  }) as ModelMessage[];
-}
 
 /**
  * Internal marker for errors thrown by nested background follow-up turns.
@@ -954,32 +750,24 @@ export function createAgent(options: AgentOptions): Agent {
     getAgent: () => agent,
     checkpoints,
   });
-  const { buildMessages, createStreamingCompactionState } = messageRuntime;
+  const { createStreamingCompactionState } = messageRuntime;
 
   /**
-   * Map AI SDK steps to our GenerateStep format.
+   * Shared generation lifecycle (PreGenerate → attempt setup → AI SDK params →
+   * PostGenerate → retry); see `./agent/generation-runner.ts`.
    */
-  function mapSteps(steps: Awaited<ReturnType<typeof generateText>>["steps"]): GenerateStep[] {
-    return steps.map((step) => ({
-      text: step.text,
-      toolCalls: step.toolCalls.map(
-        (tc): ToolCallResult => ({
-          toolCallId: tc.toolCallId,
-          toolName: tc.toolName,
-          input: tc.input,
-        }),
-      ),
-      toolResults: step.toolResults.map(
-        (tr): ToolResultPart => ({
-          toolCallId: tr.toolCallId,
-          toolName: tr.toolName,
-          output: tr.output,
-        }),
-      ),
-      finishReason: step.finishReason as GenerateStep["finishReason"],
-      usage: step.usage,
-    }));
-  }
+  const runner = createGenerationRunner({
+    options,
+    hooks: effectiveHooks,
+    getAgent: () => agent,
+    toolPipeline,
+    checkpoints,
+    messageRuntime,
+    buildPromptContext,
+    getSystemPrompt,
+    repairToolCallOptions,
+    getNextTaskPrompt,
+  });
 
   /**
    * Get the next actionable task prompt from the background task queue.
@@ -1014,117 +802,6 @@ export function createAgent(options: AgentOptions): Agent {
     }
 
     return null;
-  }
-
-  async function invokeCachedPostGenerateHooks(
-    cachedResult: GenerateResult,
-    genOptions: GenerateOptions,
-    requestedModel: AgentOptions["model"],
-  ): Promise<GenerateResult> {
-    if (cachedResult.status !== "complete") {
-      return cachedResult;
-    }
-
-    const telemetry = buildExecutionTelemetryFromIds({
-      runId: genOptions._runId ?? createRunId(),
-      threadId: genOptions.threadId,
-      requestedModel,
-    });
-    const result: GenerateResultComplete = {
-      ...cachedResult,
-      telemetry,
-    };
-
-    const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-    if (postGenerateHooks.length === 0) {
-      return result;
-    }
-
-    const postGenerateInput: PostGenerateInput = {
-      hook_event_name: "PostGenerate",
-      session_id: genOptions.threadId ?? "default",
-      cwd: process.cwd(),
-      telemetry,
-      options: genOptions,
-      result,
-    };
-    const hookOutputs = await invokeHooksWithTimeout(
-      postGenerateHooks,
-      postGenerateInput,
-      null,
-      agent,
-    );
-    const updatedResult = extractUpdatedResult<GenerateResultComplete>(hookOutputs);
-    return updatedResult
-      ? { ...updatedResult, telemetry: updatedResult.telemetry ?? telemetry }
-      : result;
-  }
-
-  /**
-   * Starts a `streamText()` request with the same retry pipeline used by the
-   * top-level streaming entrypoints.
-   *
-   * This only retries failures thrown while creating the stream, matching the
-   * outer streaming methods' current retry behavior.
-   */
-  async function startRetriedStreamText(
-    initialGenOptions: GenerateOptions,
-    createRequest: (
-      requestOptions: GenerateOptions,
-      currentModel: AgentOptions["model"],
-    ) => ReturnType<typeof streamText>,
-  ): Promise<{
-    result: ReturnType<typeof streamText>;
-    effectiveOptions: GenerateOptions;
-    currentModel: AgentOptions["model"];
-  }> {
-    let requestOptions = initialGenOptions;
-    const retryState = createRetryLoopState(
-      options.model,
-      options.generationRetryPolicy?.maxRetries,
-    );
-
-    while (retryState.retryAttempt <= retryState.maxRetries) {
-      try {
-        return {
-          result: createRequest(requestOptions, retryState.currentModel),
-          effectiveOptions: requestOptions,
-          currentModel: retryState.currentModel,
-        };
-      } catch (error) {
-        const normalizedError = normalizeError(
-          error,
-          "Stream generation failed",
-          requestOptions.threadId,
-        );
-
-        const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-        const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
-        const errorDecision = await handleGenerationError({
-          error: normalizedError,
-          failureHooks: postGenerateFailureHooks,
-          decisionHooks: retryDecisionHooks,
-          genOptions: requestOptions,
-          agent,
-          state: retryState,
-          fallbackModel: options.fallbackModel,
-          retryPolicy: options.generationRetryPolicy,
-        });
-
-        if (errorDecision.shouldRetry) {
-          if (errorDecision.updatedOptions) {
-            requestOptions = errorDecision.updatedOptions;
-          }
-          Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
-          await waitForRetryDelay(errorDecision.retryDelayMs);
-          continue;
-        }
-
-        throw normalizedError;
-      }
-    }
-
-    throw new Error("Unexpected: retry loop exited without return or throw");
   }
 
   /**
@@ -1461,113 +1138,42 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async generate(genOptions: GenerateOptions): Promise<GenerateResult> {
-      const runId = await checkpoints.resolveRunId(genOptions);
-
-      // Invoke unified PreGenerate hooks
-      const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
-      const preGenResult = await invokePreGenerateHooks<GenerateResult>(
-        preGenerateHooks,
-        { ...genOptions, _runId: runId },
-        agent,
-      );
+      const run = await runner.beginRun(genOptions);
 
       // Check for cache short-circuit via respondWith
-      if (preGenResult.cachedResult !== undefined) {
-        return await invokeCachedPostGenerateHooks(
-          preGenResult.cachedResult,
-          { ...preGenResult.effectiveOptions, _runId: runId },
-          options.model,
-        );
+      if (run.cachedResult !== undefined) {
+        return await runner.resolveCachedResult(run.cachedResult, run.effectiveGenOptions);
       }
 
-      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
+      let effectiveGenOptions = run.effectiveGenOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(
-        options.model,
-        options.generationRetryPolicy?.maxRetries,
-      );
+      const retryState = runner.createRetryState();
       // Track messages for emergency compaction (accessible in catch block)
       let lastBuiltMessages: ModelMessage[] = [];
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const { messages, checkpoint, forkedSessionId } =
-            await buildMessages(effectiveGenOptions);
-          const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
-          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
-            runId: effectiveGenOptions._runId ?? createRunId(),
-            threadId: checkpointThreadId,
-            requestedModel: retryState.currentModel,
-          });
+          const attempt = await runner.prepareAttempt(
+            effectiveGenOptions,
+            retryState.currentModel,
+            "fork-aware",
+          );
+          const {
+            messages,
+            forkedSessionId,
+            checkpointThreadId,
+            startStep,
+            executionBaseTelemetry,
+            signalState,
+          } = attempt;
           // Store for potential emergency compaction in catch block
           lastBuiltMessages = messages;
-          const maxSteps = options.maxSteps ?? 10;
-          const startStep = checkpoint?.step ?? 0;
-
-          // Shared signal state: flow-control signals (interrupt) thrown by tools
-          // are caught by the outermost wrapper and stored here. A custom
-          // stopWhen condition stops generation after the current step completes.
-          const signalState: GenerateSignalState = {};
-
-          const activeTools = toolPipeline.buildTools({
-            threadId: effectiveGenOptions.threadId,
-            telemetry: executionBaseTelemetry,
-            signalState,
-          });
-
-          // Build prompt context and generate system prompt
-          const promptContext = buildPromptContext(
-            effectiveGenOptions,
-            messages,
-            effectiveGenOptions.threadId,
-          );
-          const systemPrompt = getSystemPrompt(promptContext);
-
-          const initialParams = {
-            system: systemPrompt,
-            messages,
-            tools: activeTools,
-            maxTokens: effectiveGenOptions.maxTokens,
-            temperature: effectiveGenOptions.temperature,
-            stopSequences: effectiveGenOptions.stopSequences,
-            abortSignal: effectiveGenOptions.signal,
-            providerOptions: effectiveGenOptions.providerOptions,
-            headers: effectiveGenOptions.headers,
-            telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
-          };
 
           const generationStartTime = Date.now();
-          const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
 
           // Execute generation
-          const response = await generateText({
-            model: retryState.currentModel,
-            ...repairToolCallOptions,
-            system: initialParams.system,
-            messages: projectMessagesForModel(
-              initialParams.messages,
-              toolExecutionContext.agentSdk.modelCapabilities,
-            ),
-            tools: wrapToolsWithExecutionContext(
-              initialParams.tools as ToolSet,
-              toolExecutionContext,
-            ),
-            maxOutputTokens: initialParams.maxTokens,
-            temperature: initialParams.temperature,
-            stopSequences: initialParams.stopSequences,
-            abortSignal: initialParams.abortSignal,
-            stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
-            // Passthrough AI SDK options
-            output: effectiveGenOptions.output,
-            // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-            providerOptions: initialParams.providerOptions as any,
-            headers: initialParams.headers,
-            telemetry: initialParams.telemetry,
-            // Preserve AI SDK 6 behavior: allow system-role messages within the
-            // message history (AI SDK 7 rejects them by default).
-            allowSystemInMessages: true,
-          });
+          const response = await generateText(runner.buildModelCallParams(attempt));
 
           // Check for intercepted interrupt signal (cooperative path)
           if (signalState.interrupt) {
@@ -1610,22 +1216,11 @@ export function createAgent(options: AgentOptions): Agent {
               );
             }
 
-            // Emit InterruptRequested hook
-            const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
-            if (interruptRequestedHooks.length > 0) {
-              const hookInput: InterruptRequestedInput = {
-                hook_event_name: "InterruptRequested",
-                session_id: effectiveGenOptions.threadId ?? "default",
-                cwd: process.cwd(),
-                telemetry: interruptTelemetry,
-                interrupt_id: interrupt.id,
-                interrupt_type: interrupt.type,
-                tool_call_id: interrupt.toolCallId,
-                tool_name: interrupt.toolName,
-                request: interrupt.request,
-              };
-              await invokeHooksWithTimeout(interruptRequestedHooks, hookInput, null, agent);
-            }
+            await runner.emitInterruptRequested(
+              effectiveGenOptions.threadId,
+              interruptTelemetry,
+              interrupt,
+            );
 
             // Return interrupted result with partial results from the response
             const interruptedResult: GenerateResultInterrupted = {
@@ -1673,14 +1268,7 @@ export function createAgent(options: AgentOptions): Agent {
             forkedSessionId,
           };
 
-          // Update context manager with actual usage if available
-          if (options.contextManager?.updateUsage && response.usage) {
-            options.contextManager.updateUsage({
-              inputTokens: response.usage.inputTokens,
-              outputTokens: response.usage.outputTokens,
-              totalTokens: response.usage.totalTokens,
-            });
-          }
+          runner.updateContextUsage(response.usage);
 
           // Save checkpoint - use forked session ID if forking, otherwise use original threadId.
           // `response.response.messages` only holds the FINAL step's messages;
@@ -1700,32 +1288,15 @@ export function createAgent(options: AgentOptions): Agent {
             );
           }
 
-          // Invoke unified PostGenerate hooks
-          const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-          let finalResult = result;
-          if (postGenerateHooks.length > 0) {
-            const postGenerateInput: PostGenerateInput = {
-              hook_event_name: "PostGenerate",
-              session_id: effectiveGenOptions.threadId ?? "default",
-              cwd: process.cwd(),
-              telemetry,
-              options: effectiveGenOptions,
-              result,
-            };
-            const hookOutputs = await invokeHooksWithTimeout(
-              postGenerateHooks,
-              postGenerateInput,
-              null,
-              agent,
-            );
-
-            // Apply output transformation via updatedResult
-            // Note: Hooks can only return complete results, not interrupted ones
-            const updatedResult = extractUpdatedResult<GenerateResultComplete>(hookOutputs);
-            if (updatedResult !== undefined) {
-              finalResult = updatedResult;
-            }
-          }
+          // Invoke unified PostGenerate hooks and apply output transformation
+          // via updatedResult (generate() is the only mode that can, since the
+          // result has not been sent yet).
+          const updatedResult = await runner.invokePostGenerate(
+            effectiveGenOptions,
+            telemetry,
+            result,
+          );
+          const finalResult = updatedResult !== undefined ? updatedResult : result;
 
           // --- Background task completion loop ---
           if (!waitForBackgroundTasks || signalState.stop) {
@@ -1816,22 +1387,11 @@ export function createAgent(options: AgentOptions): Agent {
               );
             }
 
-            // Emit InterruptRequested hook
-            const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
-            if (interruptRequestedHooks.length > 0) {
-              const hookInput: InterruptRequestedInput = {
-                hook_event_name: "InterruptRequested",
-                session_id: effectiveGenOptions.threadId ?? "default",
-                cwd: process.cwd(),
-                telemetry: interruptTelemetry,
-                interrupt_id: interrupt.id,
-                interrupt_type: interrupt.type,
-                tool_call_id: interrupt.toolCallId,
-                tool_name: interrupt.toolName,
-                request: interrupt.request,
-              };
-              await invokeHooksWithTimeout(interruptRequestedHooks, hookInput, null, agent);
-            }
+            await runner.emitInterruptRequested(
+              effectiveGenOptions.threadId,
+              interruptTelemetry,
+              interrupt,
+            );
 
             // Return interrupted result
             const interruptedResult: GenerateResultInterrupted = {
@@ -1927,37 +1487,11 @@ export function createAgent(options: AgentOptions): Agent {
             }
           }
 
-          // Handle error with PostGenerateFailure hooks and fallback logic
-          const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
-          const errorDecision = await handleGenerationError({
-            error: normalizedError,
-            failureHooks: postGenerateFailureHooks,
-            decisionHooks: retryDecisionHooks,
-            genOptions: effectiveGenOptions,
-            agent,
-            state: retryState,
-            fallbackModel: options.fallbackModel,
-            retryPolicy: options.generationRetryPolicy,
-          });
-
-          if (errorDecision.shouldRetry) {
-            if (errorDecision.updatedOptions) {
-              effectiveGenOptions = {
-                ...errorDecision.updatedOptions,
-                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
-              };
-            }
-            // Update retry state
-            Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
-            // Wait for the specified delay before retrying
-            await waitForRetryDelay(errorDecision.retryDelayMs);
-            // Continue to next iteration of retry loop
-            continue;
-          }
-
-          // No retry requested or max retries exceeded - throw the normalized error
-          throw normalizedError;
+          effectiveGenOptions = await runner.retryOrThrow(
+            normalizedError,
+            effectiveGenOptions,
+            retryState,
+          );
         }
       }
 
@@ -1966,23 +1500,14 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async *stream(genOptions: GenerateOptions): AsyncGenerator<StreamPart> {
-      const runId = await checkpoints.resolveRunId(genOptions);
-
-      // Invoke unified PreGenerate hooks
-      const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
-      const preGenResult = await invokePreGenerateHooks<GenerateResult>(
-        preGenerateHooks,
-        { ...genOptions, _runId: runId },
-        agent,
-      );
+      const run = await runner.beginRun(genOptions);
 
       // Check for cache short-circuit via respondWith
       // For streaming, we convert the cached GenerateResult into StreamParts
-      if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = await invokeCachedPostGenerateHooks(
-          preGenResult.cachedResult,
-          { ...preGenResult.effectiveOptions, _runId: runId },
-          options.model,
+      if (run.cachedResult !== undefined) {
+        const cachedResult = await runner.resolveCachedResult(
+          run.cachedResult,
+          run.effectiveGenOptions,
         );
         // Only process complete results (interrupted results can't be cached)
         if (cachedResult.status === "complete") {
@@ -2042,97 +1567,39 @@ export function createAgent(options: AgentOptions): Agent {
         return;
       }
 
-      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
+      let effectiveGenOptions = run.effectiveGenOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(
-        options.model,
-        options.generationRetryPolicy?.maxRetries,
-      );
+      const retryState = runner.createRetryState();
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const { messages, checkpoint, forkedSessionId } =
-            await buildMessages(effectiveGenOptions);
-          const maxSteps = options.maxSteps ?? 10;
-          const startStep = checkpoint?.step ?? 0;
-          const checkpointThreadId = forkedSessionId ?? effectiveGenOptions.threadId;
-          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
-            runId: effectiveGenOptions._runId ?? createRunId(),
-            threadId: checkpointThreadId,
-            requestedModel: retryState.currentModel,
-          });
-
-          // Signal state for cooperative signal catching in streaming mode
-          const signalState: GenerateSignalState = {};
-
-          const activeTools = toolPipeline.buildTools({
-            threadId: effectiveGenOptions.threadId,
-            telemetry: executionBaseTelemetry,
-            signalState,
-          });
-
-          // Build prompt context and generate system prompt
-          const promptContext = buildPromptContext(
+          const attempt = await runner.prepareAttempt(
             effectiveGenOptions,
-            messages,
-            effectiveGenOptions.threadId,
+            retryState.currentModel,
+            "fork-aware",
           );
-          const systemPrompt = getSystemPrompt(promptContext);
-
-          const initialParams = {
-            system: systemPrompt,
-            messages,
-            tools: activeTools,
-            maxTokens: effectiveGenOptions.maxTokens,
-            temperature: effectiveGenOptions.temperature,
-            stopSequences: effectiveGenOptions.stopSequences,
-            abortSignal: effectiveGenOptions.signal,
-            providerOptions: effectiveGenOptions.providerOptions,
-            headers: effectiveGenOptions.headers,
-            telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
-          };
+          const { checkpointThreadId, startStep, executionBaseTelemetry, signalState } = attempt;
 
           const generationStartTime = Date.now();
           let firstTextDeltaAt: number | undefined;
-          const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
           const streamingCompaction = createStreamingCompactionState(
-            initialParams.messages,
+            attempt.initialParams.messages,
             effectiveGenOptions,
             checkpointThreadId,
           );
 
           // Execute stream
           const response = streamText({
-            model: retryState.currentModel,
-            ...repairToolCallOptions,
-            system: initialParams.system,
-            messages: projectMessagesForModel(
-              initialParams.messages,
-              toolExecutionContext.agentSdk.modelCapabilities,
-            ),
-            tools: wrapToolsWithExecutionContext(
-              initialParams.tools as ToolSet,
-              toolExecutionContext,
-            ),
+            ...runner.buildModelCallParams(attempt),
             prepareStep: streamingCompaction.prepareStep,
             onStepFinish: (stepResult) => {
               streamingCompaction.appendStep(stepResult);
             },
-            maxOutputTokens: initialParams.maxTokens,
-            temperature: initialParams.temperature,
-            stopSequences: initialParams.stopSequences,
-            abortSignal: initialParams.abortSignal,
-            stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
-            // Passthrough AI SDK options
+            // stream() reads `output` from the caller's options rather than
+            // the PreGenerate-transformed ones; see
+            // docs/architecture/generation-modes.md.
             output: genOptions.output,
-            // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-            providerOptions: initialParams.providerOptions as any,
-            headers: initialParams.headers,
-            telemetry: initialParams.telemetry,
-            // Preserve AI SDK 6 behavior: allow system-role messages within the
-            // message history (AI SDK 7 rejects them by default).
-            allowSystemInMessages: true,
           });
 
           // AI SDK only carries the response id on `finish-step`, not on
@@ -2379,39 +1846,12 @@ export function createAgent(options: AgentOptions): Agent {
           if (signalState.interrupt && checkpointThreadId && options.checkpointer) {
             const interrupt = signalState.interrupt.interrupt;
             await checkpoints.markPendingInterrupt(checkpointThreadId, interrupt, telemetry.runId);
-
-            // Emit InterruptRequested hook
-            const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
-            if (interruptRequestedHooks.length > 0) {
-              const hookInput: InterruptRequestedInput = {
-                hook_event_name: "InterruptRequested",
-                session_id: effectiveGenOptions.threadId ?? "default",
-                cwd: process.cwd(),
-                telemetry,
-                interrupt_id: interrupt.id,
-                interrupt_type: interrupt.type,
-                tool_call_id: interrupt.toolCallId,
-                tool_name: interrupt.toolName,
-                request: interrupt.request,
-              };
-              await invokeHooksWithTimeout(interruptRequestedHooks, hookInput, null, agent);
-            }
+            await runner.emitInterruptRequested(effectiveGenOptions.threadId, telemetry, interrupt);
           }
 
           // Invoke unified PostGenerate hooks
-          const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-          if (postGenerateHooks.length > 0) {
-            const postGenerateInput: PostGenerateInput = {
-              hook_event_name: "PostGenerate",
-              session_id: effectiveGenOptions.threadId ?? "default",
-              cwd: process.cwd(),
-              telemetry,
-              options: effectiveGenOptions,
-              result,
-            };
-            await invokeHooksWithTimeout(postGenerateHooks, postGenerateInput, null, agent);
-            // Note: updatedResult is not applied for streaming since the stream has already been sent
-          }
+          // Note: updatedResult is not applied for streaming since the stream has already been sent
+          await runner.invokePostGenerate(effectiveGenOptions, telemetry, result);
 
           // --- Background task completion loop ---
           if (!waitForBackgroundTasks || signalState.interrupt || signalState.stop) {
@@ -2473,37 +1913,11 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
           );
 
-          // Handle error with PostGenerateFailure hooks and fallback logic
-          const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
-          const errorDecision = await handleGenerationError({
-            error: normalizedError,
-            failureHooks: postGenerateFailureHooks,
-            decisionHooks: retryDecisionHooks,
-            genOptions: effectiveGenOptions,
-            agent,
-            state: retryState,
-            fallbackModel: options.fallbackModel,
-            retryPolicy: options.generationRetryPolicy,
-          });
-
-          if (errorDecision.shouldRetry) {
-            if (errorDecision.updatedOptions) {
-              effectiveGenOptions = {
-                ...errorDecision.updatedOptions,
-                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
-              };
-            }
-            // Update retry state
-            Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
-            // Wait for the specified delay before retrying
-            await waitForRetryDelay(errorDecision.retryDelayMs);
-            // Continue to next iteration of retry loop
-            continue;
-          }
-
-          // No retry requested or max retries exceeded - throw the normalized error
-          throw normalizedError;
+          effectiveGenOptions = await runner.retryOrThrow(
+            normalizedError,
+            effectiveGenOptions,
+            retryState,
+          );
         }
       }
 
@@ -2512,94 +1926,35 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamResponse(genOptions: GenerateOptions): Promise<Response> {
-      const runId = await checkpoints.resolveRunId(genOptions);
-
-      // Invoke unified PreGenerate hooks
-      const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
-      const preGenResult = await invokePreGenerateHooks<GenerateResult>(
-        preGenerateHooks,
-        { ...genOptions, _runId: runId },
-        agent,
-      );
+      const run = await runner.beginRun(genOptions);
 
       // Check for cache short-circuit via respondWith
       // For streaming response, create a simple text response from the cached result
-      if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = await invokeCachedPostGenerateHooks(
-          preGenResult.cachedResult,
-          { ...preGenResult.effectiveOptions, _runId: runId },
-          options.model,
+      if (run.cachedResult !== undefined) {
+        const cachedResult = await runner.resolveCachedResult(
+          run.cachedResult,
+          run.effectiveGenOptions,
         );
-        // For cached results, return a simple Response with the cached text
-        // This is compatible with useChat and provides immediate delivery
-        // Only complete results can be cached
-        const text = cachedResult.status === "complete" ? cachedResult.text : "";
-        return new Response(text, {
-          headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-          },
-        });
+        return cachedTextResponse(cachedResult);
       }
 
-      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
+      let effectiveGenOptions = run.effectiveGenOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(
-        options.model,
-        options.generationRetryPolicy?.maxRetries,
-      );
+      const retryState = runner.createRetryState();
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
-          const maxSteps = options.maxSteps ?? 10;
-          const startStep = checkpoint?.step ?? 0;
-          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
-            runId: effectiveGenOptions._runId ?? createRunId(),
-            threadId: effectiveGenOptions.threadId,
-            requestedModel: retryState.currentModel,
-          });
-
-          // Signal state for cooperative signal catching in streaming mode
-          const signalState: GenerateSignalState = {};
-
-          const activeTools = toolPipeline.buildTools({
-            threadId: effectiveGenOptions.threadId,
-            telemetry: executionBaseTelemetry,
-            signalState,
-          });
-
-          // Build prompt context and generate system prompt
-          const promptContext = buildPromptContext(
+          const attempt = await runner.prepareAttempt(
             effectiveGenOptions,
-            messages,
-            effectiveGenOptions.threadId,
+            retryState.currentModel,
+            "request",
           );
-          const systemPrompt = getSystemPrompt(promptContext);
+          const { signalState } = attempt;
 
-          const initialParams = {
-            system: systemPrompt,
-            messages,
-            tools: activeTools,
-            maxTokens: effectiveGenOptions.maxTokens,
-            temperature: effectiveGenOptions.temperature,
-            stopSequences: effectiveGenOptions.stopSequences,
-            abortSignal: effectiveGenOptions.signal,
-            providerOptions: effectiveGenOptions.providerOptions,
-            headers: effectiveGenOptions.headers,
-            telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
-          };
-
-          // Capture currentModel for use in the callback closure
-          const modelToUse = retryState.currentModel;
-          const toolExecutionContext = createToolExecutionContext(options, modelToUse);
-
-          const generationStartTime = Date.now();
-
-          // Track step count and the durable message base for checkpointing.
-          let currentStepCount = 0;
+          // Track the durable message base for checkpointing.
           const streamingCompaction = createStreamingCompactionState(
-            initialParams.messages,
+            attempt.initialParams.messages,
             effectiveGenOptions,
             effectiveGenOptions.threadId,
           );
@@ -2608,104 +1963,9 @@ export function createAgent(options: AgentOptions): Agent {
           // to the retry loop (if streamText throws synchronously on creation,
           // e.g. rate limit, the catch block handles retry/fallback).
           const result = streamText({
-            model: modelToUse,
-            ...repairToolCallOptions,
-            system: initialParams.system,
-            messages: projectMessagesForModel(
-              initialParams.messages,
-              toolExecutionContext.agentSdk.modelCapabilities,
-            ),
-            tools: wrapToolsWithExecutionContext(
-              initialParams.tools as ToolSet,
-              toolExecutionContext,
-            ),
+            ...runner.buildModelCallParams(attempt),
             prepareStep: streamingCompaction.prepareStep,
-            maxOutputTokens: initialParams.maxTokens,
-            temperature: initialParams.temperature,
-            stopSequences: initialParams.stopSequences,
-            abortSignal: initialParams.abortSignal,
-            stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
-            // Passthrough AI SDK options
-            output: effectiveGenOptions.output,
-            // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-            providerOptions: initialParams.providerOptions as any,
-            headers: initialParams.headers,
-            telemetry: initialParams.telemetry,
-            // Preserve AI SDK 6 behavior: allow system-role messages within the
-            // message history (AI SDK 7 rejects them by default).
-            allowSystemInMessages: true,
-            // Keep the message base current for final persistence, and save
-            // intermediate tool steps when requested.
-            onStepFinish: async (stepResult) => {
-              currentStepCount++;
-              const currentMessages = streamingCompaction.appendStep(stepResult);
-              if (
-                effectiveGenOptions.checkpointAfterToolCall &&
-                effectiveGenOptions.threadId &&
-                options.checkpointer
-              ) {
-                await saveCheckpoint(
-                  effectiveGenOptions.threadId,
-                  currentMessages,
-                  startStep + currentStepCount,
-                  effectiveGenOptions._runId,
-                );
-              }
-            },
-            // Save checkpoint and emit PostGenerate hook after completion
-            onFinish: async (finishResult) => {
-              // Update context manager with actual usage if available
-              if (options.contextManager?.updateUsage && finishResult.usage) {
-                options.contextManager.updateUsage({
-                  inputTokens: finishResult.usage.inputTokens,
-                  outputTokens: finishResult.usage.outputTokens,
-                  totalTokens: finishResult.usage.totalTokens,
-                });
-              }
-
-              // The streaming state is authoritative: prepareStep may have
-              // discarded earlier history mid-run.
-              if (effectiveGenOptions.threadId && options.checkpointer) {
-                await saveCheckpoint(
-                  effectiveGenOptions.threadId,
-                  streamingCompaction.finalize(finishResult.steps, finishResult.text),
-                  startStep + finishResult.steps.length,
-                  effectiveGenOptions._runId,
-                );
-              }
-
-              // Invoke unified PostGenerate hooks
-              const telemetry = buildExecutionTelemetry({
-                runId: executionBaseTelemetry.runId,
-                threadId: effectiveGenOptions.threadId,
-                requestedModel: modelToUse,
-                responseModelId: finishResult.response?.modelId,
-                usage: finishResult.usage,
-                durationMs: Date.now() - generationStartTime,
-              });
-              const hookResult: GenerateResultComplete = {
-                status: "complete",
-                telemetry,
-                text: finishResult.text,
-                usage: finishResult.usage,
-                finishReason: finishResult.finishReason as GenerateResultComplete["finishReason"],
-                output: undefined,
-                steps: mapSteps(finishResult.steps),
-              };
-              const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-              if (postGenerateHooks.length > 0) {
-                const postGenerateInput: PostGenerateInput = {
-                  hook_event_name: "PostGenerate",
-                  session_id: effectiveGenOptions.threadId ?? "default",
-                  cwd: process.cwd(),
-                  telemetry,
-                  options: effectiveGenOptions,
-                  result: hookResult,
-                };
-                await invokeHooksWithTimeout(postGenerateHooks, postGenerateInput, null, agent);
-                // Note: updatedResult is not applied for streaming since the stream has already been sent
-              }
-            },
+            ...runner.createStreamLifecycleCallbacks(attempt, streamingCompaction),
           });
 
           // Use createUIMessageStream to control stream lifecycle for background task follow-ups
@@ -2719,186 +1979,13 @@ export function createAgent(options: AgentOptions): Agent {
 
               // --- Background task completion loop ---
               if (waitForBackgroundTasks && !signalState.stop) {
-                // Track accumulated steps for checkpoint saves
-                const initialSteps = await result.steps;
-                let accumulatedStepCount = initialSteps.length;
-                let followUpBaseOptions = effectiveGenOptions;
-
-                let currentMessages: ModelMessage[] = streamingCompaction.finalize(
-                  initialSteps,
-                  await result.text,
-                );
-
-                let followUpPrompt = await getNextTaskPrompt();
-                while (followUpPrompt !== null) {
-                  const followUpRequestOptions: GenerateOptions = {
-                    ...followUpBaseOptions,
-                    requestClass: "background",
-                    prompt: followUpPrompt,
-                    messages: [
-                      ...currentMessages,
-                      { role: "user" as const, content: followUpPrompt },
-                    ],
-                  };
-                  let followUpStreamingCompaction:
-                    | ReturnType<typeof createStreamingCompactionState>
-                    | undefined;
-                  const {
-                    result: followUpResult,
-                    effectiveOptions: followUpEffectiveOptions,
-                    currentModel: followUpModel,
-                  } = await startRetriedStreamText(
-                    followUpRequestOptions,
-                    (requestOptions, currentModel) => {
-                      const followUpMessages = requestOptions.messages ?? [];
-                      // Follow-ups build their own message list without going
-                      // through buildMessages, so compact before the first step.
-                      const compaction = createStreamingCompactionState(
-                        followUpMessages,
-                        requestOptions,
-                        requestOptions.threadId,
-                        true,
-                      );
-                      followUpStreamingCompaction = compaction;
-                      const followUpTelemetry = buildExecutionTelemetryFromIds({
-                        runId: requestOptions._runId ?? executionBaseTelemetry.runId,
-                        threadId: requestOptions.threadId,
-                        requestedModel: currentModel,
-                      });
-                      const activeFollowUpTools = toolPipeline.buildTools({
-                        threadId: requestOptions.threadId,
-                        telemetry: followUpTelemetry,
-                        signalState,
-                      });
-                      const followUpPromptContext = buildPromptContext(
-                        requestOptions,
-                        followUpMessages,
-                        requestOptions.threadId,
-                      );
-                      const toolExecutionContext = createToolExecutionContext(
-                        options,
-                        currentModel,
-                      );
-
-                      return streamText({
-                        model: currentModel,
-                        ...repairToolCallOptions,
-                        system: getSystemPrompt(followUpPromptContext),
-                        messages: projectMessagesForModel(
-                          followUpMessages,
-                          toolExecutionContext.agentSdk.modelCapabilities,
-                        ),
-                        tools: wrapToolsWithExecutionContext(
-                          activeFollowUpTools as ToolSet,
-                          toolExecutionContext,
-                        ),
-                        prepareStep: compaction.prepareStep,
-                        onStepFinish: (stepResult) => {
-                          compaction.appendStep(stepResult);
-                        },
-                        maxOutputTokens: requestOptions.maxTokens,
-                        temperature: requestOptions.temperature,
-                        stopSequences: requestOptions.stopSequences,
-                        abortSignal: requestOptions.signal,
-                        stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
-                        output: requestOptions.output,
-                        // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                        providerOptions: requestOptions.providerOptions as any,
-                        headers: requestOptions.headers,
-                        telemetry:
-                          requestOptions.telemetry ?? requestOptions.experimental_telemetry,
-                        allowSystemInMessages: true,
-                      });
-                    },
-                  );
-                  const followUpStartTime = Date.now();
-                  followUpBaseOptions = {
-                    ...followUpEffectiveOptions,
-                    _runId: followUpEffectiveOptions._runId ?? followUpBaseOptions._runId,
-                  };
-
-                  writer.merge(followUpResult.toUIMessageStream());
-                  const followUpText = await followUpResult.text;
-                  const followUpResponse = await (followUpResult.response ??
-                    Promise.resolve(undefined));
-
-                  // The follow-up's compaction state is authoritative for the
-                  // transcript (it may have compacted mid-run).
-                  // --- Post-completion bookkeeping for follow-ups ---
-                  const followUpSteps = await followUpResult.steps;
-
-                  // The follow-up's compaction state is authoritative for the
-                  // transcript (it may have compacted mid-run).
-                  currentMessages = followUpStreamingCompaction
-                    ? followUpStreamingCompaction.finalize(followUpSteps, followUpText)
-                    : [
-                        ...currentMessages,
-                        { role: "user" as const, content: followUpPrompt },
-                        ...(followUpText
-                          ? [{ role: "assistant" as const, content: followUpText }]
-                          : []),
-                      ];
-                  accumulatedStepCount += followUpSteps.length;
-
-                  // Checkpoint save
-                  if (followUpEffectiveOptions.threadId && options.checkpointer) {
-                    await saveCheckpoint(
-                      followUpEffectiveOptions.threadId,
-                      currentMessages,
-                      startStep + accumulatedStepCount,
-                      followUpEffectiveOptions._runId,
-                    );
-                  }
-
-                  // Context manager update
-                  const followUpUsage = await followUpResult.usage;
-                  if (options.contextManager?.updateUsage && followUpUsage) {
-                    options.contextManager.updateUsage({
-                      inputTokens: followUpUsage.inputTokens,
-                      outputTokens: followUpUsage.outputTokens,
-                      totalTokens: followUpUsage.totalTokens,
-                    });
-                  }
-
-                  // PostGenerate hooks
-                  const followUpPostGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-                  if (followUpPostGenerateHooks.length > 0) {
-                    const followUpFinishReason = await followUpResult.finishReason;
-                    const followUpTelemetry = buildExecutionTelemetry({
-                      runId: followUpEffectiveOptions._runId ?? executionBaseTelemetry.runId,
-                      threadId: followUpEffectiveOptions.threadId,
-                      requestedModel: followUpModel,
-                      responseModelId: followUpResponse?.modelId,
-                      usage: followUpUsage,
-                      durationMs: Date.now() - followUpStartTime,
-                    });
-                    const followUpHookResult: GenerateResultComplete = {
-                      status: "complete",
-                      telemetry: followUpTelemetry,
-                      text: followUpText,
-                      usage: followUpUsage,
-                      finishReason: followUpFinishReason as GenerateResultComplete["finishReason"],
-                      output: undefined,
-                      steps: mapSteps(followUpSteps),
-                    };
-                    const followUpPostGenerateInput: PostGenerateInput = {
-                      hook_event_name: "PostGenerate",
-                      session_id: followUpEffectiveOptions.threadId ?? "default",
-                      cwd: process.cwd(),
-                      telemetry: followUpTelemetry,
-                      options: followUpEffectiveOptions,
-                      result: followUpHookResult,
-                    };
-                    await invokeHooksWithTimeout(
-                      followUpPostGenerateHooks,
-                      followUpPostGenerateInput,
-                      null,
-                      agent,
-                    );
-                  }
-
-                  followUpPrompt = await getNextTaskPrompt();
-                }
+                await runner.runUIStreamFollowUps({
+                  writer,
+                  attempt,
+                  result,
+                  streamingCompaction,
+                  signalState,
+                });
               }
             },
           });
@@ -2913,37 +2000,11 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
           );
 
-          // Handle error with PostGenerateFailure hooks and fallback logic
-          const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
-          const errorDecision = await handleGenerationError({
-            error: normalizedError,
-            failureHooks: postGenerateFailureHooks,
-            decisionHooks: retryDecisionHooks,
-            genOptions: effectiveGenOptions,
-            agent,
-            state: retryState,
-            fallbackModel: options.fallbackModel,
-            retryPolicy: options.generationRetryPolicy,
-          });
-
-          if (errorDecision.shouldRetry) {
-            if (errorDecision.updatedOptions) {
-              effectiveGenOptions = {
-                ...errorDecision.updatedOptions,
-                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
-              };
-            }
-            // Update retry state
-            Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
-            // Wait for the specified delay before retrying
-            await waitForRetryDelay(errorDecision.retryDelayMs);
-            // Continue to next iteration of retry loop
-            continue;
-          }
-
-          // No retry requested or max retries exceeded - throw the normalized error
-          throw normalizedError;
+          effectiveGenOptions = await runner.retryOrThrow(
+            normalizedError,
+            effectiveGenOptions,
+            retryState,
+          );
         }
       }
 
@@ -2952,180 +2013,37 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamRaw(genOptions: GenerateOptions) {
-      const runId = await checkpoints.resolveRunId(genOptions);
-
-      // Invoke unified PreGenerate hooks
       // Note: respondWith cache short-circuit is NOT supported for streamRaw()
       // because it returns the raw AI SDK streamText result which cannot be mocked.
       // Use stream(), streamResponse(), or streamDataResponse() for caching support.
-      const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
-      const preGenResult = await invokePreGenerateHooks<GenerateResult>(
-        preGenerateHooks,
-        { ...genOptions, _runId: runId },
-        agent,
-      );
+      // Input transformation is applied even though respondWith is not supported.
+      const run = await runner.beginRun(genOptions);
 
-      // Input transformation is applied even though respondWith is not supported
-      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
+      let effectiveGenOptions = run.effectiveGenOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(
-        options.model,
-        options.generationRetryPolicy?.maxRetries,
-      );
+      const retryState = runner.createRetryState();
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
-          const maxSteps = options.maxSteps ?? 10;
-          const startStep = checkpoint?.step ?? 0;
-          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
-            runId: effectiveGenOptions._runId ?? createRunId(),
-            threadId: effectiveGenOptions.threadId,
-            requestedModel: retryState.currentModel,
-          });
-
-          // Signal state for cooperative signal catching in streaming mode
-          const signalState: GenerateSignalState = {};
-
-          const activeTools = toolPipeline.buildTools({
-            threadId: effectiveGenOptions.threadId,
-            telemetry: executionBaseTelemetry,
-            signalState,
-          });
-
-          // Build prompt context and generate system prompt
-          const promptContext = buildPromptContext(
+          const attempt = await runner.prepareAttempt(
             effectiveGenOptions,
-            messages,
-            effectiveGenOptions.threadId,
+            retryState.currentModel,
+            "request",
           );
-          const systemPrompt = getSystemPrompt(promptContext);
 
-          const initialParams = {
-            system: systemPrompt,
-            messages,
-            tools: activeTools,
-            maxTokens: effectiveGenOptions.maxTokens,
-            temperature: effectiveGenOptions.temperature,
-            stopSequences: effectiveGenOptions.stopSequences,
-            abortSignal: effectiveGenOptions.signal,
-            providerOptions: effectiveGenOptions.providerOptions,
-            headers: effectiveGenOptions.headers,
-            telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
-          };
-
-          // Track step count and the durable message base for checkpointing.
-          let currentStepCount = 0;
+          // Track the durable message base for checkpointing.
           const streamingCompaction = createStreamingCompactionState(
-            initialParams.messages,
+            attempt.initialParams.messages,
             effectiveGenOptions,
             effectiveGenOptions.threadId,
           );
-
-          const generationStartTime = Date.now();
-          const toolExecutionContext = createToolExecutionContext(options, retryState.currentModel);
 
           // Execute stream
           const result = streamText({
-            model: retryState.currentModel,
-            ...repairToolCallOptions,
-            system: initialParams.system,
-            messages: projectMessagesForModel(
-              initialParams.messages,
-              toolExecutionContext.agentSdk.modelCapabilities,
-            ),
-            tools: wrapToolsWithExecutionContext(
-              initialParams.tools as ToolSet,
-              toolExecutionContext,
-            ),
+            ...runner.buildModelCallParams(attempt),
             prepareStep: streamingCompaction.prepareStep,
-            maxOutputTokens: initialParams.maxTokens,
-            temperature: initialParams.temperature,
-            stopSequences: initialParams.stopSequences,
-            abortSignal: initialParams.abortSignal,
-            stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
-            // Passthrough AI SDK options
-            output: effectiveGenOptions.output,
-            // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-            providerOptions: initialParams.providerOptions as any,
-            headers: initialParams.headers,
-            telemetry: initialParams.telemetry,
-            // Preserve AI SDK 6 behavior: allow system-role messages within the
-            // message history (AI SDK 7 rejects them by default).
-            allowSystemInMessages: true,
-            // Keep the message base current for final persistence, and save
-            // intermediate tool steps when requested.
-            onStepFinish: async (stepResult) => {
-              currentStepCount++;
-              const currentMessages = streamingCompaction.appendStep(stepResult);
-              if (
-                effectiveGenOptions.checkpointAfterToolCall &&
-                effectiveGenOptions.threadId &&
-                options.checkpointer
-              ) {
-                await saveCheckpoint(
-                  effectiveGenOptions.threadId,
-                  currentMessages,
-                  startStep + currentStepCount,
-                  effectiveGenOptions._runId,
-                );
-              }
-            },
-            // Save checkpoint and invoke unified PostGenerate hook after completion
-            onFinish: async (finishResult) => {
-              // Update context manager with actual usage if available
-              if (options.contextManager?.updateUsage && finishResult.usage) {
-                options.contextManager.updateUsage({
-                  inputTokens: finishResult.usage.inputTokens,
-                  outputTokens: finishResult.usage.outputTokens,
-                  totalTokens: finishResult.usage.totalTokens,
-                });
-              }
-
-              // The streaming state is authoritative: prepareStep may have
-              // discarded earlier history mid-run.
-              if (effectiveGenOptions.threadId && options.checkpointer) {
-                await saveCheckpoint(
-                  effectiveGenOptions.threadId,
-                  streamingCompaction.finalize(finishResult.steps, finishResult.text),
-                  startStep + finishResult.steps.length,
-                  effectiveGenOptions._runId,
-                );
-              }
-
-              // Invoke unified PostGenerate hooks
-              const telemetry = buildExecutionTelemetry({
-                runId: executionBaseTelemetry.runId,
-                threadId: effectiveGenOptions.threadId,
-                requestedModel: retryState.currentModel,
-                responseModelId: finishResult.response?.modelId,
-                usage: finishResult.usage,
-                durationMs: Date.now() - generationStartTime,
-              });
-              const hookResult: GenerateResultComplete = {
-                status: "complete",
-                telemetry,
-                text: finishResult.text,
-                usage: finishResult.usage,
-                finishReason: finishResult.finishReason as GenerateResultComplete["finishReason"],
-                output: undefined,
-                steps: mapSteps(finishResult.steps),
-              };
-              const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-              if (postGenerateHooks.length > 0) {
-                const postGenerateInput: PostGenerateInput = {
-                  hook_event_name: "PostGenerate",
-                  session_id: effectiveGenOptions.threadId ?? "default",
-                  cwd: process.cwd(),
-                  telemetry,
-                  options: effectiveGenOptions,
-                  result: hookResult,
-                };
-                await invokeHooksWithTimeout(postGenerateHooks, postGenerateInput, null, agent);
-                // Note: updatedResult is not applied for streaming since the stream has already been sent
-              }
-            },
+            ...runner.createStreamLifecycleCallbacks(attempt, streamingCompaction),
           });
 
           return result;
@@ -3137,37 +2055,11 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
           );
 
-          // Handle error with PostGenerateFailure hooks and fallback logic
-          const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
-          const errorDecision = await handleGenerationError({
-            error: normalizedError,
-            failureHooks: postGenerateFailureHooks,
-            decisionHooks: retryDecisionHooks,
-            genOptions: effectiveGenOptions,
-            agent,
-            state: retryState,
-            fallbackModel: options.fallbackModel,
-            retryPolicy: options.generationRetryPolicy,
-          });
-
-          if (errorDecision.shouldRetry) {
-            if (errorDecision.updatedOptions) {
-              effectiveGenOptions = {
-                ...errorDecision.updatedOptions,
-                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
-              };
-            }
-            // Update retry state
-            Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
-            // Wait for the specified delay before retrying
-            await waitForRetryDelay(errorDecision.retryDelayMs);
-            // Continue to next iteration of retry loop
-            continue;
-          }
-
-          // No retry requested or max retries exceeded - throw the normalized error
-          throw normalizedError;
+          effectiveGenOptions = await runner.retryOrThrow(
+            normalizedError,
+            effectiveGenOptions,
+            retryState,
+          );
         }
       }
 
@@ -3176,56 +2068,31 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamDataResponse(genOptions: GenerateOptions): Promise<Response> {
-      const runId = await checkpoints.resolveRunId(genOptions);
-
-      // Invoke unified PreGenerate hooks
-      const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
-      const preGenResult = await invokePreGenerateHooks<GenerateResult>(
-        preGenerateHooks,
-        { ...genOptions, _runId: runId },
-        agent,
-      );
+      const run = await runner.beginRun(genOptions);
 
       // Check for cache short-circuit via respondWith
       // For data stream response, create a simple text response from the cached result
-      if (preGenResult.cachedResult !== undefined) {
-        const cachedResult = await invokeCachedPostGenerateHooks(
-          preGenResult.cachedResult,
-          { ...preGenResult.effectiveOptions, _runId: runId },
-          options.model,
+      if (run.cachedResult !== undefined) {
+        const cachedResult = await runner.resolveCachedResult(
+          run.cachedResult,
+          run.effectiveGenOptions,
         );
-        // For cached results, return a simple Response with the cached text
-        // This is compatible with useChat and provides immediate delivery
-        // Only complete results can be cached
-        const text = cachedResult.status === "complete" ? cachedResult.text : "";
-        return new Response(text, {
-          headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-          },
-        });
+        return cachedTextResponse(cachedResult);
       }
 
-      let effectiveGenOptions = { ...preGenResult.effectiveOptions, _runId: runId };
+      let effectiveGenOptions = run.effectiveGenOptions;
 
       // Initialize retry loop state
-      const retryState = createRetryLoopState(
-        options.model,
-        options.generationRetryPolicy?.maxRetries,
-      );
+      const retryState = runner.createRetryState();
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
-          const maxSteps = options.maxSteps ?? 10;
-          const startStep = checkpoint?.step ?? 0;
-          const executionBaseTelemetry = buildExecutionTelemetryFromIds({
-            runId: effectiveGenOptions._runId ?? createRunId(),
-            threadId: effectiveGenOptions.threadId,
-            requestedModel: retryState.currentModel,
-          });
-
-          // Capture currentModel for use in the callback closure
-          const modelToUse = retryState.currentModel;
+          const attemptContext = await runner.beginAttempt(
+            effectiveGenOptions,
+            retryState.currentModel,
+            "request",
+          );
+          const { executionBaseTelemetry } = attemptContext;
 
           // Create a UI message stream that tools can write to
           const stream = createUIMessageStream({
@@ -3238,151 +2105,26 @@ export function createAgent(options: AgentOptions): Agent {
               // Create streaming context for tools
               const streamingContext: StreamingContext = { writer };
 
-              // Signal state for cooperative signal catching in streaming mode
-              const signalState: GenerateSignalState = {};
-
-              const streamingTools = toolPipeline.buildTools({
-                threadId: effectiveGenOptions.threadId,
-                telemetry: executionBaseTelemetry,
-                signalState,
-                streamingContext,
-              });
-
-              // Build prompt context and generate system prompt
-              const promptContext = buildPromptContext(
-                effectiveGenOptions,
-                messages,
-                effectiveGenOptions.threadId,
-              );
-              const systemPrompt = getSystemPrompt(promptContext);
-
-              // Build initial params with streaming-aware tools
-              const initialParams = {
-                system: systemPrompt,
-                messages,
-                tools: streamingTools,
-                maxTokens: effectiveGenOptions.maxTokens,
-                temperature: effectiveGenOptions.temperature,
-                stopSequences: effectiveGenOptions.stopSequences,
-                abortSignal: effectiveGenOptions.signal,
-                providerOptions: effectiveGenOptions.providerOptions,
-                headers: effectiveGenOptions.headers,
-                telemetry:
-                  effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
+              // Tools are built inside `execute` so they can stream through
+              // the writer.
+              const attempt = {
+                ...attemptContext,
+                ...runner.prepareRequest(attemptContext, { streamingContext }),
               };
+              const { signalState } = attempt;
 
-              // Track step count and the durable message base for checkpointing.
-              let currentStepCount = 0;
+              // Track the durable message base for checkpointing.
               const streamingCompaction = createStreamingCompactionState(
-                initialParams.messages,
+                attempt.initialParams.messages,
                 effectiveGenOptions,
                 effectiveGenOptions.threadId,
               );
-
-              const generationStartTime = Date.now();
-              const toolExecutionContext = createToolExecutionContext(options, modelToUse);
 
               // Execute stream
               const result = streamText({
-                model: modelToUse,
-                ...repairToolCallOptions,
-                system: initialParams.system,
-                messages: projectMessagesForModel(
-                  initialParams.messages,
-                  toolExecutionContext.agentSdk.modelCapabilities,
-                ),
-                tools: wrapToolsWithExecutionContext(
-                  initialParams.tools as ToolSet,
-                  toolExecutionContext,
-                ),
+                ...runner.buildModelCallParams(attempt),
                 prepareStep: streamingCompaction.prepareStep,
-                maxOutputTokens: initialParams.maxTokens,
-                temperature: initialParams.temperature,
-                stopSequences: initialParams.stopSequences,
-                abortSignal: initialParams.abortSignal,
-                stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
-                // Passthrough AI SDK options
-                output: effectiveGenOptions.output,
-                // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                providerOptions: initialParams.providerOptions as any,
-                headers: initialParams.headers,
-                telemetry: initialParams.telemetry,
-                // Preserve AI SDK 6 behavior: allow system-role messages within the
-                // message history (AI SDK 7 rejects them by default).
-                allowSystemInMessages: true,
-                // Keep the message base current for final persistence, and save
-                // intermediate tool steps when requested.
-                onStepFinish: async (stepResult) => {
-                  currentStepCount++;
-                  const currentMessages = streamingCompaction.appendStep(stepResult);
-                  if (
-                    effectiveGenOptions.checkpointAfterToolCall &&
-                    effectiveGenOptions.threadId &&
-                    options.checkpointer
-                  ) {
-                    await saveCheckpoint(
-                      effectiveGenOptions.threadId,
-                      currentMessages,
-                      startStep + currentStepCount,
-                      effectiveGenOptions._runId,
-                    );
-                  }
-                },
-                // Save checkpoint and invoke unified PostGenerate hook after completion
-                onFinish: async (finishResult) => {
-                  // Update context manager with actual usage if available
-                  if (options.contextManager?.updateUsage && finishResult.usage) {
-                    options.contextManager.updateUsage({
-                      inputTokens: finishResult.usage.inputTokens,
-                      outputTokens: finishResult.usage.outputTokens,
-                      totalTokens: finishResult.usage.totalTokens,
-                    });
-                  }
-
-                  // The streaming state is authoritative: prepareStep may have
-                  // discarded earlier history mid-run.
-                  if (effectiveGenOptions.threadId && options.checkpointer) {
-                    await saveCheckpoint(
-                      effectiveGenOptions.threadId,
-                      streamingCompaction.finalize(finishResult.steps, finishResult.text),
-                      startStep + finishResult.steps.length,
-                      effectiveGenOptions._runId,
-                    );
-                  }
-
-                  // Invoke unified PostGenerate hooks
-                  const telemetry = buildExecutionTelemetry({
-                    runId: executionBaseTelemetry.runId,
-                    threadId: effectiveGenOptions.threadId,
-                    requestedModel: modelToUse,
-                    responseModelId: finishResult.response?.modelId,
-                    usage: finishResult.usage,
-                    durationMs: Date.now() - generationStartTime,
-                  });
-                  const hookResult: GenerateResultComplete = {
-                    status: "complete",
-                    telemetry,
-                    text: finishResult.text,
-                    usage: finishResult.usage,
-                    finishReason:
-                      finishResult.finishReason as GenerateResultComplete["finishReason"],
-                    output: undefined,
-                    steps: mapSteps(finishResult.steps),
-                  };
-                  const postGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-                  if (postGenerateHooks.length > 0) {
-                    const postGenerateInput: PostGenerateInput = {
-                      hook_event_name: "PostGenerate",
-                      session_id: effectiveGenOptions.threadId ?? "default",
-                      cwd: process.cwd(),
-                      telemetry,
-                      options: effectiveGenOptions,
-                      result: hookResult,
-                    };
-                    await invokeHooksWithTimeout(postGenerateHooks, postGenerateInput, null, agent);
-                    // Note: updatedResult is not applied for streaming since the stream has already been sent
-                  }
-                },
+                ...runner.createStreamLifecycleCallbacks(attempt, streamingCompaction),
               });
 
               // Merge the streamText output into the UI message stream
@@ -3399,208 +2141,23 @@ export function createAgent(options: AgentOptions): Agent {
                   interrupt,
                   executionBaseTelemetry.runId,
                 );
-
-                // Emit InterruptRequested hook
-                const interruptRequestedHooks = effectiveHooks?.InterruptRequested ?? [];
-                if (interruptRequestedHooks.length > 0) {
-                  const hookInput: InterruptRequestedInput = {
-                    hook_event_name: "InterruptRequested",
-                    session_id: effectiveGenOptions.threadId ?? "default",
-                    cwd: process.cwd(),
-                    telemetry: executionBaseTelemetry,
-                    interrupt_id: interrupt.id,
-                    interrupt_type: interrupt.type,
-                    tool_call_id: interrupt.toolCallId,
-                    tool_name: interrupt.toolName,
-                    request: interrupt.request,
-                  };
-                  await invokeHooksWithTimeout(interruptRequestedHooks, hookInput, null, agent);
-                }
+                await runner.emitInterruptRequested(
+                  effectiveGenOptions.threadId,
+                  executionBaseTelemetry,
+                  interrupt,
+                );
               }
 
               // --- Background task completion loop (streamDataResponse) ---
               if (waitForBackgroundTasks && !signalState.interrupt && !signalState.stop) {
-                // Track accumulated steps for checkpoint saves
-                const initialSteps = await result.steps;
-                let accumulatedStepCount = initialSteps.length;
-                let followUpBaseOptions = effectiveGenOptions;
-
-                let currentMessages: ModelMessage[] = streamingCompaction.finalize(
-                  initialSteps,
-                  await result.text,
-                );
-
-                let followUpPrompt = await getNextTaskPrompt();
-                while (followUpPrompt !== null) {
-                  const followUpRequestOptions: GenerateOptions = {
-                    ...followUpBaseOptions,
-                    requestClass: "background",
-                    prompt: followUpPrompt,
-                    messages: [
-                      ...currentMessages,
-                      { role: "user" as const, content: followUpPrompt },
-                    ],
-                  };
-                  let followUpStreamingCompaction:
-                    | ReturnType<typeof createStreamingCompactionState>
-                    | undefined;
-                  const {
-                    result: followUpResult,
-                    effectiveOptions: followUpEffectiveOptions,
-                    currentModel: followUpModel,
-                  } = await startRetriedStreamText(
-                    followUpRequestOptions,
-                    (requestOptions, currentModel) => {
-                      const followUpMessages = requestOptions.messages ?? [];
-                      // Follow-ups build their own message list without going
-                      // through buildMessages, so compact before the first step.
-                      const compaction = createStreamingCompactionState(
-                        followUpMessages,
-                        requestOptions,
-                        requestOptions.threadId,
-                        true,
-                      );
-                      followUpStreamingCompaction = compaction;
-                      const followUpTelemetry = buildExecutionTelemetryFromIds({
-                        runId: requestOptions._runId ?? executionBaseTelemetry.runId,
-                        threadId: requestOptions.threadId,
-                        requestedModel: currentModel,
-                      });
-                      const activeFollowUpTools = toolPipeline.buildTools({
-                        threadId: requestOptions.threadId,
-                        telemetry: followUpTelemetry,
-                        signalState,
-                        streamingContext,
-                      });
-                      const followUpPromptContext = buildPromptContext(
-                        requestOptions,
-                        followUpMessages,
-                        requestOptions.threadId,
-                      );
-                      const toolExecutionContext = createToolExecutionContext(
-                        options,
-                        currentModel,
-                      );
-
-                      return streamText({
-                        model: currentModel,
-                        ...repairToolCallOptions,
-                        system: getSystemPrompt(followUpPromptContext),
-                        messages: projectMessagesForModel(
-                          followUpMessages,
-                          toolExecutionContext.agentSdk.modelCapabilities,
-                        ),
-                        tools: wrapToolsWithExecutionContext(
-                          activeFollowUpTools as ToolSet,
-                          toolExecutionContext,
-                        ),
-                        prepareStep: compaction.prepareStep,
-                        onStepFinish: (stepResult) => {
-                          compaction.appendStep(stepResult);
-                        },
-                        maxOutputTokens: requestOptions.maxTokens,
-                        temperature: requestOptions.temperature,
-                        stopSequences: requestOptions.stopSequences,
-                        abortSignal: requestOptions.signal,
-                        stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
-                        output: requestOptions.output,
-                        // biome-ignore lint/suspicious/noExplicitAny: Type cast needed for AI SDK compatibility
-                        providerOptions: requestOptions.providerOptions as any,
-                        headers: requestOptions.headers,
-                        telemetry:
-                          requestOptions.telemetry ?? requestOptions.experimental_telemetry,
-                        allowSystemInMessages: true,
-                      });
-                    },
-                  );
-                  const followUpStartTime = Date.now();
-                  followUpBaseOptions = {
-                    ...followUpEffectiveOptions,
-                    _runId: followUpEffectiveOptions._runId ?? followUpBaseOptions._runId,
-                  };
-
-                  writer.merge(followUpResult.toUIMessageStream());
-                  const followUpText = await followUpResult.text;
-                  const followUpResponse = await (followUpResult.response ??
-                    Promise.resolve(undefined));
-
-                  // The follow-up's compaction state is authoritative for the
-                  // transcript (it may have compacted mid-run).
-                  // --- Post-completion bookkeeping for follow-ups ---
-                  const followUpSteps = await followUpResult.steps;
-
-                  // The follow-up's compaction state is authoritative for the
-                  // transcript (it may have compacted mid-run).
-                  currentMessages = followUpStreamingCompaction
-                    ? followUpStreamingCompaction.finalize(followUpSteps, followUpText)
-                    : [
-                        ...currentMessages,
-                        { role: "user" as const, content: followUpPrompt },
-                        ...(followUpText
-                          ? [{ role: "assistant" as const, content: followUpText }]
-                          : []),
-                      ];
-                  accumulatedStepCount += followUpSteps.length;
-
-                  // Checkpoint save
-                  if (followUpEffectiveOptions.threadId && options.checkpointer) {
-                    await saveCheckpoint(
-                      followUpEffectiveOptions.threadId,
-                      currentMessages,
-                      startStep + accumulatedStepCount,
-                      followUpEffectiveOptions._runId,
-                    );
-                  }
-
-                  // Context manager update
-                  const followUpUsage = await followUpResult.usage;
-                  if (options.contextManager?.updateUsage && followUpUsage) {
-                    options.contextManager.updateUsage({
-                      inputTokens: followUpUsage.inputTokens,
-                      outputTokens: followUpUsage.outputTokens,
-                      totalTokens: followUpUsage.totalTokens,
-                    });
-                  }
-
-                  // PostGenerate hooks
-                  const followUpPostGenerateHooks = effectiveHooks?.PostGenerate ?? [];
-                  if (followUpPostGenerateHooks.length > 0) {
-                    const followUpFinishReason = await followUpResult.finishReason;
-                    const followUpTelemetry = buildExecutionTelemetry({
-                      runId: followUpEffectiveOptions._runId ?? executionBaseTelemetry.runId,
-                      threadId: followUpEffectiveOptions.threadId,
-                      requestedModel: followUpModel,
-                      responseModelId: followUpResponse?.modelId,
-                      usage: followUpUsage,
-                      durationMs: Date.now() - followUpStartTime,
-                    });
-                    const followUpHookResult: GenerateResultComplete = {
-                      status: "complete",
-                      telemetry: followUpTelemetry,
-                      text: followUpText,
-                      usage: followUpUsage,
-                      finishReason: followUpFinishReason as GenerateResultComplete["finishReason"],
-                      output: undefined,
-                      steps: mapSteps(followUpSteps),
-                    };
-                    const followUpPostGenerateInput: PostGenerateInput = {
-                      hook_event_name: "PostGenerate",
-                      session_id: followUpEffectiveOptions.threadId ?? "default",
-                      cwd: process.cwd(),
-                      telemetry: followUpTelemetry,
-                      options: followUpEffectiveOptions,
-                      result: followUpHookResult,
-                    };
-                    await invokeHooksWithTimeout(
-                      followUpPostGenerateHooks,
-                      followUpPostGenerateInput,
-                      null,
-                      agent,
-                    );
-                  }
-
-                  followUpPrompt = await getNextTaskPrompt();
-                }
+                await runner.runUIStreamFollowUps({
+                  writer,
+                  attempt,
+                  result,
+                  streamingCompaction,
+                  signalState,
+                  streamingContext,
+                });
               }
             },
           });
@@ -3615,37 +2172,11 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
           );
 
-          // Handle error with PostGenerateFailure hooks and fallback logic
-          const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
-          const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
-          const errorDecision = await handleGenerationError({
-            error: normalizedError,
-            failureHooks: postGenerateFailureHooks,
-            decisionHooks: retryDecisionHooks,
-            genOptions: effectiveGenOptions,
-            agent,
-            state: retryState,
-            fallbackModel: options.fallbackModel,
-            retryPolicy: options.generationRetryPolicy,
-          });
-
-          if (errorDecision.shouldRetry) {
-            if (errorDecision.updatedOptions) {
-              effectiveGenOptions = {
-                ...errorDecision.updatedOptions,
-                _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
-              };
-            }
-            // Update retry state
-            Object.assign(retryState, updateRetryLoopState(retryState, errorDecision));
-            // Wait for the specified delay before retrying
-            await waitForRetryDelay(errorDecision.retryDelayMs);
-            // Continue to next iteration of retry loop
-            continue;
-          }
-
-          // No retry requested or max retries exceeded - throw the normalized error
-          throw normalizedError;
+          effectiveGenOptions = await runner.retryOrThrow(
+            normalizedError,
+            effectiveGenOptions,
+            retryState,
+          );
         }
       }
 
