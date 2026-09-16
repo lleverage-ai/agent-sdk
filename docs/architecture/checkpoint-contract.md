@@ -1,7 +1,9 @@
 # Checkpoint Contract
 
-Status: **proposal** (2026-09-16). Targets `1.0.0`. Supersedes the "agent owns
-durability" model implied by `BaseCheckpointSaver.save()` today.
+Status: **accepted** (2026-09-16), pending lleverage agent-team review of the
+[open questions](#open-questions). Targets `1.0.0`. Supersedes the "agent owns
+durability" model implied by `BaseCheckpointSaver.save()` today. Implementation
+tracked in the [migration plan](#migration-plan-sdk).
 
 ## Problem
 
