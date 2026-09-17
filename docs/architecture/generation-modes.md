@@ -88,10 +88,16 @@ The runner takes the differences as inputs rather than hiding them:
 
 ## Related
 
-The checkpoint-related rows above (fork target, `updateUsage`, interrupt
-persistence, `checkpointAfterToolCall`) are addressed structurally by the
-[checkpoint contract](./checkpoint-contract.md) rather than by per-mode
-fixes. That contract also removes `streamResponse()`, `streamRaw()` and
-`forkSession` for 1.0 (its "Removed" table). This document describes the code
-as it is on `main`; the rows for those surfaces are deleted in the same PR
-that deletes the code (migration plan step 4), not before.
+The revised [checkpoint proposal](./checkpoint-contract.md) starts with an
+opt-in sink/source seam, preserving these differences on the legacy path.
+It does not claim that a common observer makes existing modes equivalent or
+that a step notification is a durable checkpoint barrier. In particular,
+`generate()` and `stream()` must not acquire per-step saver calls during a
+compatibility extraction.
+
+Mode unification, context-usage seeding, recovery/storage changes and API
+removals need separate decisions and tests. This document describes code on
+`main`; update or delete a row only in the PR that actually changes its
+implementation. The consumer baseline in
+[lleverage #6988](https://github.com/lleverage-ai/lleverage/pull/6988) is one
+regression layer, not proof of database recovery or all five modes' save timing.
