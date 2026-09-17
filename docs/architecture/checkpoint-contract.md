@@ -1,7 +1,7 @@
 # Checkpoint contract
 
-Status: **revised proposal, awaiting review** (2026-09-17). The earlier
-acceptance is withdrawn: validation found that its compatibility, recovery and
+Status: **reviewed direction; implementation details remain open** (2026-09-17).
+This replaces the earlier accepted proposal, whose compatibility, recovery and
 durability claims did not follow from the existing implementations. Targets
 `1.0.0`, but does not authorise implementation or change runtime behaviour.
 
@@ -126,17 +126,21 @@ interface RunSink {
     step: number;
     messages: ModelMessage[];
     state: AgentState;
+    /** This step's model-call usage (StepResult.usage), not an aggregate. */
     usage?: LanguageModelUsage;
   }): Promise<void>;
 
   /** Invocation outcome; interruption is not successful platform completion. */
   finalizeRun(input: RunIdentity & {
-    outcome: "completed" | "interrupted" | "failed" | "cancelled";
     messages: ModelMessage[];
     state: AgentState;
+    /** Aggregate usage for telemetry/billing only; never a context-occupancy seed. */
     usage?: LanguageModelUsage;
     error?: unknown;
-  }): Promise<void>;
+  } & (
+    | { outcome: "interrupted"; interrupt: Interrupt }
+    | { outcome: "completed" | "failed" | "cancelled"; interrupt?: never }
+  )): Promise<void>;
 }
 
 interface CheckpointSource {
@@ -147,17 +151,31 @@ interface CheckpointSource {
 }
 ```
 
-`createAgent({ checkpointRuntime: { sink, source } })` is the proposed opt-in
-entry point. Supplying it together with `checkpointer` should be rejected rather
-than creating two competing persistence owners. The persistence runtime requires
-an explicit thread identity; do not create an implicit persistent thread for
-ordinary `createAgent({})` calls.
+Two explicitly different configurations are proposed:
+
+- `createAgent({ checkpointRuntime: { mode: "persist", sink, source } })`
+  selects the new persistence owner. Reject `checkpointer` alongside this mode:
+  two load/write owners would be ambiguous. Require an explicit thread identity;
+  do not create an implicit persistent thread for ordinary `createAgent({})` calls.
+- `createAgent({ checkpointer, checkpointRuntime: { mode: "observe", sink } })`
+  keeps the legacy saver as the sole persistence owner and allows the rollout's
+  non-publishing comparison. Observer mode has no `source`; it must not replace
+  legacy loads, saves, interrupt gates or their ordering/error propagation.
+  Observation is not a durability barrier. Deliver owned copies through a
+  bounded, non-blocking diagnostic path; observer errors or dropped records
+  invalidate the comparison and are reported, not propagated into agent execution.
+  Queue bounds, ordering and disposal semantics must be specified before coding.
 
 Before implementation, define and test observer sequences for every method:
 normal completion, `respondWith`, tool failure, provider error parts versus
-thrown errors, interruption, cancellation, abandoned stream consumption, SDK
-retries and background follow-ups. The observation order should be explicit;
-it does not imply existing modes have identical outcomes or saver side effects.
+thrown errors, interruption, `resume()`, `getInterrupt()`, `forkSession`, emergency
+compaction, cancellation, abandoned stream consumption, SDK retries and background
+follow-ups. Name `runUIStreamFollowUps` explicitly: it does not re-enter the public
+method and cannot inherit another-public-call identity by assumption. The
+observation order should be explicit; it does not imply existing modes have
+identical outcomes or saver side effects. Specify who produces `StreamEvent`s
+for each mode, including non-streaming `generate()`; do not assume every mode
+has raw stream chunks or bypass the consumer's verified mapping.
 `inputMessages` must include explicit resume tool results when supplied, not
 only user-role messages. Payload ownership must also be defined so mutable
 agent state cannot change a queued record after a boundary was acknowledged.
@@ -181,8 +199,10 @@ SDK callback cannot infer successful persistence from enqueue alone. A new
 adapter needs acknowledged sequence/version and read-your-writes evidence before
 any existing recovery safeguard can be removed.
 
-For the opt-in runtime, callback failure must stop new model/tool steps; it must
-not silently fall back to an in-memory source. Specify how terminal callback
+For the opt-in **persistence** runtime, callback failure must stop new model/tool
+steps; it must not silently fall back to an in-memory source. This rule does not
+apply to the non-publishing observer, whose failures invalidate diagnostic evidence
+without changing the legacy execution outcome. Specify how terminal callback
 failure preserves the original error, and how cancellation/stream abandonment
 closes the invocation. Preserve legacy exception behaviour on the legacy path.
 
@@ -215,6 +235,17 @@ alongside the checkpoint. Its implementation must:
    compaction cohort. Their defaults and deployed values are not assumptions
    the SDK may override. Flag-off must preserve the current no-seed path.
 
+The sketch's `stepFinished.usage` is usage of that step's model call;
+`finalizeRun.usage` is aggregate usage for billing/telemetry, not a source for
+`contextTokens`. A per-call input-token count may inform occupancy, but its scope
+and correspondence to the loaded/compacted history still need validation.
+
+There is also a pre-existing in-process issue: `generate()` and the response/raw
+modes pass aggregate result usage to `updateContextUsage`, whereas `stream()`
+skips that update. Fixing only the source's resume seed would not address this
+live path. The compatibility slice preserves it; the context-usage slice must
+explicitly decide and test its replacement rather than silently changing budgets.
+
 Billing/run totals remain available for telemetry without becoming context
 occupancy. `RunRecord` and `FinalizeRunOptions` currently have no usage field;
 a future ledger adapter needs an explicit versioned storage schema and source
@@ -244,9 +275,24 @@ Do not append an `interrupt-resolved` event to an already terminal SDK ledger
 run. `RunManager.appendEvents()` rejects terminal runs. An interrupted invocation
 outcome also does not create a paused ledger state automatically.
 
-The initial seam keeps existing interrupt persistence and resume behaviour.
-Before replacing it, choose and test a durable resolution model: either an
-explicit resumable lifecycle in storage, or a separate idempotent resolution
+The initial seam keeps existing interrupt persistence and resume behaviour on
+the **legacy and observer paths**. The persistence-runtime path must not claim
+that support merely because a `CheckpointSource` exists. Its interrupted terminal
+notification must carry the actual `Interrupt` (as required by the sketch), so
+the sink has the request, identity and tool linkage needed for persistence.
+
+In the first implementation slice, every direct-checkpointer path (`resume()`,
+`getInterrupt()`, fork creation and emergency compaction) must either route through
+the new source/sink with specified semantics and tests or fail explicitly as
+unsupported on the persistence-runtime path before side effects. Likewise, the
+tool-pipeline checkpointer/approval gate must recognise a supported persistence
+runtime; an arbitrary observer-only sink is not an interrupt persistence provider.
+No silent no-op, lost pending interrupt or misleading generic-session guarantee
+is acceptable. A runtime cannot claim `AgentSession` compatibility until its
+resume path is supported and tested.
+
+Before replacing the legacy resolution path, choose and test a durable model:
+either an explicit resumable lifecycle in storage, or a separate idempotent resolution
 record that can refer to an immutable terminal run. This is a prerequisite for
 ledger-backed interrupt recovery, not an implementation detail to guess later.
 The design must cover duplicate responses, conflicting responses, restart,
@@ -275,7 +321,10 @@ specified. Blindly saving on every `stepFinished` is not compatible.
 This table is not a universal save-count formula: interrupts, retries, follow-ups,
 cache hits and error paths need their own regression cases. Test the exact
 current sequence, checkpoint contents, wrapper effects and error propagation
-for each mode with the flag on and off. The consumer session goldens deliberately
+for each mode with the flag on and off. Include `generate()`'s save followed by
+`markPendingInterrupt`, and its thrown-interrupt save with step zero and pre-call
+messages; neither is equivalent to a single normal final save. The consumer
+session goldens deliberately
 do not assert saver call counts; these are additional targeted compatibility
 tests, not a reason to put implementation mechanics into those goldens.
 
@@ -331,9 +380,12 @@ saver are separate decisions, not part of adding that opt-in runtime.
 
 ## Consumer adoption and what stays in lleverage
 
-Start with a non-publishing comparison adapter. Then switch one publication path
-at a time behind the existing rollout mechanism. Keep the old path available
-for rollback without running both writers concurrently. A model invocation is
+Start with `mode: "observe"` beside the existing checkpointer chain, using a
+non-publishing comparison adapter. The observer cannot enable interrupt or
+recovery capabilities; the legacy saver continues to provide them. Then switch
+one publication path at a time to `mode: "persist"` behind the existing rollout
+mechanism. Keep the old path available for rollback without running both writers
+concurrently. A model invocation is
 never enough evidence to finalise the enclosing platform run.
 
 Do not delete these components in the additive phase:
@@ -408,7 +460,12 @@ required: local package candidates can run against the merged consumer baseline.
 ## Decisions still requiring review
 
 - Exact invocation/attempt identity, observer ordering and stream-abandonment
-  semantics for the first opt-in seam, including cache hits and follow-ups.
+  semantics for the first opt-in seam, including cache hits, `runUIStreamFollowUps`
+  and bounded observer delivery. Persistence-runtime support or explicit rejection
+  for resume, interrupt inspection, fork and emergency-compaction paths.
+- Correcting existing in-process aggregate-usage seeding in the context-usage
+  slice, separately from validated resume occupancy. Preserve legacy behaviour
+  during the compatibility slice.
 - Acknowledgement/visibility receipts and acceptable latency for the consumer
   adapter. Resolving on an in-process enqueue cannot satisfy a durable barrier.
 - Typed source-version/context-occupancy and compaction anchor/result contracts.
