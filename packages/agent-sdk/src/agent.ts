@@ -274,6 +274,8 @@ export function createAgent(options: AgentOptions): Agent {
 
   // Initialize task manager for background task tracking
   const taskManager = new TaskManager();
+  if (options.ownedTaskPolicy)
+    taskManager.configureOwnedTasks(options.ownedTaskPolicy, options.ownedTaskCallbacks);
 
   // Background task completion options
   const waitForBackgroundTasks = options.waitForBackgroundTasks ?? true;
@@ -777,13 +779,11 @@ export function createAgent(options: AgentOptions): Agent {
    * Returns null when no more tasks need processing.
    */
   async function getNextTaskPrompt(): Promise<string | null> {
-    while (taskManager.hasActiveTasks() || taskManager.hasTerminalTasks()) {
-      const completedTask = await taskManager.waitForNextCompletion();
-
-      // Dedup: skip if already consumed via task_output tool
-      if (!taskManager.getTask(completedTask.id)) {
-        continue;
-      }
+    while (taskManager.hasBackgroundTasks()) {
+      const candidate = await taskManager.waitForNextCompletion();
+      // One synchronous consume decision shared with task_output.
+      const completedTask = taskManager.consumeTask(candidate.id);
+      if (!completedTask) continue;
 
       // Skip killed tasks (user already knows)
       if (completedTask.status === "killed") {
@@ -801,6 +801,8 @@ export function createAgent(options: AgentOptions): Agent {
       return prompt;
     }
 
+    // Consuming a killed card does not prove its request has stopped.
+    await taskManager.settleOwnedTasks("Background drain complete", true);
     return null;
   }
 
@@ -1278,6 +1280,8 @@ export function createAgent(options: AgentOptions): Agent {
 
           runner.updateContextUsage(response.usage);
 
+          // Abort-ignoring providers must not publish a late result/checkpoint.
+          effectiveGenOptions.signal?.throwIfAborted();
           // Save checkpoint - use forked session ID if forking, otherwise use original threadId.
           // `response.response.messages` only holds the FINAL step's messages;
           // build from every step so intermediate tool calls/results survive.
@@ -1422,6 +1426,8 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions.threadId,
           );
 
+          // Emergency compaction is also a replay boundary.
+          await taskManager.settleOwnedTasks("SDK generation failed", true);
           // Check for context length error and attempt emergency compaction if enabled
           // Note: Only attempt this ONCE to avoid infinite loops
           if (
@@ -1838,6 +1844,7 @@ export function createAgent(options: AgentOptions): Agent {
             steps: mapSteps(steps),
           };
 
+          effectiveGenOptions.signal?.throwIfAborted();
           // Save checkpoint if threadId is provided. The streaming compaction
           // state is authoritative because prepareStep may have discarded
           // earlier history mid-run.
@@ -2273,8 +2280,13 @@ export function createAgent(options: AgentOptions): Agent {
       // Kill all running background tasks
       await taskManager.killAllTasks();
 
-      // Close MCP connections
-      await mcpManager.disconnect();
+      try {
+        // A failed kill-all must not become successful disposal.
+        await taskManager.settleOwnedTasks("Agent disposal");
+      } finally {
+        taskManager.releaseOwnedTaskResults();
+        await mcpManager.disconnect();
+      }
     },
 
     // Initialize the ready promise

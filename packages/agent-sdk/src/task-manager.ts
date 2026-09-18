@@ -10,6 +10,12 @@
 
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import {
+  type OwnedTaskCallbacks,
+  type OwnedTaskPolicy,
+  type OwnedTaskScope,
+  OwnedTasks,
+} from "./owned-tasks.js";
 import type { BackgroundTask, BackgroundTaskStatus } from "./task-store/types.js";
 import { updateBackgroundTask } from "./task-store/types.js";
 
@@ -137,6 +143,59 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
   /** Whether the task manager is accepting new tasks */
   private accepting = true;
 
+  /** Process-local delegation implementation. @internal */
+  owned?: OwnedTasks;
+
+  /**
+   * Enable in-process ownership once. Omitted lifetime/drain limits create no timers.
+   * @param policy - Cancellation grace and optional lifetime/replay limits
+   * @param callbacks - Optional host admission and unresolved-work notifications
+   */
+  configureOwnedTasks(policy: OwnedTaskPolicy, callbacks?: OwnedTaskCallbacks): void {
+    this.owned ??= new OwnedTasks(this, policy, callbacks, {
+      tasks: this.tasks,
+      resources: this.resources,
+    });
+  }
+
+  /**
+   * Begin a host attempt only after all previous work has settled.
+   * @param scope - Host run/attempt identity and cancellation
+   */
+  beginTaskScope(scope: OwnedTaskScope): void {
+    this.owned?.begin(scope);
+  }
+
+  /**
+   * Cancel and settle delegations; reject if any real execution remains unresolved.
+   * @param reason - Why the scope is ending
+   * @param reopen - Reopen admissions only after successful settlement without scope cancellation
+   */
+  async settleOwnedTasks(reason: string, reopen = false): Promise<void> {
+    await this.owned?.close(reason, reopen);
+  }
+
+  /** Release retained payloads after settlement/quarantine transfer, never live ownership. */
+  releaseOwnedTaskResults(): void {
+    this.owned?.releaseResults();
+  }
+
+  /**
+   * Synchronously claim a result shared by manual and automatic delivery.
+   * @param taskId - Terminal background task to consume
+   * @returns The claimed task, or undefined if unavailable/already consumed/foreground
+   */
+  consumeTask(taskId: string): BackgroundTask | undefined {
+    if (this.owned) return this.owned.consume(taskId);
+    const task = this.getTask(taskId);
+    return task && this.removeTask(taskId) ? task : undefined;
+  }
+
+  /** Whether any background tasks remain, excluding owned foreground results. */
+  hasBackgroundTasks(): boolean {
+    return this.getAllTasks().some((task) => !this.owned || this.owned.isBackground(task.id));
+  }
+
   // ===========================================================================
   // Task Lifecycle
   // ===========================================================================
@@ -167,6 +226,8 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
   updateTask(taskId: string, updates: Partial<Omit<BackgroundTask, "id" | "createdAt">>): void {
     const existing = this.tasks.get(taskId);
     if (!existing) return;
+    // A terminal state has one winner; late settlement cannot resurrect work.
+    if (this.owned && !["running", "pending"].includes(existing.status)) return;
 
     const updated = updateBackgroundTask(existing, updates);
     this.tasks.set(taskId, updated);
@@ -174,6 +235,8 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
     // Emit appropriate events
     this.emit("taskUpdated", updated);
 
+    // Foreground results are returned inline, never through the completion queue.
+    if (this.owned && !this.owned.isBackground(taskId)) return;
     if (updates.status === "completed") {
       this.emit("taskCompleted", updated);
     } else if (updates.status === "failed") {
@@ -217,6 +280,7 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
       return false;
     }
 
+    if (this.owned?.records.has(taskId)) return false;
     this.tasks.delete(taskId);
     this.resources.delete(taskId);
     return true;
@@ -279,6 +343,7 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
    * @returns Promise resolving with the task that reached a terminal state
    */
   waitForNextCompletion(): Promise<BackgroundTask> {
+    if (this.owned) return this.owned.nextCompletion();
     // Check for already-terminal tasks first to avoid missing events
     // that fired while no listener was attached.
     const terminal = this.listTasks({ status: ["completed", "failed", "killed"] });
@@ -314,6 +379,7 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
    * @returns Result indicating success or failure
    */
   async killTask(taskId: string): Promise<KillResult> {
+    if (this.owned?.records.has(taskId)) return this.owned.kill(taskId);
     const task = this.tasks.get(taskId);
     if (!task) {
       return { killed: false, reason: "Task not found" };
@@ -365,8 +431,21 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
     const activeTasks = this.listTasks({ status: ["running", "pending"] });
     let killed = 0;
     let failed = 0;
+    // Cancel all owned work before waiting one shared grace. Legacy shell
+    // termination remains independent.
+    const ownedIds = new Set(this.owned?.records.keys() ?? []);
+    if (this.owned) {
+      try {
+        await this.owned.close("kill_all_tasks");
+      } catch {
+        /* Ownership stays quarantined. */
+      }
+      failed = [...ownedIds].filter((id) => this.owned?.records.has(id)).length;
+      killed = ownedIds.size - failed;
+    }
 
     for (const task of activeTasks) {
+      if (ownedIds.has(task.id)) continue;
       const result = await this.killTask(task.id);
       if (result.killed) {
         killed++;
@@ -440,6 +519,7 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
    * Used for testing or resetting state.
    */
   clear(): void {
+    if (this.owned?.records.size) throw new Error("subagent_cleanup_unresolved");
     this.tasks.clear();
     this.resources.clear();
   }

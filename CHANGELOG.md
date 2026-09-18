@@ -13,6 +13,16 @@ remaining changes and validating the consumer.
 
 ### Added
 
+- Added opt-in `AgentOptions.ownedTaskPolicy` / `ownedTaskCallbacks`, typed
+  ownership contracts and `TaskManager` scope/settlement/consume APIs. Foreground
+  and background delegations are registered before initialisation, carry
+  cancellation through factories/hooks/generation, retain unresolved ownership
+  and admission permits, and fence completed tool-call replay across attempts.
+  Omitted lifetime/drain durations create no timers. Host admission, tenant
+  policy, worker recovery and run finalisation remain host-owned.
+- Added `includeGeneralPurposeSubagent: false` to keep only the host-supplied
+  delegation roster, and `SubagentCreateContext.signal` for initialisation.
+
 - Added opt-in `AgentOptions.workflowExecutionGate` and its typed host decision,
   request and receipt contract. Tool execution fails closed before hooks,
   permissions and proxy dispatch when authority is denied, unavailable,
@@ -104,6 +114,14 @@ remaining changes and validating the consumer.
   `experimental_repairToolCall` (the only name older 7.0.x reads).
 
 ### Fixed
+
+- Owned task settlement now precedes SDK retries/emergency compaction and cannot
+  become successful disposal when cleanup is unresolved. Final checkpoint saves
+  and `PostGenerate` hooks are fenced after cancellation, including UI follow-ups.
+- Clean up hook timeout timers/listeners after callbacks settle. Owned start/stop
+  hooks observe all real promises instead of abandoning work behind a timeout race.
+- Initialise owned cancellation before registration events, release permits on
+  registration failure, and contain async unresolved-report/release rejections.
 
 - `createApproximateTokenCounter()` now counts tool result outputs. The
   `toolName` branch matched tool-result parts before the `output`/`result`

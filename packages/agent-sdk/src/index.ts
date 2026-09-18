@@ -617,6 +617,7 @@ export type {
 } from "./task-manager.js";
 // Task Manager (background task lifecycle)
 export { TaskManager } from "./task-manager.js";
+export type { OwnedTaskPolicy, OwnedTaskCallbacks, OwnedTaskIdentity, OwnedTaskScope, OwnedTaskUnresolvedReport } from "./owned-tasks.js";
 // Tool types
 export type {
   BashResult,

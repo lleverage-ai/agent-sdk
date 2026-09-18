@@ -27,7 +27,7 @@ import { createAgentState } from "../src/backends/state.js";
 import { MemorySaver } from "../src/checkpointer/memory-saver.js";
 import { createInterrupt } from "../src/checkpointer/types.js";
 import { AgentError } from "../src/errors/index.js";
-import { createAgent } from "../src/index.js";
+import { createAgent, TaskManager } from "../src/index.js";
 import type {
   Agent,
   AgentOptions,
@@ -68,7 +68,12 @@ function buildDeps(
   const model = createMockModel();
   const options: AgentOptions = { model, ...overrides.options };
   const state = createAgentState();
-  const agent = { id: "agent-test", options, state } as unknown as Agent;
+  const agent = {
+    id: "agent-test",
+    options,
+    state,
+    taskManager: new TaskManager(),
+  } as unknown as Agent;
   const checkpoints = createCheckpointRuntime({ checkpointer: options.checkpointer, state });
   const messageRuntime = createMessageRuntime({
     contextManager: options.contextManager,
@@ -849,6 +854,51 @@ describe("createGenerationRunner", () => {
       ).toEqual(["background", "background"]);
     });
 
+    it("does not save a UI follow-up that settles after cancellation", async () => {
+      const controller = new AbortController();
+      const reason = new Error("cancelled follow-up");
+      const checkpointer = new MemorySaver();
+      const save = vi.spyOn(checkpointer, "save");
+      const postGenerate = vi.fn();
+      const deps = buildDeps({
+        options: { checkpointer },
+        hooks: { PostGenerate: [postGenerate] },
+      });
+      deps.getNextTaskPrompt = vi.fn().mockResolvedValueOnce("child done").mockResolvedValue(null);
+      const runner = createGenerationRunner(deps);
+      const stream = {
+        toUIMessageStream: vi.fn(),
+        text: Promise.resolve("done"),
+        response: Promise.resolve({}),
+        steps: Promise.resolve([]),
+        usage: Promise.resolve(usage),
+        finishReason: Promise.resolve("stop"),
+      };
+      vi.mocked(streamText).mockImplementation(() => {
+        controller.abort(reason);
+        return stream as never;
+      });
+      const attempt = await runner.prepareAttempt(
+        { prompt: "p", threadId: "t1", signal: controller.signal },
+        deps.options.model,
+        "request",
+      );
+      const result = runner.runUIStreamFollowUps({
+        writer: { merge: vi.fn() } as never,
+        attempt,
+        result: stream as never,
+        streamingCompaction: deps.messageRuntime.createStreamingCompactionState(
+          attempt.messages,
+          attempt.effectiveGenOptions,
+          "t1",
+        ),
+        signalState: attempt.signalState,
+      });
+      await expect(result).rejects.toBe(reason);
+      expect(save).not.toHaveBeenCalled();
+      expect(postGenerate).not.toHaveBeenCalled();
+    });
+
     it("is a no-op when the task queue is empty", async () => {
       const deps = buildDeps();
       const runner = createGenerationRunner(deps);
@@ -894,19 +944,27 @@ describe("generation mode parity", () => {
     response: { modelId: "resp-model", messages: [{ role: "assistant", content: "done" }] },
   };
 
-  function mockStreamText(onCreate?: (params: Record<string, unknown>) => void) {
+  function mockStreamText(
+    onCreate?: (params: Record<string, unknown>) => void,
+    observeFinish?: (pending: Promise<void>) => void,
+  ) {
     vi.mocked(streamText).mockImplementation(((params: Record<string, unknown>) => {
       onCreate?.(params);
       const finish = params.onFinish as ((r: unknown) => Promise<void>) | undefined;
       const finished = finish
         ? finish({ ...generateResponse, response: { modelId: "resp-model" } })
         : Promise.resolve();
+      observeFinish?.(finished);
+      const text = finished.then(() => "done");
+      // Mock the AI SDK's observation of completion failures even in modes
+      // which never request `.text` (the assertion still observes `finished`).
+      void text.catch(() => {});
       return {
         toUIMessageStream: vi.fn(() => "ui"),
         fullStream: (async function* () {
           await finished;
         })(),
-        text: finished.then(() => "done"),
+        text,
         usage: Promise.resolve(usage),
         finishReason: Promise.resolve("stop"),
         steps: Promise.resolve([]),
@@ -953,6 +1011,45 @@ describe("generation mode parity", () => {
         return agent.streamDataResponse(options);
     }
   }
+
+  it.each(
+    modes.flatMap((mode) =>
+      (["provider", "checkpoint"] as const).map((phase) => ({ mode, phase })),
+    ),
+  )("$mode fences completion when cancelled during $phase", async ({ mode, phase }) => {
+    const controller = new AbortController();
+    const reason = new Error("cancelled generation");
+    const checkpointer = new MemorySaver();
+    const save = vi.spyOn(checkpointer, "save");
+    if (phase === "checkpoint")
+      save.mockImplementation(async () => {
+        controller.abort(reason);
+      });
+    const postGenerate = vi.fn();
+    const cancelProvider = () => {
+      if (phase === "provider") controller.abort(reason);
+    };
+    vi.mocked(generateText).mockImplementation((async () => {
+      cancelProvider();
+      return generateResponse;
+    }) as never);
+    const finishes: Promise<void>[] = [];
+    mockStreamText(cancelProvider, (pending) => {
+      finishes.push(pending);
+      void pending.catch(() => {});
+    });
+    const agent = createAgent({
+      model: createMockModel(),
+      checkpointer,
+      hooks: { PostGenerate: [postGenerate] },
+    });
+    await Promise.allSettled([
+      runMode(agent, mode, { prompt: "p", threadId: "t1", signal: controller.signal }),
+    ]);
+    await Promise.allSettled(finishes);
+    expect(save).toHaveBeenCalledTimes(phase === "checkpoint" ? 1 : 0);
+    expect(postGenerate).not.toHaveBeenCalled();
+  });
 
   it.each(modes)("%s passes the same call params to the AI SDK", async (mode) => {
     const model = createMockModel();

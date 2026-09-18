@@ -103,6 +103,7 @@ export async function invokeHooksWithTimeout(
   timeout = 60000,
   retryAttempt = 0,
 ): Promise<HookOutput[]> {
+  if (input.hook_event_name === "PostGenerate") input.options?.signal?.throwIfAborted();
   const abortController = new AbortController();
   const timeoutId = setTimeout(() => abortController.abort(), timeout);
 
@@ -115,17 +116,20 @@ export async function invokeHooksWithTimeout(
 
     const results = await Promise.all(
       hooks.map(async (hook) => {
+        let hookTimeoutId: ReturnType<typeof setTimeout> | undefined;
+        let onAbort: (() => void) | undefined;
         try {
           // Create a timeout promise that rejects after the specified time
           const timeoutPromise = new Promise<HookOutput>((_, reject) => {
-            const hookTimeoutId = setTimeout(() => {
+            hookTimeoutId = setTimeout(() => {
               reject(new HookTimeoutError(timeout));
             }, timeout);
             // Clean up timeout if signal is aborted (parent timeout reached)
-            abortController.signal.addEventListener("abort", () => {
+            onAbort = () => {
               clearTimeout(hookTimeoutId);
               reject(new HookTimeoutError(timeout));
-            });
+            };
+            abortController.signal.addEventListener("abort", onAbort, { once: true });
           });
 
           // Race between hook execution and timeout
@@ -140,6 +144,9 @@ export async function invokeHooksWithTimeout(
             console.error("Hook execution error:", error);
           }
           return {};
+        } finally {
+          clearTimeout(hookTimeoutId);
+          if (onAbort) abortController.signal.removeEventListener("abort", onAbort);
         }
       }),
     );
