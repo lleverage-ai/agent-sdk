@@ -504,9 +504,20 @@ const result = await agent.generate({
 
 | Content Type | Approximate Cost |
 |--------------|------------------|
-| Images | ~1000 tokens per image |
-| Files | ~500 tokens per file |
-| Text | Character-based approximation |
+| Images | ~1000 tokens per image (any `image` part shape) |
+| Files | ~500 tokens per file (any `file` part shape) |
+| Text / reasoning | Character-based approximation (4 chars per token) |
+| Tool calls | Tool name plus serialised `input` (or legacy `args`) |
+| Tool results | Tool name plus serialised `output` (or legacy `result`) plus multi-modal `content` |
+| Other part types | Serialised size of the whole part |
+
+The built-in counters discriminate on `part.type`. Absent, `null` and
+unserialisable payloads (cyclic values, `bigint`, `toJSON()` returning
+`undefined`) count as empty rather than throwing. Unknown part types are charged
+their serialised size so a new shape degrades towards early compaction, never
+towards silent under-counting; an unknown part carrying an `image` or `data`
+field is charged the flat image/file cost instead. Every message adds 4 tokens
+of structural overhead.
 
 ### Best Practices for Rich Content
 

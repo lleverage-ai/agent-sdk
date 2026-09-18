@@ -56,58 +56,138 @@ export interface TokenCounter {
  * functions, and symbols, and throws for `bigint` and cyclic values. Tool
  * payloads are `unknown`, so none of those may propagate into a counter that
  * reads `.length` or abort compaction before it evaluates the transcript.
+ * Absent and unserialisable values count as empty.
  */
 function serializeForCounting(value: unknown): string {
+  if (value === undefined || value === null) {
+    return "";
+  }
   if (typeof value === "string") {
     return value;
   }
   try {
     return JSON.stringify(value) ?? "";
   } catch {
-    return String(value);
+    return "";
+  }
+}
+
+/** Flat token charge for an image part (approximate vision-model cost). */
+const IMAGE_PART_TOKENS = 1000;
+/** Flat token charge for a file part (placeholder; real cost depends on content). */
+const FILE_PART_TOKENS = 500;
+
+/**
+ * Counts one content part, discriminating on `part.type`.
+ *
+ * Discriminating on the type rather than field presence matters: tool-result
+ * parts also carry `toolName`, so a field-presence chain that matched
+ * `toolName` first counted a tool result as just its name and silently dropped
+ * the (usually dominant) output, undercounting tool-heavy transcripts ~4-5x
+ * and preventing compaction from ever triggering. Unknown part types are
+ * charged their serialised size so new shapes degrade towards over-counting
+ * (early compaction) rather than silent under-counting; binary payload fields
+ * are replaced by the flat constants first.
+ */
+function countPart(part: Record<string, unknown>, countFn: (text: string) => number): number {
+  switch (part.type) {
+    case "text":
+    case "reasoning":
+      return typeof part.text === "string" ? countFn(part.text) : 0;
+    case "tool-call":
+      return (
+        countFn(serializeForCounting(part.toolName)) +
+        countFn(serializeForCounting(part.input ?? part.args))
+      );
+    case "tool-result":
+      return (
+        countFn(serializeForCounting(part.toolName)) +
+        countFn(serializeForCounting(part.output ?? part.result)) +
+        // Multi-modal tool results carry `content` instead of/alongside output.
+        countFn(serializeForCounting(part.content))
+      );
+    case "image":
+      return IMAGE_PART_TOKENS;
+    case "file":
+      return FILE_PART_TOKENS;
+    default: {
+      if ("image" in part) return IMAGE_PART_TOKENS;
+      if ("data" in part) return FILE_PART_TOKENS;
+      return countFn(serializeForCounting(part));
+    }
   }
 }
 
 /**
+ * Counts a message's content (not its overhead) with the given text counter.
+ */
+function countMessageContent(message: ModelMessage, countFn: (text: string) => number): number {
+  const { content } = message;
+  if (typeof content === "string") {
+    return countFn(content);
+  }
+  if (Array.isArray(content)) {
+    let total = 0;
+    for (const part of content) {
+      total += countPart(part as unknown as Record<string, unknown>, countFn);
+    }
+    return total;
+  }
+  return 0;
+}
+
+/**
  * Helper function to create a hash for a message for caching purposes.
- * Uses a simple hash of the serialized message content.
+ *
+ * The key covers exactly the fields {@link countPart} counts, so two messages
+ * that count differently never share a cache entry; binary image/file
+ * payloads are replaced by a marker rather than hashed in full.
  *
  * @param message - The message to hash
  * @returns A hash string for the message
  */
 function hashMessage(message: ModelMessage): string {
-  // Create a stable string representation
+  // Build a stable representation. Array content is encoded as a JSON array
+  // of per-part tuples, so part boundaries are unambiguous: a text part whose
+  // text contains a delimiter or a serialised sibling part cannot alias a
+  // different array. The role prefix and a string/array/other marker keep the
+  // three content kinds apart.
   let content: string;
   if (typeof message.content === "string") {
-    content = message.content;
+    content = `s:${message.content}`;
   } else if (Array.isArray(message.content)) {
-    // For array content, create a hash-friendly representation
-    // For images/files, include type and a marker (not the full data)
-    content = message.content
-      .map((part) => {
-        if ("text" in part) return `text:${part.text}`;
-        if ("image" in part) return `image:${part.type}`;
-        if ("data" in part && part.type === "file") return `file:${part.type}`;
-        // Tool results carry `toolName` too, so match them BEFORE the bare
-        // toolName branch and key on the payload: otherwise two results from
-        // the same tool share one cache entry and a large result reuses the
-        // count of an earlier small one.
-        if ("result" in part || "output" in part) {
-          const output = "result" in part ? part.result : part.output;
-          const toolName = "toolName" in part ? part.toolName : "";
-          return `tool-result:${toolName}:${serializeForCounting(output)}`;
-        }
-        if ("toolName" in part) {
-          // Tool call - key on every field countSingleMessage counts (`input`
-          // and legacy `args`) so different calls do not collide.
-          const call = part as { input?: unknown; args?: unknown };
-          return `tool:${part.toolName}:${serializeForCounting(call.input)}:${serializeForCounting(call.args)}`;
-        }
-        return JSON.stringify(part);
-      })
-      .join("|");
+    const tuples = message.content.map((rawPart): unknown[] => {
+      const part = rawPart as unknown as Record<string, unknown>;
+      switch (part.type) {
+        case "text":
+        case "reasoning":
+          return [part.type, typeof part.text === "string" ? part.text : ""];
+        case "tool-call":
+          return [
+            "tool-call",
+            serializeForCounting(part.toolName),
+            serializeForCounting(part.input ?? part.args),
+          ];
+        case "tool-result":
+          return [
+            "tool-result",
+            serializeForCounting(part.toolName),
+            serializeForCounting(part.output ?? part.result),
+            serializeForCounting(part.content),
+          ];
+        case "image":
+          return ["image"];
+        case "file":
+          return ["file"];
+        default:
+          if ("image" in part) return ["unknown-image"];
+          if ("data" in part) return ["unknown-data"];
+          return ["unknown", serializeForCounting(part)];
+      }
+    });
+    content = `a:${JSON.stringify(tuples)}`;
   } else {
-    content = JSON.stringify(message.content);
+    content = `o:${serializeForCounting(message.content)}`;
   }
 
   // Simple hash function (djb2)
@@ -153,50 +233,8 @@ export function createApproximateTokenCounter(): TokenCounter {
       return cached;
     }
 
-    let total = 0;
-
-    // Count message overhead (role, structure)
-    total += 4; // Approximate overhead per message
-
-    // Count content
-    if (typeof message.content === "string") {
-      total += count(message.content);
-    } else if (Array.isArray(message.content)) {
-      for (const part of message.content) {
-        if ("text" in part && typeof part.text === "string") {
-          total += count(part.text);
-        } else if ("result" in part || "output" in part) {
-          // Tool result - count output. Checked BEFORE the toolName branch:
-          // tool-result parts also carry `toolName`, so matching on toolName
-          // first counted a tool result as just its tool name and silently
-          // dropped the (usually dominant) output — undercounting tool-heavy
-          // transcripts ~4-5x and preventing compaction from ever triggering
-          // (LLE-11630).
-          const output = "result" in part ? part.result : part.output;
-          total += count(serializeForCounting(output));
-          if ("toolName" in part && typeof part.toolName === "string") {
-            total += count(part.toolName);
-          }
-        } else if ("toolName" in part) {
-          // Tool call - count name and args
-          total += count(part.toolName);
-          if ("args" in part) {
-            total += count(serializeForCounting(part.args));
-          }
-          if ("input" in part) {
-            total += count(serializeForCounting(part.input));
-          }
-        } else if ("image" in part) {
-          // Image part - count ~1000 tokens for image (approximate vision model cost)
-          // Images are expensive in terms of tokens, varies by size and model
-          total += 1000;
-        } else if ("data" in part && part.type === "file") {
-          // File part - count as ~500 tokens per file (placeholder)
-          // Actual token count depends on file size and content
-          total += 500;
-        }
-      }
-    }
+    // Message overhead (role, structure) plus content.
+    const total = 4 + countMessageContent(message, count);
 
     // Store in cache
     messageCache.set(hash, total);
@@ -272,42 +310,7 @@ export function createCustomTokenCounter(options: CustomTokenCounterOptions): To
       return cached;
     }
 
-    let total = messageOverhead;
-
-    if (typeof message.content === "string") {
-      total += countFn(message.content);
-    } else if (Array.isArray(message.content)) {
-      for (const part of message.content) {
-        if ("text" in part && typeof part.text === "string") {
-          total += countFn(part.text);
-        } else if ("result" in part || "output" in part) {
-          // Tool result - checked BEFORE the toolName branch for the same
-          // reason as in createApproximateTokenCounter: tool-result parts also
-          // carry `toolName`, and matching on it first drops the output.
-          const output = "result" in part ? part.result : part.output;
-          total += countFn(serializeForCounting(output));
-          if ("toolName" in part && typeof part.toolName === "string") {
-            total += countFn(part.toolName);
-          }
-        } else if ("toolName" in part) {
-          total += countFn(part.toolName);
-          if ("args" in part) {
-            total += countFn(serializeForCounting(part.args));
-          }
-          if ("input" in part) {
-            total += countFn(serializeForCounting(part.input));
-          }
-        } else if ("image" in part) {
-          // Image part - count ~1000 tokens for image (approximate vision model cost)
-          // Images are expensive in terms of tokens, varies by size and model
-          total += 1000;
-        } else if ("data" in part && part.type === "file") {
-          // File part - count as ~500 tokens per file (placeholder)
-          // Actual token count depends on file size and content
-          total += 500;
-        }
-      }
-    }
+    const total = messageOverhead + countMessageContent(message, countFn);
 
     // Store in cache
     messageCache.set(hash, total);

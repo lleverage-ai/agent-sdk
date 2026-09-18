@@ -241,24 +241,23 @@ describe("createApproximateTokenCounter", () => {
       expect(large).toBeGreaterThan(small + 900);
     });
 
-    it("should key tool calls on both input and args when both are present", () => {
-      const mixedCall = (args: string): ModelMessage =>
+    it("should count input and fall back to legacy args only when input is absent", () => {
+      // No AI SDK version emits both; `args` is the v4 name for `input`. When
+      // a synthetic part carries both, `input` wins and `args` is not
+      // double-counted.
+      const call = (fields: Record<string, unknown>): ModelMessage =>
         ({
           role: "assistant",
-          content: [
-            {
-              type: "tool-call",
-              toolCallId: "c",
-              toolName: "write",
-              input: { path: "a.txt" },
-              args: { content: args },
-            },
-          ],
+          content: [{ type: "tool-call", toolCallId: "c", toolName: "write", ...fields }],
         }) as unknown as ModelMessage;
 
-      const small = counter.countMessages([mixedCall("ok")]);
-      const large = counter.countMessages([mixedCall("x".repeat(4_000))]);
-      expect(large).toBeGreaterThan(small + 900);
+      const inputOnly = counter.countMessages([call({ input: { content: "x".repeat(4_000) } })]);
+      const argsOnly = counter.countMessages([call({ args: { content: "x".repeat(4_000) } })]);
+      const both = counter.countMessages([
+        call({ input: { content: "x".repeat(4_000) }, args: { content: "y".repeat(4_000) } }),
+      ]);
+      expect(argsOnly).toBe(inputOnly);
+      expect(both).toBe(inputOnly);
     });
 
     it("should not throw when a tool result or call payload is undefined", () => {
