@@ -147,35 +147,47 @@ function countMessageContent(message: ModelMessage, countFn: (text: string) => n
  * @returns A hash string for the message
  */
 function hashMessage(message: ModelMessage): string {
-  // Create a stable string representation
+  // Build a stable representation. Array content is encoded as a JSON array
+  // of per-part tuples, so part boundaries are unambiguous: a text part whose
+  // text contains a delimiter or a serialised sibling part cannot alias a
+  // different array. The role prefix and a string/array/other marker keep the
+  // three content kinds apart.
   let content: string;
   if (typeof message.content === "string") {
-    content = message.content;
+    content = `s:${message.content}`;
   } else if (Array.isArray(message.content)) {
-    content = message.content
-      .map((rawPart) => {
-        const part = rawPart as unknown as Record<string, unknown>;
-        switch (part.type) {
-          case "text":
-          case "reasoning":
-            return `${part.type}:${typeof part.text === "string" ? part.text : ""}`;
-          case "tool-call":
-            return `tool-call:${serializeForCounting(part.toolName)}:${serializeForCounting(part.input ?? part.args)}`;
-          case "tool-result":
-            return `tool-result:${serializeForCounting(part.toolName)}:${serializeForCounting(part.output ?? part.result)}:${serializeForCounting(part.content)}`;
-          case "image":
-            return "image";
-          case "file":
-            return "file";
-          default:
-            if ("image" in part) return `unknown-image:${String(part.type)}`;
-            if ("data" in part) return `unknown-data:${String(part.type)}`;
-            return `unknown:${serializeForCounting(part)}`;
-        }
-      })
-      .join("|");
+    const tuples = message.content.map((rawPart): unknown[] => {
+      const part = rawPart as unknown as Record<string, unknown>;
+      switch (part.type) {
+        case "text":
+        case "reasoning":
+          return [part.type, typeof part.text === "string" ? part.text : ""];
+        case "tool-call":
+          return [
+            "tool-call",
+            serializeForCounting(part.toolName),
+            serializeForCounting(part.input ?? part.args),
+          ];
+        case "tool-result":
+          return [
+            "tool-result",
+            serializeForCounting(part.toolName),
+            serializeForCounting(part.output ?? part.result),
+            serializeForCounting(part.content),
+          ];
+        case "image":
+          return ["image"];
+        case "file":
+          return ["file"];
+        default:
+          if ("image" in part) return ["unknown-image"];
+          if ("data" in part) return ["unknown-data"];
+          return ["unknown", serializeForCounting(part)];
+      }
+    });
+    content = `a:${JSON.stringify(tuples)}`;
   } else {
-    content = serializeForCounting(message.content);
+    content = `o:${serializeForCounting(message.content)}`;
   }
 
   // Simple hash function (djb2)

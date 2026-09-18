@@ -201,6 +201,48 @@ describe("createApproximateTokenCounter parity corpus", () => {
     expect(large - small).toBe(tokens(largeContent) - tokens(smallContent));
   });
 
+  it("does not alias a text part containing a delimiter with a two-part array", () => {
+    // A flat, delimiter-joined cache key would give these the same hash even
+    // though they count differently; the key must encode part boundaries.
+    const unknownPart = { type: "future", payload: "b" };
+    const twoParts = msg({
+      role: "assistant",
+      content: [{ type: "text", text: "a" }, unknownPart],
+    });
+    const oneText = msg({
+      role: "assistant",
+      content: [{ type: "text", text: `a|unknown:${JSON.stringify(unknownPart)}` }],
+    });
+    const fresh = createApproximateTokenCounter();
+    const twoPartsExpected = fresh.countMessages([twoParts]);
+    const oneTextExpected = createApproximateTokenCounter().countMessages([oneText]);
+    expect(twoPartsExpected).not.toBe(oneTextExpected);
+
+    const shared = createApproximateTokenCounter();
+    expect(shared.countMessages([twoParts])).toBe(twoPartsExpected);
+    expect(shared.countMessages([oneText])).toBe(oneTextExpected);
+  });
+
+  it("does not alias string content with a single text part of the same text", () => {
+    const shared = createApproximateTokenCounter();
+    const asString = msg({ role: "user", content: "hello" });
+    const asPart = msg({ role: "user", content: [{ type: "text", text: "hello" }] });
+    // Both count identically today; assert the cache is keyed apart anyway by
+    // checking a shape that does differ: an unknown-part array versus the
+    // string that equals its serialised key.
+    expect(shared.countMessages([asString])).toBe(shared.countMessages([asPart]));
+    const unknownArray = msg({ role: "user", content: [{ type: "future", payload: "p" }] });
+    const unknownAsString = msg({
+      role: "user",
+      content: JSON.stringify([["unknown", JSON.stringify({ type: "future", payload: "p" })]]),
+    });
+    const a = createApproximateTokenCounter().countMessages([unknownArray]);
+    const b = createApproximateTokenCounter().countMessages([unknownAsString]);
+    expect(a).not.toBe(b);
+    expect(shared.countMessages([unknownArray])).toBe(a);
+    expect(shared.countMessages([unknownAsString])).toBe(b);
+  });
+
   it("counts a tool-heavy transcript at no less than its dominant tool outputs", () => {
     const counter = createApproximateTokenCounter();
     const messages: ModelMessage[] = [];
