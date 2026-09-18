@@ -133,9 +133,56 @@ export function createCallToolTool(options: CallToolOptions): Tool {
         }
       }
 
-      return `Error: Tool "${tool_name}" not found. Use search_tools to discover available tools.`;
+      const suggestions = mcpManager ? suggestNearMissTools(mcpManager, tool_name) : [];
+      return suggestions.length > 0
+        ? `Error: Tool "${tool_name}" not found. Closest available tools: ${formatToolNameList(suggestions)}. Call one of them by its exact name.`
+        : `Error: Tool "${tool_name}" not found. Use search_tools to discover available tools.`;
     },
   });
+}
+
+/** Maximum number of near-miss suggestions named in an unknown-tool error. */
+export const NEAR_MISS_SUGGESTION_LIMIT = 3;
+
+/**
+ * Names the closest discoverable tools for an unknown tool name.
+ *
+ * A near-miss name (`skills__update_skill` for `skills__change_skill_draft`)
+ * otherwise fails with a bare "not found" and a pointer at `search_tools`,
+ * costing a search round trip per miss and, intermittently, a model that
+ * concludes the tool does not exist. Suggestions are names only; nothing is
+ * auto-executed. The requested name is never suggested back, and a failing
+ * search yields no suggestions rather than an error.
+ *
+ * @param mcpManager - Manager whose search index ranks candidates
+ * @param toolName - The unknown name the model asked for
+ * @returns Up to {@link NEAR_MISS_SUGGESTION_LIMIT} tool names, best first
+ *
+ * @category Tools
+ */
+export function suggestNearMissTools(mcpManager: MCPManager, toolName: string): string[] {
+  try {
+    return (
+      mcpManager
+        // Deliberately `limit`, not `limit + 1`: the requested name is unknown,
+        // so it can only appear in results through a stubbed search. Hosts pin
+        // this exact call (`searchTools(name, 3)`) as their compatibility golden.
+        .searchTools(toolName, NEAR_MISS_SUGGESTION_LIMIT)
+        .map((metadata) => metadata.name)
+        .filter((name) => name !== toolName)
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Formats tool names as a backticked, comma-separated list for error text.
+ *
+ * @internal
+ */
+export function formatToolNameList(names: string[]): string {
+  return names.map((name) => `\`${name}\``).join(", ");
 }
 
 /**

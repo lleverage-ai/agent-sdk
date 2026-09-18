@@ -79,6 +79,7 @@ const response = agent.streamDataResponse(options);
 | `createTaskTool(options)` | Create subagent delegation tool |
 | `createSearchToolsTool(options)` | Create MCP tool search |
 | `createCallToolTool(options)` | Create proxy tool invoker |
+| `suggestNearMissTools(mcpManager, toolName)` | Closest discoverable names for an unknown tool (max `NEAR_MISS_SUGGESTION_LIMIT`) |
 
 ### Core Tools
 
