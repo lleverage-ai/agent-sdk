@@ -361,7 +361,8 @@ contextManager.updateUsage?.(
 `UsageUpdateContext` and `UsageAnchor` are public types. The one-argument
 `updateUsage(usage)` form remains available for legacy seeding: it updates the
 last total without creating an anchor or incrementing its staleness. Successful
-compaction clears both measurements, including usage from the summariser;
+compaction clears both active-context measurements; summariser requests never
+update them because they run with `_skipCompaction`;
 failed compaction does not clear the existing anchor. Requests using the internal
 `_skipCompaction` flag do not update active-context usage, including follow-ups.
 
@@ -380,8 +381,10 @@ marker. Text/JSON and error-text/error-JSON output wrappers are unwrapped, with
 the tool name and call ID retained. Each result's payload is limited to
 `SUMMARY_TOOL_RESULT_MAX_CHARS` (4,000 JavaScript string characters); headers and
 the omitted-character marker are additional, and there is no new whole-prompt
-limit. Non-serialisable outputs use `[unserialisable tool output]` rather than
-failing compaction.
+limit. Absent output (`undefined` or `null`) renders as an empty result, matching
+the previous consumer behaviour. Output whose serialisation throws or yields
+`undefined` (functions, symbols, `toJSON()` returning `undefined`) uses
+`[unserialisable tool output]` rather than failing compaction.
 
 Truncated results carry a transcript recovery marker with their tool-call ID.
 This does **not** create a durable archive: retaining/retrieving the full result

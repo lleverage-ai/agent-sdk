@@ -147,7 +147,14 @@ describe("tool result content in compaction summaries", () => {
   it.each([null, undefined, "raw output", { fact: "raw JSON" }])(
     "handles legacy/raw output %j",
     async (output) => {
-      expect(await summaryInput(output)).toContain("[Tool result: lookup call-1]");
+      const input = await summaryInput(output);
+      expect(input).toContain("[Tool result: lookup call-1]");
+      if (output === null || output === undefined) {
+        // Absent output stays an empty result, as in the patched consumer; it is
+        // not reported as a serialisation failure.
+        expect(input).toContain('[Tool result: lookup call-1]\\n"');
+        expect(input).not.toContain("unserialisable");
+      }
     },
   );
 
