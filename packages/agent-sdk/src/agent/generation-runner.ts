@@ -524,9 +524,10 @@ export interface GenerationRunner {
    * spread this and add mode-specific callbacks.
    */
   buildModelCallParams(attempt: PreparedAttempt): ModelCallParams;
-  /** Forward usage to the context manager, when it tracks usage. */
+  /** Forward per-request usage, excluding isolated summarisation calls. */
   updateContextUsage(
     usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined,
+    genOptions?: Pick<GenerateOptions, "_skipCompaction">,
   ): void;
   /** Emit the `InterruptRequested` hook for a pending interrupt. */
   emitInterruptRequested(
@@ -815,9 +816,10 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
   function updateContextUsage(
     usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined,
+    genOptions?: Pick<GenerateOptions, "_skipCompaction">,
   ): void {
-    // Update context manager with actual usage if available
-    if (options.contextManager?.updateUsage && usage) {
+    // Summariser requests must not seed the active conversation's budget.
+    if (options.contextManager?.updateUsage && usage && !genOptions?._skipCompaction) {
       options.contextManager.updateUsage({
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
@@ -907,7 +909,10 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       // Save checkpoint and invoke unified PostGenerate hook after completion
       onFinish: async (finishResult) => {
         effectiveGenOptions.signal?.throwIfAborted();
-        updateContextUsage(finishResult.usage);
+        updateContextUsage(
+          finishResult.steps.at(-1)?.usage ?? finishResult.usage,
+          effectiveGenOptions,
+        );
 
         // The streaming state is authoritative: prepareStep may have
         // discarded earlier history mid-run.
@@ -1134,7 +1139,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
       // Context manager update
       const followUpUsage = await followUpResult.usage;
-      updateContextUsage(followUpUsage);
+      updateContextUsage(followUpSteps.at(-1)?.usage ?? followUpUsage, followUpEffectiveOptions);
 
       // PostGenerate hooks
       const followUpPostGenerateHooks = effectiveHooks?.PostGenerate ?? [];

@@ -544,6 +544,8 @@ describe("createGenerationRunner", () => {
       const runner = createGenerationRunner(deps);
       runner.updateContextUsage(undefined);
       expect(updateUsage).not.toHaveBeenCalled();
+      runner.updateContextUsage(usage, { _skipCompaction: true });
+      expect(updateUsage).not.toHaveBeenCalled();
       runner.updateContextUsage(usage);
       expect(updateUsage).toHaveBeenCalledWith(usage);
 
@@ -674,7 +676,7 @@ describe("createGenerationRunner", () => {
 
       await callbacks.onFinish({
         text: "done",
-        usage: usage as never,
+        usage: { inputTokens: 99_000, outputTokens: 100, totalTokens: 99_100 } as never,
         finishReason: "stop" as never,
         steps: [step, step],
         response: { modelId: "resp-model" },
@@ -756,103 +758,113 @@ describe("createGenerationRunner", () => {
   });
 
   describe("runUIStreamFollowUps", () => {
-    it("streams each follow-up into the writer and persists the growing transcript", async () => {
-      const checkpointer = new MemorySaver();
-      const postGenerate = vi.fn(async () => ({}));
-      const prompts = ["task one done", "task two done"];
-      const deps = buildDeps({
-        options: { checkpointer },
-        hooks: { PostGenerate: [postGenerate] },
-      });
-      deps.getNextTaskPrompt = vi.fn(async () => prompts.shift() ?? null);
-      const runner = createGenerationRunner(deps);
+    it.each([false, true])(
+      "streams follow-ups, persists the transcript, and isolates summariser usage (skip=%s)",
+      async (_skipCompaction) => {
+        const checkpointer = new MemorySaver();
+        const postGenerate = vi.fn(async () => ({}));
+        const prompts = ["task one done", "task two done"];
+        const updateUsage = vi.fn();
+        const deps = buildDeps({
+          options: {
+            checkpointer,
+            contextManager: { updateUsage, shouldCompact: () => ({ trigger: false }) } as never,
+          },
+          hooks: { PostGenerate: [postGenerate] },
+        });
+        deps.getNextTaskPrompt = vi.fn(async () => prompts.shift() ?? null);
+        const runner = createGenerationRunner(deps);
 
-      const makeStream = (text: string, steps: number) => ({
-        toUIMessageStream: vi.fn(() => `ui:${text}`),
-        text: Promise.resolve(text),
-        response: Promise.resolve({ modelId: "m" }),
-        steps: Promise.resolve(
-          Array.from({ length: steps }, () => ({
-            text,
-            toolCalls: [],
-            toolResults: [],
-            finishReason: "stop",
-            usage,
-            response: { messages: [{ role: "assistant", content: text }] },
-          })),
-        ),
-        usage: Promise.resolve(usage),
-        finishReason: Promise.resolve("stop"),
-      });
-      vi.mocked(streamText)
-        .mockReturnValueOnce(makeStream("follow-1", 1) as never)
-        .mockReturnValueOnce(makeStream("follow-2", 2) as never);
+        const makeStream = (text: string, steps: number) => ({
+          toUIMessageStream: vi.fn(() => `ui:${text}`),
+          text: Promise.resolve(text),
+          response: Promise.resolve({ modelId: "m" }),
+          steps: Promise.resolve(
+            Array.from({ length: steps }, () => ({
+              text,
+              toolCalls: [],
+              toolResults: [],
+              finishReason: "stop",
+              usage,
+              response: { messages: [{ role: "assistant", content: text }] },
+            })),
+          ),
+          usage: Promise.resolve({ inputTokens: 99_000, outputTokens: 100, totalTokens: 99_100 }),
+          finishReason: Promise.resolve("stop"),
+        });
+        vi.mocked(streamText)
+          .mockReturnValueOnce(makeStream("follow-1", 1) as never)
+          .mockReturnValueOnce(makeStream("follow-2", 2) as never);
 
-      const attempt = await runner.prepareAttempt(
-        { prompt: "p", threadId: "t1", _runId: "run_1" },
-        deps.options.model,
-        "request",
-      );
-      const streamingCompaction = deps.messageRuntime.createStreamingCompactionState(
-        attempt.messages,
-        attempt.effectiveGenOptions,
-        "t1",
-      );
-      const writer = { merge: vi.fn(), write: vi.fn() };
-      const streamingContext = { writer: writer as never };
+        const attempt = await runner.prepareAttempt(
+          { prompt: "p", threadId: "t1", _runId: "run_1", _skipCompaction },
+          deps.options.model,
+          "request",
+        );
+        const streamingCompaction = deps.messageRuntime.createStreamingCompactionState(
+          attempt.messages,
+          attempt.effectiveGenOptions,
+          "t1",
+        );
+        const writer = { merge: vi.fn(), write: vi.fn() };
+        const streamingContext = { writer: writer as never };
 
-      await runner.runUIStreamFollowUps({
-        writer: writer as never,
-        attempt,
-        result: makeStream("initial", 1) as never,
-        streamingCompaction,
-        signalState: attempt.signalState,
-        streamingContext,
-      });
+        await runner.runUIStreamFollowUps({
+          writer: writer as never,
+          attempt,
+          result: makeStream("initial", 1) as never,
+          streamingCompaction,
+          signalState: attempt.signalState,
+          streamingContext,
+        });
 
-      expect(writer.merge.mock.calls.map(([s]) => s)).toEqual(["ui:follow-1", "ui:follow-2"]);
+        expect(writer.merge.mock.calls.map(([s]) => s)).toEqual(["ui:follow-1", "ui:follow-2"]);
+        expect(updateUsage.mock.calls).toEqual(_skipCompaction ? [] : [[usage], [usage]]);
 
-      // Each follow-up request carries the transcript so far plus the prompt.
-      const calls = vi.mocked(streamText).mock.calls.map(([params]) => params);
-      expect(calls[0]).toMatchObject({
-        model: deps.options.model,
-        system: "SYSTEM",
-        allowSystemInMessages: true,
-      });
-      expect(calls[0].messages).toEqual([
-        user("p"),
-        { role: "assistant", content: "initial" },
-        user("task one done"),
-      ]);
-      expect(calls[1].messages).toEqual([
-        user("p"),
-        { role: "assistant", content: "initial" },
-        user("task one done"),
-        { role: "assistant", content: "follow-1" },
-        user("task two done"),
-      ]);
-      expect(deps.toolPipeline.buildTools).toHaveBeenLastCalledWith(
-        expect.objectContaining({ threadId: "t1", streamingContext }),
-      );
+        // Each follow-up request carries the transcript so far plus the prompt.
+        const calls = vi.mocked(streamText).mock.calls.map(([params]) => params);
+        expect(calls[0]).toMatchObject({
+          model: deps.options.model,
+          system: "SYSTEM",
+          allowSystemInMessages: true,
+        });
+        expect(calls[0].messages).toEqual([
+          user("p"),
+          { role: "assistant", content: "initial" },
+          user("task one done"),
+        ]);
+        expect(calls[1].messages).toEqual([
+          user("p"),
+          { role: "assistant", content: "initial" },
+          user("task one done"),
+          { role: "assistant", content: "follow-1" },
+          user("task two done"),
+        ]);
+        expect(deps.toolPipeline.buildTools).toHaveBeenLastCalledWith(
+          expect.objectContaining({ threadId: "t1", streamingContext }),
+        );
 
-      // Checkpoint step counts accumulate: 1 initial + 1 + 2. The transcript
-      // is the second request's messages plus one assistant reply per step.
-      const saved = await checkpointer.load("t1");
-      expect(saved?.step).toBe(4);
-      expect(saved?.messages).toEqual([
-        ...calls[1].messages,
-        { role: "assistant", content: "follow-2" },
-        { role: "assistant", content: "follow-2" },
-      ]);
+        // Checkpoint step counts accumulate: 1 initial + 1 + 2. The transcript
+        // is the second request's messages plus one assistant reply per step.
+        const saved = await checkpointer.load("t1");
+        expect(saved?.step).toBe(4);
+        expect(saved?.messages).toEqual([
+          ...calls[1].messages,
+          { role: "assistant", content: "follow-2" },
+          { role: "assistant", content: "follow-2" },
+        ]);
 
-      expect(postGenerate).toHaveBeenCalledTimes(2);
-      expect(
-        postGenerate.mock.calls.map(([input]) => (input as PostGenerateInput).result.text),
-      ).toEqual(["follow-1", "follow-2"]);
-      expect(
-        postGenerate.mock.calls.map(([input]) => (input as PostGenerateInput).options.requestClass),
-      ).toEqual(["background", "background"]);
-    });
+        expect(postGenerate).toHaveBeenCalledTimes(2);
+        expect(
+          postGenerate.mock.calls.map(([input]) => (input as PostGenerateInput).result.text),
+        ).toEqual(["follow-1", "follow-2"]);
+        expect(
+          postGenerate.mock.calls.map(
+            ([input]) => (input as PostGenerateInput).options.requestClass,
+          ),
+        ).toEqual(["background", "background"]);
+      },
+    );
 
     it("does not save a UI follow-up that settles after cancellation", async () => {
       const controller = new AbortController();

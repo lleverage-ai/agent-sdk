@@ -275,7 +275,9 @@ const contextManager = createContextManager({
 });
 
 // Methods
-contextManager.getBudget(messages: Message[]): TokenBudget;
+contextManager.getBudget(messages: ModelMessage[]): TokenBudget;
+contextManager.updateUsage?.(usage, context?: UsageUpdateContext): void;
+contextManager.getUsageAnchor?.(): UsageAnchor | null;
 contextManager.pinMessage(index: number, reason?: string): void;
 contextManager.unpinMessage(index: number): void;
 contextManager.isPinned(index: number): boolean;
@@ -284,6 +286,18 @@ contextManager.isPinned(index: number): boolean;
 `TokenBudget` includes `effectiveMaxTokens`, `outputReserveTokens`, and `state` so hosts can
 surface context pressure before hard failures. `CompactionPolicy` also supports
 `outputReserveTokens`, `maxConsecutiveFailures`, and `failureCooldownMs`.
+
+`UsageUpdateContext.messages` identifies the tracked request input before output
+is appended. `UsageAnchor` contains `inputTokens`, `estimatedInputTokens`,
+`messageCount`, `staleSteps` and `recordedAt`; `getUsageAnchor()` returns a copy.
+Anchoring validates input usage and the prefix's counter estimate, tolerates one
+missing-usage boundary and resets after successful compaction. It does not prove
+prefix content identity. Legacy one-argument seeding remains supported.
+
+`SUMMARY_TOOL_RESULT_MAX_CHARS` is 4,000: the per-result summary payload bound,
+excluding the tool/call-ID header and truncation marker. See
+[provider anchors and summary content](./context-compaction.md#provider-usage-anchors)
+for timing, fallback and host-retention boundaries.
 
 ## Owned tasks
 

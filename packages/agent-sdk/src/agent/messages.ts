@@ -141,7 +141,11 @@ export interface StreamingCompactionState {
     stepNumber: number;
   }): Promise<{ messages: ModelMessage[] } | undefined>;
   /** Append a finished step's response messages; returns the new transcript. */
-  appendStep(stepResult: { text?: string; response?: { messages?: unknown[] } }): ModelMessage[];
+  appendStep(stepResult: {
+    text?: string;
+    response?: { messages?: unknown[] };
+    usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  }): ModelMessage[];
   /** Final transcript for persistence. */
   finalize(
     steps: Array<{ text?: string; response?: { messages?: unknown[] } }>,
@@ -313,7 +317,20 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
       appendStep(stepResult: {
         text?: string;
         response?: { messages?: unknown[] };
+        usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
       }): ModelMessage[] {
+        // Measure the consumed input before output is appended. Missing usage
+        // still records a boundary so an older anchor cannot live indefinitely.
+        if (!genOptions._skipCompaction) {
+          contextManager?.updateUsage?.(
+            {
+              inputTokens: stepResult.usage?.inputTokens,
+              outputTokens: stepResult.usage?.outputTokens,
+              totalTokens: stepResult.usage?.totalTokens,
+            },
+            { messages: currentMessages },
+          );
+        }
         appendedSteps++;
         currentMessages = appendResponseMessages(
           currentMessages,

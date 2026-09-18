@@ -323,6 +323,71 @@ const contextManager = createContextManager({
 });
 ```
 
+### Provider usage anchors
+
+Streaming tool loops record each step's usage **before** appending its response
+messages. `getUsageAnchor()` exposes a defensive copy of that measurement:
+
+```typescript
+const anchor = contextManager.getUsageAnchor?.();
+// inputTokens, estimatedInputTokens, messageCount, staleSteps, recordedAt
+```
+
+For an append-only continuation, the budget considers provider input tokens plus
+estimated growth since that request. It still takes the larger of this value,
+the full message estimate, and the most recent per-request total. This catches a
+large new tool result even when the estimator underestimates the provider's base
+prompt. `isActual` can therefore describe a hybrid measurement, not an entirely
+provider-measured current transcript.
+
+An anchor requires finite, non-negative input usage (zero is valid). Missing or
+invalid input usage marks the previous anchor stale. It remains usable for one
+such step boundary, but not two. A shorter history or a prefix whose token count
+has changed also disables anchoring, falling back to the larger of the message
+estimate and last total. **The prefix check compares counter estimates, not
+content identity**: callers must preserve the anchored prefix; equal-size edits
+cannot be detected by this check. This deliberately retains the current
+consumer's accounting contract rather than introducing a new counter or policy.
+
+Custom integrations can record the same boundary:
+
+```typescript
+contextManager.updateUsage?.(
+  { inputTokens: 900, outputTokens: 10, totalTokens: 910 },
+  { messages: requestMessages }, // Before appending response/tool-result messages
+);
+```
+
+`UsageUpdateContext` and `UsageAnchor` are public types. The one-argument
+`updateUsage(usage)` form remains available for legacy seeding: it updates the
+last total without creating an anchor or incrementing its staleness. Successful
+compaction clears both measurements, including usage from the summariser;
+failed compaction does not clear the existing anchor. Requests using the internal
+`_skipCompaction` flag do not update active-context usage, including follow-ups.
+
+`generate()` retains its existing run-end accounting timing; it does not gain
+mid-run compaction or per-step anchors. Run-end updates and Response-mode
+follow-ups use the **final step's usage**, falling back to response usage when no
+step measurement is available. Public result, telemetry and billing usage are
+unchanged: supported AI SDK versions differ in whether their response-level
+usage aggregates multiple requests, so it must not be substituted for current
+context occupancy.
+
+### Tool results in summary prompts
+
+Compaction includes tool-result content before considering the generic tool-name
+marker. Text/JSON and error-text/error-JSON output wrappers are unwrapped, with
+the tool name and call ID retained. Each result's payload is limited to
+`SUMMARY_TOOL_RESULT_MAX_CHARS` (4,000 JavaScript string characters); headers and
+the omitted-character marker are additional, and there is no new whole-prompt
+limit. Non-serialisable outputs use `[unserialisable tool output]` rather than
+failing compaction.
+
+Truncated results carry a transcript recovery marker with their tool-call ID.
+This does **not** create a durable archive: retaining/retrieving the full result
+is still the host's responsibility. Tool execution, checkpoint ordering,
+compaction thresholds and custom token counters are unchanged.
+
 ### Token Budget Properties
 
 | Property | Description |
@@ -334,7 +399,7 @@ const contextManager = createContextManager({
 | `remaining` | Tokens remaining within the effective prompt budget |
 | `outputReserveTokens` | Tokens reserved for model output that reduce `effectiveMaxTokens` |
 | `state` | Context pressure state: `normal`, `warning`, or `blocking` |
-| `isActual` | `true` if based on model usage, `false` if estimated |
+| `isActual` | `true` if based on model usage (possibly plus estimated append growth), `false` if purely estimated |
 
 ```typescript
 const budget = contextManager.getBudget(messages);

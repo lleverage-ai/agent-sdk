@@ -1161,6 +1161,35 @@ export interface ContextManagerOptions {
 }
 
 /**
+ * Message context consumed by a measured model step, before its output is appended.
+ *
+ * @category Context
+ */
+export interface UsageUpdateContext {
+  /** The tracked messages consumed by the measured request. */
+  messages: ModelMessage[];
+}
+
+/**
+ * Provider input measurement and its corresponding message-counter estimate.
+ * This is current-context accounting, not cumulative billing usage.
+ *
+ * @category Context
+ */
+export interface UsageAnchor {
+  /** Finite, non-negative provider input token count. */
+  inputTokens: number;
+  /** Estimate of the measured request's tracked messages. */
+  estimatedInputTokens: number;
+  /** Number of messages in the measured request. */
+  messageCount: number;
+  /** Subsequent step boundaries without usable input usage. */
+  staleSteps: number;
+  /** Time the measurement was recorded, in epoch milliseconds. */
+  recordedAt: number;
+}
+
+/**
  * Manages conversation context with token tracking and auto-compaction.
  *
  * @category Context
@@ -1223,19 +1252,32 @@ export interface ContextManager {
   process(messages: ModelMessage[], agent: Agent): Promise<ModelMessage[]>;
 
   /**
-   * Update token tracking with actual usage from a model response.
-   * This provides more accurate token counts than estimation.
+   * Update token tracking with usage from one model request, not a multi-step sum.
+   * With context, valid input usage establishes an anchor for appended growth;
+   * missing/invalid input marks the previous anchor stale. Without context,
+   * preserves legacy total-usage seeding without recording a step boundary.
    *
-   * @param usage - Token usage from the model response (AI SDK v6 format)
+   * @param usage - Per-request token usage from the model response
    * @param usage.inputTokens - Tokens used in the input/prompt
    * @param usage.outputTokens - Tokens used in the output/completion
-   * @param usage.totalTokens - Total tokens used
+   * @param usage.totalTokens - Input plus output tokens for that request
+   * @param context - Tracked input messages, before appending the step's output
    */
-  updateUsage?(usage: {
-    inputTokens: number | undefined;
-    outputTokens: number | undefined;
-    totalTokens: number | undefined;
-  }): void;
+  updateUsage?(
+    usage: {
+      inputTokens: number | undefined;
+      outputTokens: number | undefined;
+      totalTokens: number | undefined;
+    },
+    context?: UsageUpdateContext,
+  ): void;
+
+  /**
+   * Return a defensive copy of the latest step anchor, or null before one is
+   * recorded or after successful compaction. Optional for custom managers.
+   * @returns The latest anchor, including its staleness, or null
+   */
+  getUsageAnchor?(): UsageAnchor | null;
 
   /**
    * Pin a message to prevent it from being compacted.
@@ -1377,6 +1419,8 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
   let lastActualUsage: { inputTokens: number | undefined; totalTokens: number | undefined } | null =
     null;
 
+  let usageAnchor: UsageAnchor | null = null;
+
   // Track pinned messages
   const pinnedMessages: PinnedMessageMetadata[] = [];
 
@@ -1391,6 +1435,22 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     scheduler = undefined;
   }
 
+  const getUsageAnchor = (): UsageAnchor | null => (usageAnchor ? { ...usageAnchor } : null);
+
+  // Preserve the consumer's counter-based prefix check. Equal token counts
+  // are not proof of content identity; callers must keep the prefix unchanged.
+  const resolveAnchoredTokens = (
+    messages: ModelMessage[],
+    estimatedTokens: number,
+  ): number | undefined => {
+    if (!usageAnchor || usageAnchor.staleSteps > 1 || messages.length < usageAnchor.messageCount) {
+      return undefined;
+    }
+    const prefixTokens = tokenCounter.countMessages(messages.slice(0, usageAnchor.messageCount));
+    if (prefixTokens !== usageAnchor.estimatedInputTokens) return undefined;
+    return usageAnchor.inputTokens + Math.max(0, estimatedTokens - prefixTokens);
+  };
+
   const getBudget = (messages: ModelMessage[]): TokenBudget => {
     const estimatedTokens = tokenCounter.countMessages(messages);
     const actualTokens = lastActualUsage?.totalTokens;
@@ -1399,9 +1459,14 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     // list may already include newer tool results appended since that call.
     // Use the larger of the two so stale usage cannot hide growth between model
     // generations (which is exactly when mid-run compaction needs to fire).
-    const currentTokens =
+    let currentTokens =
       actualTokens === undefined ? estimatedTokens : Math.max(actualTokens, estimatedTokens);
-    const isActual = actualTokens !== undefined && actualTokens >= estimatedTokens;
+    let isActual = actualTokens !== undefined && actualTokens >= estimatedTokens;
+    const anchoredTokens = resolveAnchoredTokens(messages, estimatedTokens);
+    if (anchoredTokens !== undefined && anchoredTokens > currentTokens) {
+      currentTokens = anchoredTokens;
+      isActual = true;
+    }
 
     const budget = createTokenBudget(maxTokens, currentTokens, isActual, {
       outputReserveTokens: policy.outputReserveTokens,
@@ -1689,6 +1754,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       // next budget check falls back to estimating the compacted messages
       // instead of comparing against the pre-compaction total.
       lastActualUsage = null;
+      usageAnchor = null;
 
       recordCompactionSuccess();
 
@@ -1735,11 +1801,28 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     return messages;
   };
 
-  const updateUsage = (usage: {
-    inputTokens: number | undefined;
-    outputTokens: number | undefined;
-    totalTokens: number | undefined;
-  }): void => {
+  const updateUsage = (
+    usage: {
+      inputTokens: number | undefined;
+      outputTokens: number | undefined;
+      totalTokens: number | undefined;
+    },
+    context?: UsageUpdateContext,
+  ): void => {
+    if (context?.messages) {
+      const inputTokens = usage.inputTokens;
+      if (typeof inputTokens !== "number" || !Number.isFinite(inputTokens) || inputTokens < 0) {
+        if (usageAnchor) usageAnchor = { ...usageAnchor, staleSteps: usageAnchor.staleSteps + 1 };
+      } else {
+        usageAnchor = {
+          inputTokens,
+          estimatedInputTokens: tokenCounter.countMessages(context.messages),
+          messageCount: context.messages.length,
+          staleSteps: 0,
+          recordedAt: Date.now(),
+        };
+      }
+    }
     // Store actual usage for next budget calculation
     // Only store if totalTokens is defined
     if (usage.totalTokens !== undefined) {
@@ -1783,6 +1866,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     scheduler: undefined, // Will be set below if needed
     pinnedMessages,
     getBudget,
+    getUsageAnchor,
     shouldCompact,
     compact,
     process,
@@ -2082,6 +2166,56 @@ function extractFileMetadata(part: { type: "file"; data: unknown; mimeType?: str
   return `[File: ${mimeType}, embedded data]`;
 }
 
+/**
+ * Maximum tool-result payload characters included per result in a compaction
+ * summary prompt. The tool name, call ID, and truncation marker are additional.
+ *
+ * @category Context
+ */
+export const SUMMARY_TOOL_RESULT_MAX_CHARS = 4000;
+
+function formatToolResultForSummary(part: object): string {
+  const toolName =
+    "toolName" in part && part.toolName !== undefined ? String(part.toolName) : "unknown";
+  const toolCallId =
+    "toolCallId" in part && part.toolCallId !== undefined ? String(part.toolCallId) : undefined;
+  const raw = "output" in part ? part.output : "result" in part ? part.result : undefined;
+  let text: string;
+  if (raw === undefined || raw === null) {
+    text = "";
+  } else if (typeof raw === "string") {
+    text = raw;
+  } else if (
+    typeof raw === "object" &&
+    "type" in raw &&
+    "value" in raw &&
+    raw.value !== undefined &&
+    (raw.type === "text" || raw.type === "error-text")
+  ) {
+    text = String(raw.value);
+  } else {
+    const value =
+      typeof raw === "object" &&
+      "type" in raw &&
+      "value" in raw &&
+      raw.value !== undefined &&
+      (raw.type === "json" || raw.type === "error-json")
+        ? raw.value
+        : raw;
+    try {
+      text = JSON.stringify(value) ?? "[unserialisable tool output]";
+    } catch {
+      text = "[unserialisable tool output]";
+    }
+  }
+  const handle = toolCallId ? ` ${toolCallId}` : "";
+  if (text.length > SUMMARY_TOOL_RESULT_MAX_CHARS) {
+    const omitted = text.length - SUMMARY_TOOL_RESULT_MAX_CHARS;
+    return `[Tool result: ${toolName}${handle}]\n${text.slice(0, SUMMARY_TOOL_RESULT_MAX_CHARS)}\n[... ${omitted} characters omitted; full result retained in the transcript under tool call${handle}]`;
+  }
+  return `[Tool result: ${toolName}${handle}]\n${text}`;
+}
+
 function formatMessagesForSummary(messages: ModelMessage[]): string {
   const lines: string[] = [];
 
@@ -2095,13 +2229,12 @@ function formatMessagesForSummary(messages: ModelMessage[]): string {
       for (const part of message.content) {
         if ("text" in part && typeof part.text === "string") {
           parts.push(part.text);
-        } else if ("result" in part || "output" in part) {
-          // Checked before the toolName branch: tool-result parts also carry
-          // `toolName`, and the summarizer should see the result, not just
-          // a second "[Tool call: …]" marker.
-          const output = "result" in part ? part.result : part.output;
-          const outputStr = serializeForCounting(output).slice(0, 200);
-          parts.push(`[Tool result: ${outputStr}...]`);
+        } else if (
+          part.type === "tool-result" ||
+          (!("toolName" in part) && ("result" in part || "output" in part))
+        ) {
+          // A typed result also carries toolName: render it before tool calls.
+          parts.push(formatToolResultForSummary(part));
         } else if ("toolName" in part) {
           parts.push(`[Tool call: ${part.toolName}]`);
         } else if ("image" in part && part.type === "image") {

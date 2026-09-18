@@ -13,6 +13,14 @@ remaining changes and validating the consumer.
 
 ### Added
 
+- Added `UsageUpdateContext`, `UsageAnchor` and optional
+  `ContextManager.getUsageAnchor()` for provider-input-plus-append-growth context
+  accounting. Streaming steps update usage before appending output, validate
+  input measurements, tolerate one stale step, check prefix token estimates and
+  clear anchors after successful compaction.
+- Exported `SUMMARY_TOOL_RESULT_MAX_CHARS` (4,000) for per-result summary payload
+  bounds. Compaction now unwraps text/JSON/error outputs and preserves tool names,
+  call IDs and omitted-character recovery markers.
 - Added opt-in `AgentOptions.ownedTaskPolicy` / `ownedTaskCallbacks`, typed
   ownership contracts and `TaskManager` scope/settlement/consume APIs. Foreground
   and background delegations are registered before initialisation, carry
@@ -115,6 +123,11 @@ remaining changes and validating the consumer.
 
 ### Fixed
 
+- Context occupancy updates use final-step usage rather than multi-request totals
+  in `generate()` and Response-mode completion/follow-ups; summariser requests
+  cannot overwrite active-context usage. Public result/billing usage is unchanged.
+- Summary formatting handles failed JSON serialization, including `undefined`
+  serialization results, without crashing on `text.length`.
 - Owned task settlement now precedes SDK retries/emergency compaction and cannot
   become successful disposal when cleanup is unresolved. Final checkpoint saves
   and `PostGenerate` hooks are fenced after cancellation, including UI follow-ups.
