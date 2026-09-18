@@ -303,6 +303,19 @@ surface context pressure before hard failures. `CompactionPolicy` also supports
 | `getBackendOptionsForAcceptEdits()` | Backend options for acceptEdits mode |
 | `createGuardrailsHooks()` | Input/output guardrails |
 | `createSecretsFilterHooks()` | Secrets filtering |
+| `resolveWorkflowExecutionGate()` | Validate opt-in host authorisation configuration |
+| `authorizeWorkflowToolCall()` | Obtain an explicit host allow for a named execution boundary |
+
+`AgentOptions.workflowExecutionGate` accepts `WorkflowExecutionGateOption`.
+Its callback receives `WorkflowExecutionGateRequest` and returns
+`WorkflowExecutionGateDecision`; optional input-free diagnostics use
+`WorkflowExecutionGateReceipt`. Boundaries use `WorkflowExecutionGateStage`.
+`WorkflowExecutionGateError` reports unavailable/invalid/timed-out decisions
+classified by the exported `WorkflowExecutionGateCode` type;
+`WORKFLOW_EXECUTION_GATE_CONTRACT_VERSION` is `1`, and
+`DEFAULT_WORKFLOW_EXECUTION_GATE_TIMEOUT_MS` is `10000`.
+See [the security guide](./security.md#host-owned-workflow-authorisation) for
+ordering, cancellation and the gated legacy-resume restriction.
 
 ### Security Presets
 

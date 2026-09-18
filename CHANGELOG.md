@@ -7,11 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-This release upstreams the behaviour the Lleverage platform had been carrying
-as a `pnpm patch` against the published `0.1.0-alpha.9` build, so consumers
-no longer need to patch `dist/`.
+These entries track behaviour upstreamed from Lleverage's `pnpm patch` against
+`0.1.0-alpha.9`. Removing the consumer patch still requires accounting for its
+remaining changes and validating the consumer.
 
 ### Added
+
+- Added opt-in `AgentOptions.workflowExecutionGate` and its typed host decision,
+  request and receipt contract. Tool execution fails closed before hooks,
+  permissions and proxy dispatch when authority is denied, unavailable,
+  malformed, timed out or cancelled. Hook-transformed inputs and proxy targets
+  are re-authorised. The earlier AI SDK `needsApproval` / `canUseTool` callback
+  path is gated separately, with fresh authority at execution and cancellation
+  fences after awaited permission callbacks. `createSubagent()` inherits the
+  parent's gate unless explicitly overridden, including the built-in task child.
+  Diagnostic callbacks are not awaited; synchronous and async failures are
+  contained. Agents without the option retain their existing behaviour.
+  Gated agents explicitly reject `resume()` / `resumeDataResponse()` because
+  those legacy methods invoke raw tools outside the gated pipeline; use
+  host-resolved tool-result continuation instead.
 
 - Added `AgentOptions.transformToolError`, a boundary hook applied to tool
   failures before the AI SDK records them. It runs for `execute()` rejections

@@ -371,6 +371,18 @@ const agent = createAgent({
 });
 ```
 
+### Host-owned tool authorisation
+
+For governed runs, `createAgent({ workflowExecutionGate: { version: 1, authorize } })`
+checks trusted host policy before tool hooks, permission callbacks and execution.
+Only an explicit allow continues; failures, timeouts and cancellation fail closed.
+The gate also checks proxy targets and hook-transformed inputs. This is opt-in and
+leaves ordinary agents unchanged. Gated runs use host-resolved tool-result
+continuation rather than the legacy `resume()` methods.
+
+See [Host-owned workflow authorisation](./docs/security.md#host-owned-workflow-authorisation)
+for the contract, error handling and execution-boundary limitations.
+
 ### Background Tasks
 
 Background tasks (bash commands and subagents) are automatically handled. When `generate()`, `stream()`, `streamResponse()`, or `streamDataResponse()` spawns a background task, the agent waits for completion and triggers follow-up generations to process results.

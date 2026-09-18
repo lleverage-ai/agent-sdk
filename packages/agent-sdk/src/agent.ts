@@ -43,7 +43,7 @@ import {
   isApprovalInterrupt,
   updateCheckpoint,
 } from "./checkpointer/types.js";
-import type { AgentError } from "./errors/index.js";
+import { type AgentError, ConfigurationError } from "./errors/index.js";
 import { normalizeError } from "./generation-helpers.js";
 import { invokeHooksWithTimeout } from "./hooks.js";
 import { MCPManager } from "./mcp/manager.js";
@@ -844,6 +844,14 @@ export function createAgent(options: AgentOptions): Agent {
     response: unknown,
     genOptions?: Partial<GenerateOptions>,
   ): Promise<ResumeOutcome> {
+    // This legacy path invokes raw tools and InterruptResolved hooks outside
+    // the generation tool pipeline. Never imply the workflow gate protects it.
+    if (options.workflowExecutionGate) {
+      throw new ConfigurationError(
+        "Workflow-gated agents cannot use resume() or resumeDataResponse(); supply resolved tool results through generate() or stream() instead",
+        { configKey: "workflowExecutionGate" },
+      );
+    }
     if (!options.checkpointer) {
       throw new Error("Cannot resume: checkpointer is required");
     }
