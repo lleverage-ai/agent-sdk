@@ -195,6 +195,8 @@ pipeline in all five generation modes. The AI SDK's earlier `needsApproval`
 callback is gated separately, including the SDK's `canUseTool` bridge. An
 approval-phase grant is not reused at execution: authority is checked again.
 Cancellation is rechecked after awaited approval and permission callbacks.
+The generation request signal is retained through the inner execution wrappers;
+a distinct per-call signal is combined with it, rather than replacing it.
 Tools with no host `execute` boundary, or with AI SDK input lifecycle callbacks
 (`onInputStart`, `onInputDelta`, `onInputAvailable`), are rejected before model
 execution when the gate is enabled. Partial-input callbacks run before complete

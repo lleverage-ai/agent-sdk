@@ -150,6 +150,69 @@ describe("createToolPipeline", () => {
       expect(options.streamingContext).toBeUndefined();
     });
 
+    it.each(
+      (["hook", "transformed-hook", "permission"] as const).flatMap((stage) =>
+        (
+          [
+            { callSignal: "missing", cancel: "request" },
+            { callSignal: "different", cancel: "request" },
+            { callSignal: "different", cancel: "call" },
+          ] as const
+        ).map((signals) => ({ stage, ...signals })),
+      ),
+    )(
+      "retains $cancel cancellation after $stage with a $callSignal call signal",
+      async ({ stage, callSignal, cancel }) => {
+        const request = new AbortController();
+        const other = new AbortController();
+        const cancellation = cancel === "request" ? request : other;
+        const reason = new Error("cancelled while callback awaited");
+        const { probe, calls } = createProbeTool();
+        const authorize = vi.fn(() => ({ decision: "allow" as const }));
+        const { deps } = createHarness(
+          { probe },
+          {
+            options: {
+              workflowExecutionGate: { version: 1, authorize },
+              canUseTool: async () => {
+                await Promise.resolve();
+                if (stage === "permission") cancellation.abort(reason);
+                return "allow";
+              },
+            },
+            hooks: {
+              PreToolUse: [
+                {
+                  hooks: [
+                    async () => {
+                      await Promise.resolve();
+                      if (stage !== "permission") cancellation.abort(reason);
+                      return stage === "transformed-hook"
+                        ? {
+                            hookSpecificOutput: {
+                              hookEventName: "PreToolUse" as const,
+                              updatedInput: { value: "changed" },
+                            },
+                          }
+                        : undefined;
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        );
+        const tools = createToolPipeline(deps).buildTools(buildOptions({ signal: request.signal }));
+        const result = tools.probe.execute?.(
+          { value: "x" },
+          execOptions(callSignal === "different" ? { abortSignal: other.signal } : {}),
+        );
+        await expect(result).rejects.toBe(reason);
+        expect(calls).toHaveLength(0);
+        expect(authorize).toHaveBeenCalledTimes(1);
+      },
+    );
+
     it("forwards telemetry to the task-manager layer and to hooks", async () => {
       const { probe } = createProbeTool();
       const preToolUse = vi.fn(async () => ({}));

@@ -685,7 +685,11 @@ function wrapToolsWithWorkflowExecutionGate(
           : originalNeedsApproval,
       execute: async (input: unknown, options: ToolExecutionOptions<unknown>) => {
         const toolCallId = options?.toolCallId ?? `tool-${Date.now()}`;
-        const signal = options?.abortSignal ?? requestSignal;
+        const callSignal = options?.abortSignal;
+        const signal =
+          requestSignal && callSignal && requestSignal !== callSignal
+            ? AbortSignal.any([requestSignal, callSignal])
+            : (callSignal ?? requestSignal);
         await authorizeWorkflowToolAndTarget(gate, {
           toolName: name,
           toolInput: input,
@@ -694,7 +698,10 @@ function wrapToolsWithWorkflowExecutionGate(
           stage: "pre-hook",
           signal,
         });
-        return originalExecute.call(tool, input, options);
+        // Keep the effective signal through every inner wrapper and awaited
+        // callback, not just this first lookup. A distinct call signal must not
+        // replace the generation request's cancellation authority.
+        return originalExecute.call(tool, input, { ...options, abortSignal: signal });
       },
     };
   }

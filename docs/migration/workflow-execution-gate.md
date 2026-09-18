@@ -29,7 +29,10 @@ paths that the consumer's original gate tests did not cover:
   `canUseTool` or custom approval code. Recheck authority at execution and
   cancellation after awaited permission callbacks. Three regressions failed
   before the fix: both approval-callback variants ran before denial, and a body
-  ran after cancellation inside its execution permission callback.
+  ran after cancellation inside its execution permission callback. Pipeline
+  regressions also cover cancellation during a hook, transformed-input hook or
+  permission callback when execution options omit the request signal or supply
+  a distinct call signal. Both cancellation sources remain effective.
 - Contain rejected async diagnostic sinks without awaiting them, as well as
   synchronous receipt callback exceptions.
 - Inherit the parent gate through `createSubagent`, including the built-in
@@ -66,9 +69,11 @@ Run these existing suites serially:
 - `test/session-event-publisher.unit.test.ts` (27)
 
 Also run this PR's two `workflow-execution-gate*.test.ts` files against the
-consumer package import, changing only their SDK import path. This checks the
-new boundary cases on AI SDK 7.0.8 as well as the SDK's own 7.0.101 installation.
-Restore the original package in a `finally` block, verify its original hash,
+consumer package import, changing only their SDK import path, and
+`tool-pipeline.test.ts` against the candidate's built internal modules. This
+checks the boundary and signal-propagation cases on AI SDK 7.0.8 as well as the
+SDK's own 7.0.101 installation; it does not add public exports for internal
+modules. Restore the original package in a `finally` block, verify its original hash,
 remove the temporary test copies, and confirm the consumer worktree is clean.
 Do not update the existing snapshots.
 
