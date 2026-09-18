@@ -307,6 +307,15 @@ On the streaming side, `agent.stream()` forwards these failures as
 `tool-error` parts (and denied approvals as `tool-output-denied`), so
 consumers can resolve the matching `tool-call` instead of treating it as lost.
 
+For calls that fail before execution, the AI SDK emits the invalid `tool-call`
+with the structured cause and then a `tool-error` whose `error` is already a
+string. `agent.stream()` restores the structured cause (`InvalidToolInputError`,
+`NoSuchToolError`, or the `transformToolError` result wrapping it) on that
+`tool-error` when it immediately follows the invalid call with the same tool
+call ID, tool name and input. Any intervening part clears the pairing, and the
+error text itself is never used to infer a cause, so an `execute()` rejection
+whose message resembles a validation error is still reported as-is.
+
 ## Error Hooks
 
 Handle errors at the agent level with hooks:

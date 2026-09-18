@@ -1625,7 +1625,17 @@ export function createAgent(options: AgentOptions): Agent {
           // `start-step`, so `turn-start` is emitted without a messageId and
           // consumers correlate via the matching `turn-end`.
           const activeToolInputToolNames = new Map<string, string>();
+          // AI SDK 7 emits an invalid `tool-call` (unparsable input / unknown
+          // tool) carrying the structured cause, immediately followed by a
+          // `tool-error` whose `error` has been flattened to a string. Retain
+          // the cause for that adjacent, identity-matched pair only; the
+          // receipt is cleared on every chunk and error text is never trusted.
+          let pendingInvalidToolCall:
+            | { toolCallId: string; toolName: string; input: unknown; error: unknown }
+            | undefined;
           for await (const part of response.fullStream) {
+            const precedingInvalidToolCall = pendingInvalidToolCall;
+            pendingInvalidToolCall = undefined;
             if (part.type === "start-step") {
               // A new assistant message is beginning.
               yield { type: "turn-start" };
@@ -1761,6 +1771,14 @@ export function createAgent(options: AgentOptions): Agent {
                 activeToolInputToolNames.delete(toolCallId);
               }
             } else if (part.type === "tool-call") {
+              if (part.invalid === true && part.error !== undefined) {
+                pendingInvalidToolCall = {
+                  toolCallId: part.toolCallId,
+                  toolName: part.toolName,
+                  input: part.input,
+                  error: part.error,
+                };
+              }
               yield {
                 type: "tool-call",
                 toolCallId: part.toolCallId,
@@ -1792,7 +1810,14 @@ export function createAgent(options: AgentOptions): Agent {
                 toolCallId: part.toolCallId,
                 toolName: part.toolName,
                 input: part.input,
-                error: part.error,
+                error:
+                  typeof part.error === "string" &&
+                  precedingInvalidToolCall !== undefined &&
+                  precedingInvalidToolCall.toolCallId === part.toolCallId &&
+                  precedingInvalidToolCall.toolName === part.toolName &&
+                  precedingInvalidToolCall.input === part.input
+                    ? precedingInvalidToolCall.error
+                    : part.error,
               };
             } else if (part.type === "finish") {
               yield {

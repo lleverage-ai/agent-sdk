@@ -123,6 +123,14 @@ remaining changes and validating the consumer.
 
 ### Fixed
 
+- `agent.stream()` restores the structured cause on invalid-tool-call
+  `tool-error` parts. AI SDK 7 emits an invalid `tool-call` (unparsable input,
+  unknown tool) carrying the `InvalidToolInputError` / `NoSuchToolError` cause,
+  then a `tool-error` whose `error` has been flattened to a string. The stream
+  now yields the structured error for that adjacent pair when tool call ID,
+  tool name and input identity match; the receipt clears on every chunk and
+  error text is never used to infer a cause. Execution rejections and
+  non-adjacent errors are unchanged.
 - Context occupancy updates use final-step usage rather than multi-request totals
   in `generate()` and Response-mode completion/follow-ups; summariser requests
   cannot overwrite active-context usage. Public result/billing usage is unchanged.
