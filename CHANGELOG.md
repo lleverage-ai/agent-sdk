@@ -119,7 +119,9 @@ remaining changes and validating the consumer.
   become successful disposal when cleanup is unresolved. Final checkpoint saves
   and `PostGenerate` hooks are fenced after cancellation, including UI follow-ups.
 - Clean up hook timeout timers/listeners after callbacks settle. Owned start/stop
-  hooks observe all real promises instead of abandoning work behind a timeout race.
+  and child `PostGenerate` hooks observe real promises instead of abandoning work
+  behind a timeout race. Cancellation during `PostGenerate` reaches its hook
+  context and prevents late result rewrites, including with host-composed signals.
 - Initialise owned cancellation before registration events, release permits on
   registration failure, and contain async unresolved-report/release rejections.
 

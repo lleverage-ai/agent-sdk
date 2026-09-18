@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { TaskManager, TaskResources } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
 
@@ -82,6 +83,13 @@ type Delivery =
 
 // Module-local live owners survive manager/result cleanup. Cancellation is not settlement.
 const quarantine = new Set<OwnedRecord>();
+const ownedExecution = new AsyncLocalStorage<OwnedRecord>();
+
+/** Cancellation for the current live delegation, including host-composed signals. @internal */
+export function getOwnedTaskSignal(): AbortSignal | undefined {
+  const record = ownedExecution.getStore();
+  return record && !record.settled ? record.controller.signal : undefined;
+}
 const terminal = (task: BackgroundTask | undefined): task is BackgroundTask =>
   !!task && !["pending", "running"].includes(task.status);
 
@@ -220,7 +228,9 @@ export class OwnedTasks {
       .then(async () => {
         controller.signal.throwIfAborted();
         this.manager.updateTask(task.id, { status: "running" });
-        const text = await execute(controller.signal);
+        // Keep ownership through host wrappers which compose/replace signals;
+        // signal object identity is not a reliable delegation context.
+        const text = await ownedExecution.run(record, () => execute(controller.signal));
         controller.signal.throwIfAborted();
         record.terminal = true;
         this.manager.updateTask(task.id, {

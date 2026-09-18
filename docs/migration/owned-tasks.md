@@ -68,6 +68,11 @@ Existing bash process termination remains separate.
   timeout includes queue/factory/hook time and cancels **that child only**.
 - Start/stop hook promises are all observed with `Promise.allSettled`; unlike the
   legacy hook timeout race, ownership does not abandon a slow sibling hook.
+  Owned child `PostGenerate` callbacks also remain joined until they actually
+  settle. Cancellation reaches their hook context and rejects late rewrites;
+  an abort race must not release a permit while completion-hook I/O continues.
+  Internal async-local delegation context preserves this rule through host
+  wrappers that compose signals, without changing their public execution APIs.
 - Wait up to one cancellation grace per record. Repeated kills do not renew it.
   Kill-all cancels siblings before waiting, rather than spending one grace per
   child. Newly cancelled siblings still get their own original grace.
@@ -108,7 +113,7 @@ replay data. Internal `TaskManager.owned` state is not a durable recovery API.
 
 ## Small corrections beyond the reference patch
 
-The port also closes three tested boundary gaps:
+The port also closes these tested boundary gaps:
 
 1. Cancellation in a synchronous `taskCreated` listener now sees a fully
    initialised owner and stops execution before the factory. A registration
@@ -120,6 +125,11 @@ The port also closes three tested boundary gaps:
    during that write prevents subsequent `PostGenerate` hooks.
 3. Async unresolved-report/release callback rejections are observed without
    delaying execution or allowing them to erase ownership.
+4. Cancellation during `PostGenerate` reaches the callback and prevents applying
+   `updatedResult`. Ordinary hooks retain their timeout race; owned completion
+   hooks instead stay joined to the real work, subject to the owner's optional
+   lifetime and cancellation grace. Grace-only ownership adds no hidden hook
+   lifetime. Context is isolated from concurrent ordinary callers.
 
 Late final-save and `PostGenerate` fences apply to ordinary cancelled generation
 as well as owned children. Successful ordinary execution is unchanged. Generic
