@@ -393,6 +393,88 @@ export interface AgentDataTypes extends UIDataTypes {
  */
 export type AgentUIMessage = UIMessage<AgentDataTypes>;
 
+/**
+ * Tool boundary at which the host authorises execution.
+ * @category Security
+ */
+export type WorkflowExecutionGateStage = "pre-hook" | "transformed-input" | "proxy-target";
+
+/**
+ * Host authorisation request for one tool execution boundary.
+ * @category Security
+ */
+export interface WorkflowExecutionGateRequest {
+  /** Registered tool name, or the resolved `call_tool` proxy target. */
+  toolName: string;
+  /** Input being authorised at this boundary. */
+  toolInput: unknown;
+  /** Original model tool-call identity, including repaired calls. */
+  toolCallId: string;
+  /** Request thread identity, or "default" when none was supplied. */
+  sessionId: string;
+  /** Boundary which caused this authority lookup. */
+  stage: WorkflowExecutionGateStage;
+  /** Composed run/tool-call signal; also aborted on lookup timeout. */
+  signal: AbortSignal;
+}
+
+/**
+ * Explicit host decision; anything else fails closed.
+ * @category Security
+ */
+export type WorkflowExecutionGateDecision =
+  | { decision: "allow" }
+  | { decision: "deny"; reason?: string };
+
+/**
+ * Input-free diagnostic receipt for a gate decision.
+ * @category Security
+ */
+export interface WorkflowExecutionGateReceipt {
+  /** Registered tool or resolved proxy target name. */
+  toolName: string;
+  /** Original model tool-call identity. */
+  toolCallId: string;
+  /** Request thread identity. */
+  sessionId: string;
+  /** Boundary being authorised. */
+  stage: WorkflowExecutionGateStage;
+  /** Whether a trusted allow/deny decision was obtained or execution cancelled. */
+  outcome: "allow" | "deny" | "unavailable" | "cancelled";
+  /** Specific decision or failure classification. */
+  code: "allowed" | "denied" | "unavailable" | "invalid" | "timeout" | "cancelled";
+  /** Time spent obtaining the decision, in milliseconds. */
+  durationMs: number;
+}
+
+/**
+ * Opt-in host authorisation checked before tool hooks, permissions and execution.
+ *
+ * @example
+ * ```typescript
+ * const gate: WorkflowExecutionGateOption = {
+ *   version: 1,
+ *   authorize: ({ toolName }) =>
+ *     toolName === "read" ? { decision: "allow" } : { decision: "deny" },
+ * };
+ * ```
+ * @category Security
+ */
+export interface WorkflowExecutionGateOption {
+  /** Contract version; unsupported versions fail agent construction. */
+  version: 1;
+  /** Only an explicit allow continues execution; lookup failure never allows. */
+  authorize: (
+    request: WorkflowExecutionGateRequest,
+  ) => WorkflowExecutionGateDecision | Promise<WorkflowExecutionGateDecision>;
+  /** Lookup deadline in milliseconds. @defaultValue 10000 */
+  timeoutMs?: number;
+  /** Optional host run signal, combined with each tool call's abort signal. */
+  signal?: AbortSignal;
+  /** Optional synchronous diagnostic sink; exceptions do not change enforcement. */
+  onDecision?: (receipt: WorkflowExecutionGateReceipt) => void;
+}
+
 // =============================================================================
 // Agent Configuration
 // =============================================================================
@@ -448,6 +530,23 @@ export interface AgentOptions {
    * @defaultValue undefined (errors are surfaced unchanged)
    */
   transformToolError?: ToolErrorTransform;
+
+  /**
+   * Optional fail-closed host authorisation before any tool hook, permission
+   * callback, proxy dispatch or tool body, including the AI SDK's earlier
+   * `needsApproval` callback. Rechecks authority at execution, hook-transformed
+   * inputs and `call_tool` targets. Denial, unavailable/malformed decisions, timeouts
+   * and cancellation block protected work. Tools without host execution or with
+   * AI SDK input lifecycle callbacks are rejected before model execution.
+   * This is not a sandbox for arbitrary
+   * code invoked directly outside the generation tool pipeline. Gated agents
+   * cannot use `resume()` / `resumeDataResponse()`, which execute raw tools;
+   * supply host-resolved tool results through `generate()` / `stream()` instead.
+   *
+   * @defaultValue undefined (existing hook and permission semantics)
+   * @see {@link WorkflowExecutionGateOption}
+   */
+  workflowExecutionGate?: WorkflowExecutionGateOption;
 
   /**
    * Whether to re-route direct calls to discoverable proxy tools through

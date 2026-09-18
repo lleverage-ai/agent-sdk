@@ -60,6 +60,20 @@
 
 // Core agent
 export { createAgent } from "./agent.js";
+export type {
+  WorkflowExecutionGateDecision,
+  WorkflowExecutionGateOption,
+  WorkflowExecutionGateReceipt,
+  WorkflowExecutionGateRequest,
+  WorkflowExecutionGateStage,
+} from "./types.js";
+export {
+  authorizeWorkflowToolCall,
+  DEFAULT_WORKFLOW_EXECUTION_GATE_TIMEOUT_MS,
+  resolveWorkflowExecutionGate,
+  WORKFLOW_EXECUTION_GATE_CONTRACT_VERSION,
+  WorkflowExecutionGateError,
+} from "./workflow-execution-gate.js";
 // Session (event-driven agent interactions)
 export { AgentSession, createAgentSession } from "./session.js";
 export type { AgentSessionOptions, SessionEvent, SessionOutput } from "./session.js";

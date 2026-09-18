@@ -154,6 +154,66 @@ const agent = createAgent({
 });
 ```
 
+## Host-owned workflow authorisation
+
+Use `workflowExecutionGate` when trusted host policy must run **before** tool
+hooks, permission callbacks or tool I/O. `PreToolUse` alone is not that boundary:
+other hooks may themselves perform I/O. Ordinary agents without the gate keep
+their existing hook and permission behaviour.
+
+```typescript
+const agent = createAgent({
+  model,
+  workflowExecutionGate: {
+    version: 1,
+    timeoutMs: 10_000,
+    authorize: ({ toolName }) =>
+      toolName === "read"
+        ? { decision: "allow" }
+        : { decision: "deny", reason: "This run is read-only" },
+    // Optional run signal; each call also supplies its own cancellation signal.
+    signal: runSignal,
+    onDecision: (receipt) => logger.info("Tool authority checked", receipt),
+  },
+});
+```
+
+The SDK validates the option once at construction. Only an explicit allow lets
+the pipeline proceed; denial, lookup failure, malformed decisions, timeout and
+cancellation block protected work. A late allow cannot reopen a closed lookup.
+The host receives a composed abort signal and should use it for its lookup.
+The default lookup deadline is 10 seconds. Synchronous receipt callbacks carry
+no tool input, and their exceptions cannot change enforcement.
+
+The gate sees `pre-hook` requests for registered tools, `transformed-input`
+requests when a hook replaces input, and `proxy-target` requests for the actual
+`call_tool` target. A dispatcher grant does not grant its targets, including a
+target replaced by a hook. Runtime-added and deferred tools use the same
+pipeline in all five generation modes. The AI SDK's earlier `needsApproval`
+callback is gated separately, including the SDK's `canUseTool` bridge. An
+approval-phase grant is not reused at execution: authority is checked again.
+Cancellation is rechecked after awaited approval and permission callbacks.
+Tools with no host `execute` boundary, or with AI SDK input lifecycle callbacks
+(`onInputStart`, `onInputDelta`, `onInputAvailable`), are rejected before model
+execution when the gate is enabled. Partial-input callbacks run before complete
+input can be authorised; use gated `PreToolUse` hooks for protected I/O instead.
+
+`ToolPermissionDeniedError` represents an explicit denial;
+`WorkflowExecutionGateError` represents an unavailable, malformed or timed-out
+authority decision and is not generation-retryable. Execution-stage errors pass
+through `transformToolError` before the AI SDK records a tool failure. A gate
+failure in `needsApproval` follows the AI SDK's approval-callback failure path
+and fails generation rather than being converted into an execution result.
+
+This is an execution boundary, not a sandbox for arbitrary host code. Plugin
+setup and direct calls to raw tool functions (including tools exposed for host
+introspection) are outside it. `resume()` and `resumeDataResponse()` explicitly
+reject gated agents before checkpoint loading or resolution hooks: those legacy
+paths invoke raw tools outside the generation pipeline. Hosts should durably
+resolve the interrupt themselves and supply resolved tool results to
+`generate()` / `stream()`, as the Lleverage platform does. Ungated resume behaviour
+is unchanged; this option does not migrate checkpoint storage or recovery policy.
+
 ## Permission Mode: acceptEdits with Bash Safety
 
 The `acceptEdits` permission mode auto-approves `write` and `edit` tool calls, but **shell commands can still perform file writes** (e.g., `echo > file`, `rm`, `mv`), creating a security gap.

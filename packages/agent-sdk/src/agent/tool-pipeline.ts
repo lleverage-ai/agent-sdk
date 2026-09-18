@@ -22,6 +22,9 @@
  *   [4] wrapToolsWithStreamingContext   (streamDataResponse only) injects the
  *     │                                 request-local `streamingContext`
  *     ▼
+ *   [G] optional workflow gate         host authorisation before protected work
+ *     │                                 (dispatcher and resolved proxy target)
+ *     ▼
  *   [3] wrapToolsWithHooks              PreToolUse / PostToolUse /
  *     │                                 PostToolUseFailure; may deny, rewrite
  *     │                                 input, short-circuit via respondWith,
@@ -37,7 +40,7 @@
  *   the tool's own execute()
  * ```
  *
- * Layers [1]–[3] are applied by {@link ToolPipeline.buildTools}; [4] only when
+ * Layers [1]–[3] and optional [G] are applied by {@link ToolPipeline.buildTools}; [4] only when
  * a `streamingContext` is passed; [5] is the outermost layer that must run
  * before the AI SDK can observe a thrown `InterruptSignal`. Layer [6] is
  * applied separately at the AI SDK call site, because the execution context
@@ -45,6 +48,10 @@
  *
  * Consequences of the order:
  *
+ * - The AI SDK calls needsApproval outside this execute stack. [G] separately
+ *   gates that callback before it can invoke canUseTool or custom approval code.
+ * - When configured, [G] must allow the request before [1]–[3] run. Hooks
+ *   re-authorise transformed input before respondWith or tool execution.
  * - Hooks ([3]) run *outside* permission checks ([1]), so a `PreToolUse` hook
  *   sees every call, including ones permission mode will deny, and a
  *   `PostToolUseFailure` hook sees the resulting `ToolExecutionError`.
@@ -54,7 +61,7 @@
  *   hooked and receive the task manager like any other tool. They are not
  *   permission-wrapped: {@link ToolPipeline.buildTools} adds them after [1].
  * - `transformToolError` ([5]) sees errors thrown by [1]–[4], including
- *   hook denials and permission denials.
+ *   hook denials, permission denials and gate failures.
  *
  * @packageDocumentation
  * @internal
@@ -91,6 +98,13 @@ import type {
   SubagentDefinition,
   ToolErrorTransform,
 } from "../types.js";
+import {
+  authorizeWorkflowToolCall,
+  type ResolvedWorkflowExecutionGate,
+  resolveWorkflowExecutionGate,
+  throwIfWorkflowCallCancelled,
+  WorkflowExecutionGateError,
+} from "../workflow-execution-gate.js";
 
 // =============================================================================
 // Flow-control signals
@@ -282,6 +296,7 @@ export function wrapToolsWithPermissionMode(
     threadId?: string;
     step?: number;
   },
+  workflowGate?: ResolvedWorkflowExecutionGate,
 ): ToolSet {
   const wrapped: ToolSet = {};
 
@@ -398,6 +413,7 @@ export function wrapToolsWithPermissionMode(
         // Permission mode deferred to canUseTool callback
         if (canUseTool) {
           const callbackDecision = await canUseTool(name, input);
+          if (workflowGate) throwIfWorkflowCallCancelled(workflowGate, options?.abortSignal);
 
           if (callbackDecision === "allow") {
             // Execute the original tool
@@ -586,6 +602,105 @@ export function wrapToolsWithExecutionContext(tools: ToolSet, executionContext: 
   return wrapped;
 }
 
+/** Recheck both dispatcher and target, including after hook input replacement. */
+async function authorizeWorkflowToolAndTarget(
+  gate: ResolvedWorkflowExecutionGate,
+  request: Parameters<typeof authorizeWorkflowToolCall>[1],
+): Promise<void> {
+  await authorizeWorkflowToolCall(gate, request);
+  const input = request.toolInput;
+  if (
+    request.toolName === "call_tool" &&
+    typeof input === "object" &&
+    input !== null &&
+    "tool_name" in input &&
+    typeof input.tool_name === "string"
+  ) {
+    await authorizeWorkflowToolCall(gate, {
+      ...request,
+      toolName: input.tool_name,
+      toolInput: "arguments" in input ? (input.arguments ?? {}) : {},
+      stage: "proxy-target",
+    });
+  }
+  throwIfWorkflowCallCancelled(gate, request.signal);
+}
+
+/** Host authorisation must precede hooks, permission callbacks and dispatch. */
+function wrapToolsWithWorkflowExecutionGate(
+  tools: ToolSet,
+  gate: ResolvedWorkflowExecutionGate | undefined,
+  sessionId: string,
+  requestSignal?: AbortSignal,
+): ToolSet {
+  if (!gate) return tools;
+  const wrapped: ToolSet = {};
+  for (const [name, tool] of Object.entries(tools)) {
+    if (!tool.execute) {
+      throw new WorkflowExecutionGateError(
+        `Workflow tool '${name}' has no host execution boundary`,
+        {
+          toolName: name,
+          gateCode: "invalid",
+        },
+      );
+    }
+    // These callbacks run while input is still arriving, before a complete
+    // authorisation request exists. Reject rather than leave an I/O bypass.
+    if (
+      [tool.onInputStart, tool.onInputDelta, tool.onInputAvailable].some((hook) => hook != null)
+    ) {
+      throw new WorkflowExecutionGateError(
+        `Workflow tool '${name}' cannot use input lifecycle callbacks before authorisation`,
+        { toolName: name, gateCode: "invalid" },
+      );
+    }
+    const originalExecute = tool.execute;
+    const originalNeedsApproval = tool.needsApproval;
+    wrapped[name] = {
+      ...tool,
+      // AI SDK invokes this before execute, outside the execution wrapper stack.
+      // Check it independently; never reuse an approval-phase grant at execution.
+      needsApproval:
+        typeof originalNeedsApproval === "function" || originalNeedsApproval === true
+          ? async (
+              input: unknown,
+              approvalOptions: Parameters<Exclude<Tool["needsApproval"], boolean | undefined>>[1],
+            ) => {
+              await authorizeWorkflowToolAndTarget(gate, {
+                toolName: name,
+                toolInput: input,
+                toolCallId: approvalOptions.toolCallId,
+                sessionId,
+                stage: "pre-hook",
+                signal: requestSignal,
+              });
+              const result =
+                typeof originalNeedsApproval === "function"
+                  ? await originalNeedsApproval.call(tool, input, approvalOptions)
+                  : originalNeedsApproval;
+              throwIfWorkflowCallCancelled(gate, requestSignal);
+              return result;
+            }
+          : originalNeedsApproval,
+      execute: async (input: unknown, options: ToolExecutionOptions<unknown>) => {
+        const toolCallId = options?.toolCallId ?? `tool-${Date.now()}`;
+        const signal = options?.abortSignal ?? requestSignal;
+        await authorizeWorkflowToolAndTarget(gate, {
+          toolName: name,
+          toolInput: input,
+          toolCallId,
+          sessionId,
+          stage: "pre-hook",
+          signal,
+        });
+        return originalExecute.call(tool, input, options);
+      },
+    };
+  }
+  return wrapped;
+}
+
 /**
  * Wraps tools to emit PreToolUse/PostToolUse/PostToolUseFailure hooks.
  *
@@ -606,6 +721,7 @@ export function wrapToolsWithHooks(
   agent: Agent,
   sessionId: string,
   telemetry?: ExecutionTelemetry,
+  workflowGate?: ResolvedWorkflowExecutionGate,
 ): ToolSet {
   // If no tool hooks are registered, return tools unchanged
   if (
@@ -694,8 +810,19 @@ export function wrapToolsWithHooks(
           // Check for input transformation
           const updatedInput = extractUpdatedInput(preHookOutputs);
           if (updatedInput !== undefined) {
+            if (workflowGate) {
+              await authorizeWorkflowToolAndTarget(workflowGate, {
+                toolName: name,
+                toolInput: updatedInput,
+                toolCallId: toolUseId,
+                sessionId,
+                stage: "transformed-input",
+                signal: options?.abortSignal,
+              });
+            }
             input = updatedInput;
           }
+          if (workflowGate) throwIfWorkflowCallCancelled(workflowGate, options?.abortSignal);
 
           // Check for short-circuit via respondWith (skips tool execution)
           const respondWithValue = extractRespondWith(preHookOutputs);
@@ -918,6 +1045,8 @@ export interface ToolPipelineDeps {
  */
 export interface BuildToolsOptions {
   threadId?: string;
+  /** Request signal for AI SDK approval callbacks, which receive no abort signal. */
+  signal?: AbortSignal;
   /** Execution telemetry forwarded to hooks and the task manager. */
   telemetry?: ExecutionTelemetry;
   /**
@@ -972,6 +1101,8 @@ export function createToolPipeline(deps: ToolPipelineDeps): ToolPipeline {
     pendingResponses,
     subagents,
   } = deps;
+  // Validate once, before the agent's ready/setup work or any model invocation.
+  const workflowGate = resolveWorkflowExecutionGate(options.workflowExecutionGate);
 
   /** Core + runtime + MCP tools, filtered, with permission wrapping ([1]). */
   const getPermissionWrappedTools = (
@@ -1000,12 +1131,18 @@ export function createToolPipeline(deps: ToolPipelineDeps): ToolPipeline {
     const filtered = filterToolsByAllowed(allTools, options.allowedTools, options.disallowedTools);
 
     // Apply permission mode wrapping with canUseTool callback and approval state
-    return wrapToolsWithPermissionMode(filtered, getPermissionMode, options.canUseTool, {
-      approvalDecisions,
-      pendingResponses,
-      checkpointSaver: options.checkpointer,
-      threadId,
-    });
+    return wrapToolsWithPermissionMode(
+      filtered,
+      getPermissionMode,
+      options.canUseTool,
+      {
+        approvalDecisions,
+        pendingResponses,
+        checkpointSaver: options.checkpointer,
+        threadId,
+      },
+      workflowGate,
+    );
   };
 
   const addTaskTools = (tools: ToolSet, streamingContext?: StreamingContext): ToolSet => {
@@ -1040,15 +1177,31 @@ export function createToolPipeline(deps: ToolPipelineDeps): ToolPipeline {
     tools: ToolSet,
     threadId?: string,
     telemetry?: ExecutionTelemetry,
+    signal?: AbortSignal,
   ): ToolSet => {
     // [2] inject TaskManager into execution context
     const withTaskManager = wrapToolsWithTaskManager(tools, taskManager, telemetry);
     // [3] hooks for observability
-    return wrapToolsWithHooks(withTaskManager, hooks, getAgent(), threadId ?? "default", telemetry);
+    const withHooks = wrapToolsWithHooks(
+      withTaskManager,
+      hooks,
+      getAgent(),
+      threadId ?? "default",
+      telemetry,
+      workflowGate,
+    );
+    // [G] runs outside every hook, including hooks that perform protected I/O.
+    return wrapToolsWithWorkflowExecutionGate(
+      withHooks,
+      workflowGate,
+      threadId ?? "default",
+      signal,
+    );
   };
 
   const buildTools = ({
     threadId,
+    signal,
     telemetry,
     signalState,
     streamingContext,
@@ -1059,7 +1212,7 @@ export function createToolPipeline(deps: ToolPipelineDeps): ToolPipeline {
       streamingContext,
     );
     // [2] + [3]
-    const hooked = applyHooks(withTask, threadId, telemetry);
+    const hooked = applyHooks(withTask, threadId, telemetry, signal);
     // [4] only for streaming data responses
     const scoped = streamingContext
       ? wrapToolsWithStreamingContext(hooked, streamingContext)

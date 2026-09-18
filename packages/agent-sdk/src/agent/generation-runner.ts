@@ -736,6 +736,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     const activeTools = toolPipeline.buildTools({
       threadId: effectiveGenOptions.threadId,
+      signal: effectiveGenOptions.signal,
       telemetry: executionBaseTelemetry,
       signalState,
       streamingContext: request?.streamingContext,
@@ -1047,6 +1048,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         });
         const activeFollowUpTools = toolPipeline.buildTools({
           threadId: requestOptions.threadId,
+          signal: requestOptions.signal,
           telemetry: followUpTelemetry,
           signalState,
           streamingContext,
