@@ -171,6 +171,11 @@ export function mergeHooks(...registrations: (HookRegistration | undefined)[]): 
       result.InterruptResolved = [...(result.InterruptResolved ?? []), ...reg.InterruptResolved];
     }
 
+    // Merge checkpoint hooks
+    if (reg.PostCheckpointLoad) {
+      result.PostCheckpointLoad = [...(result.PostCheckpointLoad ?? []), ...reg.PostCheckpointLoad];
+    }
+
     // Merge session hooks
     if (reg.SessionStart) {
       result.SessionStart = [...(result.SessionStart ?? []), ...reg.SessionStart];

@@ -770,6 +770,7 @@ export type {
   PluginLoadingMode,
   PluginOptions,
   PluginSubagent,
+  PostCheckpointLoadInput,
   PostCompactInput,
   PostGenerateFailureInput,
   PostGenerateInput,

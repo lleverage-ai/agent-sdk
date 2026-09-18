@@ -215,8 +215,13 @@ interface AgentHooks {
   MCPConnectionRestored?: MCPConnectionRestoredHook[];
   PreCompact?: PreCompactHook[];
   PostCompact?: PostCompactHook[];
+  PostCheckpointLoad?: PostCheckpointLoadHook[];
 }
 ```
+
+`PostCheckpointLoad` receives `PostCheckpointLoadInput` (`thread_id`, `step`,
+`messages`, `metadata`, `has_pending_interrupt`) after a thread is restored and
+before the compaction check. See [Persistence](./persistence.md#checkpoint-hooks).
 
 ## Checkpointing
 

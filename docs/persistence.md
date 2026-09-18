@@ -267,34 +267,49 @@ where another model call would only add redundant text.
 
 ### Checkpoint Hooks
 
-Monitor checkpoint operations:
+`PostCheckpointLoad` fires each time the agent loads a thread from the
+checkpointer: after the saver's `load()` returns a checkpoint and before that
+generation's compaction check. Loaded checkpoints are cached per agent
+instance, so sequential generations on a thread fire it once; concurrent
+generations on the same not-yet-cached thread each load and each fire it.
+Forking a session fires it for the source thread. It is the only hook that sees the
+restored transcript, because `PreGenerate` runs before the checkpoint is
+prepended and tool hooks carry only the tool call.
+
+The hook is observation only: its return value is ignored, and `messages` and
+`metadata` are the checkpoint's own references, so do not mutate them. A hook
+that throws or times out is logged and the generation continues.
 
 ```typescript
 const agent = createAgent({
   model,
   checkpointer,
+  contextManager,
   hooks: {
-    PreCheckpointSave: [
-      async ({ threadId, checkpoint }) => {
-        console.log(`Saving checkpoint for ${threadId}`);
-        return {};
-      },
-    ],
-    PostCheckpointSave: [
-      async ({ threadId, checkpoint }) => {
-        console.log(`Checkpoint saved for ${threadId}`);
-        return {};
-      },
-    ],
     PostCheckpointLoad: [
-      async ({ threadId, checkpoint }) => {
-        console.log(`Loaded checkpoint for ${threadId} with ${checkpoint.messages.length} messages`);
+      async ({ thread_id, step, messages, metadata, has_pending_interrupt }) => {
+        console.log(`Restored ${thread_id} at step ${step}: ${messages.length} messages`);
+
+        // Seed the context manager from the previous run's recorded usage so
+        // the first compaction decision sees the real context size rather than
+        // an estimate. The SDK does not record or interpret this metadata;
+        // whatever the host wrote on save is what it reads here.
+        const contextTokens = (metadata?.lastRunUsage as { contextTokens?: number })?.contextTokens;
+        if (typeof contextTokens === "number") {
+          contextManager.updateUsage?.({
+            inputTokens: undefined,
+            outputTokens: undefined,
+            totalTokens: contextTokens,
+          });
+        }
         return {};
       },
     ],
   },
 });
 ```
+
+The `resume()` pre-flight read and `getPendingInterrupt()` do not fire it.
 
 ## Combining Memory and Checkpoints
 

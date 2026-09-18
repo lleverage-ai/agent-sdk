@@ -66,6 +66,13 @@ export interface CheckpointRuntimeDeps {
   checkpointer: BaseCheckpointSaver | undefined;
   /** Live agent state; restored on load and snapshotted on save. */
   state: AgentState;
+  /**
+   * Called each time the saver returns a checkpoint, i.e. on every load that
+   * misses this runtime's cache. Cached re-reads do not re-notify; concurrent
+   * loads of the same uncached thread each notify. Must not throw; the runtime
+   * does not contain listener failures.
+   */
+  onLoaded?: (checkpoint: Checkpoint, threadId: string) => Promise<void>;
 }
 
 /**
@@ -128,7 +135,7 @@ export interface CheckpointRuntime {
  * @internal
  */
 export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): CheckpointRuntime {
-  const { checkpointer, state } = deps;
+  const { checkpointer, state, onLoaded } = deps;
 
   // Track current checkpoint state per thread
   const threadCheckpoints = new Map<string, Checkpoint>();
@@ -148,9 +155,10 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
       return cached;
     }
 
+    let checkpoint: Checkpoint | undefined;
     try {
       // Load from checkpointer
-      const checkpoint = await checkpointer.load(threadId);
+      checkpoint = await checkpointer.load(threadId);
       if (checkpoint) {
         threadCheckpoints.set(threadId, checkpoint);
 
@@ -158,8 +166,6 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
         state.todos = [...checkpoint.state.todos];
         state.files = { ...checkpoint.state.files };
       }
-
-      return checkpoint;
     } catch (error) {
       // Wrap checkpoint load errors with CheckpointError
       throw new CheckpointError(`Failed to load checkpoint for thread ${threadId}`, {
@@ -169,6 +175,15 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
         metadata: { threadId },
       });
     }
+
+    // Notify after the cache and state are settled so a listener observes the
+    // same checkpoint the generation will use. Outside the try so a listener
+    // failure is never misreported as a load failure.
+    if (checkpoint && onLoaded) {
+      await onLoaded(checkpoint, threadId);
+    }
+
+    return checkpoint;
   }
 
   /**

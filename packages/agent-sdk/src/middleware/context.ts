@@ -51,6 +51,7 @@ export function createMiddlewareContext(): MiddlewareContextResult {
   const mcpConnectionRestored: HookCallback[] = [];
   const interruptRequested: HookCallback[] = [];
   const interruptResolved: HookCallback[] = [];
+  const postCheckpointLoad: HookCallback[] = [];
   const customHooks: Record<string, HookCallback[]> = {};
 
   /**
@@ -138,6 +139,10 @@ export function createMiddlewareContext(): MiddlewareContextResult {
       interruptResolved.push(callback);
     },
 
+    onPostCheckpointLoad(callback: HookCallback): void {
+      postCheckpointLoad.push(callback);
+    },
+
     onCustom(eventName: string, callback: HookCallback): void {
       if (!customHooks[eventName]) {
         customHooks[eventName] = [];
@@ -212,6 +217,11 @@ export function createMiddlewareContext(): MiddlewareContextResult {
     }
     if (interruptResolved.length > 0) {
       hooks.InterruptResolved = interruptResolved;
+    }
+
+    // Add checkpoint hooks if any were registered
+    if (postCheckpointLoad.length > 0) {
+      hooks.PostCheckpointLoad = postCheckpointLoad;
     }
 
     // Add custom hooks if any were registered
