@@ -210,10 +210,13 @@ failure in `needsApproval` follows the AI SDK's approval-callback failure path
 and fails generation rather than being converted into an execution result.
 
 `createSubagent()` inherits the parent's gate unless the host explicitly supplies
-another gate in the child options. This includes the built-in general-purpose
-`task` child and does not depend on hook inheritance. Custom subagent factories
-that call `createAgent()` independently must configure their child's gate:
-authorising the parent's `task` call does not authorise the child's tool calls.
+another gate in the child options; `undefined` still inherits. This includes the
+built-in general-purpose `task` child and does not depend on hook inheritance.
+Custom subagent factories that call `createAgent()` independently must configure
+their child's gate: authorising the parent's `task` call does not authorise the
+child's tool calls. The agent-teams plugin also creates independent agents;
+configure each `TeammateDefinition.agentOptions.workflowExecutionGate` explicitly
+when those teammates require host authorisation.
 
 This is an execution boundary, not a sandbox for arbitrary host code. Plugin
 setup and direct calls to raw tool functions (including tools exposed for host

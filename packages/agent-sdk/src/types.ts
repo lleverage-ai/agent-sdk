@@ -540,8 +540,9 @@ export interface AgentOptions {
    * AI SDK input lifecycle callbacks are rejected before model execution.
    * This is not a sandbox for arbitrary
    * code invoked directly outside the generation tool pipeline. `createSubagent`
-   * inherits the gate unless explicitly overridden; independent custom factories
-   * must configure their own child's gate. Gated agents
+   * inherits the gate unless explicitly overridden (`undefined` still inherits).
+   * Independent custom factories must configure their own child's gate, as must
+   * agent-teams teammates via `TeammateDefinition.agentOptions`. Gated agents
    * cannot use `resume()` / `resumeDataResponse()`, which execute raw tools;
    * supply host-resolved tool results through `generate()` / `stream()` instead.
    *
