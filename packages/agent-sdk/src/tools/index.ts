@@ -81,7 +81,11 @@ export type {
 export { createTodoWriteTool } from "./todos.js";
 export type { CallToolOptions } from "./call-tool.js";
 // Call tool (proxy for registered-but-not-loaded tools)
-export { createCallToolTool } from "./call-tool.js";
+export {
+  createCallToolTool,
+  NEAR_MISS_SUGGESTION_LIMIT,
+  suggestNearMissTools,
+} from "./call-tool.js";
 export type { ToolReference } from "./utils.js";
 // Tool utilities (DX helpers)
 export {

@@ -13,6 +13,14 @@ remaining changes and validating the consumer.
 
 ### Added
 
+- Near-miss tool suggestions. An unknown tool name now names the closest
+  discoverable tools instead of only pointing at `search_tools`: `call_tool`
+  returns `Closest available tools: ...` and a direct call of an unknown name
+  is repaired to a `NoSuchToolError` carrying the suggestions in
+  `availableTools` (when `transformToolError` is configured). Exported
+  `suggestNearMissTools()` and `NEAR_MISS_SUGGESTION_LIMIT` (3). The requested
+  name is never suggested, a failing search falls back to the plain hint, and
+  nothing is auto-executed.
 - Added `UsageUpdateContext`, `UsageAnchor` and optional
   `ContextManager.getUsageAnchor()` for provider-input-plus-append-growth context
   accounting. Streaming steps update usage before appending output, validate

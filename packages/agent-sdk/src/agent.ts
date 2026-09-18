@@ -64,7 +64,7 @@ import { createSubagent } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
 import { formatPluginToolName, resolveStaticToolDescription } from "./tool-names.js";
-import { createCallToolTool } from "./tools/call-tool.js";
+import { createCallToolTool, formatToolNameList, suggestNearMissTools } from "./tools/call-tool.js";
 import { coreToolsToToolSet, createCoreTools, createSearchToolsTool } from "./tools/factory.js";
 import type { SkillDefinition } from "./tools/skills.js";
 import type {
@@ -564,14 +564,31 @@ export function createAgent(options: AgentOptions): Agent {
    * above; if it does not apply, route the parse failure through the configured
    * `transformToolError` and deliberately throw the transformed value so the AI
    * SDK records only that in the next model step and checkpoint.
+   *
+   * An unknown tool name is enriched with the closest discoverable tools so a
+   * near-miss costs one corrected call rather than a `search_tools` round trip.
+   * It stays a `NoSuchToolError`: hosts classify that as invalid input and keep
+   * its message, where a plain `Error` would be replaced by generic text.
    */
   const repairToolCall: ToolCallRepairFunction<ToolSet> = async (params) => {
     const repaired = await repairDiscoveredToolCall(params);
     if (repaired) {
       return repaired;
     }
+    let error: unknown = params.error;
+    if (NoSuchToolError.isInstance(error)) {
+      const toolName = params.toolCall.toolName;
+      const suggestions = suggestNearMissTools(mcpManager, toolName);
+      if (suggestions.length > 0) {
+        error = new NoSuchToolError({
+          toolName,
+          availableTools: suggestions,
+          message: `Tool "${toolName}" does not exist. Closest available tools: ${formatToolNameList(suggestions)}. Call one of them by its exact name through call_tool.`,
+        });
+      }
+    }
     if (options.transformToolError) {
-      throw options.transformToolError(params.error, { toolName: params.toolCall.toolName });
+      throw options.transformToolError(error, { toolName: params.toolCall.toolName });
     }
     return null;
   };

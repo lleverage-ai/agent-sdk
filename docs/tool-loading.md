@@ -108,6 +108,26 @@ every agent in the process (useful in tests that assert the unrepaired error);
 an explicit `repairDiscoveredToolCalls` option takes precedence over the
 environment variable.
 
+### Near-miss suggestions
+
+A name that is close but not exact (`skills__update_skill` for
+`skills__change_skill_draft`) cannot be repaired. Instead of a bare "not
+found" that sends the model back to `search_tools`, the error names the
+closest discoverable tools, ranked by the same index `search_tools` uses:
+
+- `call_tool` returns
+  `` Error: Tool "skills__update_skill" not found. Closest available tools: `skills__change_skill_draft`, `skills__get_skill`. Call one of them by its exact name. ``
+- a direct call of the unknown name, when `transformToolError` is configured,
+  is transformed from a `NoSuchToolError` whose `availableTools` holds the
+  suggestions and whose message ends `... through call_tool.` It stays a
+  `NoSuchToolError` so hosts that classify by error class keep the message.
+
+At most `NEAR_MISS_SUGGESTION_LIMIT` (3) names are suggested, the requested
+name is never suggested back, and a failing search falls back to the plain
+`search_tools` hint. Suggestions are names only; nothing is executed on the
+model's behalf. `suggestNearMissTools(mcpManager, toolName)` exposes the same
+ranking for custom proxies.
+
 ## External MCP Servers
 
 External servers are searchable through the same mechanism:
