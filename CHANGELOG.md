@@ -123,6 +123,16 @@ remaining changes and validating the consumer.
 
 ### Fixed
 
+- `createApproximateTokenCounter()` and `createCustomTokenCounter()` now
+  discriminate content parts on `part.type` instead of field presence, matching
+  Lleverage's platform counter exactly. Previously dropped from the count:
+  multi-modal tool-result `content`, `image` parts without an `image` field
+  (`{ data, mediaType }`), `file` parts without `data` (URL files),
+  `tool-approval-request` / `tool-approval-response`, `custom`, `reasoning-file`
+  and any unknown part type (now charged its serialised size). A tool call
+  carrying both `input` and legacy `args` counts `input` once instead of both.
+  `null` and unserialisable payloads count as empty, and a message with
+  `content: undefined` no longer throws from the cache hash.
 - `agent.stream()` restores the structured cause on invalid-tool-call
   `tool-error` parts. AI SDK 7 emits an invalid `tool-call` (unparsable input,
   unknown tool) carrying the `InvalidToolInputError` / `NoSuchToolError` cause,
