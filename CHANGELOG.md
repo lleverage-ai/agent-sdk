@@ -19,8 +19,10 @@ remaining changes and validating the consumer.
   malformed, timed out or cancelled. Hook-transformed inputs and proxy targets
   are re-authorised. The earlier AI SDK `needsApproval` / `canUseTool` callback
   path is gated separately, with fresh authority at execution and cancellation
-  fences after awaited permission callbacks. Agents without the option retain
-  their existing behaviour.
+  fences after awaited permission callbacks. `createSubagent()` inherits the
+  parent's gate unless explicitly overridden, including the built-in task child.
+  Diagnostic callbacks are not awaited; synchronous and async failures are
+  contained. Agents without the option retain their existing behaviour.
   Gated agents explicitly reject `resume()` / `resumeDataResponse()` because
   those legacy methods invoke raw tools outside the gated pipeline; use
   host-resolved tool-result continuation instead.

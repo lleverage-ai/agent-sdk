@@ -471,8 +471,8 @@ export interface WorkflowExecutionGateOption {
   timeoutMs?: number;
   /** Optional host run signal, combined with each tool call's abort signal. */
   signal?: AbortSignal;
-  /** Optional synchronous diagnostic sink; exceptions do not change enforcement. */
-  onDecision?: (receipt: WorkflowExecutionGateReceipt) => void;
+  /** Optional diagnostic sink; not awaited, and throws/rejections do not change enforcement. */
+  onDecision?: (receipt: WorkflowExecutionGateReceipt) => void | Promise<void>;
 }
 
 // =============================================================================
@@ -539,7 +539,9 @@ export interface AgentOptions {
    * and cancellation block protected work. Tools without host execution or with
    * AI SDK input lifecycle callbacks are rejected before model execution.
    * This is not a sandbox for arbitrary
-   * code invoked directly outside the generation tool pipeline. Gated agents
+   * code invoked directly outside the generation tool pipeline. `createSubagent`
+   * inherits the gate unless explicitly overridden; independent custom factories
+   * must configure their own child's gate. Gated agents
    * cannot use `resume()` / `resumeDataResponse()`, which execute raw tools;
    * supply host-resolved tool results through `generate()` / `stream()` instead.
    *

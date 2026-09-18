@@ -96,7 +96,7 @@ export interface ResolvedWorkflowExecutionGate {
   authorize: WorkflowExecutionGateOption["authorize"];
   timeoutMs: number;
   signal?: AbortSignal;
-  onDecision?: (receipt: WorkflowExecutionGateReceipt) => void;
+  onDecision?: WorkflowExecutionGateOption["onDecision"];
 }
 
 /**
@@ -160,7 +160,8 @@ function emitReceipt(
   receipt: WorkflowExecutionGateReceipt,
 ): void {
   try {
-    gate.onDecision?.(receipt);
+    const pending = gate.onDecision?.(receipt);
+    if (pending) void Promise.resolve(pending).catch(() => {});
   } catch {
     // Diagnostics cannot change an authorisation decision.
   }

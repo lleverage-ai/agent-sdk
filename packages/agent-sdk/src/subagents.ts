@@ -22,6 +22,12 @@ import type { Agent, HookRegistration, InheritableHookEvent, SubagentOptions } f
  * - `false`: No inheritance, use only subagent's own hooks
  * - `string[]`: Inherit only specific hook events
  *
+ * **Workflow Authorisation**:
+ * Inherits the parent's `workflowExecutionGate` unless the host explicitly
+ * supplies another gate in the subagent options. This is independent of hook
+ * inheritance. Custom factories that call `createAgent` instead must configure
+ * their child's gate themselves.
+ *
  * **Tool Filtering Security**:
  * When `allowedTools` is specified, subagent gets access to only those tools.
  * A warning is logged if dangerous tools (bash, write, edit, rm, etc.) are included
@@ -112,6 +118,8 @@ export function createSubagent(parentAgent: Agent, options: SubagentOptions): Ag
     disabledCoreTools: options.disabledCoreTools,
     permissionMode: options.permissionMode,
     canUseTool: options.canUseTool,
+    workflowExecutionGate:
+      options.workflowExecutionGate ?? parentAgent.options.workflowExecutionGate,
     disallowedTools: options.disallowedTools,
   });
 }

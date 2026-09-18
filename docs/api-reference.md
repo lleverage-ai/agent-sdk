@@ -310,7 +310,8 @@ surface context pressure before hard failures. `CompactionPolicy` also supports
 Its callback receives `WorkflowExecutionGateRequest` and returns
 `WorkflowExecutionGateDecision`; optional input-free diagnostics use
 `WorkflowExecutionGateReceipt`. Boundaries use `WorkflowExecutionGateStage`.
-`WorkflowExecutionGateError` reports unavailable/invalid/timed-out decisions;
+`WorkflowExecutionGateError` reports unavailable/invalid/timed-out decisions
+classified by the exported `WorkflowExecutionGateCode` type;
 `WORKFLOW_EXECUTION_GATE_CONTRACT_VERSION` is `1`, and
 `DEFAULT_WORKFLOW_EXECUTION_GATE_TIMEOUT_MS` is `10000`.
 See [the security guide](./security.md#host-owned-workflow-authorisation) for

@@ -72,6 +72,7 @@ export {
   DEFAULT_WORKFLOW_EXECUTION_GATE_TIMEOUT_MS,
   resolveWorkflowExecutionGate,
   WORKFLOW_EXECUTION_GATE_CONTRACT_VERSION,
+  type WorkflowExecutionGateCode,
   WorkflowExecutionGateError,
 } from "./workflow-execution-gate.js";
 // Session (event-driven agent interactions)

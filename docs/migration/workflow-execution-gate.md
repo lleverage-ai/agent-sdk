@@ -30,6 +30,11 @@ paths that the consumer's original gate tests did not cover:
   cancellation after awaited permission callbacks. Three regressions failed
   before the fix: both approval-callback variants ran before denial, and a body
   ran after cancellation inside its execution permission callback.
+- Contain rejected async diagnostic sinks without awaiting them, as well as
+  synchronous receipt callback exceptions.
+- Inherit the parent gate through `createSubagent`, including the built-in
+  general-purpose task child, unless the host supplies an explicit child gate.
+  Independent custom factories remain responsible for configuring their child.
 - Reject input lifecycle callbacks before model invocation: they can perform I/O
   while input is incomplete, before execution can be authorised. No callers of
   these callbacks were found in the inspected consumer agent-service, agent-core

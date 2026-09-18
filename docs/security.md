@@ -182,8 +182,10 @@ The SDK validates the option once at construction. Only an explicit allow lets
 the pipeline proceed; denial, lookup failure, malformed decisions, timeout and
 cancellation block protected work. A late allow cannot reopen a closed lookup.
 The host receives a composed abort signal and should use it for its lookup.
-The default lookup deadline is 10 seconds. Synchronous receipt callbacks carry
-no tool input, and their exceptions cannot change enforcement.
+The default lookup deadline is 10 seconds. Receipt callbacks carry no tool input;
+the SDK contains synchronous exceptions and asynchronous rejections without
+awaiting the sink. A gate-only signal blocks further tool work; pass the same
+signal in the generation options to cancel model generation too.
 
 The gate sees `pre-hook` requests for registered tools, `transformed-input`
 requests when a hook replaces input, and `proxy-target` requests for the actual
@@ -197,6 +199,8 @@ Tools with no host `execute` boundary, or with AI SDK input lifecycle callbacks
 (`onInputStart`, `onInputDelta`, `onInputAvailable`), are rejected before model
 execution when the gate is enabled. Partial-input callbacks run before complete
 input can be authorised; use gated `PreToolUse` hooks for protected I/O instead.
+In `streamDataResponse`, such build-time failures become an error part in the
+returned response rather than a rejected promise; the model is still not called.
 
 `ToolPermissionDeniedError` represents an explicit denial;
 `WorkflowExecutionGateError` represents an unavailable, malformed or timed-out
@@ -204,6 +208,12 @@ authority decision and is not generation-retryable. Execution-stage errors pass
 through `transformToolError` before the AI SDK records a tool failure. A gate
 failure in `needsApproval` follows the AI SDK's approval-callback failure path
 and fails generation rather than being converted into an execution result.
+
+`createSubagent()` inherits the parent's gate unless the host explicitly supplies
+another gate in the child options. This includes the built-in general-purpose
+`task` child and does not depend on hook inheritance. Custom subagent factories
+that call `createAgent()` independently must configure their child's gate:
+authorising the parent's `task` call does not authorise the child's tool calls.
 
 This is an execution boundary, not a sandbox for arbitrary host code. Plugin
 setup and direct calls to raw tool functions (including tools exposed for host

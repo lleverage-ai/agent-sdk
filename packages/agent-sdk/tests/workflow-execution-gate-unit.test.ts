@@ -79,6 +79,35 @@ describe("workflow authority lookup", () => {
     }
   });
 
+  it.each(["allow", "deny"] as const)(
+    "contains an async receipt rejection after %s",
+    async (decision) => {
+      const onDecision = vi.fn(async () => {
+        throw new Error("async diagnostic sink failed");
+      });
+      const configured = gate({ version: 1, authorize: () => ({ decision }), onDecision });
+      if (decision === "allow") {
+        await expect(authorizeWorkflowToolCall(configured, request)).resolves.toBeUndefined();
+      } else {
+        await expect(authorizeWorkflowToolCall(configured, request)).rejects.toMatchObject({
+          name: "ToolPermissionDeniedError",
+        });
+      }
+      expect(onDecision).toHaveBeenCalledTimes(1);
+      // Give an unhandled rejection a turn to surface; Vitest fails the run if it does.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    },
+  );
+
+  it("does not await a diagnostic sink that never settles", async () => {
+    const configured = gate({
+      version: 1,
+      authorize: () => ({ decision: "allow" }),
+      onDecision: () => new Promise<void>(() => {}),
+    });
+    await expect(authorizeWorkflowToolCall(configured, request)).resolves.toBeUndefined();
+  });
+
   it("cleans deadline timers and source listeners on success", async () => {
     vi.useFakeTimers();
     const run = new AbortController();

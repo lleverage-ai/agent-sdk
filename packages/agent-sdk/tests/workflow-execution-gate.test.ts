@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   createAgent,
+  createSubagent,
   definePlugin,
   type LanguageModel,
   type WorkflowExecutionGateReceipt,
@@ -242,30 +243,41 @@ afterEach(() => {
 });
 
 describe("workflow execution gate (LLE-12792)", () => {
-  it("refuses a tool without a host execute boundary before invoking the model", async () => {
-    const generate = vi.fn();
-    const target = createAgent({
-      model: new MockLanguageModelV3({
-        doGenerate: generate,
-      }) as unknown as LanguageModel,
-      tools: {
-        external: tool({
-          description: "client-side tool",
-          inputSchema: z.object({}),
-        }),
-      },
-      workflowExecutionGate: {
-        version: 1,
-        authorize: () => ({ decision: "allow" }),
-      },
-    });
-    await expect(target.generate({ prompt: "go" })).rejects.toMatchObject({
-      name: "WorkflowExecutionGateError",
-      gateCode: "invalid",
-      toolName: "external",
-    });
-    expect(generate).not.toHaveBeenCalled();
-  });
+  it.each(["generate", "streamDataResponse"] as const)(
+    "refuses a no-execute tool before model invocation in %s",
+    async (mode) => {
+      const generate = vi.fn();
+      const stream = vi.fn();
+      const target = createAgent({
+        model: new MockLanguageModelV3({
+          doGenerate: generate,
+          doStream: stream,
+        }) as unknown as LanguageModel,
+        tools: {
+          external: tool({
+            description: "client-side tool",
+            inputSchema: z.object({}),
+          }),
+        },
+        workflowExecutionGate: {
+          version: 1,
+          authorize: () => ({ decision: "allow" }),
+        },
+      });
+      if (mode === "generate") {
+        await expect(target.generate({ prompt: "go" })).rejects.toMatchObject({
+          name: "WorkflowExecutionGateError",
+          gateCode: "invalid",
+          toolName: "external",
+        });
+      } else {
+        const response = await target.streamDataResponse({ prompt: "go" });
+        expect(await response.text()).toContain('"type":"error"');
+      }
+      expect(generate).not.toHaveBeenCalled();
+      expect(stream).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["onInputStart", "onInputDelta", "onInputAvailable"] as const)(
     "rejects %s before model execution rather than leaving an ungated input callback",
@@ -649,6 +661,45 @@ describe("workflow execution gate (LLE-12792)", () => {
     },
   );
 
+  it.each(
+    (["stream", "streamRaw", "streamResponse", "streamDataResponse"] as const).flatMap((mode) =>
+      (["canUseTool", "needsApproval"] as const).map((callback) => ({ mode, callback })),
+    ),
+  )("authorises before $callback in $mode", async ({ mode, callback }) => {
+    const permission = vi.fn(async () => "allow" as const);
+    const approval = vi.fn(async () => false);
+    const authorize = vi.fn(() => ({ decision: "deny" as const }));
+    const target = setup({
+      hooksOrder: [],
+      ...(callback === "canUseTool" ? { canUseTool: permission } : { needsApproval: approval }),
+      gate: { version: 1, authorize },
+    });
+    target.script.current = { name: "read", input: { path: "private" } };
+    try {
+      if (mode === "stream") {
+        for await (const _part of target.agent.stream({ prompt: "go" })) {
+          /* consume */
+        }
+      } else if (mode === "streamRaw") {
+        const result = await target.agent.streamRaw({ prompt: "go" });
+        await result.text;
+      } else {
+        const response = await target.agent[mode]({ prompt: "go" });
+        await response.text();
+      }
+    } catch {
+      // Modes expose approval errors through either rejection or an error part.
+    }
+    expect(authorize).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: "read", stage: "pre-hook" }),
+    );
+    expect(permission).not.toHaveBeenCalled();
+    expect(approval).not.toHaveBeenCalled();
+    expect(target.protectedIo).not.toHaveBeenCalled();
+    expect(target.toolBody).not.toHaveBeenCalled();
+  });
+
   it("rechecks cancellation after an awaited execution permission callback", async () => {
     const controller = new AbortController();
     let checks = 0;
@@ -728,6 +779,68 @@ describe("workflow execution gate (LLE-12792)", () => {
     expect(lookupSignal?.aborted).toBe(true);
     expect(approval).not.toHaveBeenCalled();
     expect(target.toolBody).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "inherits subagent authority independently of hooks (explicit override: %s)",
+    async (override) => {
+      const inherited = vi.fn(() => ({ decision: "deny" as const }));
+      const explicit = vi.fn(() => ({ decision: "allow" as const }));
+      const parent = createAgent({
+        model,
+        workflowExecutionGate: { version: 1, authorize: inherited },
+      });
+      const body = vi.fn(async () => "read");
+      const child = createSubagent(parent, {
+        name: "reader",
+        description: "read a file",
+        inheritHooks: false,
+        model: scriptedModel({ current: { name: "read", input: { path: "private" } } }),
+        tools: { read: tool({ inputSchema: z.object({ path: z.string() }), execute: body }) },
+        ...(override
+          ? { workflowExecutionGate: { version: 1 as const, authorize: explicit } }
+          : {}),
+      });
+      await child.generate({ prompt: "go" });
+      expect(inherited).toHaveBeenCalledTimes(override ? 0 : 1);
+      expect(explicit).toHaveBeenCalledTimes(override ? 1 : 0);
+      expect(body).toHaveBeenCalledTimes(override ? 1 : 0);
+    },
+  );
+
+  it("the built-in general-purpose task child inherits the parent's gate", async () => {
+    const script: Script = {
+      current: {
+        name: "task",
+        input: { description: "Read a file", subagent_type: "general-purpose" },
+      },
+    };
+    const childIo = vi.fn();
+    const authorize = vi.fn((request: WorkflowExecutionGateRequest) => {
+      if (request.toolName === "task") {
+        script.current = { name: "read", input: { file_path: "/private" } };
+        return { decision: "allow" as const };
+      }
+      return { decision: "deny" as const };
+    });
+    const agent = createAgent({
+      model: scriptedModel(script),
+      hooks: {
+        PreToolUse: [
+          {
+            hooks: [
+              async (input) => {
+                if (input.hook_event_name === "PreToolUse" && input.tool_name === "read") childIo();
+              },
+            ],
+          },
+        ],
+      },
+      workflowExecutionGate: { version: 1, authorize },
+    });
+    await agent.generate({ prompt: "Delegate this" });
+    expect(authorize.mock.calls.map(([request]) => request.toolName)).toEqual(["task", "read"]);
+    expect(childIo).not.toHaveBeenCalled();
   });
 
   it.each(["resume", "resumeDataResponse"] as const)(
