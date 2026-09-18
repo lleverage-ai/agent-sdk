@@ -67,9 +67,10 @@ export interface CheckpointRuntimeDeps {
   /** Live agent state; restored on load and snapshotted on save. */
   state: AgentState;
   /**
-   * Called after the saver returns a checkpoint for a thread that was not
-   * already cached. Cached re-reads within this runtime do not re-notify.
-   * Must not throw; the runtime does not contain listener failures.
+   * Called each time the saver returns a checkpoint, i.e. on every load that
+   * misses this runtime's cache. Cached re-reads do not re-notify; concurrent
+   * loads of the same uncached thread each notify. Must not throw; the runtime
+   * does not contain listener failures.
    */
   onLoaded?: (checkpoint: Checkpoint, threadId: string) => Promise<void>;
 }

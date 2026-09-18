@@ -267,10 +267,12 @@ where another model call would only add redundant text.
 
 ### Checkpoint Hooks
 
-`PostCheckpointLoad` fires when the agent restores a thread from the
-checkpointer: once per thread per agent instance, after the saver's `load()`
-returns a checkpoint and before that generation's compaction check. Forking a
-session fires it for the source thread. It is the only hook that sees the
+`PostCheckpointLoad` fires each time the agent loads a thread from the
+checkpointer: after the saver's `load()` returns a checkpoint and before that
+generation's compaction check. Loaded checkpoints are cached per agent
+instance, so sequential generations on a thread fire it once; concurrent
+generations on the same not-yet-cached thread each load and each fire it.
+Forking a session fires it for the source thread. It is the only hook that sees the
 restored transcript, because `PreGenerate` runs before the checkpoint is
 prepended and tool hooks carry only the tool call.
 
@@ -307,8 +309,7 @@ const agent = createAgent({
 });
 ```
 
-Cached re-reads within the same agent instance do not fire the hook again, and
-neither do the `resume()` pre-flight read or `getPendingInterrupt()`.
+The `resume()` pre-flight read and `getPendingInterrupt()` do not fire it.
 
 ## Combining Memory and Checkpoints
 

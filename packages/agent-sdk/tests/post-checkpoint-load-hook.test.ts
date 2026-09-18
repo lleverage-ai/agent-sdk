@@ -168,7 +168,7 @@ describe("PostCheckpointLoad hook", () => {
     expect(calls[0]?.metadata).toEqual({ lastRunUsage: { contextTokens: 42 } });
   });
 
-  it("fires once per thread per agent instance, not on cached re-reads", async () => {
+  it("fires once for sequential generations on a thread, not on cached re-reads", async () => {
     const { hook, calls } = loadedHook();
     const saver = await seededSaver();
     const loadSpy = vi.spyOn(saver, "load");

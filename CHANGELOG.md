@@ -13,9 +13,9 @@ remaining changes and validating the consumer.
 
 ### Added
 
-- `PostCheckpointLoad` hook. Fires once per thread per agent instance after the
-  checkpointer's `load()` returns a checkpoint and before that generation's
-  compaction check, with `PostCheckpointLoadInput` (`thread_id`, `step`,
+- `PostCheckpointLoad` hook. Fires each time the checkpointer's `load()`
+  returns a checkpoint (cached re-reads within an agent instance do not
+  re-fire) and before that generation's compaction check, with `PostCheckpointLoadInput` (`thread_id`, `step`,
   `messages`, `metadata`, `has_pending_interrupt`). It is the only hook that
   sees the restored transcript, so hosts can seed a context manager from
   persisted usage or rebuild cross-turn plugin state without wrapping the

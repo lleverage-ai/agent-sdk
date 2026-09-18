@@ -3218,12 +3218,14 @@ export interface ToolLoadErrorInput extends BaseHookInput {
 /**
  * Input for PostCheckpointLoad hooks.
  *
- * Fired when the agent's checkpoint runtime restores a thread from the
- * configured checkpointer: once per thread per agent instance, immediately
- * after the saver's `load()` returns a checkpoint and before that generation's
- * context-compaction check. Forking fires it for the source thread. Cached
- * re-reads within the same agent instance do not fire it again, and the
- * `resume()` pre-flight and `getPendingInterrupt()` reads do not fire it.
+ * Fired each time the agent's checkpoint runtime loads a thread from the
+ * configured checkpointer: immediately after the saver's `load()` returns a
+ * checkpoint and before that generation's context-compaction check. The
+ * runtime caches loaded checkpoints per agent instance, so sequential
+ * generations on a thread fire it once; concurrent generations on the same
+ * not-yet-cached thread each load and each fire it. Forking fires it for the
+ * source thread. The `resume()` pre-flight and `getPendingInterrupt()` reads
+ * do not fire it.
  *
  * It is the only hook that sees the restored transcript: `PreGenerate` runs
  * before the checkpoint is prepended, and tool hooks carry only the tool call.
