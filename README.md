@@ -404,6 +404,14 @@ const agent = createAgent({
 const result = await agent.generate({ prompt: "Research this in the background" });
 ```
 
+For host-managed delegation lifecycles, opt into
+`ownedTaskPolicy: { cancellationGraceMs: 5000 }` and, for a bounded roster,
+`includeGeneralPurposeSubagent: false`. Omitted delegation/drain timeouts create
+no timers. The SDK distinguishes cancellation from actual settlement, retains
+unresolved owners, and delivers background results once; admission and recovery
+policy stay with the host. See [owned-task migration](./docs/migration/owned-tasks.md)
+for scopes, callbacks, replay limits and finalisation.
+
 ### Agent Teams
 
 Multi-agent coordination where the primary agent becomes a team lead:

@@ -1165,7 +1165,7 @@ export function createToolPipeline(deps: ToolPipelineDeps): ToolPipeline {
         defaultModel: options.model,
         parentAgent: getAgent(),
         // Always include general-purpose subagent so agents can delegate tasks
-        includeGeneralPurpose: true,
+        includeGeneralPurpose: options.includeGeneralPurposeSubagent ?? true,
         // Only pass streaming context when provided (streamDataResponse)
         streamingContext,
         taskManager,

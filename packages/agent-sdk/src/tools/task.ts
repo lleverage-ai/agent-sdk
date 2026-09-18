@@ -18,6 +18,7 @@ import { createBackgroundTask, updateBackgroundTask } from "../task-store/index.
 import type {
   Agent,
   ExecutionTelemetry,
+  HookCallback,
   StreamingContext,
   StreamingMetadata,
   SubagentCreateContext,
@@ -25,6 +26,31 @@ import type {
   SubagentStartInput,
   SubagentStopInput,
 } from "../types.js";
+
+// Own real hook promises, not timeout races that abandon still-running hooks.
+// All siblings settle even on failure; delegation policy owns cancellation grace.
+async function invokeSubagentHooks(
+  hooks: HookCallback[],
+  input: SubagentStartInput | SubagentStopInput,
+  parentAgent: Agent,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!signal) {
+    await invokeHooksWithTimeout(hooks, input, null, parentAgent);
+    return;
+  }
+  signal.throwIfAborted();
+  const outcomes = await Promise.allSettled(
+    hooks.map((hook) =>
+      Promise.resolve().then(() =>
+        hook(input, null, { agent: parentAgent, signal, retryAttempt: 0 }),
+      ),
+    ),
+  );
+  signal.throwIfAborted();
+  const failed = outcomes.find((outcome) => outcome.status === "rejected");
+  if (failed) throw failed.reason;
+}
 
 // =============================================================================
 // Types
@@ -551,12 +577,15 @@ ${subagentDescriptions}`;
         subagentDef.streaming === true && streamingContext?.writer != null;
 
       // Execute task function
-      const executeTask = async (): Promise<string> => {
+      const executeTask = async (signal?: AbortSignal): Promise<string> => {
+        signal?.throwIfAborted();
         const startTime = Date.now();
 
         // Update task status to running
         const runningTask = updateBackgroundTask(task, { status: "running" });
-        if (taskStore) {
+        if (taskManager?.owned) {
+          taskManager.updateTask(taskId, { status: "running" });
+        } else if (taskStore) {
           await taskStore.save(runningTask);
         } else {
           backgroundTasks.set(taskId, runningTask);
@@ -579,6 +608,7 @@ ${subagentDescriptions}`;
 
         // Build context for the subagent factory
         const createContext: SubagentCreateContext = {
+          signal,
           model: subagentModel,
           allowedTools: subagentDef.allowedTools,
           plugins: subagentDef.plugins,
@@ -595,6 +625,9 @@ ${subagentDescriptions}`;
 
         // Create the subagent with resolved context
         const subagent = await subagentDef.create(createContext);
+        // Own initialisation before a cancellation/failing hook can abandon it.
+        if (signal) await subagent.ready;
+        signal?.throwIfAborted();
 
         const subagentStartHooks = parentAgent.options.hooks?.SubagentStart ?? [];
         if (subagentStartHooks.length > 0) {
@@ -607,11 +640,13 @@ ${subagentDescriptions}`;
             agent_type: subagent_type,
             prompt: description,
           };
-          await invokeHooksWithTimeout(subagentStartHooks, input, null, parentAgent);
+          await invokeSubagentHooks(subagentStartHooks, input, parentAgent, signal);
         }
 
         // Wait for subagent's async initialization (MCP connections, plugin setup)
+        signal?.throwIfAborted();
         await subagent.ready;
+        signal?.throwIfAborted();
 
         let resultText: string;
 
@@ -630,6 +665,7 @@ ${subagentDescriptions}`;
 
           // Stream the subagent's response
           const streamResult = await subagent.streamRaw({
+            signal,
             prompt: description,
             maxTokens: (max_turns ?? defaultMaxTurns) * 4096,
           });
@@ -638,6 +674,7 @@ ${subagentDescriptions}`;
           // This allows the client to handle them separately from assistant text
           let fullText = "";
           for await (const chunk of streamResult.textStream) {
+            signal?.throwIfAborted();
             fullText += chunk;
             // Send each chunk as a data annotation
             streamingContext!.writer!.write({
@@ -650,6 +687,7 @@ ${subagentDescriptions}`;
             });
           }
 
+          signal?.throwIfAborted();
           resultText = fullText;
 
           // Signal subagent completion to client
@@ -665,6 +703,7 @@ ${subagentDescriptions}`;
         } else {
           // Non-streaming execution - use generate() as before
           const result = await subagent.generate({
+            signal,
             prompt: description,
             maxTokens: (max_turns ?? defaultMaxTurns) * 4096,
           });
@@ -674,6 +713,7 @@ ${subagentDescriptions}`;
             resultText = `Interrupted: ${result.interrupt.type}`;
           }
         }
+        signal?.throwIfAborted();
 
         const subagentStopHooks = parentAgent.options.hooks?.SubagentStop ?? [];
         if (subagentStopHooks.length > 0) {
@@ -686,11 +726,24 @@ ${subagentDescriptions}`;
             agent_type: subagent_type,
             result: resultText,
           };
-          await invokeHooksWithTimeout(subagentStopHooks, input, null, parentAgent);
+          await invokeSubagentHooks(subagentStopHooks, input, parentAgent, signal);
         }
 
         return resultText;
       };
+
+      // Register both delivery modes before factory/ready/hooks.
+      if (taskManager?.owned) {
+        if (run_in_background && isStreamingSubagent)
+          return { error: true, taskId, message: "Streaming subagents cannot run in background" };
+        return taskManager.owned.run(
+          task,
+          !!run_in_background,
+          toolOptions?.abortSignal,
+          executeTask,
+          toolOptions?.toolCallId,
+        );
+      }
 
       // Background execution
       if (run_in_background) {
@@ -977,6 +1030,12 @@ Parameters:
 
       // Helper to format task response with live output support
       const formatTaskResponse = (task: BackgroundTask) => {
+        if (taskManager?.owned && !["pending", "running"].includes(task.status)) {
+          const consumed = taskManager.consumeTask(task.id);
+          if (!consumed)
+            return { taskId: task.id, message: "Task result already consumed or delivered inline" };
+          task = consumed;
+        }
         const response: Record<string, unknown> = {
           taskId: task.id,
           type: task.subagentType,

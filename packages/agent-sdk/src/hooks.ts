@@ -4,6 +4,7 @@
  * @packageDocumentation
  */
 
+import { getOwnedTaskSignal } from "./owned-tasks.js";
 import type {
   Agent,
   CustomHookInput,
@@ -60,15 +61,18 @@ export class HookTimeoutError extends Error {
  * This function enforces a hard timeout using `Promise.race`. If a hook does not complete
  * within the specified timeout, it will be treated as returning an empty result `{}`.
  * The abort signal is also set when the timeout is reached, allowing cooperative hooks
- * to clean up resources.
+ * to clean up resources. PostGenerate also forwards generation cancellation and
+ * rejects its outputs if cancelled. For a live owned delegation, PostGenerate
+ * joins the real callbacks instead of racing a hook timer: the owning task's
+ * explicit lifetime/cancellation grace governs cleanup without abandoning work.
  *
  * @param hooks - Array of hook callbacks to invoke
  * @param input - The hook input data
  * @param toolUseId - The tool use ID (null for non-tool hooks)
  * @param agent - The agent instance
- * @param timeout - Timeout in milliseconds (default: 60000). Each hook must complete within this time.
+ * @param timeout - Ordinary hook timeout in milliseconds (default: 60000). Owned child PostGenerate uses its owner's lifecycle policy instead.
  * @param retryAttempt - Current retry attempt number (default: 0)
- * @returns Array of hook outputs. Timed out hooks return empty objects `{}`.
+ * @returns Array of hook outputs. Timed out ordinary hooks return empty objects `{}`; cancelled PostGenerate rejects instead.
  *
  * @example
  * ```typescript
@@ -103,7 +107,40 @@ export async function invokeHooksWithTimeout(
   timeout = 60000,
   retryAttempt = 0,
 ): Promise<HookOutput[]> {
+  const callerSignal = input.hook_event_name === "PostGenerate" ? input.options?.signal : undefined;
+  const ownerSignal = input.hook_event_name === "PostGenerate" ? getOwnedTaskSignal() : undefined;
+  const generationSignal =
+    callerSignal && ownerSignal && callerSignal !== ownerSignal
+      ? AbortSignal.any([callerSignal, ownerSignal])
+      : (callerSignal ?? ownerSignal);
+  generationSignal?.throwIfAborted();
+
+  if (ownerSignal && generationSignal) {
+    // A cancellation race here would let generate() settle and release its
+    // owner's permit while hook I/O is still running. Keep every real callback
+    // joined; OwnedTasks bounds the caller's cancellation wait and quarantines
+    // unresolved work. No implicit hook lifetime for grace-only ownership.
+    const results = await Promise.all(
+      hooks.map(async (hook) => {
+        try {
+          generationSignal.throwIfAborted();
+          return (
+            (await hook(input, toolUseId, { signal: generationSignal, agent, retryAttempt })) ?? {}
+          );
+        } catch (error) {
+          if (!generationSignal.aborted) console.error("Hook execution error:", error);
+          return {};
+        }
+      }),
+    );
+    generationSignal.throwIfAborted();
+    return results;
+  }
+
   const abortController = new AbortController();
+  const onGenerationAbort = () => abortController.abort(generationSignal?.reason);
+  generationSignal?.addEventListener("abort", onGenerationAbort, { once: true });
+  if (generationSignal?.aborted) onGenerationAbort();
   const timeoutId = setTimeout(() => abortController.abort(), timeout);
 
   try {
@@ -115,17 +152,23 @@ export async function invokeHooksWithTimeout(
 
     const results = await Promise.all(
       hooks.map(async (hook) => {
+        let hookTimeoutId: ReturnType<typeof setTimeout> | undefined;
+        let onAbort: (() => void) | undefined;
         try {
+          generationSignal?.throwIfAborted();
           // Create a timeout promise that rejects after the specified time
           const timeoutPromise = new Promise<HookOutput>((_, reject) => {
-            const hookTimeoutId = setTimeout(() => {
+            hookTimeoutId = setTimeout(() => {
               reject(new HookTimeoutError(timeout));
             }, timeout);
             // Clean up timeout if signal is aborted (parent timeout reached)
-            abortController.signal.addEventListener("abort", () => {
+            onAbort = () => {
               clearTimeout(hookTimeoutId);
-              reject(new HookTimeoutError(timeout));
-            });
+              reject(
+                generationSignal?.aborted ? generationSignal.reason : new HookTimeoutError(timeout),
+              );
+            };
+            abortController.signal.addEventListener("abort", onAbort, { once: true });
           });
 
           // Race between hook execution and timeout
@@ -133,6 +176,9 @@ export async function invokeHooksWithTimeout(
           // Convert void/undefined returns to empty objects (for observation-only hooks)
           return result ?? {};
         } catch (error) {
+          // Generation cancellation is rethrown after sibling races finish,
+          // not logged as a hook timeout or returned as a successful rewrite.
+          if (generationSignal?.aborted) return {};
           // If hook throws or times out, treat as allowing with no modifications
           if (error instanceof HookTimeoutError) {
             console.error(`Hook timed out after ${timeout}ms`);
@@ -140,12 +186,17 @@ export async function invokeHooksWithTimeout(
             console.error("Hook execution error:", error);
           }
           return {};
+        } finally {
+          clearTimeout(hookTimeoutId);
+          if (onAbort) abortController.signal.removeEventListener("abort", onAbort);
         }
       }),
     );
 
+    generationSignal?.throwIfAborted();
     return results;
   } finally {
+    generationSignal?.removeEventListener("abort", onGenerationAbort);
     clearTimeout(timeoutId);
   }
 }

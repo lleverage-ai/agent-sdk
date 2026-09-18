@@ -1343,6 +1343,15 @@ export interface AgentOptions {
    */
   subagents?: SubagentDefinition[];
 
+  /** Include the built-in general-purpose delegate. Defaults to true; false keeps only the supplied roster. */
+  includeGeneralPurposeSubagent?: boolean;
+
+  /** Opt-in ownership for foreground/background delegations. Omitted lifetime/drain limits create no timers. */
+  ownedTaskPolicy?: import("./owned-tasks.js").OwnedTaskPolicy;
+
+  /** Optional host admission and unresolved-work reporting; the SDK does not own tenant or recovery policy. */
+  ownedTaskCallbacks?: import("./owned-tasks.js").OwnedTaskCallbacks;
+
   /**
    * Custom delegation instructions to include in the system prompt when subagents exist.
    *
@@ -3816,6 +3825,9 @@ export interface SubagentDefinition {
  * @category Subagents
  */
 export interface SubagentCreateContext {
+  /** Delegation/attempt cancellation, including factory and asynchronous initialisation. */
+  signal?: AbortSignal;
+
   /**
    * The resolved model to use for the subagent.
    *

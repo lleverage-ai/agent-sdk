@@ -53,10 +53,10 @@ import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
 import type { AgentError } from "../errors/index.js";
 import {
   createRetryLoopState,
-  handleGenerationError,
   invokePreGenerateHooks,
   normalizeError,
   type RetryLoopState,
+  handleGenerationError as sdkHandleGenerationError,
   updateRetryLoopState,
   waitForRetryDelay,
 } from "../generation-helpers.js";
@@ -691,6 +691,12 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     return invokeCachedPostGenerateHooks(cachedResult, effectiveGenOptions, options.model);
   }
 
+  async function handleGenerationError(input: Parameters<typeof sdkHandleGenerationError>[0]) {
+    // No retry hook, fallback or replacement request may overlap abandoned children.
+    await getAgent().taskManager.settleOwnedTasks("SDK generation failed", true);
+    return sdkHandleGenerationError(input);
+  }
+
   function createRetryState(): RetryLoopState {
     return createRetryLoopState(options.model, options.generationRetryPolicy?.maxRetries);
   }
@@ -900,6 +906,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       },
       // Save checkpoint and invoke unified PostGenerate hook after completion
       onFinish: async (finishResult) => {
+        effectiveGenOptions.signal?.throwIfAborted();
         updateContextUsage(finishResult.usage);
 
         // The streaming state is authoritative: prepareStep may have
@@ -1113,6 +1120,8 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
           ];
       accumulatedStepCount += followUpSteps.length;
 
+      // Like the initial turn, a cancelled follow-up cannot publish a late save.
+      followUpEffectiveOptions.signal?.throwIfAborted();
       // Checkpoint save
       if (followUpEffectiveOptions.threadId && options.checkpointer) {
         await saveCheckpoint(

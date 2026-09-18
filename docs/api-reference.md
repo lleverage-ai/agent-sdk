@@ -285,6 +285,27 @@ contextManager.isPinned(index: number): boolean;
 surface context pressure before hard failures. `CompactionPolicy` also supports
 `outputReserveTokens`, `maxConsecutiveFailures`, and `failureCooldownMs`.
 
+## Owned tasks
+
+`AgentOptions.ownedTaskPolicy` accepts `OwnedTaskPolicy` (required cancellation
+grace, optional delegation/drain durations and replay budget).
+`ownedTaskCallbacks` accepts `OwnedTaskCallbacks` with synchronous admission and
+non-blocking unresolved-work notification. Callback identities/reports use
+`OwnedTaskIdentity` and `OwnedTaskUnresolvedReport`. Factories receive
+`SubagentCreateContext.signal`. `includeGeneralPurposeSubagent` defaults to true.
+
+| TaskManager method | Contract |
+| --- | --- |
+| `configureOwnedTasks(policy, callbacks?)` | Opt in once; omitted lifetime durations create no timer |
+| `beginTaskScope(scope: OwnedTaskScope)` | Host run/attempt/signal; previous live work must be settled |
+| `settleOwnedTasks(reason, reopen?)` | Cancel and prove settlement; reject unresolved cleanup |
+| `releaseOwnedTaskResults()` | Drop final-run payloads, not live/quarantined ownership |
+| `consumeTask(id)` | Synchronously claim one terminal background result |
+| `hasBackgroundTasks()` | Exclude inline foreground results from automatic drain |
+
+See [owned-task migration](./migration/owned-tasks.md). This is not a durable
+scheduler or a replacement for host recovery, tenant limits or publication.
+
 ## Observability
 
 | Function | Description |

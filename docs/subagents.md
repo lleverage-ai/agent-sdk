@@ -36,6 +36,26 @@ The parent agent receives a `task` tool to delegate work:
 // Agent can call: task({ description: "Research AI trends and summarize the main findings", subagent_type: "researcher" })
 ```
 
+## Owned delegation lifecycles
+
+`AgentOptions.ownedTaskPolicy` opts the agent's `task` tool into process-local
+ownership of foreground and background work. Set a positive
+`cancellationGraceMs`; omitting `delegationTimeoutMs` and `drainTimeoutMs` means
+no lifetime timers. `includeGeneralPurposeSubagent: false` restricts the tool to
+the supplied roster. Optional `ownedTaskCallbacks` let the host reserve admission
+before factory creation and receive unresolved-cleanup reports.
+
+Use `taskManager.beginTaskScope({ runId, attemptId, signal })` and await
+`settleOwnedTasks(reason)` before replacing an attempt. Cancellation is not
+settlement: unresolved promises keep their permits and block new owned
+admissions, even if their result cards were removed. Foreground results stay
+inline; `task_output` and automatic follow-ups share a consume-once decision.
+
+These live owners/replay entries are not persisted or recovered by `TaskStore`.
+Host admission, worker recovery and executor policy remain outside the SDK.
+See [the owned-task guide](./migration/owned-tasks.md) for failure codes, replay
+limits, callback contracts and the difference between attempt and run cleanup.
+
 ## Advanced Subagent Execution
 
 For programmatic control over subagent execution:
