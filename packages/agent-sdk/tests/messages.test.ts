@@ -294,6 +294,26 @@ describe("createMessageRuntime", () => {
   });
 
   describe("createStreamingCompactionState()", () => {
+    it("anchors to the compacted input before output and records missing-usage boundaries", async () => {
+      const updateUsage = vi.fn();
+      const contextManager = createContextManager({
+        updateUsage,
+        shouldCompact: vi.fn(() => ({ trigger: true, reason: "token_threshold" as const })),
+      });
+      const runtime = createMessageRuntime(createHarness({ contextManager }).deps);
+      const state = runtime.createStreamingCompactionState([user("old")], {}, "t1");
+      await state.prepareStep({ messages: [user("old")], stepNumber: 1 });
+      const usage = { inputTokens: 100, outputTokens: 10, totalTokens: 110 };
+      state.appendStep({ text: "new", usage });
+      expect(updateUsage).toHaveBeenNthCalledWith(1, usage, { messages: [assistant("[summary]")] });
+      state.appendStep({ text: "missing usage" });
+      expect(updateUsage).toHaveBeenNthCalledWith(
+        2,
+        { inputTokens: undefined, outputTokens: undefined, totalTokens: undefined },
+        { messages: [assistant("[summary]"), assistant("new")] },
+      );
+    });
+
     it("skips step 0 by default and compacts later steps", async () => {
       const contextManager = createContextManager({
         shouldCompact: vi.fn(() => ({ trigger: true, reason: "token_threshold" as const })),

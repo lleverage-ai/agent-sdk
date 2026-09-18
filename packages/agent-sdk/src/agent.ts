@@ -1278,7 +1278,12 @@ export function createAgent(options: AgentOptions): Agent {
             forkedSessionId,
           };
 
-          runner.updateContextUsage(response.usage);
+          // Across supported AI SDK versions, run-level usage may aggregate
+          // multiple requests. Context occupancy needs the final request only.
+          runner.updateContextUsage(
+            response.steps.at(-1)?.usage ?? response.usage,
+            effectiveGenOptions,
+          );
 
           // Abort-ignoring providers must not publish a late result/checkpoint.
           effectiveGenOptions.signal?.throwIfAborted();

@@ -177,6 +177,8 @@ export type {
   CompactionTaskStatus,
   ContextManager,
   ContextManagerOptions,
+  UsageAnchor,
+  UsageUpdateContext,
   CreateTokenBudgetOptions,
   CustomTokenCounterOptions,
   PinnedMessageMetadata,
@@ -194,6 +196,7 @@ export {
   createTokenBudget,
   DEFAULT_COMPACTION_POLICY,
   DEFAULT_SUMMARIZATION_CONFIG,
+  SUMMARY_TOOL_RESULT_MAX_CHARS,
 } from "./context-manager.js";
 
 // Error types

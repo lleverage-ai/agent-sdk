@@ -475,7 +475,7 @@ export async function POST(req: Request) {
 - [Middleware](./docs/middleware.md) — Logging, caching, retry, and guardrails
 - [Observability](./docs/observability.md) — Logging, metrics, and tracing
 - [Persistence](./docs/persistence.md) — Memory and checkpointing
-- [Context Compaction](./docs/context-compaction.md) — Automatic, protocol-aware context management
+- [Context Compaction](./docs/context-compaction.md) — Automatic, protocol-aware context management, provider usage anchors, and bounded tool-result summaries
 - [Error Handling](./docs/errors.md) — Typed errors and recovery
 - [API Reference](./docs/api-reference.md) — Complete API documentation
 
