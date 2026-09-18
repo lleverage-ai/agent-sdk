@@ -669,6 +669,8 @@ export {
   createReadTool,
   // Call tool (proxy for registered-but-not-loaded tools)
   createCallToolTool,
+  NEAR_MISS_SUGGESTION_LIMIT,
+  suggestNearMissTools,
   // Search tools (MCP integration)
   createSearchToolsTool,
   createSkillRegistry,
