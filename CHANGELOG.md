@@ -19,8 +19,9 @@ remaining changes and validating the consumer.
   is repaired to a `NoSuchToolError` carrying the suggestions in
   `availableTools` (when `transformToolError` is configured). Exported
   `suggestNearMissTools()` and `NEAR_MISS_SUGGESTION_LIMIT` (3). The requested
-  name is never suggested, a failing search falls back to the plain hint, and
-  nothing is auto-executed.
+  name is never suggested and nothing is auto-executed. With no suggestions,
+  `call_tool` keeps the plain `search_tools` hint and the direct-call path
+  passes the original `NoSuchToolError` through unchanged.
 - Added `UsageUpdateContext`, `UsageAnchor` and optional
   `ContextManager.getUsageAnchor()` for provider-input-plus-append-growth context
   accounting. Streaming steps update usage before appending output, validate

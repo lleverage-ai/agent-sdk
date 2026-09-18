@@ -162,10 +162,15 @@ export const NEAR_MISS_SUGGESTION_LIMIT = 3;
  */
 export function suggestNearMissTools(mcpManager: MCPManager, toolName: string): string[] {
   try {
-    return mcpManager
-      .searchTools(toolName, NEAR_MISS_SUGGESTION_LIMIT)
-      .map((metadata) => metadata.name)
-      .filter((name) => name !== toolName);
+    return (
+      mcpManager
+        // Deliberately `limit`, not `limit + 1`: the requested name is unknown,
+        // so it can only appear in results through a stubbed search. Hosts pin
+        // this exact call (`searchTools(name, 3)`) as their compatibility golden.
+        .searchTools(toolName, NEAR_MISS_SUGGESTION_LIMIT)
+        .map((metadata) => metadata.name)
+        .filter((name) => name !== toolName)
+    );
   } catch {
     return [];
   }

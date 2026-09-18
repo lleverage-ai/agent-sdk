@@ -122,10 +122,12 @@ closest discoverable tools, ranked by the same index `search_tools` uses:
   suggestions and whose message ends `... through call_tool.` It stays a
   `NoSuchToolError` so hosts that classify by error class keep the message.
 
-At most `NEAR_MISS_SUGGESTION_LIMIT` (3) names are suggested, the requested
-name is never suggested back, and a failing search falls back to the plain
-`search_tools` hint. Suggestions are names only; nothing is executed on the
-model's behalf. `suggestNearMissTools(mcpManager, toolName)` exposes the same
+At most `NEAR_MISS_SUGGESTION_LIMIT` (3) names are suggested and the requested
+name is never suggested back. When there are no suggestions (nothing close, or
+the search itself fails), `call_tool` returns the plain `search_tools` hint and
+the direct-call path passes the AI SDK's original `NoSuchToolError` through
+unchanged. Suggestions are names only; nothing is executed on the model's
+behalf. `suggestNearMissTools(mcpManager, toolName)` exposes the same
 ranking for custom proxies.
 
 ## External MCP Servers
