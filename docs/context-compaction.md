@@ -96,6 +96,12 @@ Compaction is checked at two points:
 written after a mid-run compaction persist the compacted transcript, not the
 original history.
 
+The run-boundary check sees the restored transcript only as an estimate until
+the first model call reports real usage. A host that persists the previous
+run's context size in checkpoint metadata can seed the context manager from a
+`PostCheckpointLoad` hook, which fires before that check; see
+[Persistence](./persistence.md#checkpoint-hooks).
+
 `getBudget()` combines the last reported model usage with a fresh estimate
 and uses whichever is larger. Reported usage describes the *previous* model
 input, so it cannot account for tool results appended since; the estimate

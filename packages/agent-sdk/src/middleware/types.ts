@@ -136,6 +136,13 @@ export interface MiddlewareContext {
   onInterruptResolved(callback: HookCallback): void;
 
   /**
+   * Register a PostCheckpointLoad hook.
+   * Called after a checkpoint is restored for a generation and before the
+   * compaction check; the only hook that sees the restored transcript.
+   */
+  onPostCheckpointLoad(callback: HookCallback): void;
+
+  /**
    * Register a custom hook for a plugin-defined event.
    * Called when `invokeCustomHook()` fires the given event name.
    *

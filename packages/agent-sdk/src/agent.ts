@@ -78,6 +78,7 @@ import type {
   InterruptResolvedInput,
   MCPConnectionFailedInput,
   MCPConnectionRestoredInput,
+  PostCheckpointLoadInput,
   StreamingContext,
   StreamPart,
   SubagentDefinition,
@@ -756,7 +757,30 @@ export function createAgent(options: AgentOptions): Agent {
   /**
    * Checkpoint cache and persistence; see `./agent/checkpoint-runtime.ts`.
    */
-  const checkpoints = createCheckpointRuntime({ checkpointer: options.checkpointer, state });
+  const checkpoints = createCheckpointRuntime({
+    checkpointer: options.checkpointer,
+    state,
+    onLoaded: async (checkpoint, threadId) => {
+      const loadedHooks = effectiveHooks?.PostCheckpointLoad ?? [];
+      if (loadedHooks.length === 0) return;
+      const input: PostCheckpointLoadInput = {
+        hook_event_name: "PostCheckpointLoad",
+        session_id: threadId,
+        cwd: process.cwd(),
+        telemetry: buildExecutionTelemetryFromIds({
+          runId: getCheckpointRunId(checkpoint) ?? createRunId(),
+          threadId,
+          requestedModel: options.model,
+        }),
+        thread_id: threadId,
+        step: checkpoint.step,
+        messages: checkpoint.messages,
+        ...(checkpoint.metadata ? { metadata: checkpoint.metadata } : {}),
+        has_pending_interrupt: checkpoint.pendingInterrupt !== undefined,
+      };
+      await invokeHooksWithTimeout(loadedHooks, input, null, agent);
+    },
+  });
   const { save: saveCheckpoint } = checkpoints;
 
   /**

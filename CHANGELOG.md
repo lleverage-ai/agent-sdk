@@ -13,6 +13,15 @@ remaining changes and validating the consumer.
 
 ### Added
 
+- `PostCheckpointLoad` hook. Fires once per thread per agent instance after the
+  checkpointer's `load()` returns a checkpoint and before that generation's
+  compaction check, with `PostCheckpointLoadInput` (`thread_id`, `step`,
+  `messages`, `metadata`, `has_pending_interrupt`). It is the only hook that
+  sees the restored transcript, so hosts can seed a context manager from
+  persisted usage or rebuild cross-turn plugin state without wrapping the
+  checkpointer. Observation only; hook failures are contained. Registrable via
+  `hooks`, plugins, middleware (`onPostCheckpointLoad`) and subagent
+  `inheritHooks`. The `HookEvent` name existed before but was never fired.
 - Near-miss tool suggestions. An unknown tool name now names the closest
   discoverable tools instead of only pointing at `search_tools`: `call_tool`
   returns `Closest available tools: ...` and a direct call of an unknown name

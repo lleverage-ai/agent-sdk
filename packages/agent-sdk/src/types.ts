@@ -3216,6 +3216,40 @@ export interface ToolLoadErrorInput extends BaseHookInput {
 }
 
 /**
+ * Input for PostCheckpointLoad hooks.
+ *
+ * Fired when the agent's checkpoint runtime restores a thread from the
+ * configured checkpointer: once per thread per agent instance, immediately
+ * after the saver's `load()` returns a checkpoint and before that generation's
+ * context-compaction check. Forking fires it for the source thread. Cached
+ * re-reads within the same agent instance do not fire it again, and the
+ * `resume()` pre-flight and `getPendingInterrupt()` reads do not fire it.
+ *
+ * It is the only hook that sees the restored transcript: `PreGenerate` runs
+ * before the checkpoint is prepended, and tool hooks carry only the tool call.
+ *
+ * Observation only. `messages` and `metadata` are the checkpoint's own
+ * references, not copies; hooks must not mutate them. Any output is ignored.
+ * A host that seeds its context manager from the previous run's recorded
+ * usage does so here, so the seed precedes the first compaction decision.
+ *
+ * @category Hooks
+ */
+export interface PostCheckpointLoadInput extends BaseHookInput {
+  hook_event_name: "PostCheckpointLoad";
+  /** Thread the checkpoint was loaded for (the source thread when forking). */
+  thread_id: string;
+  /** Step number recorded on the checkpoint. */
+  step: number;
+  /** The restored transcript that will be prepended to this generation. */
+  messages: ReadonlyArray<ModelMessage>;
+  /** Checkpoint metadata as persisted by the saver, unvalidated. */
+  metadata?: Readonly<Record<string, unknown>>;
+  /** Whether the checkpoint carries an unresolved interrupt. */
+  has_pending_interrupt: boolean;
+}
+
+/**
  * Input for PreCompact hooks.
  * @category Hooks
  */
@@ -3325,6 +3359,7 @@ export type HookInput =
   | PostCompactInput
   | InterruptRequestedInput
   | InterruptResolvedInput
+  | PostCheckpointLoadInput
   | CustomHookInput;
 
 /**
@@ -3551,6 +3586,13 @@ export interface HookRegistration {
    */
   InterruptRequested?: HookCallback[];
   InterruptResolved?: HookCallback[];
+
+  /**
+   * Checkpoint lifecycle hooks.
+   * Called after a checkpoint is loaded for a generation and before the
+   * compaction check; see {@link PostCheckpointLoadInput}.
+   */
+  PostCheckpointLoad?: HookCallback[];
 
   /**
    * Custom hooks defined by plugins, keyed by event name.
