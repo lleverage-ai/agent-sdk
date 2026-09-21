@@ -165,12 +165,16 @@ remaining changes and validating the consumer.
   registered skill has function-based instructions that consume arguments, and
   its description explains that explicit-only skills are still loadable when
   the discoverable catalogue is empty.
-- The `skill` tool's `description` and `inputSchema` are now evaluated lazily
-  (AI SDK 7 function description and `() => Schema`), so skills registered or
-  loaded after `createSkillTool()` are reflected on the next request without
-  recreating the tool. Code that reads `tool.description` as a string should
-  handle the function form; the SDK's own prompt builder and
-  `VirtualMCPServer` do.
+- The `skill` tool's `description` and `inputSchema` are captured once at
+  `createSkillTool()` by default (`catalogue: "snapshot"`), so the definition
+  the model sees is byte-identical across the steps of a run and a mid-run
+  skill load does not invalidate provider prompt caches keyed on the tool
+  block. `execute` still consults the live registry. Pass
+  `catalogue: "live"` for the per-request evaluation (AI SDK 7 function
+  description and `() => Schema`) that reflects skills registered or loaded
+  after creation without recreating the tool; with `"live"`, code that reads
+  `tool.description` as a string must handle the function form (the SDK's own
+  prompt builder and `VirtualMCPServer` do).
 - `ContextManager.getBudget()` now uses `max(actual usage, estimate)` instead
   of trusting the last reported usage outright. Actual usage describes the
   *previous* model input; the current message list may already contain newer

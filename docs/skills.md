@@ -331,6 +331,23 @@ The tool only advertises an `args` input when at least one registered skill
 has function-based instructions (`registry.anySkillConsumesArgs()`), so
 models are not tempted to invent arguments for skills that ignore them.
 
+#### Catalogue mode
+
+By default (`catalogue: "snapshot"`) the tool's description (the list of
+loadable skills) and input schema are computed once, when `createSkillTool()`
+runs. The model then sees a byte-identical `skill` tool definition on every
+step of a run: loading a skill mid-run does not rewrite the tool block, so
+provider prompt caches keyed on the tools stay warm. Skills registered after
+creation are not advertised until the tool is recreated, although `execute`
+always goes through the live registry so an explicit load by name still works.
+
+Pass `catalogue: "live"` to re-evaluate both on every request instead (an AI
+SDK function description and lazy schema). Late-registered skills are
+advertised, and their `args` accepted, on the next request, and loaded skills
+drop out of the catalogue, at the cost of a changing tool definition between
+steps. With `"live"`, code that reads `tool.description` as a string must
+resolve the function form first.
+
 ### Explicit-only (non-discoverable) skills
 
 Set `discoverable: false` on a skill to keep it registered but hidden from
