@@ -13,6 +13,14 @@ remaining changes and validating the consumer.
 
 ### Added
 
+- `chainPostToolUseHooks(callbacks)`: composes `PostToolUse` callbacks so each
+  sees the previous one's `updatedResult` as its `tool_response` and the
+  final value is returned as one `updatedResult`. Side-by-side `PostToolUse`
+  hooks still all receive the original response with only the first
+  `updatedResult` applied; that is unchanged. No-op callbacks leave the
+  running value alone, an all-no-op chain returns `undefined` so the tool's
+  own output is kept, non-`PostToolUse` inputs are ignored, and callback
+  errors propagate to the pipeline's existing containment.
 - `GenerateOptions.streamingContext`: a caller-supplied, request-local
   `StreamingContext` for `generate()`, `stream()`, `streamResponse()` and
   `streamRaw()`. Function-based plugin tools receive it as `ctx`, `call_tool`
