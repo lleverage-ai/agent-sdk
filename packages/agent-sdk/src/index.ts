@@ -791,6 +791,7 @@ export type {
   // Streaming types
   StreamingContext,
   StreamingMetadata,
+  StreamingWriter,
   StreamingToolsFactory,
   StreamPart,
   SubagentCreateContext,

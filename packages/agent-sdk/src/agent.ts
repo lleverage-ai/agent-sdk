@@ -2071,6 +2071,7 @@ export function createAgent(options: AgentOptions): Agent {
                   result,
                   streamingCompaction,
                   signalState,
+                  streamingContext: effectiveGenOptions.streamingContext,
                 });
               }
             },
@@ -2154,6 +2155,12 @@ export function createAgent(options: AgentOptions): Agent {
     },
 
     async streamDataResponse(genOptions: GenerateOptions): Promise<Response> {
+      if (genOptions.streamingContext !== undefined) {
+        throw new ConfigurationError(
+          "streamDataResponse() creates its own stream writer and cannot take a caller-supplied streamingContext; use stream(), streamResponse(), streamRaw() or generate() to supply one",
+          { configKey: "streamingContext" },
+        );
+      }
       const run = await runner.beginRun(genOptions);
 
       // Check for cache short-circuit via respondWith

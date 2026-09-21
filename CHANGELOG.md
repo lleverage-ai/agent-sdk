@@ -13,6 +13,19 @@ remaining changes and validating the consumer.
 
 ### Added
 
+- `GenerateOptions.streamingContext`: a caller-supplied, request-local
+  `StreamingContext` for `generate()`, `stream()`, `streamResponse()` and
+  `streamRaw()`. Function-based plugin tools receive it as `ctx`, `call_tool`
+  and MCP tools stream through it, every tool can read it as
+  `ExtendedToolExecutionOptions.streamingContext`, and subagents registered
+  with `streaming: true` inherit it; other subagents never see the parent's
+  writer. Tools are built per request, so concurrent generations on one agent
+  keep separate writers. Background-task follow-ups reuse the request's
+  context. `streamDataResponse()` still creates its own writer and rejects a
+  caller-supplied context with a `ConfigurationError`.
+- `StreamingWriter` (`Pick<UIMessageStreamWriter, "write">`), so a host sink
+  that only implements `write()` can be a context writer. The SDK only ever
+  calls `write()` on a context writer.
 - `ContextManagerOptions.summarizer`: a `SummaryExecutor` that generates
   compaction summaries in place of the agent passed to `compact()`. It
   receives the exact summary messages, output limit, trigger, strategy and
@@ -126,6 +139,12 @@ remaining changes and validating the consumer.
 
 ### Changed
 
+- **BREAKING** (types only): `StreamingContext.writer` is `StreamingWriter | null`
+  instead of `UIMessageStreamWriter | null`. Code that forwards `ctx.writer`
+  into a `UIMessageStreamWriter`-typed slot should widen that slot to
+  `StreamingWriter`; a plugin that calls `merge()` or `onError` on
+  `ctx.writer` must narrow first. `streamDataResponse()` still supplies a
+  full `UIMessageStreamWriter` at runtime.
 - The `skill` tool only advertises an `args` input when at least one
   registered skill has function-based instructions that consume arguments, and
   its description explains that explicit-only skills are still loadable when

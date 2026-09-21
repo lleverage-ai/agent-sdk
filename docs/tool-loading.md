@@ -64,8 +64,8 @@ Behavior:
   - `search_tools` for discovery
   - `call_tool` for invocation by qualified tool name
 - Function-based plugin tools that use `StreamingContext` can also be deferred;
-  discovery uses `writer: null`, and `call_tool` receives the live writer during
-  `streamDataResponse()`
+  discovery uses `writer: null`, and `call_tool` receives the live writer from
+  `streamDataResponse()` or from the caller's `GenerateOptions.streamingContext`
 - Tool schema remains stable across turns, which helps provider prompt caching
 - Inline plugin tools use `<plugin>__<tool>`
 - External MCP tools use `mcp__<server>__<tool>`

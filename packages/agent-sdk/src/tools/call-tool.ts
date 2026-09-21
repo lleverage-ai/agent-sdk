@@ -14,7 +14,7 @@ import { z } from "zod";
 import type { MCPManager } from "../mcp/manager.js";
 import type { ExtendedToolExecutionOptions, StreamingContext } from "../types.js";
 
-type ProxyToolExecutionOptions = Partial<ExtendedToolExecutionOptions> & {
+type ProxyToolExecutionOptions = Omit<Partial<ExtendedToolExecutionOptions>, "streamingContext"> & {
   streamingContext?: StreamingContext | null;
 };
 
