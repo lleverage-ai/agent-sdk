@@ -174,7 +174,9 @@ remaining changes and validating the consumer.
   description and `() => Schema`) that reflects skills registered or loaded
   after creation without recreating the tool; with `"live"`, code that reads
   `tool.description` as a string must handle the function form (the SDK's own
-  prompt builder and `VirtualMCPServer` do).
+  prompt builder and `VirtualMCPServer` do). Not a change from the last
+  published release: 0.1.0-alpha.9 captured both at creation; the
+  per-request evaluation only ever existed unreleased on `main`.
 - `ContextManager.getBudget()` now uses `max(actual usage, estimate)` instead
   of trusting the last reported usage outright. Actual usage describes the
   *previous* model input; the current message list may already contain newer
