@@ -308,9 +308,14 @@ const agent = createAgent({
 **Stacking `PostToolUse` transforms:** hooks registered side by side all see the original `tool_response`, and only the first `updatedResult` is applied. To apply several transforms in sequence (cap an oversized output, then annotate the capped value), compose them with `chainPostToolUseHooks` and register the result once:
 
 ```typescript
-hooks: {
-  PostToolUse: [{ callback: chainPostToolUseHooks([capToolOutput, appendStepBudgetNotice]) }],
-}
+import { chainPostToolUseHooks, createAgent } from "@lleverage-ai/agent-sdk";
+
+const agent = createAgent({
+  model,
+  hooks: {
+    PostToolUse: [{ callback: chainPostToolUseHooks([capToolOutput, appendStepBudgetNotice]) }],
+  },
+});
 ```
 
 **Request-class-aware generation retry:** You can configure `generationRetryPolicy` on `createAgent()` and set `requestClass` per request to vary overload behavior for interactive vs background work, recover from authentication or stale-socket failures, and optionally shrink `maxTokens` after context-overflow errors.
