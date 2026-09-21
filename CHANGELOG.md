@@ -145,7 +145,6 @@ remaining changes and validating the consumer.
   `StreamingWriter`; a plugin that calls `merge()` or `onError` on
   `ctx.writer` must narrow first. `streamDataResponse()` still supplies a
   full `UIMessageStreamWriter` at runtime.
-
 - The `skill` tool only advertises an `args` input when at least one
   registered skill has function-based instructions that consume arguments, and
   its description explains that explicit-only skills are still loadable when
