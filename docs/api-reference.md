@@ -278,6 +278,8 @@ const contextManager = createContextManager({
   summarization?: SummarizationOptions,
   scheduler?: SchedulerOptions,
   tokenCounter?: TokenCounter,
+  summarizer?: SummaryExecutor,          // isolated summary generation
+  commitCompaction?: (result) => Promise<void>, // awaited durable write
 });
 
 // Methods
