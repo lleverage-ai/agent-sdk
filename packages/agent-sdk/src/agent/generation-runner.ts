@@ -508,7 +508,11 @@ export interface GenerationRunner {
     currentModel: LanguageModel,
     checkpointThread: CheckpointThreadStrategy,
   ): Promise<AttemptContext>;
-  /** Compose tools, prompt and AI SDK params for an attempt. */
+  /**
+   * Compose tools, prompt and AI SDK params for an attempt. `request.streamingContext`
+   * overrides the caller's `GenerateOptions.streamingContext`; it is how
+   * `streamDataResponse()` supplies its own writer.
+   */
   prepareRequest(
     attempt: AttemptContext,
     request?: { streamingContext?: StreamingContext },
@@ -741,12 +745,15 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     const signalState: GenerateSignalState = {};
 
+    // A mode that owns a writer (`streamDataResponse`) passes its context
+    // explicitly; every other mode uses the caller's request-local one.
+    const streamingContext = request?.streamingContext ?? effectiveGenOptions.streamingContext;
     const activeTools = toolPipeline.buildTools({
       threadId: effectiveGenOptions.threadId,
       signal: effectiveGenOptions.signal,
       telemetry: executionBaseTelemetry,
       signalState,
-      streamingContext: request?.streamingContext,
+      streamingContext,
     });
 
     // Build prompt context and generate system prompt

@@ -200,6 +200,15 @@ export interface ExtendedToolExecutionOptions extends ToolExecutionOptions<unkno
    * Used by bash tool for run_in_background support.
    */
   taskManager?: import("./task-manager.js").TaskManager;
+
+  /**
+   * The request's streaming context, when the generation has one: supplied by
+   * `streamDataResponse()` or by the caller through
+   * {@link GenerateOptions.streamingContext}. Lets a tool that is not created
+   * by a plugin factory reach the same writer plugin tools receive as `ctx`.
+   * Absent when the generation has no streaming context.
+   */
+  streamingContext?: StreamingContext;
 }
 
 /**
@@ -223,6 +232,17 @@ export type ToolErrorTransform = (error: unknown, context: { toolName: string })
 // =============================================================================
 // Streaming Types
 // =============================================================================
+
+/**
+ * The part of a UI message stream writer that tools and the SDK use.
+ *
+ * Every `UIMessageStreamWriter` satisfies this, and so does any host-owned
+ * sink that accepts UI message chunks; the SDK only ever calls `write` on a
+ * {@link StreamingContext} writer.
+ *
+ * @category Types
+ */
+export type StreamingWriter = Pick<UIMessageStreamWriter, "write">;
 
 /**
  * Metadata identifying the source of streamed data.
@@ -275,11 +295,13 @@ export interface StreamingMetadata {
  */
 export interface StreamingContext {
   /**
-   * UI Message stream writer for sending custom data to client.
-   * Only available when using `streamDataResponse()`.
-   * Will be `null` when using `generate()` or regular `streamResponse()`.
+   * Writer for sending custom data parts to the client.
+   *
+   * Supplied by `streamDataResponse()` from its own UI message stream, or by
+   * the caller through {@link GenerateOptions.streamingContext} for any other
+   * generation mode. `null` when neither provided one.
    */
-  writer: UIMessageStreamWriter | null;
+  writer: StreamingWriter | null;
 
   /**
    * Metadata identifying the source of streamed data.
@@ -2271,6 +2293,34 @@ export interface GenerateOptions {
    * ```
    */
   onStreamWriterReady?: (writer: UIMessageStreamWriter) => void;
+
+  /**
+   * Request-local streaming context for this generation's tools.
+   *
+   * `generate()`, `stream()`, `streamResponse()` and `streamRaw()` hand this
+   * context to function-based plugin tools (as `ctx`), to `call_tool` and MCP
+   * tools, to every tool through
+   * {@link ExtendedToolExecutionOptions.streamingContext}, and to the task
+   * tool so subagents registered with `streaming: true` can stream into it.
+   * Subagents without `streaming: true` never see the parent's writer.
+   * Follow-up generations for background tasks keep the same context.
+   *
+   * Tools are built per request, so two concurrent generations on one agent
+   * with different contexts never share a writer. `streamDataResponse()`
+   * creates its own writer and rejects this option with a
+   * `ConfigurationError`.
+   *
+   * @example
+   * ```typescript
+   * for await (const part of agent.stream({
+   *   prompt,
+   *   streamingContext: { writer: { write: (chunk) => emitToClient(chunk) } },
+   * })) {
+   *   // plugin tools' ctx.writer.write(...) reaches emitToClient
+   * }
+   * ```
+   */
+  streamingContext?: StreamingContext;
 
   /**
    * Internal flag to skip compaction during summary generation.

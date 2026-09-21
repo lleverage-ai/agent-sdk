@@ -11,7 +11,7 @@ mode is a deliberate decision rather than drift.
 | `stream()` | `AsyncGenerator<StreamPart>` | `streamText()` + `fullStream` |
 | `streamResponse()` | `Response` (UI message stream) | `streamText()` inside `createUIMessageStream` |
 | `streamRaw()` | raw `streamText()` result | `streamText()` |
-| `streamDataResponse()` | `Response` (UI message stream) with tool `StreamingContext` | `streamText()` inside `createUIMessageStream` |
+| `streamDataResponse()` | `Response` (UI message stream) with its own tool `StreamingContext` | `streamText()` inside `createUIMessageStream` |
 
 ## Shared lifecycle
 
@@ -54,6 +54,7 @@ Recorded as of the #140 refactor. None of these were changed by it.
 | Follow-up turns | re-enter `agent.generate()` | re-enter `agent.stream()` | `runUIStreamFollowUps` | none | `runUIStreamFollowUps` |
 | Follow-ups skipped when | `signalState.stop` | `signalState.interrupt \|\| stop` | `signalState.stop` | n/a | `signalState.interrupt \|\| stop` |
 | Follow-up messages when checkpointing | from checkpoint (no explicit `messages`) | from checkpoint | explicit transcript + prompt | n/a | explicit transcript + prompt |
+| Tool `StreamingContext` | caller's `GenerateOptions.streamingContext` | caller's | caller's | caller's | its own writer; a caller-supplied one is rejected |
 
 ### Follow-up retry differences
 

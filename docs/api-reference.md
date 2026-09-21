@@ -130,6 +130,39 @@ const plugin = definePlugin({
 });
 ```
 
+#### Streaming-aware plugin tools
+
+`tools` may be a function of `StreamingContext`. It receives the request's
+writer: the one `streamDataResponse()` creates, or the one a caller passes as
+`GenerateOptions.streamingContext` to `generate()`, `stream()`,
+`streamResponse()` or `streamRaw()`. `ctx.writer` is `null` when the request
+has neither. Any object with `write()` (a `StreamingWriter`) is accepted.
+
+```typescript
+const plugin = definePlugin({
+  name: "widgets",
+  tools: (ctx) => ({
+    show: tool({
+      inputSchema: z.object({ label: z.string() }),
+      execute: async ({ label }) => {
+        ctx.writer?.write({ type: "data-widget", data: { label } });
+        return "shown";
+      },
+    }),
+  }),
+});
+
+for await (const part of agent.stream({
+  prompt,
+  streamingContext: { writer: { write: (chunk) => emitToClient(chunk) } },
+})) { /* ... */ }
+```
+
+The same context reaches every tool as
+`ExtendedToolExecutionOptions.streamingContext`, `call_tool` for deferred
+plugins, and subagents registered with `streaming: true`. Subagents without
+`streaming: true` never receive the parent's writer.
+
 ### defineSkill
 
 ```typescript
