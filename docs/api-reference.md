@@ -233,6 +233,7 @@ if (hasExecuteCapability(backend)) {
 | `createSecretsFilterHooks()` | Secrets redaction |
 | `createCacheHooks()` | Response caching |
 | `createObservabilityEventHooks()` | Observability events |
+| `chainPostToolUseHooks(callbacks)` | Compose `PostToolUse` transforms so each sees the previous `updatedResult`; register the result once |
 
 ### Hook Types
 

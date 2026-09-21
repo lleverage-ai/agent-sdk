@@ -538,6 +538,87 @@ export function createToolHook(
 }
 
 /**
+ * Composes `PostToolUse` callbacks so each one sees the previous one's
+ * transformed `tool_response`, and returns the final value as one
+ * `updatedResult`.
+ *
+ * Registered side by side, `PostToolUse` hooks all receive the original
+ * `tool_response` and {@link extractUpdatedResult} keeps only the first
+ * non-undefined `updatedResult`; registration order picks one transform, it
+ * never stacks them. Use this when transforms must accumulate, such as capping
+ * an oversized output and then annotating the capped value with a notice.
+ *
+ * Semantics:
+ *
+ * - Callbacks run sequentially, in the given order, and are awaited.
+ * - A callback that returns no `updatedResult` leaves the running value
+ *   unchanged; the next callback still sees the current value.
+ * - A callback returning `updatedResult: undefined` is a no-op, so a callback
+ *   cannot unset a previous transform (matches the SDK's own extraction).
+ * - Returns `undefined` when no callback transformed, so the pipeline keeps
+ *   the tool's own output exactly as it would with no hooks.
+ * - Inputs that are not `PostToolUse` are ignored (returns `undefined`).
+ * - Other fields on inner outputs (for example `systemMessage`) are not
+ *   merged; only the transform is threaded through.
+ * - Errors thrown by a callback propagate; the pipeline's per-hook timeout
+ *   and error containment apply to the composed callback as a whole.
+ *
+ * Register the returned callback once (as a `PostToolUse` entry or inside a
+ * {@link HookMatcher}); do not also register the inner callbacks.
+ *
+ * @param callbacks - `PostToolUse` callbacks in the order their transforms apply
+ * @returns One callback that applies every transform in sequence
+ *
+ * @example
+ * ```typescript
+ * const agent = createAgent({
+ *   model,
+ *   hooks: {
+ *     PostToolUse: [
+ *       { callback: chainPostToolUseHooks([capToolOutput, appendStepBudgetNotice]) },
+ *     ],
+ *   },
+ * });
+ * ```
+ *
+ * @category Hooks
+ */
+export function chainPostToolUseHooks(callbacks: readonly HookCallback[]): HookCallback {
+  return async (input, toolUseId, context) => {
+    if (input.hook_event_name !== "PostToolUse") {
+      return undefined;
+    }
+
+    let currentResponse: unknown = input.tool_response;
+    let transformed = false;
+
+    for (const callback of callbacks) {
+      const output = await callback(
+        { ...input, tool_response: currentResponse },
+        toolUseId,
+        context,
+      );
+      const updatedResult = output?.hookSpecificOutput?.updatedResult;
+      if (updatedResult !== undefined) {
+        currentResponse = updatedResult;
+        transformed = true;
+      }
+    }
+
+    if (!transformed) {
+      return undefined;
+    }
+
+    return {
+      hookSpecificOutput: {
+        hookEventName: "PostToolUse",
+        updatedResult: currentResponse,
+      },
+    };
+  };
+}
+
+/**
  * Invokes custom hook callbacks registered under a specific event name.
  *
  * Custom hooks are defined by plugins via the `Custom` field on `HookRegistration`.

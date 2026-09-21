@@ -317,6 +317,7 @@ export {
 // Hooks
 export {
   aggregatePermissionDecisions,
+  chainPostToolUseHooks,
   createToolHook,
   extractRespondWith,
   extractRetryDecision,
