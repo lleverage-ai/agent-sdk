@@ -311,16 +311,26 @@ const contextManager = createContextManager({
     return { text: result.text ?? "", usage: result.usage };
   },
   commitCompaction: async (result) => {
-    // result.summaryUsage and result.summaryDurationMs describe the summary call.
+    // summaryUsage is what the executor reported. summaryDurationMs spans
+    // compact() from entry to the built result, not only the model call.
     const outcome = await store.saveCompaction(threadId, result);
     if (outcome.status !== "committed") log.warn("compaction not committed", outcome);
   },
 });
 ```
 
-`CompactionResult` carries `summaryDurationMs` for every compaction and
-`summaryUsage` when the executor reported it. Neither option changes when
-compaction runs, what is retained, or the prompts sent to the model.
+When a summary is generated, `CompactionResult` carries `summaryDurationMs`,
+measured from entry to `compact()` through construction of the result (token
+counting and retention selection included, not only the model call), and
+`summaryUsage` when the executor reported it. Neither field is set on the
+no-op result returned when there is nothing to compact. Neither option
+changes when compaction runs, what is retained, or the prompts sent to the
+model.
+
+An executor's empty or whitespace-only `text` is accepted exactly as an empty
+agent-generated summary is: the compaction proceeds with an empty summary
+message. Reject it inside the executor if that must fail the compaction, and
+refuse to commit it inside `commitCompaction` if it must not be persisted.
 
 ## Error-Triggered Fallback
 

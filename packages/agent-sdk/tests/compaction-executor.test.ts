@@ -137,6 +137,27 @@ describe("summarizer executor", () => {
     );
   });
 
+  it("accepts empty executor text exactly as the agent path accepts an empty summary", async () => {
+    // Parity, not endorsement: the built-in path already proceeds on
+    // `result.text ?? ""`, and a host's commit step decides whether an empty
+    // summary is persisted. Throwing here would fail the user's turn instead.
+    const { agent: emptyAgent } = agentStub("");
+    const viaAgent = await manager().compact(transcript, emptyAgent, "hard_cap");
+    const { agent } = agentStub();
+    const viaExecutor = await manager({ summarizer: async () => ({ text: "   " }) }).compact(
+      transcript,
+      agent,
+      "hard_cap",
+    );
+    expect(viaAgent.summary).toBe("");
+    expect(viaExecutor.summary).toBe("   ");
+    expect(viaExecutor.messagesAfter).toBe(viaAgent.messagesAfter);
+    expect(viaExecutor.newMessages[1]).toEqual({
+      role: "assistant",
+      content: "[Previous conversation summary]\n\n   ",
+    });
+  });
+
   it("does not consult the executor when there is nothing to compact", async () => {
     const summarizer = vi.fn(async () => ({ text: "unused" }));
     const { agent } = agentStub();
@@ -146,6 +167,8 @@ describe("summarizer executor", () => {
     );
     expect(summarizer).not.toHaveBeenCalled();
     expect(result.newMessages).toBe(transcript);
+    expect(result.summaryDurationMs).toBeUndefined();
+    expect(result.summaryUsage).toBeUndefined();
   });
 });
 
