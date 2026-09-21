@@ -1244,7 +1244,11 @@ export interface SummaryUsage {
 export interface SummaryResponse {
   /** Generated summary text. */
   text: string;
-  /** Usage of the summary generation, when the executor can report it. */
+  /**
+   * Usage of the summary generation, when the executor can report it. Only
+   * finite, non-negative counts are kept on the result; anything else is
+   * dropped without failing the compaction.
+   */
   usage?: SummaryUsage;
 }
 
@@ -1679,7 +1683,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         if (typeof response?.text !== "string") {
           throw new Error("Summary executor did not return text");
         }
-        if (response.usage) summaryUsage = response.usage;
+        summaryUsage = normalizeSummaryUsage(response.usage) ?? summaryUsage;
         return response.text;
       }
       const summaryResult = await agent.generate({
@@ -2081,6 +2085,26 @@ function getNextSummaryTier(existingSummaries: ModelMessage[]): number {
   }, 0);
 
   return highestTier + 1;
+}
+
+/**
+ * Keep only finite, non-negative token counts from an executor-reported usage.
+ * Returns undefined when nothing usable remains, so malformed telemetry is
+ * dropped rather than stored on the result or allowed to fail the compaction.
+ *
+ * @internal
+ */
+function normalizeSummaryUsage(usage: unknown): SummaryUsage | undefined {
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const source = usage as Record<string, unknown>;
+  const normalized: SummaryUsage = {};
+  for (const key of ["inputTokens", "outputTokens", "totalTokens"] as const) {
+    const value = source[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+      normalized[key] = value;
+    }
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
 }
 
 function getCompletedSummaryText(result: { status: string; text?: string }): string {

@@ -88,6 +88,25 @@ describe("summarizer executor", () => {
     expect(viaAgent.summaryDurationMs).toBeGreaterThanOrEqual(0);
   });
 
+  it("keeps only finite non-negative counts from reported usage and drops the rest", async () => {
+    const { agent } = agentStub();
+    const mixed = await manager({
+      summarizer: async () => ({
+        text: "s",
+        usage: { inputTokens: 12, outputTokens: -1, totalTokens: Number.NaN },
+      }),
+    }).compact(transcript, agent);
+    expect(mixed.summaryUsage).toEqual({ inputTokens: 12 });
+
+    for (const usage of [true, "30", { totalTokens: Number.POSITIVE_INFINITY }, null]) {
+      const result = await manager({
+        summarizer: async () => ({ text: "s", usage: usage as never }),
+      }).compact(transcript, agent);
+      expect(result.summaryUsage).toBeUndefined();
+      expect(result.summary).toBe("s");
+    }
+  });
+
   it("passes strategy and tier for structured and tiered summaries", async () => {
     const { agent } = agentStub();
     const requests: SummaryRequest[] = [];
