@@ -16,15 +16,32 @@ import { isActiveRunStatus } from "./types.js";
  * - `ILedgerStore` for run records and canonical messages
  * - The accumulator for transforming events into messages
  *
+ * @typeParam TBeginRunOptions - The options {@link RunManager.beginRun} accepts.
+ *   Inferred from the ledger store, so a store declaring extra per-run
+ *   fields on `beginRun` makes the manager accept the same fields and forward
+ *   them unchanged. Defaults to {@link BeginRunOptions}.
+ *
+ * @example
+ * ```typescript
+ * interface HostBeginRunOptions extends BeginRunOptions {
+ *   clientRunRequestId?: string;
+ * }
+ * declare const store: ILedgerStore<HostBeginRunOptions>;
+ *
+ * const manager = new RunManager(store, eventStore);
+ * // Typed without a cast; the store receives the same object.
+ * await manager.beginRun({ threadId: "t1", clientRunRequestId: "req-1" });
+ * ```
+ *
  * @category RunManager
  */
-export class RunManager {
-  private ledgerStore: ILedgerStore;
+export class RunManager<TBeginRunOptions extends BeginRunOptions = BeginRunOptions> {
+  private ledgerStore: ILedgerStore<TBeginRunOptions>;
   private eventStore: IEventStore<StreamEvent>;
   private logger: Logger;
 
   constructor(
-    ledgerStore: ILedgerStore,
+    ledgerStore: ILedgerStore<TBeginRunOptions>,
     eventStore: IEventStore<StreamEvent>,
     options?: { logger?: Logger },
   ) {
@@ -38,10 +55,14 @@ export class RunManager {
    * transitions it to "streaming" status. The event stream is created
    * implicitly on the first call to {@link appendEvents}.
    *
+   * The options object is passed to `ILedgerStore.beginRun()` as-is: fields
+   * beyond {@link BeginRunOptions} declared by the store's `TBeginRunOptions`
+   * reach the store unchanged and are neither read nor validated here.
+   *
    * @param options - Run creation options
    * @returns The newly created run record
    */
-  async beginRun(options: BeginRunOptions): Promise<RunRecord> {
+  async beginRun(options: TBeginRunOptions): Promise<RunRecord> {
     const run = await this.ledgerStore.beginRun(options);
     try {
       await this.ledgerStore.activateRun(run.runId);
