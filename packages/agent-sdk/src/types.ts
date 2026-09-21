@@ -1338,7 +1338,9 @@ export interface AgentOptions {
    *
    * For subagents with `streaming: true`, the task tool will pass
    * the streaming context, allowing them to write directly to the
-   * parent's data stream. This requires using `streamDataResponse()`.
+   * parent's data stream. The parent request needs a streaming context:
+   * either `streamDataResponse()`, which creates its own, or a caller-supplied
+   * {@link GenerateOptions.streamingContext} on any other generation mode.
    *
    * @example
    * ```typescript
@@ -3948,8 +3950,10 @@ export interface SubagentCreateContext {
    * Streaming context from the parent agent.
    *
    * Only provided when SubagentDefinition.streaming is true and the
-   * parent agent is using streamDataResponse(). Allows the subagent
-   * to write custom data directly to the parent's data stream.
+   * parent request has a streaming context, from `streamDataResponse()` or
+   * from a caller-supplied {@link GenerateOptions.streamingContext} on
+   * `generate()`, `stream()`, `streamResponse()` or `streamRaw()`. Allows
+   * the subagent to write custom data directly to the parent's data stream.
    *
    * The context includes metadata identifying this subagent as the
    * source of any streamed data.
