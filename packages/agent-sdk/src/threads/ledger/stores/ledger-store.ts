@@ -18,16 +18,23 @@ import type {
  * at the run and message level with side effects (supersession),
  * idempotency guards, and transactional semantics.
  *
+ * @typeParam TBeginRunOptions - The options accepted by {@link ILedgerStore.beginRun}.
+ *   A host store that records extra per-run fields (its own identifiers,
+ *   render targets, admission tokens) declares a subtype of
+ *   {@link BeginRunOptions} here; {@link RunManager} infers the same type from
+ *   the store and forwards those options unchanged. The SDK never reads or
+ *   validates the extra fields. Defaults to {@link BeginRunOptions}.
+ *
  * @category Stores
  */
-export interface ILedgerStore {
+export interface ILedgerStore<TBeginRunOptions extends BeginRunOptions = BeginRunOptions> {
   /**
    * Begin a new run in a thread.
    *
    * @param options - Run creation options
    * @returns The newly created run record with status "created"
    */
-  beginRun(options: BeginRunOptions): Promise<RunRecord>;
+  beginRun(options: TBeginRunOptions): Promise<RunRecord>;
 
   /**
    * Transition a run from "created" to "streaming".

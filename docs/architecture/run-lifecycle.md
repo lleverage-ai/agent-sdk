@@ -48,6 +48,26 @@ A Run represents a single agent generation cycle — from receiving input to pro
 | streaming | committed | `finalizeRun({ status: "committed", messages })` | Persists transcript and marks same-fork committed runs as superseded |
 | streaming | failed | `finalizeRun({ status: "failed" })` or recovery | Marks run terminal without committing transcript messages |
 | streaming | cancelled | `finalizeRun({ status: "cancelled" })` or recovery | Marks run terminal without committing transcript messages |
+
+### Host-specific run creation options
+
+`ILedgerStore` and `RunManager` take an optional `TBeginRunOptions` type
+parameter (default `BeginRunOptions`). A host store whose `beginRun()` records
+extra per-run fields declares that wider type; `new RunManager(store, events)`
+infers it, so `manager.beginRun()` accepts the same fields and passes the
+object to the store unchanged. The SDK does not read or validate those fields,
+and the `beginRun()` → `activateRun()` → `recoverRun({ action: "fail" })`
+sequence above is the same for every option type.
+
+```typescript
+interface HostBeginRunOptions extends BeginRunOptions {
+  clientRunRequestId?: string;
+}
+declare const store: ILedgerStore<HostBeginRunOptions>;
+
+const manager = new RunManager(store, eventStore);
+await manager.beginRun({ threadId: "t1", clientRunRequestId: "req-1" });
+```
 | committed | superseded | A newer committed run finalizes at the same `forkFromMessageId` | Prior committed run is marked superseded |
 
 ## beginRun() Fork Semantics

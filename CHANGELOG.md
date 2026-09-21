@@ -13,6 +13,14 @@ remaining changes and validating the consumer.
 
 ### Added
 
+- `ILedgerStore<TBeginRunOptions>` and `RunManager<TBeginRunOptions>` (threads
+  ledger): an optional type parameter, defaulting to `BeginRunOptions`, for
+  stores whose `beginRun()` records extra per-run fields. `new RunManager(store,
+  eventStore)` infers it from the store, so `manager.beginRun()` accepts those
+  fields without a cast and forwards the options object unchanged. No runtime
+  change: the SDK still neither reads nor validates fields beyond
+  `BeginRunOptions`, and the activate / recover-on-activation-failure sequence
+  is unchanged. Existing non-generic usage compiles as before.
 - `chainPostToolUseHooks(callbacks)`: composes `PostToolUse` callbacks so each
   sees the previous one's `updatedResult` as its `tool_response` and the
   final value is returned as one `updatedResult`. Side-by-side `PostToolUse`
