@@ -13,6 +13,18 @@ remaining changes and validating the consumer.
 
 ### Added
 
+- `ContextManagerOptions.summarizer`: a `SummaryExecutor` that generates
+  compaction summaries in place of the agent passed to `compact()`. It
+  receives the exact summary messages, output limit, trigger, strategy and
+  tier the built-in path uses and returns text plus optional usage, so hosts
+  can run summaries on an isolated tool-free agent with a deadline and abort
+  signal without wrapping `agent.generate`. A rejection fails the compaction.
+- `ContextManagerOptions.commitCompaction`: awaited after `onCompact` and
+  before `compact()` resolves, so awaiting compaction also awaits a durable
+  write. Rejections are contained and do not open the failure circuit.
+- `CompactionResult.summaryUsage` (executor-reported) and
+  `CompactionResult.summaryDurationMs`. Exported `SummaryExecutor`,
+  `SummaryRequest`, `SummaryResponse`, `SummaryUsage`.
 - `PostCheckpointLoad` hook. Fires each time the checkpointer's `load()`
   returns a checkpoint (cached re-reads within an agent instance do not
   re-fire) and before that generation's compaction check, with `PostCheckpointLoadInput` (`thread_id`, `step`,

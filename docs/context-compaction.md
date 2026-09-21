@@ -274,6 +274,64 @@ const agent = createAgent({
 });
 ```
 
+## Isolated Summaries and Durable Writes
+
+By default `compact()` generates its summary through the agent it is given,
+with `_skipCompaction` set so the summary request cannot itself compact. Two
+options let a host take over the parts around that generation without
+replacing `compact()` itself.
+
+`summarizer` replaces the summary generation. It receives exactly the
+messages and output limit the built-in path would send, plus the compaction
+`trigger`, `strategy` and (for tiered summaries) `tier`, and returns the
+summary text and optionally its token usage. The agent passed to `compact()`
+is not called. Use it to run summaries on a separate agent with no tools or
+hooks, bound them with a deadline or the run's abort signal, or report their
+cost. A rejection fails the compaction the same way a failed model call does.
+
+`commitCompaction` is awaited after the result is built and `onCompact` has
+run, before `compact()` resolves, so a caller awaiting compaction also awaits
+the durable write. A rejection is contained: `compact()` still resolves with
+the in-memory result and the failure circuit records a success, because a
+lost write costs a recompute later, not the active generation. The callback
+owns its own logging and outcome classification.
+
+```typescript
+const summariser = createAgent({ model, maxSteps: 1, disabledCoreTools: ALL_CORE_TOOLS });
+
+const contextManager = createContextManager({
+  maxTokens: 100_000,
+  summarizer: async ({ messages, maxTokens }) => {
+    const result = await summariser.generate({
+      messages,
+      maxTokens,
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (result.status !== "complete") throw new Error("Summary did not complete");
+    return { text: result.text ?? "", usage: result.usage };
+  },
+  commitCompaction: async (result) => {
+    // summaryUsage is what the executor reported. summaryDurationMs spans
+    // compact() from entry to the built result, not only the model call.
+    const outcome = await store.saveCompaction(threadId, result);
+    if (outcome.status !== "committed") log.warn("compaction not committed", outcome);
+  },
+});
+```
+
+When a summary is generated, `CompactionResult` carries `summaryDurationMs`,
+measured from entry to `compact()` through construction of the result (token
+counting and retention selection included, not only the model call), and
+`summaryUsage` when the executor reported it. Neither field is set on the
+no-op result returned when there is nothing to compact. Neither option
+changes when compaction runs, what is retained, or the prompts sent to the
+model.
+
+An executor's empty or whitespace-only `text` is accepted exactly as an empty
+agent-generated summary is: the compaction proceeds with an empty summary
+message. Reject it inside the executor if that must fail the compaction, and
+refuse to commit it inside `commitCompaction` if it must not be persisted.
+
 ## Error-Triggered Fallback
 
 When enabled, the SDK automatically attempts emergency compaction if a context length error occurs:
