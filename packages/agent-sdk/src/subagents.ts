@@ -161,6 +161,7 @@ const INHERITABLE_HOOK_EVENTS = [
   "PostCompact",
   "InterruptRequested",
   "InterruptResolved",
+  "PostCheckpointLoad",
   "Custom",
 ] as const satisfies readonly InheritableHookEvent[];
 
