@@ -152,4 +152,7 @@ jobs:
             echo "::error::ACTIONS_ID_TOKEN_REQUEST_URL is unset: the job did not receive id-token: write. Check org/repo Actions workflow permissions."
             exit 1
           fi
-          npm publish --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
+          # Verbose so the OIDC exchange outcome is visible: npm never throws on
+          # OIDC failure, it logs at verbose and falls back to token auth, which
+          # surfaces only as ENEEDAUTH. The id_token itself is not logged.
+          npm publish --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org --loglevel verbose
