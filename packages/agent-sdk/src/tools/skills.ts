@@ -697,6 +697,26 @@ export interface SkillToolOptions {
    * @defaultValue {@link DEFAULT_SKILL_CONTINUATION_INSTRUCTION}
    */
   continuationInstruction?: string | false;
+
+  /**
+   * When the tool's model-facing description and input schema are computed.
+   *
+   * - `"snapshot"` (default): computed once, at `createSkillTool()`. The tool
+   *   definition the model sees is byte-identical on every step of a run, so
+   *   provider prompt caches keyed on the tool block stay warm after a skill
+   *   loads. Skills registered or loaded after creation are not reflected
+   *   until the tool is recreated; `execute` still consults the live registry.
+   * - `"live"`: an AI SDK function description and lazy schema, re-evaluated
+   *   each time a request is prepared. A skill registered after creation is
+   *   advertised (and its `args` accepted) on the next request, and a loaded
+   *   skill drops out of the catalogue. Use when the registry changes while
+   *   one tool instance stays in use, and accept the per-step definition
+   *   churn. Code reading `tool.description` as a string must resolve the
+   *   function form (see `resolveStaticToolDescription`).
+   *
+   * @defaultValue "snapshot"
+   */
+  catalogue?: "snapshot" | "live";
 }
 
 /**
@@ -738,7 +758,7 @@ export const DEFAULT_SKILL_CONTINUATION_INSTRUCTION =
  * @category Tools
  */
 export function createSkillTool(options: SkillToolOptions): Tool {
-  const { registry, descriptionPrefix } = options;
+  const { registry, descriptionPrefix, catalogue = "snapshot" } = options;
   const continuationInstruction =
     options.continuationInstruction === undefined
       ? DEFAULT_SKILL_CONTINUATION_INSTRUCTION
@@ -850,65 +870,72 @@ export function createSkillTool(options: SkillToolOptions): Tool {
   // commit to a framing of the task in the same call that loads the
   // instructions, so the framing lands in context before the instructions it
   // is supposed to follow.
-  //
-  // Both the description and the schema are evaluated lazily so the AI SDK
-  // re-reads them on every request (when preparing the tool list for the
-  // model and when validating a tool call). `registry.register()` and
-  // `registry.load()` mutate the registry after this tool is created; a
-  // description captured at creation time would keep advertising loaded
-  // skills and omit newly registered ones, and a fixed schema would strip the
-  // `args` the model supplies for a late-registered function-instruction
-  // skill.
-  const inputSchema = (): Schema<SkillToolInput> =>
-    zodSchema<SkillToolInput>(
-      registry.anySkillConsumesArgs()
-        ? z.object({
-            skill_name: z.string().describe("Name of the skill to load"),
-            args: z.string().optional().describe("Optional arguments to pass to the skill"),
-          })
-        : z.object({
-            skill_name: z.string().describe("Name of the skill to load"),
-          }),
-    );
+  const buildInputSchema = (): z.ZodType<SkillToolInput> =>
+    registry.anySkillConsumesArgs()
+      ? z.object({
+          skill_name: z.string().describe("Name of the skill to load"),
+          args: z.string().optional().describe("Optional arguments to pass to the skill"),
+        })
+      : z.object({
+          skill_name: z.string().describe("Name of the skill to load"),
+        });
 
-  return tool({
-    description: buildDescription,
-    inputSchema,
-    execute: async ({ skill_name, args }: SkillToolInput) => {
-      const result = registry.load(skill_name, args);
+  const execute = async ({ skill_name, args }: SkillToolInput) => {
+    const result = registry.load(skill_name, args);
 
-      if (!result.success) {
-        return {
-          success: false,
-          error: result.error,
-        };
-      }
-
-      // Format the response
-      const toolNames = Object.keys(result.tools);
-      const skill = registry.get(skill_name);
-      const content = buildSkillContentBlock(skill_name, result.instructions, toolNames, skill);
-      const response: Record<string, unknown> = {
-        success: true,
-        skill: skill_name,
-        newTools: toolNames,
-        instructions: result.instructions,
-        content,
-        skillPath: skill?.skillPath,
+    if (!result.success) {
+      return {
+        success: false,
+        error: result.error,
       };
+    }
 
-      if (toolNames.length === 0) {
-        response.message = withContinuation(
-          `Loaded skill '${skill_name}' (provides instructions only, no new tools)`,
-        );
-      } else {
-        response.message = withContinuation(
-          `Loaded skill '${skill_name}'. New tools available: ${toolNames.join(", ")}`,
-        );
-      }
+    // Format the response
+    const toolNames = Object.keys(result.tools);
+    const skill = registry.get(skill_name);
+    const content = buildSkillContentBlock(skill_name, result.instructions, toolNames, skill);
+    const response: Record<string, unknown> = {
+      success: true,
+      skill: skill_name,
+      newTools: toolNames,
+      instructions: result.instructions,
+      content,
+      skillPath: skill?.skillPath,
+    };
 
-      return response;
-    },
+    if (toolNames.length === 0) {
+      response.message = withContinuation(
+        `Loaded skill '${skill_name}' (provides instructions only, no new tools)`,
+      );
+    } else {
+      response.message = withContinuation(
+        `Loaded skill '${skill_name}'. New tools available: ${toolNames.join(", ")}`,
+      );
+    }
+
+    return response;
+  };
+
+  if (catalogue === "live") {
+    // Function description and lazy schema: the AI SDK re-reads both when it
+    // prepares each request (tool list for the model, tool-call validation),
+    // so `registry.register()` / `registry.load()` after creation are
+    // reflected without recreating the tool, and a late-registered
+    // function-instruction skill's `args` are not stripped by a fixed schema.
+    const inputSchema = (): Schema<SkillToolInput> => zodSchema<SkillToolInput>(buildInputSchema());
+    return tool({
+      description: buildDescription,
+      inputSchema,
+      execute,
+    });
+  }
+
+  // Snapshot: one definition for the tool's lifetime, so the model-facing
+  // bytes do not change between steps after a skill loads.
+  return tool({
+    description: buildDescription(),
+    inputSchema: buildInputSchema(),
+    execute,
   });
 }
 

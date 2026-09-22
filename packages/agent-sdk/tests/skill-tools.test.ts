@@ -585,8 +585,24 @@ describe("createSkillTool", () => {
       expect(await schemaKeys(skillTool)).toEqual(["skill_name", "args"]);
     });
 
-    it("reflects skills registered after the tool was created", async () => {
+    it("snapshot catalogue keeps the schema fixed after the tool was created", async () => {
       const skillTool = createSkillTool({ registry });
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name"]);
+      expect(typeof skillTool.inputSchema).not.toBe("function");
+
+      registry.register({
+        name: "review",
+        description: "Code review",
+        instructions: (args) => `Review target: ${args}`,
+      });
+
+      // Same definition; recreate the tool to advertise the new skill.
+      expect(await schemaKeys(skillTool)).toEqual(["skill_name"]);
+      expect(await schemaKeys(createSkillTool({ registry }))).toEqual(["skill_name", "args"]);
+    });
+
+    it("live catalogue reflects skills registered after the tool was created", async () => {
+      const skillTool = createSkillTool({ registry, catalogue: "live" });
       expect(await schemaKeys(skillTool)).toEqual(["skill_name"]);
 
       registry.register({
@@ -632,8 +648,26 @@ describe("createSkillTool", () => {
       expect(describeTool(skillTool)).not.toContain("Only when the user asks");
     });
 
-    it("re-evaluates the description per request as the registry changes", () => {
+    it("snapshot catalogue is a string captured at creation", () => {
       const skillTool = createSkillTool({ registry });
+      expect(typeof skillTool.description).toBe("string");
+      const before = describeTool(skillTool);
+
+      registry.register({
+        name: "kubernetes",
+        description: "Kubernetes cluster operations",
+        instructions: "Use kubectl carefully.",
+      });
+      registry.load("git");
+
+      // Unchanged for this instance; a new instance sees the registry.
+      expect(describeTool(skillTool)).toBe(before);
+      expect(describeTool(createSkillTool({ registry }))).toContain("kubernetes");
+      expect(describeTool(createSkillTool({ registry }))).not.toContain("- git:");
+    });
+
+    it("live catalogue re-evaluates the description per request as the registry changes", () => {
+      const skillTool = createSkillTool({ registry, catalogue: "live" });
       expect(typeof skillTool.description).toBe("function");
 
       // A skill registered after the tool was created is advertised.
