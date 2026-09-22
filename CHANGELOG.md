@@ -204,6 +204,22 @@ remaining changes and validating the consumer.
   checkpoint with your checkpointer, save it under the new thread id, and call
   `generate({ threadId: newId })`; in-thread branching of ledger transcripts
   (`beginRun({ forkFromMessageId })`) is unaffected.
+- **BREAKING**: `agent.streamResponse()`. It was `streamDataResponse()` without
+  the tool `StreamingContext`: the same `createUIMessageStream` + `streamText()`
+  shape, `createStreamLifecycleCallbacks`, `runUIStreamFollowUps` follow-ups and
+  `respondWith` plain-text short-circuit, but it did not persist a pending
+  interrupt or fire `InterruptRequested`. Call `streamDataResponse()` instead;
+  the returned `Response` is the same UI message stream. If you need to hand
+  tools your own writer, use `stream()`, `streamRaw()` or `generate()` with
+  `GenerateOptions.streamingContext`. `createMockAgent()` and
+  `createRecordingAgent()` drop their `streamResponse()` pass-throughs; the mock
+  now serves the plain-text `Response` from `streamDataResponse()`.
+- **BREAKING**: `KeyValueStoreSaver`, `createKeyValueStoreSaver()` and
+  `KeyValueStoreSaverOptions`. It was a JSON blob wrapper over a
+  `KeyValueStore`; implement `BaseCheckpointSaver` (`save`/`load`/`delete`,
+  optional `list`) over your store directly — `docs/persistence.md` shows the
+  shape. `KeyValueStore`, `InMemoryStore`, `PersistentBackend` and `KVTaskStore`
+  are unchanged.
 
 ### Fixed
 

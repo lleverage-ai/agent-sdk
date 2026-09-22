@@ -614,7 +614,7 @@ describe("workflow execution gate (LLE-12792)", () => {
     expect(target.failureHook).not.toHaveBeenCalled();
   });
 
-  it.each(["generate", "stream", "streamRaw", "streamResponse", "streamDataResponse"] as const)(
+  it.each(["generate", "stream", "streamRaw", "streamDataResponse"] as const)(
     "blocks protected hooks and bodies in %s",
     async (mode) => {
       const authorize = vi.fn(() => ({ decision: "deny" as const }));
@@ -662,7 +662,7 @@ describe("workflow execution gate (LLE-12792)", () => {
   );
 
   it.each(
-    (["stream", "streamRaw", "streamResponse", "streamDataResponse"] as const).flatMap((mode) =>
+    (["stream", "streamRaw", "streamDataResponse"] as const).flatMap((mode) =>
       (["canUseTool", "needsApproval"] as const).map((callback) => ({ mode, callback })),
     ),
   )("authorises before $callback in $mode", async ({ mode, callback }) => {

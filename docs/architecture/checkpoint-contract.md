@@ -316,7 +316,7 @@ specified. Blindly saving on every `stepFinished` is not compatible.
 | --- | --- |
 | `generate()` | Final save; the per-step flag is ignored. |
 | `stream()` | Final save; the per-step flag is ignored. |
-| `streamResponse()`, `streamRaw()`, `streamDataResponse()` | Flag-gated step saves plus final save. |
+| `streamRaw()`, `streamDataResponse()` | Flag-gated step saves plus final save. |
 
 This table is not a universal save-count formula: interrupts, retries, follow-ups,
 cache hits and error paths need their own regression cases. Test the exact
@@ -419,8 +419,9 @@ both the consumer and SDK internals, including subagent/team callers.
 | `PreGenerate.respondWith` | Keep; consumer interception relies on it. Test each mode's existing short-circuit behaviour. |
 | `checkpointAfterToolCall` | Candidate removal only with explicit consumer migration and intentional replacement save/barrier semantics. The consumer passes it today. |
 | `forkSession` / `forkedSessionId` | Removed for 1.0 (no consumer or internal caller). In-thread branching remains the ledger's `forkFromMessageId`. |
-| `KeyValueStoreSaver` | Proposed 1.0 removal needs a real migration route for existing adapters. A KV-backed ledger entails concurrency, ordering and recovery contracts, not a ten-line blob wrapper. |
-| `streamResponse()`, `streamRaw()` | Proposed removals need verified absence or migration of consumer and internal callers. Do not infer that an SDK subagent cannot call them from a top-level consumer usage search. |
+| `KeyValueStoreSaver` | Removed for 1.0 (no consumer caller). A `BaseCheckpointSaver` over a KV store is a few lines; see `docs/persistence.md`. |
+| `streamResponse()` | Removed for 1.0 (no consumer or internal caller); `streamDataResponse()` is the `Response`-shaped mode. |
+| `streamRaw()` | Retained: the SDK's own streaming-subagent path (`tools/task.ts`) calls it. |
 | `streamDataResponse()` | Provisionally retain for generic HTTP use; a replacement recipe would need equivalent streaming/tool context. |
 | Internal checkpoint write methods and ledger `resumeSaver` | Remove only when their replacements reproduce the required behaviour; not merely because a sink interface exists. |
 

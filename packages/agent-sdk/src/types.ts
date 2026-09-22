@@ -1303,8 +1303,8 @@ export interface AgentOptions {
    * Whether agent methods should wait for background tasks to complete
    * and automatically trigger follow-up generations with their results.
    *
-   * When true (default), generate(), stream(), streamResponse(), and
-   * streamDataResponse() won't return until all background tasks have
+   * When true (default), generate(), stream() and streamDataResponse()
+   * won't return until all background tasks have
    * completed and been processed — including tasks spawned by follow-up
    * generations.
    *
@@ -1406,7 +1406,7 @@ export type PluginLoadingMode = "eager" | "proxy";
  * const result = await agent.generate({ prompt: "Hello" });
  *
  * // Stream for use with useChat
- * const response = await agent.streamResponse({ prompt: "Hello" });
+ * const response = await agent.streamDataResponse({ prompt: "Hello" });
  * ```
  *
  * @category Agent
@@ -1447,7 +1447,7 @@ export interface Agent {
    * ```typescript
    * const agent = createAgent({ model, plugins: [mcpPlugin] });
    * await agent.ready; // Wait for MCP connections
-   * return agent.streamResponse({ messages });
+   * return agent.streamDataResponse({ messages });
    * ```
    */
   readonly ready: Promise<void>;
@@ -1468,24 +1468,6 @@ export interface Agent {
    * @yields Stream parts as they're generated
    */
   stream(options: GenerateOptions): AsyncGenerator<StreamPart>;
-
-  /**
-   * Generate a streaming Response for use with useChat/AI SDK UI.
-   * Returns a web-standard Response with proper stream protocol.
-   *
-   * @param options - Generation options including the prompt
-   * @returns A web Response that can be returned from API routes
-   *
-   * @example
-   * ```typescript
-   * // In a Next.js API route
-   * export async function POST(req: Request) {
-   *   const { messages } = await req.json();
-   *   return agent.streamResponse({ messages });
-   * }
-   * ```
-   */
-  streamResponse(options: GenerateOptions): Promise<Response>;
 
   /**
    * Get the underlying streamText result for advanced use cases.
@@ -2278,8 +2260,7 @@ export interface GenerateOptions {
   /**
    * Request-local streaming context for this generation's tools.
    *
-   * `generate()`, `stream()`, `streamResponse()` and `streamRaw()` hand this
-   * context to function-based plugin tools (as `ctx`), to `call_tool` and MCP
+   * `generate()`, `stream()` and `streamRaw()` hand this context to function-based plugin tools (as `ctx`), to `call_tool` and MCP
    * tools, to every tool through
    * {@link ExtendedToolExecutionOptions.streamingContext}, and to the task
    * tool so subagents registered with `streaming: true` can stream into it.
@@ -3928,7 +3909,7 @@ export interface SubagentCreateContext {
    * Only provided when SubagentDefinition.streaming is true and the
    * parent request has a streaming context, from `streamDataResponse()` or
    * from a caller-supplied {@link GenerateOptions.streamingContext} on
-   * `generate()`, `stream()`, `streamResponse()` or `streamRaw()`. Allows
+   * `generate()`, `stream()` or `streamRaw()`. Allows
    * the subagent to write custom data directly to the parent's data stream.
    *
    * The context includes metadata identifying this subagent as the

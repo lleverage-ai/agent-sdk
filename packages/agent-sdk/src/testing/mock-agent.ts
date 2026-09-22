@@ -433,7 +433,7 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
       }
     },
 
-    async streamResponse(genOptions: GenerateOptions): Promise<Response> {
+    async streamDataResponse(genOptions: GenerateOptions): Promise<Response> {
       streamCalls.push({ ...genOptions });
 
       const response = await getNextResponse(genOptions);
@@ -451,17 +451,12 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
         });
       }
 
-      // Return a simple text response
+      // Return a simple text response; the mock has no real streaming tools
+      // to exercise, so no data-part protocol is emitted.
       return new Response(response.text, {
         status: 200,
         headers: { "Content-Type": "text/plain" },
       });
-    },
-
-    async streamDataResponse(genOptions: GenerateOptions): Promise<Response> {
-      // For mock agent, streamDataResponse behaves the same as streamResponse
-      // since we don't have real streaming tools to exercise
-      return mockAgent.streamResponse(genOptions);
     },
 
     async streamRaw(genOptions: GenerateOptions) {

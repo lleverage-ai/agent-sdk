@@ -981,8 +981,8 @@ describe("generation mode parity", () => {
     }) => stream.done.then(() => new Response("ok"))) as never);
   }
 
-  type Mode = "generate" | "stream" | "streamResponse" | "streamRaw" | "streamDataResponse";
-  const modes: Mode[] = ["generate", "stream", "streamResponse", "streamRaw", "streamDataResponse"];
+  type Mode = "generate" | "stream" | "streamRaw" | "streamDataResponse";
+  const modes: Mode[] = ["generate", "stream", "streamRaw", "streamDataResponse"];
 
   async function runMode(agent: Agent, mode: Mode, options: Parameters<Agent["generate"]>[0]) {
     switch (mode) {
@@ -994,8 +994,6 @@ describe("generation mode parity", () => {
         }
         return;
       }
-      case "streamResponse":
-        return agent.streamResponse(options);
       case "streamRaw": {
         const result = await agent.streamRaw(options);
         await result.text;

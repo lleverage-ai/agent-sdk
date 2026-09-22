@@ -206,7 +206,7 @@ describe("Retry Parity", () => {
     });
   });
 
-  // Note: streamResponse(), streamRaw(), and streamDataResponse() cannot support
+  // Note: streamRaw() and streamDataResponse() cannot support
   // retry in the same way as generate() and stream() because they return a Response/result
   // before the stream is consumed. With lazy streaming in AI SDK v6, errors only
   // occur when the stream body is consumed, which happens AFTER the Response is returned.

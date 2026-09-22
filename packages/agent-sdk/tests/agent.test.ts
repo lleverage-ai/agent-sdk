@@ -2514,83 +2514,6 @@ describe("Fallback Model - Streaming", () => {
     );
   });
 
-  it("streamResponse() uses fallback model on rate limit error", async () => {
-    vi.clearAllMocks();
-    const primaryModel = createMockModel();
-    const fallbackModel = createMockModel();
-
-    const agent = createAgent({
-      model: primaryModel,
-      fallbackModel,
-    });
-
-    // First call with primary model fails with rate limit, second succeeds
-    vi.mocked(streamText)
-      .mockImplementationOnce(() => {
-        throw new Error("rate limit exceeded");
-      })
-      .mockReturnValueOnce(createMockStreamResult("Fallback response") as never);
-
-    const response = await agent.streamResponse({
-      messages: [{ role: "user", content: "Hello" }],
-    });
-
-    expect(response.status).toBe(200);
-    expect(streamText).toHaveBeenCalledTimes(2);
-
-    // Check that second call used fallback model
-    expect(vi.mocked(streamText).mock.calls[1][0].model).toBe(fallbackModel);
-  });
-
-  it("streamResponse() routes background follow-up turns through retry recovery", async () => {
-    vi.clearAllMocks();
-    const primaryModel = createMockModel();
-
-    const agent = createAgent({
-      model: primaryModel,
-      generationRetryPolicy: {
-        onAuthenticationFailure: async ({ options }) => ({
-          retry: true,
-          updatedOptions: {
-            ...options,
-            headers: {
-              ...options.headers,
-              Authorization: "Bearer refreshed-token",
-            },
-          },
-        }),
-      },
-    });
-
-    agent.taskManager.registerTask(
-      createBackgroundTask({
-        id: "task-stream-response-follow-up",
-        subagentType: "researcher",
-        description: "Summarize findings",
-        status: "completed",
-        completedAt: new Date().toISOString(),
-        result: "Task complete",
-      }),
-    );
-
-    vi.mocked(streamText)
-      .mockReturnValueOnce(createMockStreamResult("Initial response") as never)
-      .mockImplementationOnce(() => {
-        throw new Error("Invalid API key");
-      })
-      .mockReturnValueOnce(createMockStreamResult("Follow-up response") as never);
-
-    const response = await agent.streamResponse({
-      messages: [{ role: "user", content: "Hello" }],
-    });
-    await response.text();
-
-    expect(streamText).toHaveBeenCalledTimes(3);
-    expect(vi.mocked(streamText).mock.calls[2][0].headers).toEqual({
-      Authorization: "Bearer refreshed-token",
-    });
-  });
-
   it("streamRaw() uses fallback model on rate limit error", async () => {
     vi.clearAllMocks();
     const primaryModel = createMockModel();
@@ -2858,7 +2781,6 @@ describe("agent.subagents - task tool availability", () => {
           usage: { inputTokens: 10, outputTokens: 20 },
         }),
         stream: vi.fn(),
-        streamResponse: vi.fn(),
         streamRaw: vi.fn().mockReturnValue({
           textStream: (async function* () {
             yield `Stream from ${type}`;
@@ -2964,7 +2886,7 @@ describe("agent.subagents - task tool availability", () => {
     expect(callArgs.tools).toHaveProperty("task");
   });
 
-  it("includes task tool in streamResponse when subagents configured", async () => {
+  it("includes task tool in streamDataResponse when subagents configured", async () => {
     const mockStreamText = vi.mocked(streamText);
 
     mockStreamText.mockReturnValue({
@@ -2997,7 +2919,7 @@ describe("agent.subagents - task tool availability", () => {
       subagents: [createMockSubagent("coder", "Writes code")],
     });
 
-    await agent.streamResponse({ prompt: "Test streamResponse" });
+    await agent.streamDataResponse({ prompt: "Test streamDataResponse" });
 
     const callArgs = mockStreamText.mock.calls[0][0] as { tools?: Record<string, unknown> };
     expect(callArgs.tools).toHaveProperty("task");

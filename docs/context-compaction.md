@@ -86,7 +86,7 @@ Compaction is checked at two points:
 1. **Before the run starts** (`generate()` and all streaming entry points),
    after checkpoint messages and the new prompt have been assembled.
 2. **Before every subsequent model call within a streaming run**
-   (`stream()`, `streamResponse()`, `streamDataResponse()` and their
+   (`stream()`, `streamDataResponse()` and their
    background-task follow-ups), via the AI SDK `prepareStep` hook. This is
    what keeps long tool loops inside the budget: a run that starts well under
    the threshold can accumulate large tool results across many steps, and the

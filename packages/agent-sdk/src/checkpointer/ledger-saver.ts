@@ -1,7 +1,7 @@
 /**
  * Ledger-backed checkpoint saver.
  *
- * Most checkpoint savers ({@link MemorySaver}, `FileSaver`, `KeyValueStoreSaver`)
+ * Most checkpoint savers ({@link MemorySaver}, `FileSaver`)
  * are symmetric blob stores: `save()` persists the whole {@link Checkpoint} and
  * `load()` reads it back. That model duplicates the message history when the
  * durable source of truth is an event log / transcript ledger, which is why
@@ -46,7 +46,7 @@ export interface LedgerCheckpointerOptions {
   /**
    * Saver used to persist the resume delta (step, agent state, pending
    * interrupt, metadata) — everything in a checkpoint except the message
-   * history. Provide a durable saver (e.g. `FileSaver` or `KeyValueStoreSaver`)
+   * history. Provide a durable saver (e.g. `FileSaver`)
    * for resume state that survives a restart.
    *
    * @defaultValue a new in-memory {@link MemorySaver}

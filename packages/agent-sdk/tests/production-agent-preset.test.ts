@@ -173,7 +173,7 @@ describe("createProductionAgent", () => {
     // Verify agent has standard methods
     expect(typeof agent.generate).toBe("function");
     expect(typeof agent.stream).toBe("function");
-    expect(typeof agent.streamResponse).toBe("function");
+    expect(typeof agent.streamDataResponse).toBe("function");
   });
 
   test("allows full customization", () => {
@@ -381,7 +381,7 @@ describe("createSecureProductionAgent", () => {
     // Verify agent has standard methods
     expect(typeof agent.generate).toBe("function");
     expect(typeof agent.stream).toBe("function");
-    expect(typeof agent.streamResponse).toBe("function");
+    expect(typeof agent.streamDataResponse).toBe("function");
   });
 
   test("default blocked input patterns don't match normal text", () => {

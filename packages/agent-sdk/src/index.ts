@@ -139,7 +139,6 @@ export type {
   FileSaverOptions,
   // New interrupt types
   Interrupt,
-  KeyValueStoreSaverOptions,
   LedgerCheckpointerOptions,
   MemorySaverOptions,
 } from "./checkpointer/index.js";
@@ -150,7 +149,6 @@ export {
   createCheckpoint,
   createFileSaver,
   createInterrupt,
-  createKeyValueStoreSaver,
   // Ledger-backed Saver
   createLedgerCheckpointer,
   createMemorySaver,
@@ -160,7 +158,6 @@ export {
   isCheckpoint,
   isInterrupt,
   // KeyValueStore Saver
-  KeyValueStoreSaver,
   // Memory Saver
   MemorySaver,
   updateCheckpoint,

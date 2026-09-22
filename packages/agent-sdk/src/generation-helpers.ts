@@ -1,5 +1,5 @@
 /**
- * Shared helpers for generation methods (generate, stream, streamResponse, etc.)
+ * Shared helpers for generation methods (generate, stream, streamDataResponse, etc.)
  *
  * These helpers extract common retry/hook handling patterns to ensure consistent
  * behavior across all generation methods and reduce code duplication.

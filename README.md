@@ -398,7 +398,7 @@ for the contract, error handling and execution-boundary limitations.
 
 ### Background Tasks
 
-Background tasks (bash commands and subagents) are automatically handled. When `generate()`, `stream()`, `streamResponse()`, or `streamDataResponse()` spawns a background task, the agent waits for completion and triggers follow-up generations to process results.
+Background tasks (bash commands and subagents) are automatically handled. When `generate()`, `stream()`, or `streamDataResponse()` spawns a background task, the agent waits for completion and triggers follow-up generations to process results.
 
 ```typescript
 const agent = createAgent({
@@ -472,7 +472,7 @@ for await (const part of agent.stream({ prompt: "Tell me a story" })) {
 // Next.js API route
 export async function POST(req: Request) {
   const { messages } = await req.json();
-  return agent.streamResponse({ messages });
+  return agent.streamDataResponse({ messages });
 }
 ```
 

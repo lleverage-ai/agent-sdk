@@ -41,7 +41,6 @@ function createMockAgent(overrides?: Partial<Agent>): Agent {
       steps: [],
     }),
     stream: vi.fn(),
-    streamResponse: vi.fn(),
     streamRaw: vi.fn(),
     getSkills: vi.fn().mockReturnValue([]),
     ...overrides,

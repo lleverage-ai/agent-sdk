@@ -159,51 +159,6 @@ describe("Incremental Checkpointing", () => {
     expect(checkpointSaveCount).toBe(1);
   });
 
-  it("should work with streamResponse method", async () => {
-    const checkpointSaves: number[] = [];
-    const originalSave = checkpointer.save.bind(checkpointer);
-    checkpointer.save = async (checkpoint) => {
-      checkpointSaves.push(checkpoint.step);
-      return originalSave(checkpoint);
-    };
-
-    const mockModel = createMockModelWithStream(async function* () {
-      yield {
-        type: "text-delta" as const,
-        textDelta: "Response",
-        delta: "Response",
-      };
-      yield {
-        type: "finish" as const,
-        finishReason: "stop" as const,
-        usage: {
-          inputTokens: 50,
-          outputTokens: 25,
-          inputTokenDetails: { noCacheTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 },
-          outputTokenDetails: { reasoningTokens: 0 },
-        },
-        providerMetadata: undefined,
-      };
-    });
-
-    const agent = createAgent({
-      model: mockModel,
-      checkpointer,
-    });
-
-    const response = await agent.streamResponse({
-      prompt: "Respond",
-      threadId: "thread-3",
-      checkpointAfterToolCall: true,
-    });
-
-    // Consume the response stream
-    await response.text();
-
-    // Should have at least final checkpoint
-    expect(checkpointSaves.length).toBeGreaterThanOrEqual(1);
-  });
-
   it("should work with streamDataResponse method", async () => {
     const checkpointSaves: number[] = [];
     const originalSave = checkpointer.save.bind(checkpointer);

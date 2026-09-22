@@ -4,7 +4,7 @@ AgentSession provides an event-driven wrapper around an Agent for interactive, l
 
 ## When to Use AgentSession
 
-> **Note:** Since v0.0.4, `agent.generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` automatically wait for background tasks and trigger follow-up generations. You no longer need AgentSession just for background task handling. AgentSession is primarily useful for interactive event loops.
+> **Note:** Since v0.0.4, `agent.generate()`, `stream()`, and `streamDataResponse()` automatically wait for background tasks and trigger follow-up generations. You no longer need AgentSession just for background task handling. AgentSession is primarily useful for interactive event loops.
 
 | Scenario | Use AgentSession? |
 |----------|-------------------|
