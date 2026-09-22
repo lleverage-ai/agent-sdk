@@ -5,13 +5,16 @@ on:
     tags:
       - "agent-sdk@*"
 
+# id-token: write lets the job mint the OIDC token npm exchanges for a
+# short-lived publish credential (Trusted Publishing). Declared at workflow
+# level, as in npm's reference workflow.
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -20,10 +23,12 @@ jobs:
         with:
           bun-version: latest
 
+      # No registry-url: with it, setup-node writes an .npmrc with a
+      # placeholder _authToken and exports NODE_AUTH_TOKEN for the whole job,
+      # which makes npm publish use token auth and skip the OIDC exchange.
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          registry-url: "https://registry.npmjs.org"
 
       # npm Trusted Publishing (OIDC) needs npm >= 11.5.1; Node 22 ships 10.x.
       # Pinned so the release path does not change under a future npm major.
@@ -140,4 +145,11 @@ jobs:
         working-directory: ${{ steps.parse.outputs.package_dir }}
         env:
           NPM_TAG: ${{ steps.parse.outputs.npm_tag }}
-        run: npm publish --access public --tag "$NPM_TAG"
+        run: |
+          # Fail early if OIDC is unavailable (org/repo policy blocking id-token)
+          # rather than letting npm fall back to a 404 from an unauthenticated PUT.
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "::error::ACTIONS_ID_TOKEN_REQUEST_URL is unset: the job did not receive id-token: write. Check org/repo Actions workflow permissions."
+            exit 1
+          fi
+          npm publish --access public --tag "$NPM_TAG" --registry https://registry.npmjs.org
