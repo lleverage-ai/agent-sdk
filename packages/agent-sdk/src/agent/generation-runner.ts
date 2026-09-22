@@ -16,8 +16,8 @@
  *                       stop conditions → AI SDK call options
  *     │  (mode-specific: generateText / streamText / UI stream)
  *   updateContextUsage · emitInterruptRequested · invokePostGenerate
- *   createStreamLifecycleCallbacks   onStepFinish / onFinish for the two
- *                       Response-shaped modes
+ *   createStreamLifecycleCallbacks   onStepFinish / onFinish for streamRaw()
+ *                       and streamDataResponse()
  *   runUIStreamFollowUps   background-task follow-up turns merged into a
  *                       UI message stream
  *     │
@@ -533,8 +533,8 @@ export interface GenerationRunner {
     result: GenerateResultComplete,
   ): Promise<GenerateResultComplete | undefined>;
   /**
-   * `onStepFinish` / `onFinish` for the two Response-shaped modes: keep the
-   * durable transcript current, save intermediate checkpoints when
+   * `onStepFinish` / `onFinish` for `streamRaw()` and `streamDataResponse()`:
+   * keep the durable transcript current, save intermediate checkpoints when
    * `checkpointAfterToolCall` is set, and on finish update usage, persist and
    * run PostGenerate hooks.
    */
