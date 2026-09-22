@@ -1,11 +1,11 @@
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { invokeHooksWithTimeout } from "../src/hooks.js";
 import {
   createAgent,
   createTaskTool,
   type HookCallback,
   type HookOutput,
-  invokeHooksWithTimeout,
   type LanguageModel,
   type PostGenerateInput,
 } from "../src/index.js";

@@ -479,7 +479,7 @@ See [Agent Session docs](./docs/agent-session.md) for full details.
 
 ### Background Task Handling
 
-By default, `generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` automatically wait for background tasks to complete and trigger follow-up generations:
+By default, `generate()`, `stream()`, and `streamDataResponse()` automatically wait for background tasks to complete and trigger follow-up generations:
 
 ```typescript
 const agent = createAgent({
@@ -1241,7 +1241,6 @@ State persistence and interrupt handling:
 import {
   MemorySaver,
   FileSaver,
-  KeyValueStoreSaver,
   createCheckpoint,
   createInterrupt,
   createApprovalInterrupt,

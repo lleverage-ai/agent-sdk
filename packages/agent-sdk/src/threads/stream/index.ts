@@ -6,7 +6,6 @@
 
 // Types
 export type { IEventStore, StoredEvent, ReplayOptions, ProjectorConfig, Logger } from "./types.js";
-export { defaultLogger } from "./types.js";
 
 // Stream events
 export type { StreamEvent, CoreEventKind } from "./stream-event.js";

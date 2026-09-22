@@ -16,7 +16,7 @@ describe("barrel exports", () => {
     expect(mod.CORE_EVENT_KINDS).toBeDefined();
     expect(mod.EventKindRegistry).toBeDefined();
     expect(mod.WS_READY_STATE).toBeDefined();
-    expect(mod.defaultLogger).toBeDefined();
+    expect(mod).not.toHaveProperty("defaultLogger");
   });
 
   it("root barrel exports ledger layer symbols", async () => {
@@ -54,7 +54,7 @@ describe("barrel exports", () => {
     expect(mod.CORE_EVENT_KINDS).toBeDefined();
     expect(mod.EventKindRegistry).toBeDefined();
     expect(mod.WS_READY_STATE).toBeDefined();
-    expect(mod.defaultLogger).toBeDefined();
+    expect(mod).not.toHaveProperty("defaultLogger");
   });
 
   it("ledger sub-barrel exports all ledger symbols", async () => {
