@@ -1,6 +1,6 @@
 # Generation Modes
 
-`createAgent()` exposes five ways to run one generation. They share a lifecycle
+`createAgent()` exposes four ways to run one generation. They share a lifecycle
 (`src/agent/generation-runner.ts`) but differ in output shape and, in a few
 places, in behaviour. This page records those differences so a change to one
 mode is a deliberate decision rather than drift.

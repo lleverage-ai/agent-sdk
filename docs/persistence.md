@@ -144,8 +144,8 @@ const agent = createAgent({
 
 ### Custom savers
 
-Any object implementing `BaseCheckpointSaver` (`save`, `load`, `delete`, and
-optionally `list`) can be passed as `checkpointer`. For a key-value backend,
+Any object implementing `BaseCheckpointSaver` (`save`, `load`, `list`,
+`delete`, `exists`) can be passed as `checkpointer`. For a key-value backend,
 wrap it directly:
 
 ```typescript
@@ -161,8 +161,15 @@ class RedisSaver implements BaseCheckpointSaver {
     const raw = await this.redis.get(this.prefix + threadId);
     return raw ? (JSON.parse(raw) as Checkpoint) : undefined;
   }
+  async list() {
+    const keys = await this.redis.keys(this.prefix + "*");
+    return keys.map((key) => key.slice(this.prefix.length));
+  }
   async delete(threadId: string) {
-    await this.redis.del(this.prefix + threadId);
+    return (await this.redis.del(this.prefix + threadId)) > 0;
+  }
+  async exists(threadId: string) {
+    return (await this.redis.exists(this.prefix + threadId)) > 0;
   }
 }
 ```

@@ -64,9 +64,6 @@ const response = agent.streamDataResponse(options);
 // Raw AI SDK stream
 const stream = await agent.streamRaw(options);
 
-// Data stream response
-const response = agent.streamDataResponse(options);
-
 ```
 
 ## Tools
