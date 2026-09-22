@@ -11,7 +11,7 @@ const providerUsage = {
   inputTokens: { total: 900, noCache: 900, cacheRead: 0, cacheWrite: 0 },
   outputTokens: { total: 10, text: 10, reasoning: 0 },
 };
-const modes = ["generate", "stream", "streamResponse", "streamDataResponse", "streamRaw"] as const;
+const modes = ["generate", "stream", "streamDataResponse", "streamRaw"] as const;
 
 describe("per-request usage through real AI SDK loops", () => {
   it.each(modes)(

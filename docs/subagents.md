@@ -248,7 +248,7 @@ async function initializeAgent() {
 
 ## Automatic Task Completion Handling
 
-By default, `agent.generate()`, `stream()`, `streamResponse()`, and `streamDataResponse()` automatically wait for background tasks to complete and trigger follow-up generations. No manual polling or AgentSession is required for the normal path.
+By default, `agent.generate()`, `stream()`, and `streamDataResponse()` automatically wait for background tasks to complete and trigger follow-up generations. No manual polling or AgentSession is required for the normal path.
 
 ```typescript
 const agent = createAgent({

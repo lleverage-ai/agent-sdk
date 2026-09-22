@@ -321,12 +321,12 @@ describe("createMockAgent", () => {
     expect(agent.state.files["/test.txt"]).toBeDefined();
   });
 
-  it("returns streamResponse", async () => {
+  it("returns streamDataResponse", async () => {
     const agent = createMockAgent({
       response: { text: "Response text" },
     });
 
-    const response = await agent.streamResponse({ prompt: "Hi" });
+    const response = await agent.streamDataResponse({ prompt: "Hi" });
 
     expect(response).toBeInstanceOf(Response);
     const text = await response.text();

@@ -110,7 +110,7 @@ describe("Streaming Hook Parity", () => {
       );
     });
 
-    it("fires PreGenerate hooks in streamResponse()", async () => {
+    it("fires PreGenerate hooks in streamDataResponse()", async () => {
       const model = createMockModel();
       const preGenerateCallback = vi.fn(async (input: PreGenerateInput) => ({
         hookSpecificOutput: {},
@@ -144,7 +144,7 @@ describe("Streaming Hook Parity", () => {
         return mockStream as any;
       });
 
-      await agent.streamResponse({ prompt: "test" });
+      await agent.streamDataResponse({ prompt: "test" });
 
       expect(preGenerateCallback).toHaveBeenCalledTimes(1);
       expect(preGenerateCallback).toHaveBeenCalledWith(
@@ -483,40 +483,6 @@ describe("Streaming Hook Parity", () => {
       expect(streamText).not.toHaveBeenCalled();
       expect(receivedText).toBe("Cached response");
       expect(finishPart?.finishReason).toBe("stop");
-    });
-
-    it("supports respondWith in streamResponse() for cache hits", async () => {
-      const model = createMockModel();
-      const cachedResult = {
-        status: "complete" as const,
-        text: "Cached response",
-        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        finishReason: "stop" as const,
-        steps: [],
-      };
-
-      const agent = createAgent({
-        model,
-        hooks: {
-          PreGenerate: [
-            async () => ({
-              hookSpecificOutput: {
-                respondWith: cachedResult,
-              },
-            }),
-          ],
-        },
-      });
-
-      const response = await agent.streamResponse({ prompt: "test" });
-
-      // Should NOT call streamText (returns cached result as plain Response)
-      expect(streamText).not.toHaveBeenCalled();
-
-      // Response should contain the cached text
-      const text = await response.text();
-      expect(text).toBe("Cached response");
-      expect(response.headers.get("Content-Type")).toBe("text/plain; charset=utf-8");
     });
 
     it("supports respondWith in streamDataResponse() for cache hits", async () => {

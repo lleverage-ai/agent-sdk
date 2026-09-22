@@ -1,8 +1,8 @@
 /**
  * Tool execution pipeline.
  *
- * Every generation mode (`generate()`, `stream()`, `streamResponse()`,
- * `streamRaw()`, `streamDataResponse()`) and every background-task follow-up
+ * Every generation mode (`generate()`, `stream()`, `streamRaw()`,
+ * `streamDataResponse()`) and every background-task follow-up
  * turn hands the AI SDK a tool set built here. The wrappers compose in a fixed
  * order, and the order matters: each layer sees only what the layer beneath it
  * returns or throws.

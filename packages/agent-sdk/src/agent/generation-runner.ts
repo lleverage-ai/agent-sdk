@@ -1,8 +1,7 @@
 /**
- * Generation lifecycle shared by the five response modes.
+ * Generation lifecycle shared by the four response modes.
  *
- * `generate()`, `stream()`, `streamResponse()`, `streamRaw()` and
- * `streamDataResponse()` each own a retry loop and an output shape, but the
+ * `generate()`, `stream()`, `streamRaw()` and `streamDataResponse()` each own a retry loop and an output shape, but the
  * work between "caller options" and "AI SDK request" is the same in all of
  * them. This module owns that shared work so a fix lands in one place:
  *
@@ -17,8 +16,8 @@
  *                       stop conditions → AI SDK call options
  *     │  (mode-specific: generateText / streamText / UI stream)
  *   updateContextUsage · emitInterruptRequested · invokePostGenerate
- *   createStreamLifecycleCallbacks   onStepFinish / onFinish for the three
- *                       Response-shaped modes
+ *   createStreamLifecycleCallbacks   onStepFinish / onFinish for streamRaw()
+ *                       and streamDataResponse()
  *   runUIStreamFollowUps   background-task follow-up turns merged into a
  *                       UI message stream
  *     │
@@ -340,8 +339,8 @@ export function mapSteps(steps: AiSdkSteps): GenerateStep[] {
 }
 
 /**
- * Plain-text `Response` for a cached (`respondWith`) result, used by the two
- * UI-stream modes. Only complete results carry text.
+ * Plain-text `Response` for a cached (`respondWith`) result, used by the
+ * `streamDataResponse()` mode. Only complete results carry text.
  *
  * @internal
  */
@@ -534,8 +533,8 @@ export interface GenerationRunner {
     result: GenerateResultComplete,
   ): Promise<GenerateResultComplete | undefined>;
   /**
-   * `onStepFinish` / `onFinish` for the three Response-shaped modes: keep the
-   * durable transcript current, save intermediate checkpoints when
+   * `onStepFinish` / `onFinish` for `streamRaw()` and `streamDataResponse()`:
+   * keep the durable transcript current, save intermediate checkpoints when
    * `checkpointAfterToolCall` is set, and on finish update usage, persist and
    * run PostGenerate hooks.
    */

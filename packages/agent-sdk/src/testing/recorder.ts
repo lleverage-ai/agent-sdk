@@ -317,12 +317,6 @@ export function createRecordingAgent(
       }
     },
 
-    async streamResponse(genOptions: GenerateOptions): Promise<Response> {
-      // Recording streamResponse is complex due to Response streaming
-      // Just pass through to the wrapped agent
-      return agent.streamResponse(genOptions);
-    },
-
     async streamDataResponse(genOptions: GenerateOptions): Promise<Response> {
       // Recording streamDataResponse is complex due to Response streaming
       // Just pass through to the wrapped agent

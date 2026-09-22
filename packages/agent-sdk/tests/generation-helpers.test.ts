@@ -25,7 +25,6 @@ const createMockAgent = (): Agent =>
     },
     generate: vi.fn(),
     stream: vi.fn(),
-    streamResponse: vi.fn(),
     streamRaw: vi.fn(),
     streamDataResponse: vi.fn(),
     close: vi.fn(),

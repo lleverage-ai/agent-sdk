@@ -271,7 +271,7 @@ describe("Hook Routing Test Coverage Audit", () => {
       );
     });
 
-    it("PostGenerate hook fires after streamResponse() completes", async () => {
+    it("PostGenerate hook fires after streamDataResponse() completes", async () => {
       const postGenerateCallback = vi.fn(async () => ({}));
 
       const agent = createAgent({
@@ -300,7 +300,7 @@ describe("Hook Routing Test Coverage Audit", () => {
         return mockStream as any;
       });
 
-      await agent.streamResponse({ prompt: "test" });
+      await agent.streamDataResponse({ prompt: "test" });
 
       // Wait for the onFinish callback
       await new Promise((resolve) => setTimeout(resolve, 50));

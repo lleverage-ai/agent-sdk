@@ -11,15 +11,10 @@ import {
   // Types and helpers
   createCheckpoint,
   createFileSaver,
-  createKeyValueStoreSaver,
   createMemorySaver,
   // File Saver
   FileSaver,
-  // KeyValueStore for testing
-  InMemoryStore,
   isCheckpoint,
-  // KeyValueStore Saver
-  KeyValueStoreSaver,
   // Memory Saver
   MemorySaver,
   updateCheckpoint,
@@ -602,145 +597,6 @@ describe("FileSaver", () => {
 });
 
 // =============================================================================
-// KeyValueStoreSaver Tests
-// =============================================================================
-
-describe("KeyValueStoreSaver", () => {
-  let store: InMemoryStore;
-  let saver: KeyValueStoreSaver;
-
-  beforeEach(() => {
-    store = new InMemoryStore();
-    saver = new KeyValueStoreSaver({ store });
-  });
-
-  describe("basic operations", () => {
-    it("should save and load a checkpoint", async () => {
-      const checkpoint = createTestCheckpoint("session-1");
-      await saver.save(checkpoint);
-
-      const loaded = await saver.load("session-1");
-      expect(loaded).toEqual(checkpoint);
-    });
-
-    it("should return undefined for non-existent checkpoint", async () => {
-      const loaded = await saver.load("non-existent");
-      expect(loaded).toBeUndefined();
-    });
-
-    it("should overwrite existing checkpoint", async () => {
-      const checkpoint1 = createTestCheckpoint("session-1", { step: 0 });
-      const checkpoint2 = createTestCheckpoint("session-1", { step: 5 });
-
-      await saver.save(checkpoint1);
-      await saver.save(checkpoint2);
-
-      const loaded = await saver.load("session-1");
-      expect(loaded?.step).toBe(5);
-    });
-
-    it("should check existence correctly", async () => {
-      expect(await saver.exists("session-1")).toBe(false);
-
-      await saver.save(createTestCheckpoint("session-1"));
-      expect(await saver.exists("session-1")).toBe(true);
-    });
-
-    it("should delete checkpoint", async () => {
-      await saver.save(createTestCheckpoint("session-1"));
-      expect(await saver.exists("session-1")).toBe(true);
-
-      const deleted = await saver.delete("session-1");
-      expect(deleted).toBe(true);
-      expect(await saver.exists("session-1")).toBe(false);
-    });
-
-    it("should return false when deleting non-existent", async () => {
-      const deleted = await saver.delete("non-existent");
-      expect(deleted).toBe(false);
-    });
-  });
-
-  describe("list", () => {
-    it("should list all thread IDs", async () => {
-      await saver.save(createTestCheckpoint("session-1"));
-      await saver.save(createTestCheckpoint("session-2"));
-      await saver.save(createTestCheckpoint("session-3"));
-
-      const threads = await saver.list();
-      expect(threads).toHaveLength(3);
-      expect(threads).toContain("session-1");
-      expect(threads).toContain("session-2");
-      expect(threads).toContain("session-3");
-    });
-
-    it("should return empty array when no checkpoints", async () => {
-      const threads = await saver.list();
-      expect(threads).toEqual([]);
-    });
-  });
-
-  describe("namespace isolation", () => {
-    it("should isolate checkpoints by namespace", async () => {
-      const saver1 = new KeyValueStoreSaver({ store, namespace: "user-1" });
-      const saver2 = new KeyValueStoreSaver({ store, namespace: "user-2" });
-
-      await saver1.save(createTestCheckpoint("session-1"));
-      await saver2.save(createTestCheckpoint("session-1"));
-
-      expect(await saver1.list()).toEqual(["session-1"]);
-      expect(await saver2.list()).toEqual(["session-1"]);
-
-      // Deleting from one namespace doesn't affect the other
-      await saver1.delete("session-1");
-      expect(await saver1.exists("session-1")).toBe(false);
-      expect(await saver2.exists("session-1")).toBe(true);
-    });
-  });
-
-  describe("storage structure", () => {
-    it("should store checkpoints at [checkpoints, threadId]", async () => {
-      await saver.save(createTestCheckpoint("session-1"));
-
-      // Verify in underlying store
-      const stored = await store.get(["checkpoints"], "session-1");
-      expect(stored).toBeDefined();
-      expect((stored as Checkpoint).threadId).toBe("session-1");
-    });
-
-    it("should store namespaced checkpoints at [namespace, checkpoints, threadId]", async () => {
-      const namespacedSaver = new KeyValueStoreSaver({
-        store,
-        namespace: "my-namespace",
-      });
-      await namespacedSaver.save(createTestCheckpoint("session-1"));
-
-      // Verify in underlying store
-      const stored = await store.get(["my-namespace", "checkpoints"], "session-1");
-      expect(stored).toBeDefined();
-      expect((stored as Checkpoint).threadId).toBe("session-1");
-    });
-  });
-
-  describe("factory function", () => {
-    it("should create saver via factory", async () => {
-      const saver = createKeyValueStoreSaver({ store });
-      await saver.save(createTestCheckpoint("test"));
-      expect(await saver.exists("test")).toBe(true);
-    });
-
-    it("should accept options via factory", async () => {
-      const saver = createKeyValueStoreSaver({
-        store,
-        namespace: "test-ns",
-      });
-      await saver.save(createTestCheckpoint("session-1"));
-      expect(await saver.list()).toEqual(["session-1"]);
-    });
-  });
-});
-
-// =============================================================================
 // Integration Tests
 // =============================================================================
 
@@ -858,11 +714,5 @@ describe("Checkpointer Integration", () => {
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
-
-    // Test KeyValueStoreSaver
-    const store = new InMemoryStore();
-    const kvSaver = new KeyValueStoreSaver({ store });
-    await kvSaver.save(checkpoint);
-    expect((await kvSaver.load("cross-saver-test"))?.step).toBe(10);
   });
 });

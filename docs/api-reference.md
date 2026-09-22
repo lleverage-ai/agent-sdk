@@ -58,14 +58,11 @@ for await (const part of agent.stream(options)) {
   // Handle stream parts
 }
 
-// Stream response (for API routes)
-const response = agent.streamResponse(options);
+// Stream response (for API routes; tools get a StreamingContext)
+const response = agent.streamDataResponse(options);
 
 // Raw AI SDK stream
 const stream = await agent.streamRaw(options);
-
-// Data stream response
-const response = agent.streamDataResponse(options);
 
 ```
 
@@ -134,8 +131,8 @@ const plugin = definePlugin({
 
 `tools` may be a function of `StreamingContext`. It receives the request's
 writer: the one `streamDataResponse()` creates, or the one a caller passes as
-`GenerateOptions.streamingContext` to `generate()`, `stream()`,
-`streamResponse()` or `streamRaw()`. `ctx.writer` is `null` when the request
+`GenerateOptions.streamingContext` to `generate()`, `stream()` or
+`streamRaw()`. `ctx.writer` is `null` when the request
 has neither. Any object with `write()` (a `StreamingWriter`) is accepted.
 
 ```typescript
@@ -263,7 +260,6 @@ before the compaction check. See [Persistence](./persistence.md#checkpoint-hooks
 |-------|-------------|
 | `MemorySaver` | In-memory checkpoints |
 | `FileSaver` | File-based checkpoints |
-| `KeyValueStoreSaver` | Generic key-value storage |
 
 ### Checkpointer Interface
 

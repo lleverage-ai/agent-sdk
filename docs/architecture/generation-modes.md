@@ -1,6 +1,6 @@
 # Generation Modes
 
-`createAgent()` exposes five ways to run one generation. They share a lifecycle
+`createAgent()` exposes four ways to run one generation. They share a lifecycle
 (`src/agent/generation-runner.ts`) but differ in output shape and, in a few
 places, in behaviour. This page records those differences so a change to one
 mode is a deliberate decision rather than drift.
@@ -9,7 +9,6 @@ mode is a deliberate decision rather than drift.
 | --- | --- | --- |
 | `generate()` | `GenerateResult` | `generateText()` |
 | `stream()` | `AsyncGenerator<StreamPart>` | `streamText()` + `fullStream` |
-| `streamResponse()` | `Response` (UI message stream) | `streamText()` inside `createUIMessageStream` |
 | `streamRaw()` | raw `streamText()` result | `streamText()` |
 | `streamDataResponse()` | `Response` (UI message stream) with its own tool `StreamingContext` | `streamText()` inside `createUIMessageStream` |
 
@@ -37,22 +36,22 @@ Every mode goes through the runner in this order:
 
 Recorded as of the #140 refactor. None of these were changed by it.
 
-| Behaviour | `generate` | `stream` | `streamResponse` | `streamRaw` | `streamDataResponse` |
-| --- | --- | --- | --- | --- | --- |
-| `respondWith` cache short-circuit | result as-is | replayed as `StreamPart`s | plain-text `Response` | not supported | plain-text `Response` |
-| `contextManager.updateUsage` after the run | yes | **no** | yes | yes | yes |
-| `output` schema read from | effective options (after `PreGenerate`) | **caller's `genOptions`** | effective options | effective options | effective options |
-| Pending interrupt persisted + `InterruptRequested` hook | yes (cooperative and thrown paths) | yes | **no** | **no** | yes |
-| Non-cooperative `InterruptSignal` thrown out of the AI SDK call | caught, persisted, returned as `interrupted` | propagates to retry handling | propagates | propagates | propagates |
-| `checkpointAfterToolCall` (save after every step) | no | no | yes | yes | yes |
-| Emergency compaction on context-length error | yes (once, when `enableErrorFallback`) | no | no | no | no |
-| `timeToFirstTokenMs` in telemetry | no | yes | no | no | no |
-| `providerMetadata` in telemetry usage | yes | no | no | no | no |
-| `PostGenerate` `updatedResult` applied | yes | no (already streamed) | no | no | no |
-| Follow-up turns | re-enter `agent.generate()` | re-enter `agent.stream()` | `runUIStreamFollowUps` | none | `runUIStreamFollowUps` |
-| Follow-ups skipped when | `signalState.stop` | `signalState.interrupt \|\| stop` | `signalState.stop` | n/a | `signalState.interrupt \|\| stop` |
-| Follow-up messages when checkpointing | from checkpoint (no explicit `messages`) | from checkpoint | explicit transcript + prompt | n/a | explicit transcript + prompt |
-| Tool `StreamingContext` | caller's `GenerateOptions.streamingContext` | caller's | caller's | caller's | its own writer; a caller-supplied one is rejected |
+| Behaviour | `generate` | `stream` | `streamRaw` | `streamDataResponse` |
+| --- | --- | --- | --- | --- |
+| `respondWith` cache short-circuit | result as-is | replayed as `StreamPart`s | not supported | plain-text `Response` |
+| `contextManager.updateUsage` after the run | yes | **no** | yes | yes |
+| `output` schema read from | effective options (after `PreGenerate`) | **caller's `genOptions`** | effective options | effective options |
+| Pending interrupt persisted + `InterruptRequested` hook | yes (cooperative and thrown paths) | yes | **no** | yes |
+| Non-cooperative `InterruptSignal` thrown out of the AI SDK call | caught, persisted, returned as `interrupted` | propagates to retry handling | propagates | propagates |
+| `checkpointAfterToolCall` (save after every step) | no | no | yes | yes |
+| Emergency compaction on context-length error | yes (once, when `enableErrorFallback`) | no | no | no |
+| `timeToFirstTokenMs` in telemetry | no | yes | no | no |
+| `providerMetadata` in telemetry usage | yes | no | no | no |
+| `PostGenerate` `updatedResult` applied | yes | no (already streamed) | no | no |
+| Follow-up turns | re-enter `agent.generate()` | re-enter `agent.stream()` | none | `runUIStreamFollowUps` |
+| Follow-ups skipped when | `signalState.stop` | `signalState.interrupt \|\| stop` | n/a | `signalState.interrupt \|\| stop` |
+| Follow-up messages when checkpointing | from checkpoint (no explicit `messages`) | from checkpoint | n/a | explicit transcript + prompt |
+| Tool `StreamingContext` | caller's `GenerateOptions.streamingContext` | caller's | caller's | its own writer; a caller-supplied one is rejected |
 
 ### Follow-up retry differences
 
@@ -62,7 +61,7 @@ the full retry loop including emergency compaction. Failures are wrapped in
 `NestedBackgroundGenerationError` so the parent rethrows the original error
 instead of applying its own retry policy under the wrong request class.
 
-`streamResponse()` and `streamDataResponse()` follow-ups go through
+`streamDataResponse()` follow-ups go through
 `runUIStreamFollowUps`, which:
 
 - builds the message list itself (`transcript + user prompt`) and compacts

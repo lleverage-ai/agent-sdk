@@ -33,7 +33,6 @@ function createMockAgent(overrides: Partial<Agent> = {}): Agent {
       usage: { inputTokens: 10, outputTokens: 20, totalTokens: 30 },
     }),
     stream: vi.fn() as any,
-    streamResponse: vi.fn() as any,
     streamRaw: vi.fn() as any,
     getSkills: vi.fn().mockReturnValue([]),
     ...overrides,

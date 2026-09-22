@@ -209,7 +209,7 @@ function isBackendFactory(value: BackendProtocol | BackendFactory): value is Bac
  * // Use in a Next.js API route with useChat
  * export async function POST(req: Request) {
  *   const { messages } = await req.json();
- *   return agent.streamResponse({ messages });
+ *   return agent.streamDataResponse({ messages });
  * }
  * ```
  *
@@ -1996,94 +1996,10 @@ export function createAgent(options: AgentOptions): Agent {
       throw new Error("Unexpected: retry loop exited without return or throw");
     },
 
-    async streamResponse(genOptions: GenerateOptions): Promise<Response> {
-      const run = await runner.beginRun(genOptions);
-
-      // Check for cache short-circuit via respondWith
-      // For streaming response, create a simple text response from the cached result
-      if (run.cachedResult !== undefined) {
-        const cachedResult = await runner.resolveCachedResult(
-          run.cachedResult,
-          run.effectiveGenOptions,
-        );
-        return cachedTextResponse(cachedResult);
-      }
-
-      let effectiveGenOptions = run.effectiveGenOptions;
-
-      // Initialize retry loop state
-      const retryState = runner.createRetryState();
-
-      while (retryState.retryAttempt <= retryState.maxRetries) {
-        try {
-          const attempt = await runner.prepareAttempt(effectiveGenOptions, retryState.currentModel);
-          const { signalState } = attempt;
-
-          // Track the durable message base for checkpointing.
-          const streamingCompaction = createStreamingCompactionState(
-            attempt.initialParams.messages,
-            effectiveGenOptions,
-            effectiveGenOptions.threadId,
-          );
-
-          // Execute streamText OUTSIDE createUIMessageStream so errors propagate
-          // to the retry loop (if streamText throws synchronously on creation,
-          // e.g. rate limit, the catch block handles retry/fallback).
-          const result = streamText({
-            ...runner.buildModelCallParams(attempt),
-            prepareStep: streamingCompaction.prepareStep,
-            ...runner.createStreamLifecycleCallbacks(attempt, streamingCompaction),
-          });
-
-          // Use createUIMessageStream to control stream lifecycle for background task follow-ups
-          const stream = createUIMessageStream({
-            execute: async ({ writer }) => {
-              // Merge initial generation into the stream
-              writer.merge(result.toUIMessageStream());
-
-              // Wait for initial generation to complete
-              await result.text;
-
-              // --- Background task completion loop ---
-              if (waitForBackgroundTasks && !signalState.stop) {
-                await runner.runUIStreamFollowUps({
-                  writer,
-                  attempt,
-                  result,
-                  streamingCompaction,
-                  signalState,
-                  streamingContext: effectiveGenOptions.streamingContext,
-                });
-              }
-            },
-          });
-
-          // Convert the stream to a Response
-          return createUIMessageStreamResponse({ stream });
-        } catch (error) {
-          // Normalize error to AgentError
-          const normalizedError = normalizeError(
-            error,
-            "Stream generation failed",
-            effectiveGenOptions.threadId,
-          );
-
-          effectiveGenOptions = await runner.retryOrThrow(
-            normalizedError,
-            effectiveGenOptions,
-            retryState,
-          );
-        }
-      }
-
-      // This should never be reached, but TypeScript needs it for type safety
-      throw new Error("Unexpected: retry loop exited without return or throw");
-    },
-
     async streamRaw(genOptions: GenerateOptions) {
       // Note: respondWith cache short-circuit is NOT supported for streamRaw()
       // because it returns the raw AI SDK streamText result which cannot be mocked.
-      // Use stream(), streamResponse(), or streamDataResponse() for caching support.
+      // Use stream() or streamDataResponse() for caching support.
       // Input transformation is applied even though respondWith is not supported.
       const run = await runner.beginRun(genOptions);
 
@@ -2134,7 +2050,7 @@ export function createAgent(options: AgentOptions): Agent {
     async streamDataResponse(genOptions: GenerateOptions): Promise<Response> {
       if (genOptions.streamingContext !== undefined) {
         throw new ConfigurationError(
-          "streamDataResponse() creates its own stream writer and cannot take a caller-supplied streamingContext; use stream(), streamResponse(), streamRaw() or generate() to supply one",
+          "streamDataResponse() creates its own stream writer and cannot take a caller-supplied streamingContext; use stream(), streamRaw() or generate() to supply one",
           { configKey: "streamingContext" },
         );
       }

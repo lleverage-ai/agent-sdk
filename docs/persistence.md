@@ -142,32 +142,39 @@ const agent = createAgent({
 });
 ```
 
-### KeyValueStoreSaver
+### Custom savers
 
-Use any key-value store:
+Any object implementing `BaseCheckpointSaver` (`save`, `load`, `list`,
+`delete`, `exists`) can be passed as `checkpointer`. For a key-value backend,
+wrap it directly:
 
 ```typescript
-import {
-  createKeyValueStoreSaver,
-  InMemoryStore,
-} from "@lleverage-ai/agent-sdk";
+import type { BaseCheckpointSaver, Checkpoint } from "@lleverage-ai/agent-sdk";
 
-// In-memory store
-const store = new InMemoryStore();
-const checkpointer = createKeyValueStoreSaver({ store });
+class RedisSaver implements BaseCheckpointSaver {
+  constructor(private readonly redis: RedisClient, private readonly prefix = "checkpoint:") {}
 
-// Redis store (custom implementation)
-class RedisStore implements KeyValueStore {
-  async get(key: string) { /* ... */ }
-  async set(key: string, value: any) { /* ... */ }
-  async delete(key: string) { /* ... */ }
-  async list(prefix?: string) { /* ... */ }
+  async save(checkpoint: Checkpoint) {
+    await this.redis.set(this.prefix + checkpoint.threadId, JSON.stringify(checkpoint));
+  }
+  async load(threadId: string) {
+    const raw = await this.redis.get(this.prefix + threadId);
+    return raw ? (JSON.parse(raw) as Checkpoint) : undefined;
+  }
+  async list() {
+    const keys = await this.redis.keys(this.prefix + "*");
+    return keys.map((key) => key.slice(this.prefix.length));
+  }
+  async delete(threadId: string) {
+    return (await this.redis.del(this.prefix + threadId)) > 0;
+  }
+  async exists(threadId: string) {
+    return (await this.redis.exists(this.prefix + threadId)) > 0;
+  }
 }
-
-const redisCheckpointer = createKeyValueStoreSaver({
-  store: new RedisStore(),
-});
 ```
+
+For event-sourced backends, see `createLedgerCheckpointer`.
 
 ### Checkpoint Structure
 
