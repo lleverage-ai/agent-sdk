@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-These entries track behaviour upstreamed from Lleverage's `pnpm patch` against
-`0.1.0-alpha.9`. Removing the consumer patch still requires accounting for its
-remaining changes and validating the consumer.
+## [1.0.0-rc.1] - 2026-09-22
+
+Release candidate for 1.0.0. These entries track behaviour upstreamed from
+Lleverage's `pnpm patch` against `0.1.0-alpha.9`, the narrow host seams that
+replaced the patch's integration workarounds, and the API removals audited
+against the consumer. The pre-release entries below will be consolidated into
+the final 1.0.0 entry.
 
 ### Added
 
@@ -727,7 +731,8 @@ remaining changes and validating the consumer.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.9...agent-sdk@1.0.0-rc.1
 [0.1.0-alpha.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.0.14...agent-sdk@0.1.0-alpha.1
 [0.0.14]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.13...agent-sdk@0.0.14
 [0.0.13]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.12...v0.0.13
