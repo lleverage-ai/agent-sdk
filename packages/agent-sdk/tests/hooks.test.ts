@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invokeHooksWithTimeout, matchesToolName } from "../src/hooks.js";
 import type {
   GenerateResult,
   HookCallback,
@@ -19,9 +20,7 @@ import {
   extractUpdatedInput,
   extractUpdatedResult,
   HookTimeoutError,
-  invokeHooksWithTimeout,
   invokeMatchingHooks,
-  matchesToolName,
 } from "../src/index.js";
 import { createMockModel, resetMocks } from "./setup.js";
 

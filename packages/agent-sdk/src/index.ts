@@ -322,9 +322,7 @@ export {
   extractUpdatedResult,
   HookTimeoutError,
   invokeCustomHook,
-  invokeHooksWithTimeout,
   invokeMatchingHooks,
-  matchesToolName,
 } from "./hooks.js";
 // MCP types
 export type {
@@ -337,7 +335,6 @@ export type {
 // MCP (Model Context Protocol)
 export {
   expandEnvVars,
-  isSchemaEmpty,
   MCPInputValidationError,
   MCPInputValidator,
   MCPManager,
@@ -436,7 +433,6 @@ export {
   matchesPathPattern,
   // Store and parsing
   parseMarkdownWithFrontmatter,
-  parseSimpleYaml,
   serializeMarkdownWithFrontmatter,
 } from "./memory/index.js";
 // Middleware types
@@ -444,7 +440,6 @@ export type {
   AgentMiddleware,
   LoggingMiddlewareOptions,
   MiddlewareContext,
-  MiddlewareContextResult,
 } from "./middleware/index.js";
 // Middleware System
 export {
@@ -453,7 +448,6 @@ export {
   // Built-in middleware
   createLoggingMiddleware,
   // Context creation (for custom middleware)
-  createMiddlewareContext,
   mergeHooks,
   setupMiddleware,
   teardownMiddleware,
@@ -539,7 +533,6 @@ export {
   exportEventsJSONLines,
   exportEventsPrometheus,
   // Logger
-  LOG_LEVEL_VALUES,
   SemanticAttributes,
   setDefaultLogger,
   setDefaultMetricsRegistry,

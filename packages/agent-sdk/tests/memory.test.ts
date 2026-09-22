@@ -35,9 +35,9 @@ import {
   matchesPathPattern,
   // Store and parsing
   parseMarkdownWithFrontmatter,
-  parseSimpleYaml,
   serializeMarkdownWithFrontmatter,
 } from "../src/index.js";
+import { parseSimpleYaml } from "../src/memory/store.js";
 
 // =============================================================================
 // YAML Parsing Tests

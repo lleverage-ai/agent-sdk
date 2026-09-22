@@ -220,6 +220,16 @@ remaining changes and validating the consumer.
   optional `list`) over your store directly — `docs/persistence.md` shows the
   shape. `KeyValueStore`, `InMemoryStore`, `PersistentBackend` and `KVTaskStore`
   are unchanged.
+- **BREAKING**: Seven `@internal`-tagged helpers are no longer re-exported from
+  the package root: `invokeHooksWithTimeout`, `matchesToolName`,
+  `createMiddlewareContext`, `MiddlewareContextResult`, `isSchemaEmpty`,
+  `parseSimpleYaml` and `LOG_LEVEL_VALUES`. `defaultLogger` from
+  `@lleverage-ai/agent-sdk/threads` and `/threads/stream` (the internal
+  console fallback for stores and `WsServer`) is likewise no longer exported;
+  the observability `defaultLogger` on the package root is unchanged. Hooks
+  are invoked by the agent itself; middleware hooks are composed through
+  `applyMiddleware()` / `mergeHooks()`, and log levels are configured through
+  `createLogger({ level })`. None of these were used by the lleverage consumer.
 
 ### Fixed
 
