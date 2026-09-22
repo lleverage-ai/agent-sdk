@@ -2076,27 +2076,6 @@ export interface GenerateOptions {
    */
   threadId?: string;
 
-  /**
-   * Fork an existing session into a new thread.
-   *
-   * When provided with a checkpointer and threadId, creates a new session
-   * that starts from the current state of the source thread. Useful for
-   * exploring alternative conversation paths without affecting the original.
-   *
-   * @example
-   * ```typescript
-   * // Fork a session to explore alternatives
-   * const result = await agent.generate({
-   *   threadId: "session-123",
-   *   forkSession: "session-123-alternative",
-   *   prompt: "Let's try a different approach",
-   * });
-   * // Original session-123 remains unchanged
-   * // session-123-alternative contains a copy of session-123's state
-   * ```
-   */
-  forkSession?: string;
-
   /** Maximum tokens to generate */
   maxTokens?: number;
 
@@ -2433,9 +2412,6 @@ export interface GenerateResultComplete {
 
   /** All steps from the generation (includes tool calls) */
   steps: GenerateStep[];
-
-  /** New session ID if session was forked via forkSession option */
-  forkedSessionId?: string;
 }
 
 /**
@@ -3291,7 +3267,7 @@ export interface ToolLoadErrorInput extends BaseHookInput {
  */
 export interface PostCheckpointLoadInput extends BaseHookInput {
   hook_event_name: "PostCheckpointLoad";
-  /** Thread the checkpoint was loaded for (the source thread when forking). */
+  /** Thread the checkpoint was loaded for. */
   thread_id: string;
   /** Step number recorded on the checkpoint. */
   step: number;

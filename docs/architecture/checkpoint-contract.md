@@ -168,7 +168,7 @@ Two explicitly different configurations are proposed:
 
 Before implementation, define and test observer sequences for every method:
 normal completion, `respondWith`, tool failure, provider error parts versus
-thrown errors, interruption, `resume()`, `getInterrupt()`, `forkSession`, emergency
+thrown errors, interruption, `resume()`, `getInterrupt()`, emergency
 compaction, cancellation, abandoned stream consumption, SDK retries and background
 follow-ups. Name `runUIStreamFollowUps` explicitly: it does not re-enter the public
 method and cannot inherit another-public-call identity by assumption. The
@@ -282,7 +282,7 @@ notification must carry the actual `Interrupt` (as required by the sketch), so
 the sink has the request, identity and tool linkage needed for persistence.
 
 In the first implementation slice, every direct-checkpointer path (`resume()`,
-`getInterrupt()`, fork creation and emergency compaction) must either route through
+`getInterrupt()` and emergency compaction) must either route through
 the new source/sink with specified semantics and tests or fail explicitly as
 unsupported on the persistence-runtime path before side effects. Likewise, the
 tool-pipeline checkpointer/approval gate must recognise a supported persistence
@@ -418,7 +418,7 @@ both the consumer and SDK internals, including subagent/team callers.
 | Source `delete` / optional `list` | Keep for checkpoint management and local tooling. Specify cascading deletion if a new storage model is introduced. |
 | `PreGenerate.respondWith` | Keep; consumer interception relies on it. Test each mode's existing short-circuit behaviour. |
 | `checkpointAfterToolCall` | Candidate removal only with explicit consumer migration and intentional replacement save/barrier semantics. The consumer passes it today. |
-| `forkSession` / `forkedSessionId` | Retain during compatibility work; proposed 1.0 removal is independent of in-thread branch support and requires fork-state semantics. |
+| `forkSession` / `forkedSessionId` | Removed for 1.0 (no consumer or internal caller). In-thread branching remains the ledger's `forkFromMessageId`. |
 | `KeyValueStoreSaver` | Proposed 1.0 removal needs a real migration route for existing adapters. A KV-backed ledger entails concurrency, ordering and recovery contracts, not a ten-line blob wrapper. |
 | `streamResponse()`, `streamRaw()` | Proposed removals need verified absence or migration of consumer and internal callers. Do not infer that an SDK subagent cannot call them from a top-level consumer usage search. |
 | `streamDataResponse()` | Provisionally retain for generic HTTP use; a replacement recipe would need equivalent streaming/tool context. |
@@ -462,7 +462,7 @@ required: local package candidates can run against the merged consumer baseline.
 - Exact invocation/attempt identity, observer ordering and stream-abandonment
   semantics for the first opt-in seam, including cache hits, `runUIStreamFollowUps`
   and bounded observer delivery. Persistence-runtime support or explicit rejection
-  for resume, interrupt inspection, fork and emergency-compaction paths.
+  for resume, interrupt inspection and emergency-compaction paths.
 - Correcting existing in-process aggregate-usage seeding in the context-usage
   slice, separately from validated resume occupancy. Preserve legacy behaviour
   during the compatibility slice.

@@ -8,7 +8,7 @@
  *
  * Responsibilities:
  *
- * - `load` / `save` / `fork`: the run-boundary operations. `load` restores
+ * - `load` / `save`: the run-boundary operations. `load` restores
  *   agent state (`todos`, `files`) from the checkpoint; `save` snapshots it.
  * - `commit`: persist an already-built checkpoint and update the cache. Used
  *   when the caller has to shape the checkpoint itself (resume, emergency
@@ -97,9 +97,6 @@ export interface CheckpointRuntime {
     step: number,
     runId?: string,
   ): Promise<Checkpoint | undefined>;
-
-  /** Copy a thread's checkpoint to a new thread id. */
-  fork(sourceThreadId: string, targetThreadId: string): Promise<Checkpoint | undefined>;
 
   /**
    * Persist a checkpoint the caller has already shaped and make it the
@@ -247,54 +244,6 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
     }
   }
 
-  /**
-   * Fork an existing checkpoint to a new thread ID.
-   * Copies all checkpoint data including messages and state.
-   */
-  async function forkCheckpoint(
-    sourceThreadId: string,
-    targetThreadId: string,
-  ): Promise<Checkpoint | undefined> {
-    if (!checkpointer) {
-      return undefined;
-    }
-
-    // Load the source checkpoint
-    const sourceCheckpoint = await loadCheckpoint(sourceThreadId);
-    if (!sourceCheckpoint) {
-      return undefined;
-    }
-
-    // Create a new checkpoint with the target threadId
-    const forkedCheckpoint = createCheckpoint({
-      threadId: targetThreadId,
-      messages: [...sourceCheckpoint.messages],
-      step: sourceCheckpoint.step,
-      state: {
-        todos: [...sourceCheckpoint.state.todos],
-        files: { ...sourceCheckpoint.state.files },
-      },
-    });
-
-    try {
-      // Save the forked checkpoint
-      await checkpointer.save(forkedCheckpoint);
-      threadCheckpoints.set(targetThreadId, forkedCheckpoint);
-
-      return forkedCheckpoint;
-    } catch (error) {
-      throw new CheckpointError(
-        `Failed to fork checkpoint from ${sourceThreadId} to ${targetThreadId}`,
-        {
-          operation: "fork",
-          threadId: targetThreadId,
-          cause: error instanceof Error ? error : undefined,
-          metadata: { sourceThreadId, targetThreadId },
-        },
-      );
-    }
-  }
-
   async function commit(threadId: string, checkpoint: Checkpoint): Promise<void> {
     if (!checkpointer) {
       return;
@@ -325,7 +274,7 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
 
   async function resolveRunId(genOptions: GenerateOptions): Promise<string> {
     let runId = genOptions._runId;
-    if (!runId && genOptions.threadId && !genOptions.forkSession) {
+    if (!runId && genOptions.threadId) {
       const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
       if (existingCheckpoint?.pendingInterrupt) {
         runId = getCheckpointRunId(existingCheckpoint);
@@ -337,7 +286,6 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
   return {
     load: loadCheckpoint,
     save: saveCheckpoint,
-    fork: forkCheckpoint,
     commit,
     markPendingInterrupt,
     resolveRunId,

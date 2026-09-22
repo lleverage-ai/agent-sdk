@@ -40,8 +40,6 @@ Recorded as of the #140 refactor. None of these were changed by it.
 | Behaviour | `generate` | `stream` | `streamResponse` | `streamRaw` | `streamDataResponse` |
 | --- | --- | --- | --- | --- | --- |
 | `respondWith` cache short-circuit | result as-is | replayed as `StreamPart`s | plain-text `Response` | not supported | plain-text `Response` |
-| Checkpoint thread when `forkSession` is set | `forkedSessionId` | `forkedSessionId` | request `threadId` | request `threadId` | request `threadId` |
-| `forkedSessionId` on the result | yes | no | n/a | n/a | n/a |
 | `contextManager.updateUsage` after the run | yes | **no** | yes | yes | yes |
 | `output` schema read from | effective options (after `PreGenerate`) | **caller's `genOptions`** | effective options | effective options | effective options |
 | Pending interrupt persisted + `InterruptRequested` hook | yes (cooperative and thrown paths) | yes | **no** | **no** | yes |
@@ -78,7 +76,6 @@ instead of applying its own retry policy under the wrong request class.
 
 The runner takes the differences as inputs rather than hiding them:
 
-- `beginAttempt(…, "fork-aware" | "request")` selects the checkpoint thread.
 - `stream()` overrides `output` after spreading `buildModelCallParams`.
 - `createStreamLifecycleCallbacks` (usage, `checkpointAfterToolCall`,
   `PostGenerate`) is only used by the three `Response`-shaped modes.

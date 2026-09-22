@@ -1205,19 +1205,9 @@ export function createAgent(options: AgentOptions): Agent {
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const attempt = await runner.prepareAttempt(
-            effectiveGenOptions,
-            retryState.currentModel,
-            "fork-aware",
-          );
-          const {
-            messages,
-            forkedSessionId,
-            checkpointThreadId,
-            startStep,
-            executionBaseTelemetry,
-            signalState,
-          } = attempt;
+          const attempt = await runner.prepareAttempt(effectiveGenOptions, retryState.currentModel);
+          const { messages, checkpointThreadId, startStep, executionBaseTelemetry, signalState } =
+            attempt;
           // Store for potential emergency compaction in catch block
           lastBuiltMessages = messages;
 
@@ -1316,7 +1306,6 @@ export function createAgent(options: AgentOptions): Agent {
             finishReason: response.finishReason as GenerateResultComplete["finishReason"],
             output,
             steps: mapSteps(response.steps),
-            forkedSessionId,
           };
 
           // Across supported AI SDK versions, run-level usage may aggregate
@@ -1328,7 +1317,7 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Abort-ignoring providers must not publish a late result/checkpoint.
           effectiveGenOptions.signal?.throwIfAborted();
-          // Save checkpoint - use forked session ID if forking, otherwise use original threadId.
+          // Save checkpoint.
           // `response.response.messages` only holds the FINAL step's messages;
           // build from every step so intermediate tool calls/results survive.
           if (checkpointThreadId && options.checkpointer) {
@@ -1634,11 +1623,7 @@ export function createAgent(options: AgentOptions): Agent {
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const attempt = await runner.prepareAttempt(
-            effectiveGenOptions,
-            retryState.currentModel,
-            "fork-aware",
-          );
+          const attempt = await runner.prepareAttempt(effectiveGenOptions, retryState.currentModel);
           const { checkpointThreadId, startStep, executionBaseTelemetry, signalState } = attempt;
 
           const generationStartTime = Date.now();
@@ -2031,11 +2016,7 @@ export function createAgent(options: AgentOptions): Agent {
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const attempt = await runner.prepareAttempt(
-            effectiveGenOptions,
-            retryState.currentModel,
-            "request",
-          );
+          const attempt = await runner.prepareAttempt(effectiveGenOptions, retryState.currentModel);
           const { signalState } = attempt;
 
           // Track the durable message base for checkpointing.
@@ -2113,11 +2094,7 @@ export function createAgent(options: AgentOptions): Agent {
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
         try {
-          const attempt = await runner.prepareAttempt(
-            effectiveGenOptions,
-            retryState.currentModel,
-            "request",
-          );
+          const attempt = await runner.prepareAttempt(effectiveGenOptions, retryState.currentModel);
 
           // Track the durable message base for checkpointing.
           const streamingCompaction = createStreamingCompactionState(
@@ -2183,7 +2160,6 @@ export function createAgent(options: AgentOptions): Agent {
           const attemptContext = await runner.beginAttempt(
             effectiveGenOptions,
             retryState.currentModel,
-            "request",
           );
           const { executionBaseTelemetry } = attemptContext;
 

@@ -16,7 +16,7 @@ import { createMockModel } from "./setup.js";
 
 /**
  * `PostCheckpointLoad` is the one point where hooks see the restored transcript.
- * It fires after the checkpointer's `load()` (or a fork copy) and before the
+ * It fires after the checkpointer's `load()` and before the
  * compaction check, so a host can seed its context manager from the previous
  * run's recorded usage ahead of the first compaction decision.
  */
@@ -150,22 +150,6 @@ describe("PostCheckpointLoad hook", () => {
     // The seeded 9,500 tokens (over the 8,000 soft threshold) drove compaction
     // even though the two restored messages estimate to a handful of tokens.
     expect(shouldCompactSpy.mock.results[0]?.value).toMatchObject({ trigger: true });
-  });
-
-  it("fires for the source thread when forking a session", async () => {
-    const { hook, calls } = loadedHook();
-    const agent = createAgent({
-      model: createMockModel({ text: "ok" }),
-      checkpointer: await seededSaver({ lastRunUsage: { contextTokens: 42 } }),
-      hooks: { PostCheckpointLoad: [hook] },
-    });
-
-    await agent.generate({ prompt: "branch", threadId: "thread-1", forkSession: "thread-fork" });
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.thread_id).toBe("thread-1");
-    expect(calls[0]?.messages).toEqual(restored);
-    expect(calls[0]?.metadata).toEqual({ lastRunUsage: { contextTokens: 42 } });
   });
 
   it("fires once for sequential generations on a thread, not on cached re-reads", async () => {

@@ -27,8 +27,8 @@
  *     └────────────────────────────────────────────────────────────────┘
  * ```
  *
- * The modes still differ in places (fork handling, pending-interrupt
- * persistence, follow-up strategy, …). Those differences are deliberate
+ * The modes still differ in places (pending-interrupt persistence,
+ * follow-up strategy, …). Those differences are deliberate
  * inputs to this module rather than hidden inside it; see
  * `docs/architecture/generation-modes.md` for the table.
  *
@@ -397,18 +397,6 @@ export interface RepairToolCallOptions {
 }
 
 /**
- * Which thread a mode persists to and reports in telemetry.
- *
- * - `fork-aware`: `forkedSessionId ?? threadId` (`generate()`, `stream()`).
- * - `request`: `threadId` as passed (`streamResponse()`, `streamRaw()`,
- *   `streamDataResponse()` — these do not honour `forkSession` for
- *   persistence).
- *
- * @internal
- */
-export type CheckpointThreadStrategy = "fork-aware" | "request";
-
-/**
  * Output of {@link GenerationRunner.beginRun}.
  *
  * @internal
@@ -431,8 +419,7 @@ export interface AttemptContext {
   currentModel: LanguageModel;
   messages: ModelMessage[];
   checkpoint: Checkpoint | undefined;
-  forkedSessionId: string | undefined;
-  /** Thread used for checkpoint persistence and telemetry; see {@link CheckpointThreadStrategy}. */
+  /** Thread used for checkpoint persistence and telemetry (the request `threadId`). */
   checkpointThreadId: string | undefined;
   startStep: number;
   maxSteps: number;
@@ -506,7 +493,6 @@ export interface GenerationRunner {
   beginAttempt(
     effectiveGenOptions: GenerateOptions,
     currentModel: LanguageModel,
-    checkpointThread: CheckpointThreadStrategy,
   ): Promise<AttemptContext>;
   /**
    * Compose tools, prompt and AI SDK params for an attempt. `request.streamingContext`
@@ -521,7 +507,6 @@ export interface GenerationRunner {
   prepareAttempt(
     effectiveGenOptions: GenerateOptions,
     currentModel: LanguageModel,
-    checkpointThread: CheckpointThreadStrategy,
   ): Promise<PreparedAttempt>;
   /**
    * The call options shared by `generateText()` and `streamText()`. Callers
@@ -709,15 +694,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
   async function beginAttempt(
     effectiveGenOptions: GenerateOptions,
     currentModel: LanguageModel,
-    checkpointThread: CheckpointThreadStrategy,
   ): Promise<AttemptContext> {
-    const { messages, checkpoint, forkedSessionId } = await buildMessages(effectiveGenOptions);
+    const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
     const maxSteps = options.maxSteps ?? 10;
     const startStep = checkpoint?.step ?? 0;
-    const checkpointThreadId =
-      checkpointThread === "fork-aware"
-        ? (forkedSessionId ?? effectiveGenOptions.threadId)
-        : effectiveGenOptions.threadId;
+    const checkpointThreadId = effectiveGenOptions.threadId;
     const executionBaseTelemetry = buildExecutionTelemetryFromIds({
       runId: effectiveGenOptions._runId ?? createRunId(),
       threadId: checkpointThreadId,
@@ -729,7 +710,6 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       currentModel,
       messages,
       checkpoint,
-      forkedSessionId,
       checkpointThreadId,
       startStep,
       maxSteps,
@@ -785,9 +765,8 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
   async function prepareAttempt(
     effectiveGenOptions: GenerateOptions,
     currentModel: LanguageModel,
-    checkpointThread: CheckpointThreadStrategy,
   ): Promise<PreparedAttempt> {
-    const attempt = await beginAttempt(effectiveGenOptions, currentModel, checkpointThread);
+    const attempt = await beginAttempt(effectiveGenOptions, currentModel);
     return { ...attempt, ...prepareRequest(attempt) };
   }
 

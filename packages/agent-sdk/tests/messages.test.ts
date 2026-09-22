@@ -152,24 +152,6 @@ describe("createMessageRuntime", () => {
 
       expect(result.messages).toEqual([user("earlier"), user("history"), user("now")]);
       expect(result.checkpoint?.threadId).toBe("t1");
-      expect(result.forkedSessionId).toBeUndefined();
-    });
-
-    it("forks the source thread and reports the forked session id", async () => {
-      const { deps, saver } = createHarness();
-      await deps.checkpoints.save("src", [user("earlier")], 1);
-      const runtime = createMessageRuntime(deps);
-
-      const result = await runtime.buildMessages({
-        threadId: "src",
-        forkSession: "dst",
-        prompt: "now",
-      });
-
-      expect(result.forkedSessionId).toBe("dst");
-      expect(result.checkpoint?.threadId).toBe("dst");
-      expect(result.messages).toEqual([user("earlier"), user("now")]);
-      expect((await saver.load("dst"))?.messages).toEqual([user("earlier")]);
     });
 
     it("builds from history and prompt alone without a thread", async () => {
@@ -179,7 +161,7 @@ describe("createMessageRuntime", () => {
       expect(result.checkpoint).toBeUndefined();
     });
 
-    it("compacts at the run boundary using the forked thread id for telemetry", async () => {
+    it("compacts at the run boundary using the request thread id for telemetry", async () => {
       const contextManager = createContextManager({
         shouldCompact: vi.fn(() => ({ trigger: true, reason: "token_threshold" as const })),
       });
@@ -193,7 +175,6 @@ describe("createMessageRuntime", () => {
 
       const result = await runtime.buildMessages({
         threadId: "src",
-        forkSession: "dst",
         prompt: "now",
         _runId: "run-1",
       });
@@ -203,7 +184,7 @@ describe("createMessageRuntime", () => {
         expect.objectContaining({
           hook_event_name: "PreCompact",
           session_id: "src",
-          telemetry: expect.objectContaining({ runId: "run-1", threadId: "dst" }),
+          telemetry: expect.objectContaining({ runId: "run-1", threadId: "src" }),
           message_count: 2,
           tokens_before: 100,
         }),

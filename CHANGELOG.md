@@ -192,6 +192,19 @@ remaining changes and validating the consumer.
   repair hook is passed as both `repairToolCall` (stable since 7.0.20) and
   `experimental_repairToolCall` (the only name older 7.0.x reads).
 
+### Removed
+
+- **BREAKING**: `GenerateOptions.forkSession` and `GenerateResult.forkedSessionId`.
+  Passing `forkSession` copied the source thread's checkpoint to a new thread id
+  and ran the generation there; `generate()` and `stream()` then persisted to the
+  forked thread while the `Response`-shaped modes persisted to the request
+  `threadId`. Every mode now persists to and reports the request `threadId`, and
+  the internal `CheckpointRuntime.fork()` and `"fork-aware" | "request"`
+  checkpoint-thread strategy are gone. To branch a conversation, load the source
+  checkpoint with your checkpointer, save it under the new thread id, and call
+  `generate({ threadId: newId })`; in-thread branching of ledger transcripts
+  (`beginRun({ forkFromMessageId })`) is unaffected.
+
 ### Fixed
 
 - `createApproximateTokenCounter()` and `createCustomTokenCounter()` now
