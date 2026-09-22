@@ -1,8 +1,7 @@
 /**
  * Tests for the checkpoint runtime (`src/agent/checkpoint-runtime.ts`).
  *
- * End-to-end checkpoint behaviour (interrupt/resume, forking, incremental
- * saves) is covered by the agent tests. This file pins the runtime's own
+ * End-to-end checkpoint behaviour (interrupt/resume, incremental saves) is covered by the agent tests. This file pins the runtime's own
  * contract: cache coherence with the saver, state restore/snapshot, error
  * wrapping, and the run-id continuation rule.
  */
@@ -83,7 +82,6 @@ describe("createCheckpointRuntime", () => {
 
       await expect(runtime.load("t1")).resolves.toBeUndefined();
       await expect(runtime.save("t1", [], 0)).resolves.toBeUndefined();
-      await expect(runtime.fork("t1", "t2")).resolves.toBeUndefined();
       await expect(runtime.commit("t1", checkpoint)).resolves.toBeUndefined();
       await expect(
         runtime.markPendingInterrupt("t1", makeInterrupt(), "run-1"),
@@ -181,28 +179,6 @@ describe("createCheckpointRuntime", () => {
     });
   });
 
-  describe("fork()", () => {
-    it("copies messages and state to the target thread and caches both", async () => {
-      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
-      await runtime.save("src", [{ role: "user", content: "hi" }], 4, "run-1");
-
-      const forked = await runtime.fork("src", "dst");
-      expect(forked?.threadId).toBe("dst");
-      expect(forked?.messages).toEqual([{ role: "user", content: "hi" }]);
-      expect(forked?.step).toBe(4);
-      // The fork does not inherit the source run id
-      expect(forked?.metadata).toBeUndefined();
-      expect(await runtime.load("dst")).toBe(forked);
-      expect((await saver.load("dst"))?.threadId).toBe("dst");
-    });
-
-    it("returns undefined when the source does not exist", async () => {
-      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
-      await expect(runtime.fork("missing", "dst")).resolves.toBeUndefined();
-      expect(await saver.load("dst")).toBeUndefined();
-    });
-  });
-
   describe("commit()", () => {
     it("persists the given checkpoint and makes it the cached one", async () => {
       const runtime = createCheckpointRuntime({ checkpointer: saver, state });
@@ -286,15 +262,6 @@ describe("createCheckpointRuntime", () => {
       const resolved = await runtime.resolveRunId({ threadId: "t1" });
       expect(resolved).not.toBe("run-ckpt");
       expect(resolved).toEqual(expect.any(String));
-    });
-
-    it("mints a new id for a forked session even with a pending interrupt", async () => {
-      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
-      await runtime.save("t1", [], 0, "run-ckpt");
-      await runtime.markPendingInterrupt("t1", makeInterrupt(), "run-ckpt");
-
-      const resolved = await runtime.resolveRunId({ threadId: "t1", forkSession: "t2" });
-      expect(resolved).not.toBe("run-ckpt");
     });
   });
 });

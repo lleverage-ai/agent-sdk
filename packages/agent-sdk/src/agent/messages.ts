@@ -10,7 +10,7 @@
  *   only holds the final step, so multi-step runs are rebuilt from per-step
  *   responses.
  * - {@link createMessageRuntime}: the agent-scoped half. `buildMessages()`
- *   loads or forks the thread checkpoint, appends history and prompt, and
+ *   loads the thread checkpoint, appends history and prompt, and
  *   compacts at the run boundary. `createStreamingCompactionState()` tracks
  *   the durable transcript through a streaming tool loop and compacts between
  *   steps. Both go through `compactMessagesIfNeeded()`, which owns the
@@ -162,14 +162,13 @@ export interface StreamingCompactionState {
  */
 export interface MessageRuntime {
   /**
-   * Build the messages array for the AI SDK from GenerateOptions. Loads (or
-   * forks) the thread checkpoint, appends history and prompt, and compacts at
-   * the run boundary when a context manager is configured.
+   * Build the messages array for the AI SDK from GenerateOptions. Loads the
+   * thread checkpoint, appends history and prompt, and compacts at the run
+   * boundary when a context manager is configured.
    */
   buildMessages(genOptions: GenerateOptions): Promise<{
     messages: ModelMessage[];
     checkpoint?: Checkpoint;
-    forkedSessionId?: string;
   }>;
 
   /** Compact `messages` if the context policy requires it, emitting hooks. */
@@ -361,28 +360,16 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
   /**
    * Build the messages array for AI SDK from GenerateOptions.
    * If a checkpoint exists for the threadId, prepends checkpoint messages.
-   * If forkSession is specified, creates a new session from the source.
    * If contextManager is provided, applies automatic compaction if needed.
    */
   async function buildMessages(genOptions: GenerateOptions): Promise<{
     messages: ModelMessage[];
     checkpoint?: Checkpoint;
-    forkedSessionId?: string;
   }> {
     const messages: ModelMessage[] = [];
     let checkpoint: Checkpoint | undefined;
-    let forkedSessionId: string | undefined;
 
-    // Handle session forking
-    if (genOptions.forkSession && genOptions.threadId) {
-      forkedSessionId = genOptions.forkSession;
-      checkpoint = await checkpoints.fork(genOptions.threadId, forkedSessionId);
-      if (checkpoint) {
-        // Prepend forked checkpoint messages
-        messages.push(...checkpoint.messages);
-      }
-    } else if (genOptions.threadId) {
-      // Normal checkpoint loading
+    if (genOptions.threadId) {
       checkpoint = await checkpoints.load(genOptions.threadId);
       if (checkpoint) {
         // Prepend checkpoint messages
@@ -401,13 +388,9 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
     }
 
     // Apply context compaction if contextManager is configured
-    const compaction = await compactMessagesIfNeeded(
-      messages,
-      genOptions,
-      forkedSessionId ?? genOptions.threadId,
-    );
+    const compaction = await compactMessagesIfNeeded(messages, genOptions, genOptions.threadId);
 
-    return { messages: compaction.messages, checkpoint, forkedSessionId };
+    return { messages: compaction.messages, checkpoint };
   }
 
   return { buildMessages, compactMessagesIfNeeded, createStreamingCompactionState };

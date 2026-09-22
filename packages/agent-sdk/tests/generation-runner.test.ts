@@ -382,37 +382,26 @@ describe("createGenerationRunner", () => {
   });
 
   describe("beginAttempt / prepareRequest", () => {
-    it("selects the checkpoint thread per strategy", async () => {
+    it("uses the request thread for checkpoints and telemetry", async () => {
       const checkpointer = new MemorySaver();
       const deps = buildDeps({ options: { checkpointer } });
       const runner = createGenerationRunner(deps);
       await deps.checkpoints.save("base", [user("history")], 3, "run_prev");
 
-      const forkAware = await runner.beginAttempt(
-        { prompt: "p", threadId: "base", forkSession: true, _runId: "run_1" },
+      const attempt = await runner.beginAttempt(
+        { prompt: "p", threadId: "base", _runId: "run_1" },
         deps.options.model,
-        "fork-aware",
       );
-      expect(forkAware.forkedSessionId).toBeDefined();
-      expect(forkAware.checkpointThreadId).toBe(forkAware.forkedSessionId);
-      expect(forkAware.executionBaseTelemetry.threadId).toBe(forkAware.forkedSessionId);
-      expect(forkAware.startStep).toBe(3);
-      expect(forkAware.messages).toEqual([user("history"), user("p")]);
-
-      const request = await runner.beginAttempt(
-        { prompt: "p", threadId: "base", forkSession: true, _runId: "run_1" },
-        deps.options.model,
-        "request",
-      );
-      expect(request.forkedSessionId).toBeDefined();
-      expect(request.checkpointThreadId).toBe("base");
-      expect(request.executionBaseTelemetry.threadId).toBe("base");
+      expect(attempt.checkpointThreadId).toBe("base");
+      expect(attempt.executionBaseTelemetry.threadId).toBe("base");
+      expect(attempt.startStep).toBe(3);
+      expect(attempt.messages).toEqual([user("history"), user("p")]);
     });
 
     it("defaults maxSteps to 10 and startStep to 0 without a checkpoint", async () => {
       const deps = buildDeps();
       const runner = createGenerationRunner(deps);
-      const attempt = await runner.beginAttempt({ prompt: "p" }, deps.options.model, "request");
+      const attempt = await runner.beginAttempt({ prompt: "p" }, deps.options.model);
       expect(attempt).toMatchObject({ maxSteps: 10, startStep: 0, checkpoint: undefined });
       expect(attempt.executionBaseTelemetry.runId).toMatch(/^run_/);
     });
@@ -427,7 +416,6 @@ describe("createGenerationRunner", () => {
       const attempt = await runner.beginAttempt(
         { prompt: "p", threadId: "t1", _runId: "run_1", maxTokens: 5, temperature: 0.1 },
         deps.options.model,
-        "request",
       );
       const prepared = runner.prepareRequest(attempt, { streamingContext });
 
@@ -464,13 +452,11 @@ describe("createGenerationRunner", () => {
           experimental_telemetry: { isEnabled: false },
         },
         deps.options.model,
-        "request",
       );
       expect(both.initialParams.telemetry).toEqual({ isEnabled: true });
       const legacy = await runner.prepareAttempt(
         { prompt: "p", experimental_telemetry: { isEnabled: false } },
         deps.options.model,
-        "request",
       );
       expect(legacy.initialParams.telemetry).toEqual({ isEnabled: false });
     });
@@ -488,7 +474,6 @@ describe("createGenerationRunner", () => {
       const attempt = await runner.prepareAttempt(
         { prompt: "p", headers: { h: "1" }, providerOptions: { x: 1 } },
         deps.options.model,
-        "request",
       );
 
       const params = runner.buildModelCallParams(attempt);
@@ -525,7 +510,7 @@ describe("createGenerationRunner", () => {
     it("stops after the current step when the signal state is set", async () => {
       const deps = buildDeps({ options: { maxSteps: 5 } });
       const runner = createGenerationRunner(deps);
-      const attempt = await runner.prepareAttempt({ prompt: "p" }, deps.options.model, "request");
+      const attempt = await runner.prepareAttempt({ prompt: "p" }, deps.options.model);
       const [signalStop, userStop] = runner.buildModelCallParams(attempt).stopWhen;
 
       expect((signalStop as () => boolean)()).toBe(false);
@@ -650,7 +635,6 @@ describe("createGenerationRunner", () => {
         const attempt = await runner.prepareAttempt(
           { prompt: "p", threadId: "t1", _runId: "run_1", checkpointAfterToolCall },
           deps.options.model,
-          "request",
         );
         const compaction = deps.messageRuntime.createStreamingCompactionState(
           attempt.messages,
@@ -799,7 +783,6 @@ describe("createGenerationRunner", () => {
         const attempt = await runner.prepareAttempt(
           { prompt: "p", threadId: "t1", _runId: "run_1", _skipCompaction },
           deps.options.model,
-          "request",
         );
         const streamingCompaction = deps.messageRuntime.createStreamingCompactionState(
           attempt.messages,
@@ -893,7 +876,6 @@ describe("createGenerationRunner", () => {
       const attempt = await runner.prepareAttempt(
         { prompt: "p", threadId: "t1", signal: controller.signal },
         deps.options.model,
-        "request",
       );
       const result = runner.runUIStreamFollowUps({
         writer: { merge: vi.fn() } as never,
@@ -914,7 +896,7 @@ describe("createGenerationRunner", () => {
     it("is a no-op when the task queue is empty", async () => {
       const deps = buildDeps();
       const runner = createGenerationRunner(deps);
-      const attempt = await runner.prepareAttempt({ prompt: "p" }, deps.options.model, "request");
+      const attempt = await runner.prepareAttempt({ prompt: "p" }, deps.options.model);
       const writer = { merge: vi.fn() };
 
       await runner.runUIStreamFollowUps({
