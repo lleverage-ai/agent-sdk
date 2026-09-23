@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `agent.invalidateCheckpoint(threadId)`: makes the next generation for a
+  thread reload its checkpoint from the checkpointer. Until now an agent
+  loaded each thread once and never read the store again, so a host whose
+  store changed behind the agent had to build a new agent to see it. The
+  reload behaves like a first load: it calls `checkpointer.load()`, restores
+  `todos` and `files`, and fires `PostCheckpointLoad` again. The reloaded
+  checkpoint, including its `pendingInterrupt`, replaces the cached one; until
+  the reload, the cached checkpoint stays the base for saves, so a generation
+  already in flight is unaffected. No-op without a checkpointer. Without a
+  call, caching is unchanged.
+
+### Removed
+
+- **BREAKING**: `GenerateOptions.checkpointAfterToolCall`. Only `streamRaw()`
+  and `streamDataResponse()` honoured it, by saving after every step;
+  `generate()` and `stream()` ignored it despite the docs. Every mode now saves
+  the checkpoint once, when the call returns normally, so `streamRaw()` and
+  `streamDataResponse()` no longer call `checkpointer.save()` per step. Remove
+  the option from your calls. `shouldStopAfterStep` still drains at a step
+  boundary: the stopped call returns normally and its save includes the last
+  completed step. If you need each step to be durable, record steps in your own
+  storage, build the checkpoint from them in `load()`, and call
+  `invalidateCheckpoint()` before the call that should see them.
+
 ## [1.0.0-rc.1] - 2026-09-22
 
 Release candidate for 1.0.0. These entries track behaviour upstreamed from

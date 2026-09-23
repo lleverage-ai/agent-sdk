@@ -345,6 +345,10 @@ export function createRecordingAgent(
       return agent.getInterrupt(threadId);
     },
 
+    invalidateCheckpoint(threadId: string) {
+      agent.invalidateCheckpoint(threadId);
+    },
+
     async resume(
       threadId: string,
       interruptId: string,

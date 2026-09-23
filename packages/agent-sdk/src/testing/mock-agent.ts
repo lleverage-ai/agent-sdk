@@ -568,6 +568,10 @@ export function createMockAgent(options: MockAgentOptions = {}): MockAgent {
       return undefined;
     },
 
+    invalidateCheckpoint(_threadId: string) {
+      // Mock agent has no checkpoint cache (no-op in mock)
+    },
+
     async resume(
       threadId: string,
       _interruptId: string,

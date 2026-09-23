@@ -2196,6 +2196,10 @@ export function createAgent(options: AgentOptions): Agent {
       return checkpoint?.pendingInterrupt;
     },
 
+    invalidateCheckpoint(threadId: string): void {
+      checkpoints.invalidate(threadId);
+    },
+
     async resume(
       threadId: string,
       interruptId: string,

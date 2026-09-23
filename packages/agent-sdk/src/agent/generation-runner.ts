@@ -534,9 +534,8 @@ export interface GenerationRunner {
   ): Promise<GenerateResultComplete | undefined>;
   /**
    * `onStepFinish` / `onFinish` for `streamRaw()` and `streamDataResponse()`:
-   * keep the durable transcript current, save intermediate checkpoints when
-   * `checkpointAfterToolCall` is set, and on finish update usage, persist and
-   * run PostGenerate hooks.
+   * keep the durable transcript current, and on finish update usage, save the
+   * checkpoint once and run PostGenerate hooks.
    */
   createStreamLifecycleCallbacks(
     attempt: PreparedAttempt,
@@ -869,27 +868,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     const { effectiveGenOptions, currentModel, startStep, executionBaseTelemetry } = attempt;
     const generationStartTime = Date.now();
 
-    // Track step count for incremental checkpointing.
-    let currentStepCount = 0;
-
     return {
-      // Keep the message base current for final persistence, and save
-      // intermediate tool steps when requested.
+      // Keep the message base current for the save in `onFinish`. Like every
+      // other generation mode, the stream saves the checkpoint once.
       onStepFinish: async (stepResult) => {
-        currentStepCount++;
-        const currentMessages = streamingCompaction.appendStep(stepResult);
-        if (
-          effectiveGenOptions.checkpointAfterToolCall &&
-          effectiveGenOptions.threadId &&
-          options.checkpointer
-        ) {
-          await saveCheckpoint(
-            effectiveGenOptions.threadId,
-            currentMessages,
-            startStep + currentStepCount,
-            effectiveGenOptions._runId,
-          );
-        }
+        streamingCompaction.appendStep(stepResult);
       },
       // Save checkpoint and invoke unified PostGenerate hook after completion
       onFinish: async (finishResult) => {
