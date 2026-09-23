@@ -315,14 +315,12 @@ specified. Blindly saving on every `stepFinished` is not compatible.
 
 | SDK mode | Current ordinary successful invocation with a saver/thread |
 | --- | --- |
-| `generate()` | Final save; the per-step flag is ignored. |
-| `stream()` | Final save; the per-step flag is ignored. |
-| `streamRaw()`, `streamDataResponse()` | Flag-gated step saves plus final save. |
+| `generate()`, `stream()`, `streamRaw()`, `streamDataResponse()` | One final save when the call returns normally; no per-step saves (`checkpointAfterToolCall` was removed for 1.0). |
 
 This table is not a universal save-count formula: interrupts, retries, follow-ups,
 cache hits and error paths need their own regression cases. Test the exact
 current sequence, checkpoint contents, wrapper effects and error propagation
-for each mode with the flag on and off. Include `generate()`'s save followed by
+for each mode. Include `generate()`'s save followed by
 `markPendingInterrupt`, and its thrown-interrupt save with step zero and pre-call
 messages; neither is equivalent to a single normal final save. The consumer
 session goldens deliberately

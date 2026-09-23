@@ -988,8 +988,9 @@ export interface AgentOptions {
   /**
    * Checkpoint saver for session persistence.
    *
-   * When provided, the agent will automatically save checkpoints after each
-   * generation step and restore state when a matching threadId is found.
+   * When provided, the agent saves the thread's checkpoint once, when a
+   * generation call returns normally, and restores state when a matching
+   * threadId is found.
    *
    * @example
    * ```typescript

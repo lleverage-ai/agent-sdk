@@ -272,6 +272,62 @@ describe("createCheckpointRuntime", () => {
       expect((await runtime.load("t1"))?.step).toBe(5);
     });
 
+    it("does not let an older load roll back state or re-notify after a newer one", async () => {
+      await saver.save(seed(1, "old"));
+      const onLoaded = vi.fn(async () => {});
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state, onLoaded });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const realLoad = saver.load.bind(saver);
+      vi.spyOn(saver, "load").mockImplementationOnce(async (threadId) => {
+        const loaded = await realLoad(threadId);
+        await gate;
+        return loaded;
+      });
+
+      const older = runtime.load("t1");
+      await Promise.resolve();
+      await saver.save(seed(5, "new"));
+      runtime.invalidate("t1");
+      const newer = await runtime.load("t1");
+      release();
+      await older;
+
+      expect(newer?.step).toBe(5);
+      expect(state.todos.map((todo) => todo.id)).toEqual(["new"]);
+      expect(state.files).toEqual({ "/f": "new" });
+      expect(onLoaded).toHaveBeenCalledTimes(1);
+      expect(onLoaded).toHaveBeenCalledWith(newer, "t1");
+    });
+
+    it("still restores state for a first load that overlaps an invalidation", async () => {
+      await saver.save(seed(1, "old"));
+      const onLoaded = vi.fn(async () => {});
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state, onLoaded });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const realLoad = saver.load.bind(saver);
+      vi.spyOn(saver, "load").mockImplementationOnce(async (threadId) => {
+        const loaded = await realLoad(threadId);
+        await gate;
+        return loaded;
+      });
+
+      const inFlight = runtime.load("t1");
+      await Promise.resolve();
+      runtime.invalidate("t1");
+      release();
+      await inFlight;
+
+      // Its generation saves this state, so it must not be left empty.
+      expect(state.todos.map((todo) => todo.id)).toEqual(["old"]);
+      expect(onLoaded).toHaveBeenCalledTimes(1);
+    });
+
     it("only affects the thread it names", async () => {
       await saver.save(seed(1, "old"));
       await saver.save({ ...seed(1, "other"), threadId: "t2" });

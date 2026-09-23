@@ -157,6 +157,9 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
   // Bumped by every invalidation, so a load that started before one cannot
   // cache what it read.
   const invalidationEpochs = new Map<string, number>();
+  // Epoch of the newest load that restored agent state for the thread. A load
+  // older than that must not roll state back or re-notify.
+  const appliedEpochs = new Map<string, number>();
 
   /**
    * Load checkpoint for a thread if checkpointer is configured.
@@ -175,6 +178,7 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
 
     const epoch = invalidationEpochs.get(threadId) ?? 0;
     let checkpoint: Checkpoint | undefined;
+    let superseded = false;
     try {
       // Load from checkpointer
       checkpoint = await checkpointer.load(threadId);
@@ -189,7 +193,11 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
         }
       }
 
-      if (checkpoint) {
+      // A load that started before an invalidation still restores state for
+      // its own generation, unless a newer load has already done so.
+      superseded = (appliedEpochs.get(threadId) ?? -1) > epoch;
+      if (checkpoint && !superseded) {
+        appliedEpochs.set(threadId, epoch);
         // Restore agent state from checkpoint
         state.todos = [...checkpoint.state.todos];
         state.files = { ...checkpoint.state.files };
@@ -207,7 +215,7 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
     // Notify after the cache and state are settled so a listener observes the
     // same checkpoint the generation will use. Outside the try so a listener
     // failure is never misreported as a load failure.
-    if (checkpoint && onLoaded) {
+    if (checkpoint && onLoaded && !superseded) {
       await onLoaded(checkpoint, threadId);
     }
 
