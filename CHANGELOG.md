@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] - 2026-09-23
+
+Second release candidate for 1.0.0. It removes `checkpointAfterToolCall`, so
+every generation mode saves the checkpoint once, and adds
+`invalidateCheckpoint()` so a host can make an agent reload a thread from its
+checkpoint store.
+
 ### Added
 
 - `agent.invalidateCheckpoint(threadId)`: makes the next generation for a
@@ -757,7 +764,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.2...HEAD
+[1.0.0-rc.2]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.1...agent-sdk@1.0.0-rc.2
 [1.0.0-rc.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.9...agent-sdk@1.0.0-rc.1
 [0.1.0-alpha.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.0.14...agent-sdk@0.1.0-alpha.1
 [0.0.14]: https://github.com/lleverage-ai/agent-sdk/compare/v0.0.13...agent-sdk@0.0.14
