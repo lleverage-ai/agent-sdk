@@ -49,9 +49,9 @@ const result = await agent.generate({
   messages?: Message[],
   threadId?: string,
   tools?: Record<string, Tool>,
-  checkpointAfterToolCall?: boolean,
   shouldStopAfterStep?: () => boolean, // cooperative pause at a step boundary
 });
+// Every mode saves the thread's checkpoint once, when the call returns normally.
 
 // Stream a response (AsyncIterator)
 for await (const part of agent.stream(options)) {
@@ -63,6 +63,11 @@ const response = agent.streamDataResponse(options);
 
 // Raw AI SDK stream
 const stream = await agent.streamRaw(options);
+
+// Make the next call for a thread reload its checkpoint from the checkpointer
+// (restores todos/files and fires PostCheckpointLoad again). No-op without a
+// checkpointer.
+agent.invalidateCheckpoint(threadId);
 
 ```
 
@@ -252,7 +257,9 @@ interface AgentHooks {
 
 `PostCheckpointLoad` receives `PostCheckpointLoadInput` (`thread_id`, `step`,
 `messages`, `metadata`, `has_pending_interrupt`) after a thread is restored and
-before the compaction check. See [Persistence](./persistence.md#checkpoint-hooks).
+before the compaction check. It fires on the first load of a thread and again
+after `invalidateCheckpoint(threadId)`. See
+[Persistence](./persistence.md#checkpoint-hooks).
 
 ## Checkpointing
 

@@ -26,7 +26,8 @@ Every mode goes through the runner in this order:
 4. `buildModelCallParams` — model-capability projection of tool results,
    execution context injection, stop conditions, AI SDK passthrough options.
 5. Mode-specific call and output handling.
-6. `updateContextUsage`, checkpoint save, `PostGenerate` hooks.
+6. `updateContextUsage`, checkpoint save (once per call, when it returns
+   normally), `PostGenerate` hooks.
 7. Background-task follow-ups while `waitForBackgroundTasks` is on.
 8. On error: `retryOrThrow` — `PostGenerateFailure` and
    `GenerationRetryDecision` hooks, fallback model, backoff; or throw the
@@ -35,6 +36,9 @@ Every mode goes through the runner in this order:
 ## Behaviour differences
 
 Recorded as of the #140 refactor. None of these were changed by it.
+Checkpoint save timing is no longer a difference: `checkpointAfterToolCall`
+was removed before 1.0 ([#180](https://github.com/lleverage-ai/agent-sdk/issues/180)),
+and every mode now saves once, when the call returns normally.
 
 | Behaviour | `generate` | `stream` | `streamRaw` | `streamDataResponse` |
 | --- | --- | --- | --- | --- |
@@ -43,7 +47,6 @@ Recorded as of the #140 refactor. None of these were changed by it.
 | `output` schema read from | effective options (after `PreGenerate`) | **caller's `genOptions`** | effective options | effective options |
 | Pending interrupt persisted + `InterruptRequested` hook | yes (cooperative and thrown paths) | yes | **no** | yes |
 | Non-cooperative `InterruptSignal` thrown out of the AI SDK call | caught, persisted, returned as `interrupted` | propagates to retry handling | propagates | propagates |
-| `checkpointAfterToolCall` (save after every step) | no | no | yes | yes |
 | Emergency compaction on context-length error | yes (once, when `enableErrorFallback`) | no | no | no |
 | `timeToFirstTokenMs` in telemetry | no | yes | no | no |
 | `providerMetadata` in telemetry usage | yes | no | no | no |
@@ -76,8 +79,8 @@ instead of applying its own retry policy under the wrong request class.
 The runner takes the differences as inputs rather than hiding them:
 
 - `stream()` overrides `output` after spreading `buildModelCallParams`.
-- `createStreamLifecycleCallbacks` (usage, `checkpointAfterToolCall`,
-  `PostGenerate`) is only used by the three `Response`-shaped modes.
+- `createStreamLifecycleCallbacks` (usage, the end-of-stream checkpoint save,
+  `PostGenerate`) is only used by `streamRaw()` and `streamDataResponse()`.
 - Pending-interrupt persistence and `emitInterruptRequested` are called from the
   modes that support them.
 - Emergency compaction and the thrown-`InterruptSignal` path stay in
@@ -89,8 +92,7 @@ The revised [checkpoint proposal](./checkpoint-contract.md) starts with an
 opt-in sink/source seam, preserving these differences on the legacy path.
 It does not claim that a common observer makes existing modes equivalent or
 that a step notification is a durable checkpoint barrier. In particular,
-`generate()` and `stream()` must not acquire per-step saver calls during a
-compatibility extraction.
+no mode may acquire per-step saver calls during a compatibility extraction.
 
 Mode unification, context-usage seeding, recovery/storage changes and API
 removals need separate decisions and tests. This document describes code on

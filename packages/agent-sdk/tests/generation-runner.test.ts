@@ -613,7 +613,7 @@ describe("createGenerationRunner", () => {
   });
 
   describe("createStreamLifecycleCallbacks", () => {
-    it("saves per-step checkpoints only with checkpointAfterToolCall, then finalizes", async () => {
+    it("never saves per step; saves once on finish, then runs PostGenerate", async () => {
       const checkpointer = new MemorySaver();
       const updateUsage = vi.fn();
       const postGenerate = vi.fn(async () => ({}));
@@ -630,32 +630,26 @@ describe("createGenerationRunner", () => {
       const runner = createGenerationRunner(deps);
       const saveSpy = vi.spyOn(checkpointer, "save");
 
-      const run = async (checkpointAfterToolCall: boolean) => {
-        saveSpy.mockClear();
-        const attempt = await runner.prepareAttempt(
-          { prompt: "p", threadId: "t1", _runId: "run_1", checkpointAfterToolCall },
-          deps.options.model,
-        );
-        const compaction = deps.messageRuntime.createStreamingCompactionState(
-          attempt.messages,
-          attempt.effectiveGenOptions,
-          "t1",
-        );
-        const callbacks = runner.createStreamLifecycleCallbacks(attempt, compaction);
-        const step = {
-          text: "step",
-          toolCalls: [],
-          toolResults: [],
-          finishReason: "stop",
-          usage,
-          response: { messages: [{ role: "assistant", content: "step" }] },
-        } as never;
-        await callbacks.onStepFinish(step);
-        await callbacks.onStepFinish(step);
-        return { attempt, callbacks, step };
-      };
-
-      const { callbacks, step } = await run(false);
+      const attempt = await runner.prepareAttempt(
+        { prompt: "p", threadId: "t1", _runId: "run_1" },
+        deps.options.model,
+      );
+      const compaction = deps.messageRuntime.createStreamingCompactionState(
+        attempt.messages,
+        attempt.effectiveGenOptions,
+        "t1",
+      );
+      const callbacks = runner.createStreamLifecycleCallbacks(attempt, compaction);
+      const step = {
+        text: "step",
+        toolCalls: [],
+        toolResults: [],
+        finishReason: "stop",
+        usage,
+        response: { messages: [{ role: "assistant", content: "step" }] },
+      } as never;
+      await callbacks.onStepFinish(step);
+      await callbacks.onStepFinish(step);
       expect(saveSpy).not.toHaveBeenCalled();
 
       await callbacks.onFinish({
@@ -685,10 +679,6 @@ describe("createGenerationRunner", () => {
         null,
         expect.anything(),
       );
-
-      await run(true);
-      expect(saveSpy).toHaveBeenCalledTimes(2);
-      expect(saveSpy.mock.calls.map(([cp]) => cp.step)).toEqual([3, 4]);
     });
   });
 

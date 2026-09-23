@@ -41,7 +41,8 @@ or safe to remove without tracing its side effects.
 | `SessionServiceCheckpointSaver.save()` serialises calls and clears `knownEmpty`, but does not persist the SDK blob | A durability no-op is not an entirely side-effect-free call. Preserve its observable effects during compatibility work. |
 | Consumer `load()` includes sanitisation, degraded recovery, continuation handling and resolved-interrupt handling | Keep those policies in the consumer source. A ledger transcript alone is not equivalent. |
 | Save/load decorators may compact, archive, repair or emit metrics | Preserve their gates, ordering and timing. Measure costs; do not assume every decorator always performs archive writes. |
-| `generate()` and `stream()` ignore `checkpointAfterToolCall`; the three response/raw modes honour it | A universal step-save adapter changes production behaviour immediately. |
+| Every mode saves the checkpoint once, when the call returns normally (`checkpointAfterToolCall` was removed for 1.0) | A step-save adapter would add saver calls no mode makes today. Step durability belongs to the consumer's own storage. |
+| The agent caches a thread's checkpoint after the first load and only re-reads the saver after `invalidateCheckpoint(threadId)` | A consumer whose `load()` projects its own records must invalidate before a call that needs records written since that load. |
 | Resume usage and compaction extensions are reached through saver-shaped objects | Typed seams are useful, but must preserve the meaning of the data and rollout controls. |
 | The SDK ledger already provides run records, raw event storage, accumulation and committed transcripts | These are useful building blocks, not a complete checkpoint recovery implementation. |
 
@@ -314,14 +315,12 @@ specified. Blindly saving on every `stepFinished` is not compatible.
 
 | SDK mode | Current ordinary successful invocation with a saver/thread |
 | --- | --- |
-| `generate()` | Final save; the per-step flag is ignored. |
-| `stream()` | Final save; the per-step flag is ignored. |
-| `streamRaw()`, `streamDataResponse()` | Flag-gated step saves plus final save. |
+| `generate()`, `stream()`, `streamRaw()`, `streamDataResponse()` | One final save when the call returns normally; no per-step saves (`checkpointAfterToolCall` was removed for 1.0). |
 
 This table is not a universal save-count formula: interrupts, retries, follow-ups,
 cache hits and error paths need their own regression cases. Test the exact
 current sequence, checkpoint contents, wrapper effects and error propagation
-for each mode with the flag on and off. Include `generate()`'s save followed by
+for each mode. Include `generate()`'s save followed by
 `markPendingInterrupt`, and its thrown-interrupt save with step zero and pre-call
 messages; neither is equivalent to a single normal final save. The consumer
 session goldens deliberately
@@ -395,7 +394,7 @@ Do not delete these components in the additive phase:
   loading and resolved-interrupt overlay.
 - User-turn resupply, flush/read-your-writes safeguards and checkpoint freshness
   checks. Comments should describe the actual mechanism, not claim that
-  `checkpointAfterToolCall` made `stream()` flush.
+  the removed `checkpointAfterToolCall` option made `stream()` flush.
 - Claiming, retry budgets, truncation/no-output handling, recovery classification,
   drain handover, idempotent replay and terminal publication.
 - Gateway/model routing, organisation context, session-service projection lag,
@@ -417,7 +416,8 @@ both the consumer and SDK internals, including subagent/team callers.
 | `MemorySaver`, `FileSaver` | Keep their current implementations and contracts. A ledger-backed alternative is separately opt-in. |
 | Source `delete` / optional `list` | Keep for checkpoint management and local tooling. Specify cascading deletion if a new storage model is introduced. |
 | `PreGenerate.respondWith` | Keep; consumer interception relies on it. Test each mode's existing short-circuit behaviour. |
-| `checkpointAfterToolCall` | Candidate removal only with explicit consumer migration and intentional replacement save/barrier semantics. The consumer passes it today. |
+| `checkpointAfterToolCall` | Removed for 1.0 ([#180](https://github.com/lleverage-ai/agent-sdk/issues/180)). Only `streamRaw()` and `streamDataResponse()` honoured it; the consumer passed it only to `stream()`, where it did nothing, and the SDK's own `streamRaw()` caller never set it. Every mode now saves once, when the call returns normally. There is no replacement save barrier: consumers that need per-step durability record steps in their own storage and use `invalidateCheckpoint()` to make the next call reload. |
+| `invalidateCheckpoint(threadId)` | Added for 1.0 ([#180](https://github.com/lleverage-ai/agent-sdk/issues/180)). The only way to make an agent re-read a thread it has already loaded; the next call reloads, restores agent state and fires `PostCheckpointLoad` again. |
 | `forkSession` / `forkedSessionId` | Removed for 1.0 (no consumer or internal caller). In-thread branching remains the ledger's `forkFromMessageId`. |
 | `KeyValueStoreSaver` | Removed for 1.0 (no consumer caller). A `BaseCheckpointSaver` over a KV store is a few lines; see `docs/persistence.md`. |
 | `streamResponse()` | Removed for 1.0 (no consumer or internal caller); `streamDataResponse()` is the `Response`-shaped mode. |

@@ -988,8 +988,9 @@ export interface AgentOptions {
   /**
    * Checkpoint saver for session persistence.
    *
-   * When provided, the agent will automatically save checkpoints after each
-   * generation step and restore state when a matching threadId is found.
+   * When provided, the agent saves the thread's checkpoint once, when a
+   * generation call returns normally, and restores state when a matching
+   * threadId is found.
    *
    * @example
    * ```typescript
@@ -1571,6 +1572,44 @@ export interface Agent {
   getInterrupt(threadId: string): Promise<Interrupt | undefined>;
 
   /**
+   * Make the next generation for a thread reload its checkpoint from the
+   * configured checkpointer.
+   *
+   * The agent caches each thread's checkpoint after the first load and keeps
+   * that cache current with its own saves. It never reads the store again on
+   * its own, so a change made behind the agent (for example by another
+   * process, or by a host that rebuilds checkpoints from its own records) is
+   * not visible to later calls on the same agent. Call this before the next
+   * `generate()` / `stream()` / `streamRaw()` / `streamDataResponse()` for the
+   * thread to pick that change up.
+   *
+   * The reload behaves like a first load: it calls `checkpointer.load()`,
+   * restores agent state (`todos`, `files`) from the result and runs
+   * `PostCheckpointLoad` hooks again. From then on, the reloaded checkpoint is
+   * the source of truth for the thread, including its `pendingInterrupt`, so
+   * the store must already hold any interrupt the host still needs. Until the
+   * reload happens, the cached checkpoint remains the base for saves, so a
+   * generation already in flight is unaffected.
+   *
+   * Synchronous and cheap; the load happens on the next call. A no-op when the
+   * agent has no checkpointer.
+   *
+   * @param threadId - The thread whose cached checkpoint should be dropped
+   *
+   * @example
+   * ```typescript
+   * try {
+   *   for await (const part of agent.stream({ prompt, threadId })) render(part);
+   * } catch {
+   *   // The host recorded the failed attempt's completed steps in its store.
+   *   agent.invalidateCheckpoint(threadId);
+   *   for await (const part of agent.stream({ threadId })) render(part);
+   * }
+   * ```
+   */
+  invalidateCheckpoint(threadId: string): void;
+
+  /**
    * Resume execution after responding to an interrupt.
    *
    * Use this method to continue the agent's execution after providing a response
@@ -2044,8 +2083,9 @@ export interface GenerateOptions {
    * Thread identifier for session persistence.
    *
    * When provided with a checkpointer, the agent will:
-   * - Load existing checkpoint for this thread (if any)
-   * - Save checkpoint after each step
+   * - Load existing checkpoint for this thread (if any), once per agent
+   *   until {@link Agent.invalidateCheckpoint} is called for the thread
+   * - Save the checkpoint once, when the call returns normally
    *
    * @example
    * ```typescript
@@ -2074,40 +2114,21 @@ export interface GenerateOptions {
   signal?: AbortSignal;
 
   /**
-   * Enable incremental checkpointing during streaming.
-   *
-   * When enabled, the agent will save a checkpoint after each step (tool call)
-   * during streaming, not just at the end. This provides better crash recovery
-   * for long-running streams with multiple tool calls.
-   *
-   * If the process crashes mid-stream, you can resume from the last completed
-   * step instead of losing all progress.
-   *
-   * @defaultValue false
-   *
-   * @example
-   * ```typescript
-   * // Enable incremental checkpointing for long-running streams
-   * const stream = await agent.stream({
-   *   prompt: "Analyze this large dataset",
-   *   threadId: "session-123",
-   *   checkpointAfterToolCall: true,
-   * });
-   * ```
-   */
-  checkpointAfterToolCall?: boolean;
-
-  /**
    * Cooperative pause hook evaluated as a stop condition after each completed
    * step (model generation + tool executions).
    *
    * When it returns `true`, the generation loop stops cleanly at the step
-   * boundary instead of starting the next model call. Combined with
-   * {@link GenerateOptions.checkpointAfterToolCall}, the last completed step is
-   * already durably checkpointed when the stream ends, so a later call for the
-   * same `threadId` continues from that boundary. This is the primitive for
-   * draining in-flight runs before a process shuts down, or for bounding a run
-   * to a fixed number of steps.
+   * boundary instead of starting the next model call. The generation then
+   * returns normally, so its single end-of-call checkpoint save includes the
+   * last completed step and a later call for the same `threadId` continues
+   * from that boundary. This is the primitive for draining in-flight runs
+   * before a process shuts down, or for bounding a run to a fixed number of
+   * steps.
+   *
+   * Every generation mode saves the checkpoint once, when the call returns
+   * normally. Steps completed by a call that throws or is aborted are not in
+   * the checkpoint; hosts that need per-step durability record it in their
+   * own storage.
    *
    * The final step's `finishReason` distinguishes the two stop cases: a paused
    * boundary reports `tool-calls` (the model still wanted tools), while a
@@ -2123,7 +2144,6 @@ export interface GenerateOptions {
    * const stream = await agent.stream({
    *   prompt,
    *   threadId,
-   *   checkpointAfterToolCall: true,
    *   shouldStopAfterStep: () => draining,
    * });
    * ```

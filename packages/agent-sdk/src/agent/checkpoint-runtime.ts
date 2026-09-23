@@ -10,6 +10,9 @@
  *
  * - `load` / `save`: the run-boundary operations. `load` restores
  *   agent state (`todos`, `files`) from the checkpoint; `save` snapshots it.
+ * - `invalidate`: mark a thread's cached checkpoint stale so the next `load`
+ *   goes back to the saver. This is how a host picks up state that changed in
+ *   the store behind this agent.
  * - `commit`: persist an already-built checkpoint and update the cache. Used
  *   when the caller has to shape the checkpoint itself (resume, emergency
  *   compaction).
@@ -83,9 +86,22 @@ export interface CheckpointRuntimeDeps {
 export interface CheckpointRuntime {
   /**
    * Load the checkpoint for a thread, restoring agent state from it. Cached
-   * per thread after the first load.
+   * per thread after the first load, until {@link CheckpointRuntime.invalidate}.
    */
   load(threadId: string): Promise<Checkpoint | undefined>;
+
+  /**
+   * Mark the thread's cached checkpoint stale. The next `load` for the thread
+   * calls the saver again, restores agent state from what it returns and
+   * notifies `onLoaded`, exactly like a first load.
+   *
+   * Until that load succeeds, the stale checkpoint stays the base for `save`,
+   * `commit` and `markPendingInterrupt`, so a generation already in flight
+   * keeps its metadata and any interrupt it stamps. A load that was already in
+   * flight when `invalidate` ran does not repopulate the cache. No-op when no
+   * checkpointer is configured.
+   */
+  invalidate(threadId: string): void;
 
   /**
    * Save the thread's transcript and step count, snapshotting agent state.
@@ -136,6 +152,14 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
 
   // Track current checkpoint state per thread
   const threadCheckpoints = new Map<string, Checkpoint>();
+  // Threads whose cached checkpoint must be reloaded from the saver.
+  const staleThreads = new Set<string>();
+  // Bumped by every invalidation, so a load that started before one cannot
+  // cache what it read.
+  const invalidationEpochs = new Map<string, number>();
+  // Epoch of the newest load that restored agent state for the thread. A load
+  // older than that must not roll state back or re-notify.
+  const appliedEpochs = new Map<string, number>();
 
   /**
    * Load checkpoint for a thread if checkpointer is configured.
@@ -148,17 +172,32 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
 
     // Check if we already have it cached
     const cached = threadCheckpoints.get(threadId);
-    if (cached) {
+    if (cached && !staleThreads.has(threadId)) {
       return cached;
     }
 
+    const epoch = invalidationEpochs.get(threadId) ?? 0;
     let checkpoint: Checkpoint | undefined;
+    let superseded = false;
     try {
       // Load from checkpointer
       checkpoint = await checkpointer.load(threadId);
-      if (checkpoint) {
-        threadCheckpoints.set(threadId, checkpoint);
+      if ((invalidationEpochs.get(threadId) ?? 0) === epoch) {
+        staleThreads.delete(threadId);
+        if (checkpoint) {
+          threadCheckpoints.set(threadId, checkpoint);
+        } else {
+          // A refreshed thread the store no longer has behaves like a thread
+          // that was never loaded.
+          threadCheckpoints.delete(threadId);
+        }
+      }
 
+      // A load that started before an invalidation still restores state for
+      // its own generation, unless a newer load has already done so.
+      superseded = (appliedEpochs.get(threadId) ?? -1) > epoch;
+      if (checkpoint && !superseded) {
+        appliedEpochs.set(threadId, epoch);
         // Restore agent state from checkpoint
         state.todos = [...checkpoint.state.todos];
         state.files = { ...checkpoint.state.files };
@@ -176,11 +215,19 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
     // Notify after the cache and state are settled so a listener observes the
     // same checkpoint the generation will use. Outside the try so a listener
     // failure is never misreported as a load failure.
-    if (checkpoint && onLoaded) {
+    if (checkpoint && onLoaded && !superseded) {
       await onLoaded(checkpoint, threadId);
     }
 
     return checkpoint;
+  }
+
+  function invalidate(threadId: string): void {
+    if (!checkpointer) {
+      return;
+    }
+    staleThreads.add(threadId);
+    invalidationEpochs.set(threadId, (invalidationEpochs.get(threadId) ?? 0) + 1);
   }
 
   /**
@@ -285,6 +332,7 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
 
   return {
     load: loadCheckpoint,
+    invalidate,
     save: saveCheckpoint,
     commit,
     markPendingInterrupt,

@@ -225,27 +225,61 @@ const result2 = await agent.generate({
 // Agent remembers: "Your name is Alice"
 ```
 
-### Incremental Checkpointing for Streaming
+### When the Checkpoint Is Saved
 
-For long-running streams, enable checkpoint updates after each step:
+Every generation mode (`generate()`, `stream()`, `streamRaw()` and
+`streamDataResponse()`) saves the thread's checkpoint once, when the call
+returns normally. For the streaming modes that is when the stream finishes.
+Steps completed by a call that throws or is aborted are not in the
+checkpoint, so a later call on the same thread starts from the previous save.
+
+If you need each completed step to be durable, record it in your own storage
+as the stream reports it, and have your checkpointer's `load()` build the
+checkpoint from those records. Then use
+[`invalidateCheckpoint()`](#refreshing-a-cached-checkpoint) so the agent
+reads it.
+
+### Refreshing a Cached Checkpoint
+
+An agent loads a thread's checkpoint from the checkpointer on the first call
+for that thread, then keeps it in memory and updates that copy with its own
+saves. It does not read the store again on its own. If the store changes
+behind the agent (another process wrote to it, or your checkpointer rebuilds
+checkpoints from records of its own), call `agent.invalidateCheckpoint()`
+before the next call:
 
 ```typescript
-for await (const _part of agent.stream({
-  threadId: "conversation-1",
-  prompt: "Continue",
-  checkpointAfterToolCall: true,
-})) {
-  // consume stream
+try {
+  for await (const part of agent.stream({ threadId, prompt })) render(part);
+} catch (error) {
+  // Your own storage recorded the failed attempt's completed steps.
+  agent.invalidateCheckpoint(threadId);
+  for await (const part of agent.stream({ threadId })) render(part);
 }
 ```
+
+The next call for the thread then behaves like a first load:
+
+- it calls `checkpointer.load(threadId)`
+- it restores agent state (`todos`, `files`) from the result
+- it fires `PostCheckpointLoad` again
+
+After that, the thread is cached again until the next invalidation.
+
+The reloaded checkpoint replaces the cached one completely, including its
+`pendingInterrupt`. Make sure your store already holds any interrupt you still
+need before you invalidate. Until the reload happens, the cached checkpoint
+stays the base for saves, so a generation already in flight is unaffected.
+Without a checkpointer, `invalidateCheckpoint()` does nothing.
 
 ### Pausing at a Step Boundary
 
 `shouldStopAfterStep` is evaluated after every completed step. When it returns
-`true`, the loop stops before the next model call. With
-`checkpointAfterToolCall` enabled, the last step is already persisted, so a
+`true`, the loop stops before the next model call and the call returns
+normally. Its single save therefore includes the last completed step, so a
 later call on the same `threadId` picks up where the run left off. This is
-the primitive for draining in-flight runs before a process exits.
+the primitive for draining in-flight runs before a process exits. Consume the
+stream to the end so the save happens.
 
 ```typescript
 let draining = false;
@@ -256,7 +290,6 @@ process.on("SIGTERM", () => {
 for await (const _part of agent.stream({
   threadId: "conversation-1",
   prompt: "Continue",
-  checkpointAfterToolCall: true,
   shouldStopAfterStep: () => draining,
 })) {
   // consume stream
@@ -279,6 +312,8 @@ checkpointer: after the saver's `load()` returns a checkpoint and before that
 generation's compaction check. Loaded checkpoints are cached per agent
 instance, so sequential generations on a thread fire it once; concurrent
 generations on the same not-yet-cached thread each load and each fire it.
+After [`invalidateCheckpoint()`](#refreshing-a-cached-checkpoint), the next
+generation on the thread loads and fires it again.
 Forking a session fires it for the source thread. It is the only hook that sees the
 restored transcript, because `PreGenerate` runs before the checkpoint is
 prepended and tool hooks carry only the tool call.

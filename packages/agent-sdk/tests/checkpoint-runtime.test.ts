@@ -1,8 +1,9 @@
 /**
  * Tests for the checkpoint runtime (`src/agent/checkpoint-runtime.ts`).
  *
- * End-to-end checkpoint behaviour (interrupt/resume, incremental saves) is covered by the agent tests. This file pins the runtime's own
- * contract: cache coherence with the saver, state restore/snapshot, error
+ * End-to-end checkpoint behaviour (interrupt/resume, cache refresh) is covered
+ * by the agent tests. This file pins the runtime's own contract: cache
+ * coherence with the saver, invalidation, state restore/snapshot, error
  * wrapping, and the run-id continuation rule.
  */
 
@@ -86,6 +87,8 @@ describe("createCheckpointRuntime", () => {
       await expect(
         runtime.markPendingInterrupt("t1", makeInterrupt(), "run-1"),
       ).resolves.toBeUndefined();
+      expect(() => runtime.invalidate("t1")).not.toThrow();
+      await expect(runtime.load("t1")).resolves.toBeUndefined();
     });
 
     it("resolveRunId still honours _runId and otherwise mints one", async () => {
@@ -140,6 +143,201 @@ describe("createCheckpointRuntime", () => {
         operation: "load",
         threadId: "t1",
       });
+    });
+  });
+
+  describe("invalidate()", () => {
+    function seed(step: number, todo: string, extra: Partial<Checkpoint> = {}): Checkpoint {
+      return {
+        ...createCheckpoint({
+          threadId: "t1",
+          messages: [{ role: "user", content: `at ${step}` }],
+          step,
+          state: { todos: [{ id: todo, content: todo, status: "pending" }], files: { "/f": todo } },
+        }),
+        ...extra,
+      };
+    }
+
+    it("keeps serving the cache when nothing invalidates it", async () => {
+      await saver.save(seed(1, "old"));
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
+      const first = await runtime.load("t1");
+
+      await saver.save(seed(5, "new"));
+
+      expect(await runtime.load("t1")).toBe(first);
+      expect(state.todos.map((todo) => todo.id)).toEqual(["old"]);
+    });
+
+    it("makes the next load read the saver, restore state and notify again", async () => {
+      await saver.save(seed(1, "old"));
+      const onLoaded = vi.fn(async () => {});
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state, onLoaded });
+      await runtime.load("t1");
+      await saver.save(seed(5, "new"));
+      const loadSpy = vi.spyOn(saver, "load");
+
+      runtime.invalidate("t1");
+      const refreshed = await runtime.load("t1");
+
+      expect(loadSpy).toHaveBeenCalledTimes(1);
+      expect(refreshed?.step).toBe(5);
+      expect(state.todos.map((todo) => todo.id)).toEqual(["new"]);
+      expect(state.files).toEqual({ "/f": "new" });
+      expect(onLoaded).toHaveBeenCalledTimes(2);
+      expect(onLoaded).toHaveBeenLastCalledWith(refreshed, "t1");
+      // One refresh, one reload: the fresh checkpoint is cached again.
+      expect(await runtime.load("t1")).toBe(refreshed);
+      expect(loadSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps the stale checkpoint as the save base until the reload", async () => {
+      await saver.save({ ...seed(1, "old"), metadata: { runId: "run-1", keep: true } });
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
+      const first = await runtime.load("t1");
+
+      runtime.invalidate("t1");
+      const interrupt = makeInterrupt();
+      const marked = await runtime.markPendingInterrupt("t1", interrupt, undefined);
+      const saved = await runtime.save("t1", [], 2);
+
+      expect(marked?.createdAt).toBe(first?.createdAt);
+      expect(marked?.pendingInterrupt).toBe(interrupt);
+      expect(saved?.metadata).toEqual({ runId: "run-1", keep: true });
+      expect(saved?.pendingInterrupt).toBe(interrupt);
+    });
+
+    it("keeps a pending interrupt that is in the store", async () => {
+      const interrupt = makeInterrupt({ id: "int_store" });
+      await saver.save(seed(1, "old"));
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
+      await runtime.load("t1");
+      await saver.save({ ...seed(3, "new"), pendingInterrupt: interrupt });
+
+      runtime.invalidate("t1");
+
+      expect((await runtime.load("t1"))?.pendingInterrupt).toEqual(interrupt);
+    });
+
+    it("drops the cache when the store no longer has the thread", async () => {
+      await saver.save(seed(1, "old"));
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
+      await runtime.load("t1");
+      await saver.delete("t1");
+
+      runtime.invalidate("t1");
+
+      await expect(runtime.load("t1")).resolves.toBeUndefined();
+      // The next save starts a new checkpoint rather than updating the old one.
+      const saved = await runtime.save("t1", [], 1);
+      expect(saved?.messages).toEqual([]);
+    });
+
+    it("stays stale when the reload fails", async () => {
+      await saver.save(seed(1, "old"));
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
+      await runtime.load("t1");
+      await saver.save(seed(5, "new"));
+      const loadSpy = vi.spyOn(saver, "load").mockRejectedValueOnce(new Error("disk"));
+
+      runtime.invalidate("t1");
+      await expect(runtime.load("t1")).rejects.toBeInstanceOf(CheckpointError);
+
+      expect((await runtime.load("t1"))?.step).toBe(5);
+      expect(loadSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it("does not let a load that started before the refresh fill the cache", async () => {
+      await saver.save(seed(1, "old"));
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const realLoad = saver.load.bind(saver);
+      vi.spyOn(saver, "load").mockImplementationOnce(async (threadId) => {
+        const loaded = await realLoad(threadId);
+        await gate;
+        return loaded;
+      });
+
+      const inFlight = runtime.load("t1");
+      await Promise.resolve();
+      await saver.save(seed(5, "new"));
+      runtime.invalidate("t1");
+      release();
+
+      expect((await inFlight)?.step).toBe(1);
+      expect((await runtime.load("t1"))?.step).toBe(5);
+    });
+
+    it("does not let an older load roll back state or re-notify after a newer one", async () => {
+      await saver.save(seed(1, "old"));
+      const onLoaded = vi.fn(async () => {});
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state, onLoaded });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const realLoad = saver.load.bind(saver);
+      vi.spyOn(saver, "load").mockImplementationOnce(async (threadId) => {
+        const loaded = await realLoad(threadId);
+        await gate;
+        return loaded;
+      });
+
+      const older = runtime.load("t1");
+      await Promise.resolve();
+      await saver.save(seed(5, "new"));
+      runtime.invalidate("t1");
+      const newer = await runtime.load("t1");
+      release();
+      await older;
+
+      expect(newer?.step).toBe(5);
+      expect(state.todos.map((todo) => todo.id)).toEqual(["new"]);
+      expect(state.files).toEqual({ "/f": "new" });
+      expect(onLoaded).toHaveBeenCalledTimes(1);
+      expect(onLoaded).toHaveBeenCalledWith(newer, "t1");
+    });
+
+    it("still restores state for a first load that overlaps an invalidation", async () => {
+      await saver.save(seed(1, "old"));
+      const onLoaded = vi.fn(async () => {});
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state, onLoaded });
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const realLoad = saver.load.bind(saver);
+      vi.spyOn(saver, "load").mockImplementationOnce(async (threadId) => {
+        const loaded = await realLoad(threadId);
+        await gate;
+        return loaded;
+      });
+
+      const inFlight = runtime.load("t1");
+      await Promise.resolve();
+      runtime.invalidate("t1");
+      release();
+      await inFlight;
+
+      // Its generation saves this state, so it must not be left empty.
+      expect(state.todos.map((todo) => todo.id)).toEqual(["old"]);
+      expect(onLoaded).toHaveBeenCalledTimes(1);
+    });
+
+    it("only affects the thread it names", async () => {
+      await saver.save(seed(1, "old"));
+      await saver.save({ ...seed(1, "other"), threadId: "t2" });
+      const runtime = createCheckpointRuntime({ checkpointer: saver, state });
+      const other = await runtime.load("t2");
+      await runtime.load("t1");
+
+      runtime.invalidate("t1");
+
+      expect(await runtime.load("t2")).toBe(other);
     });
   });
 
