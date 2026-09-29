@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `call_tool` now returns object and array results from proxied tools as
+  compact JSON (`JSON.stringify(result)`) instead of JSON indented by two
+  spaces. The data is the same, but the model sees fewer bytes, and a tool
+  result stays in the conversation for every later model call. String results
+  are still passed through unchanged. Primitives and `null` keep their JSON
+  form, and a result that cannot be serialised still falls back to
+  `String(result)`. The error text and interrupt propagation have not changed.
+  Hosts that assert the exact text of a proxied result need to update those
+  expectations.
+
 ## [1.0.0-rc.2] - 2026-09-23
 
 Second release candidate for 1.0.0. It removes `checkpointAfterToolCall`, so
