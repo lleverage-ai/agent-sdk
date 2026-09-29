@@ -187,6 +187,10 @@ export function formatToolNameList(names: string[]): string {
 
 /**
  * Format a successful tool result.
+ *
+ * Non-string results are serialised as compact JSON. The result stays in the
+ * conversation for every later model call, so indentation would only add
+ * bytes without adding information.
  * @internal
  */
 function formatResult(toolName: string, result: unknown): string {
@@ -194,7 +198,7 @@ function formatResult(toolName: string, result: unknown): string {
     return result;
   }
   try {
-    return JSON.stringify(result, null, 2);
+    return JSON.stringify(result);
   } catch {
     return String(result);
   }
