@@ -397,6 +397,25 @@ describe("Task Tool", () => {
       );
     });
 
+    it("should pass the originating toolCallId in create context", async () => {
+      const subagent = createMockSubagentDefinition("worker", "Does work");
+
+      const tool = createTaskTool({
+        subagents: [subagent],
+        defaultModel: { modelId: "default-model" } as LanguageModel,
+        parentAgent,
+      });
+
+      await tool.execute!(
+        { description: "Do work", subagent_type: "worker" },
+        { toolCallId: "tc-42", messages: [], abortSignal: undefined as any },
+      );
+
+      expect(subagent.create).toHaveBeenCalledWith(
+        expect.objectContaining({ toolCallId: "tc-42" }),
+      );
+    });
+
     it("should pass allowedTools in create context", async () => {
       const defaultModel = { modelId: "default-model" } as LanguageModel;
       const subagent = createMockSubagentDefinition("reader", "Read-only agent", undefined, {
@@ -446,6 +465,7 @@ describe("Task Tool", () => {
       );
 
       expect(subagent.create).toHaveBeenCalledWith({
+        toolCallId: "tc-1",
         model: fastModel,
         allowedTools: ["read"],
       });

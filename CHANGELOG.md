@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SubagentCreateContext.toolCallId`: the ID of the `task` tool call that
+  started the delegation, passed to `SubagentDefinition.create()`. A host can
+  use it to key durable state for the delegated run to the call that owns it.
+  It is `undefined` when the task tool is executed without a tool call ID.
+
 ### Changed
 
 - `call_tool` now returns object and array results from proxied tools as
