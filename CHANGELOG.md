@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.3] - 2026-09-30
+
+Third release candidate for 1.0.0. `call_tool` now returns proxied object and
+array results as compact JSON, and the task tool passes the originating tool
+call ID to subagent factories.
+
 ### Added
 
 - `SubagentCreateContext.toolCallId`: the ID of the `task` tool call that
@@ -783,7 +789,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.2...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...HEAD
+[1.0.0-rc.3]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.2...agent-sdk@1.0.0-rc.3
 [1.0.0-rc.2]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.1...agent-sdk@1.0.0-rc.2
 [1.0.0-rc.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.9...agent-sdk@1.0.0-rc.1
 [0.1.0-alpha.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.0.14...agent-sdk@0.1.0-alpha.1
