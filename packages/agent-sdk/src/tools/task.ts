@@ -608,6 +608,7 @@ ${subagentDescriptions}`;
 
         // Build context for the subagent factory
         const createContext: SubagentCreateContext = {
+          toolCallId: toolOptions?.toolCallId,
           signal,
           model: subagentModel,
           allowedTools: subagentDef.allowedTools,

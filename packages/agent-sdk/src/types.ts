@@ -3898,6 +3898,9 @@ export interface SubagentDefinition {
  * @category Subagents
  */
 export interface SubagentCreateContext {
+  /** Stable originating tool call identity for durable delegation ownership. */
+  toolCallId?: string;
+
   /** Delegation/attempt cancellation, including factory and asynchronous initialisation. */
   signal?: AbortSignal;
 
