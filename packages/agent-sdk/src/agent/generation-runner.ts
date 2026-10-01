@@ -623,7 +623,13 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     return {
       runId,
-      effectiveGenOptions: { ...preGenResult.effectiveOptions, _runId: runId },
+      effectiveGenOptions: {
+        ...preGenResult.effectiveOptions,
+        _runId: runId,
+        _historyUnlessCheckpointed:
+          preGenResult.effectiveOptions._historyUnlessCheckpointed ??
+          genOptions._historyUnlessCheckpointed,
+      },
       cachedResult: preGenResult.cachedResult,
     };
   }
@@ -1162,6 +1168,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         nextOptions = {
           ...errorDecision.updatedOptions,
           _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
+          _historyUnlessCheckpointed:
+            errorDecision.updatedOptions._historyUnlessCheckpointed ??
+            effectiveGenOptions._historyUnlessCheckpointed,
         };
       }
       // Update retry state

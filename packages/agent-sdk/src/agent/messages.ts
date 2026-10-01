@@ -377,9 +377,14 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
       }
     }
 
-    // Add conversation history if provided. A caller that keeps its own copy
-    // of the thread history sends it only for when no checkpoint holds it.
-    if (genOptions.messages && !(checkpoint && genOptions._messagesUnlessCheckpointed)) {
+    // A caller's own copy of the thread history stands in for a checkpoint
+    // only when this load found none.
+    if (!checkpoint && genOptions._historyUnlessCheckpointed) {
+      messages.push(...genOptions._historyUnlessCheckpointed);
+    }
+
+    // Add conversation history if provided
+    if (genOptions.messages) {
       messages.push(...genOptions.messages);
     }
 

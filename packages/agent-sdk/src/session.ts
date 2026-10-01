@@ -56,9 +56,9 @@ export interface AgentSessionOptions {
    * If provided, the session will use checkpointing for state recovery.
    *
    * When the agent also has a checkpointer, the checkpoint is the model's
-   * conversation history: whenever a generation loads a checkpoint for the
-   * thread, the session's own messages are not added to it, and
-   * {@link AgentSession.getMessages} is a display copy.
+   * conversation history: each turn passes only the new prompt, the session's
+   * own messages are used only when the generation loads no checkpoint for the
+   * thread, and {@link AgentSession.getMessages} is a display copy.
    */
   threadId?: string;
 
@@ -373,14 +373,14 @@ export class AgentSession {
    */
   private async *generate(prompt: string): AsyncGenerator<SessionOutput, void, unknown> {
     try {
-      const generateOptions: GenerateOptions = {
-        prompt,
-        messages: this.messages.length > 0 ? this.messages : undefined,
-        threadId: this.threadId,
-        // The agent prepends the thread's checkpoint to `messages`, so the
-        // local history is used only when the generation loads no checkpoint.
-        _messagesUnlessCheckpointed: true,
-      };
+      const history = this.messages.length > 0 ? [...this.messages] : undefined;
+      // With a checkpointer the agent prepends the thread's checkpoint, so the
+      // local history is passed as a fallback it uses only when it loads no
+      // checkpoint. `messages` stays free for hooks to add to.
+      const checkpointed = Boolean(this.threadId && this.agent.options.checkpointer);
+      const generateOptions: GenerateOptions = checkpointed
+        ? { prompt, threadId: this.threadId, _historyUnlessCheckpointed: history }
+        : { prompt, messages: history, threadId: this.threadId };
 
       const result = await this.agent.generate(generateOptions);
 

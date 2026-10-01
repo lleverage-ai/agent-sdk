@@ -2317,13 +2317,15 @@ export interface GenerateOptions {
   _runId?: string;
 
   /**
-   * Internal flag: `messages` is the caller's own copy of the thread history,
-   * so drop it when the generation loads a checkpoint for `threadId` (which
-   * already holds that history) and use it only when there is none. Used by
-   * `AgentSession`.
+   * Internal fallback history for `threadId`, used only when the generation
+   * loads no checkpoint for the thread. It goes where the checkpoint's
+   * messages would, before `messages` and `prompt`, which are always used.
+   * `AgentSession` uses it so its own copy of the history is never sent on
+   * top of the checkpoint. Kept across PreGenerate and retry option
+   * replacements, like `_runId`.
    * @internal
    */
-  _messagesUnlessCheckpointed?: boolean;
+  _historyUnlessCheckpointed?: ModelMessage[];
 }
 
 /**

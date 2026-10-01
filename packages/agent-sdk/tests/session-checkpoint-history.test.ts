@@ -12,16 +12,22 @@ import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { FileSaver } from "../src/checkpointer/file-saver.js";
 import { MemorySaver } from "../src/checkpointer/memory-saver.js";
+import type { HookCallback, PreGenerateInput } from "../src/index.js";
 import { createAgent } from "../src/index.js";
 import { AgentSession } from "../src/session.js";
 
 type PromptMessage = { role: string; content: string | Array<{ type: string; text?: string }> };
 
 /** A mock model that answers `A1`, `A2`, ... and records every request. */
-function createRecordingModel() {
+function createRecordingModel(options: { failFirstCall?: boolean } = {}) {
   let calls = 0;
+  let failNext = options.failFirstCall ?? false;
   const model = new MockLanguageModelV3({
     doGenerate: async () => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("model unavailable");
+      }
       calls++;
       return {
         content: [{ type: "text", text: `A${calls}` }],
@@ -208,6 +214,132 @@ describe("AgentSession history with a real agent", () => {
 
     expect(requests()).toEqual([["user:U1"], ["user:U1", "assistant:A1", "user:U2"]]);
     await agent.dispose();
+  });
+
+  describe("with hooks on a checkpointed thread", () => {
+    const context: ModelMessage = { role: "user", content: "CTX" };
+
+    it("keeps messages a PreGenerate hook adds through updatedInput", async () => {
+      const { model, requests } = createRecordingModel();
+      const addContext: HookCallback = async (input) => ({
+        hookSpecificOutput: {
+          hookEventName: "PreGenerate",
+          updatedInput: {
+            ...(input as PreGenerateInput).options,
+            messages: [...((input as PreGenerateInput).options.messages ?? []), context],
+          },
+        },
+      });
+      const agent = createAgent({
+        model,
+        checkpointer: new MemorySaver(),
+        hooks: { PreGenerate: [addContext] },
+      });
+      const session = new AgentSession({ agent, threadId: "thread-1" });
+
+      await runTurns(session, ["U1", "U2"]);
+
+      expect(requests()).toEqual([
+        ["user:CTX", "user:U1"],
+        ["user:CTX", "user:U1", "assistant:A1", "user:CTX", "user:U2"],
+      ]);
+      await agent.dispose();
+    });
+
+    it("keeps messages a PreGenerate hook sets on the options in place", async () => {
+      const { model, requests } = createRecordingModel();
+      const addContext: HookCallback = async (input) => {
+        const options = (input as PreGenerateInput).options;
+        options.messages = [...(options.messages ?? []), context];
+        return {};
+      };
+      const agent = createAgent({
+        model,
+        checkpointer: new MemorySaver(),
+        hooks: { PreGenerate: [addContext] },
+      });
+      const session = new AgentSession({ agent, threadId: "thread-1" });
+
+      await runTurns(session, ["U1", "U2"]);
+
+      expect(requests()[1]).toEqual(["user:CTX", "user:U1", "assistant:A1", "user:CTX", "user:U2"]);
+      // The hook's change does not leak into the session's own history.
+      expect(session.getMessages().map((message) => message.content)).toEqual([
+        "U1",
+        "A1",
+        "U2",
+        "A2",
+      ]);
+      await agent.dispose();
+    });
+
+    it("keeps the session's history when a hook rebuilds the options from public fields", async () => {
+      const { model, requests } = createRecordingModel();
+      const rebuild: HookCallback = async (input) => {
+        const { prompt, threadId } = (input as PreGenerateInput).options;
+        return {
+          hookSpecificOutput: { hookEventName: "PreGenerate", updatedInput: { prompt, threadId } },
+        };
+      };
+      const agent = createAgent({
+        model,
+        checkpointer: new MemorySaver(),
+        hooks: { PreGenerate: [rebuild] },
+      });
+      const session = new AgentSession({
+        agent,
+        threadId: "thread-1",
+        initialMessages: [
+          { role: "user", content: "U0" },
+          { role: "assistant", content: "A0" },
+        ],
+      });
+
+      await runTurns(session, ["U1", "U2"]);
+
+      expect(requests()).toEqual([
+        ["user:U0", "assistant:A0", "user:U1"],
+        ["user:U0", "assistant:A0", "user:U1", "assistant:A1", "user:U2"],
+      ]);
+      await agent.dispose();
+    });
+
+    it("keeps the session's history when a failure hook retries with rebuilt options", async () => {
+      const { model, requests } = createRecordingModel({ failFirstCall: true });
+      const retry: HookCallback = async (input) => {
+        if (input.hook_event_name !== "PostGenerateFailure") return {};
+        const { prompt, threadId } = input.options;
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PostGenerateFailure",
+            retry: true,
+            updatedInput: { prompt, threadId },
+          },
+        };
+      };
+      const agent = createAgent({
+        model,
+        checkpointer: new MemorySaver(),
+        hooks: { PostGenerateFailure: [retry] },
+      });
+      const session = new AgentSession({
+        agent,
+        threadId: "thread-1",
+        initialMessages: [
+          { role: "user", content: "U0" },
+          { role: "assistant", content: "A0" },
+        ],
+      });
+
+      const replies = await runTurns(session, ["U1"]);
+
+      expect(replies).toEqual(["A1"]);
+      expect(requests()).toEqual([
+        ["user:U0", "assistant:A0", "user:U1"],
+        ["user:U0", "assistant:A0", "user:U1"],
+      ]);
+      await agent.dispose();
+    });
   });
 
   it("still sends its own history when the agent has no checkpointer", async () => {

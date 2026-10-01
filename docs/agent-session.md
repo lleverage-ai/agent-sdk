@@ -128,8 +128,9 @@ interface AgentSessionOptions {
 
   /**
    * Thread ID for checkpointing (enables state persistence).
-   * With a checkpointer, the checkpoint holds the model's history: when a
-   * generation loads one for the thread, the session's messages are not resent.
+   * With a checkpointer, the checkpoint holds the model's history. Each turn
+   * passes only the new prompt; the session's own history is used only when
+   * the generation loads no checkpoint for the thread.
    */
   threadId?: string;
 
