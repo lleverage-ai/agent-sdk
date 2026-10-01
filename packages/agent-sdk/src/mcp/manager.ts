@@ -12,7 +12,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { type Tool, type ToolSet, tool } from "ai";
-import { formatMcpToolName, isMcpToolName } from "../tool-names.js";
+import { formatMcpToolName, isMcpToolName, MCP_TOOL_PREFIX } from "../tool-names.js";
 import type {
   HttpMCPServerConfig,
   MCPServerConfig,
@@ -67,7 +67,10 @@ interface SearchDocument {
   normalizedDescription: string;
   tokensByField: Record<SearchFieldName, string[]>;
   termFrequencyByField: Record<SearchFieldName, Map<string, number>>;
+  /** Unfolded terms from every field, for partial-token fuzzy matching */
   tokenList: string[];
+  /** Terms of the tool's own name, without its plugin or server prefix */
+  ownNameTokens: string[];
   trigrams: Set<string>;
 }
 
@@ -93,6 +96,9 @@ const NAME_PHRASE_BONUS = 8;
 const SOURCE_PHRASE_BONUS = 4;
 const DESCRIPTION_PHRASE_BONUS = 2;
 const PREFIX_BONUS = 4;
+// Every term of a tool's own name appears in the query, so the query names the
+// tool: `list_skills` in "list_skills get_skill", or "list skills" in prose.
+const NAME_COVERAGE_BONUS = 20;
 const MIN_FUZZY_SCORE = 0.12;
 
 /**
@@ -107,13 +113,52 @@ function normalizeText(text: string): string {
 }
 
 /**
- * Split text into normalized terms.
+ * Fold a plural term to its singular so "emails" matches `find_email`.
  * @internal
  */
-function tokenizeText(text: string): string[] {
+function foldPlural(term: string): string {
+  if (term.length <= 3) return term;
+  if (term.length > 4 && term.endsWith("ies")) return `${term.slice(0, -3)}y`;
+  if (/(ss|us|is)$/.test(term)) return term;
+  // "statuses" to "status"; a general "-uses" rule would break "causes".
+  if (term.endsWith("tuses")) return term.slice(0, -2);
+  if (/(ch|sh|x|ss)es$/.test(term)) return term.slice(0, -2);
+  if (term.endsWith("s")) return term.slice(0, -1);
+  return term;
+}
+
+/**
+ * Split text into normalized terms, without plural folding.
+ * @internal
+ */
+function splitTerms(text: string): string[] {
   const normalized = normalizeText(text);
   if (!normalized) return [];
   return normalized.split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Split text into normalized terms, with plurals folded.
+ * @internal
+ */
+function tokenizeText(text: string): string[] {
+  return splitTerms(text).map(foldPlural);
+}
+
+/**
+ * Terms of a tool's own name: its qualified name without the `<plugin>__` or
+ * `mcp__<server>__` prefix.
+ * @internal
+ */
+function ownNameTokens(tool: MCPToolMetadata): string[] {
+  let name = tool.name;
+  for (const prefix of [`${MCP_TOOL_PREFIX}${tool.source}__`, `${tool.source}__`]) {
+    if (name.startsWith(prefix)) {
+      name = name.slice(prefix.length);
+      break;
+    }
+  }
+  return Array.from(new Set(tokenizeText(name)));
 }
 
 /**
@@ -132,12 +177,16 @@ function buildTermFrequency(tokens: string[]): Map<string, number> {
  * Extract useful search terms from JSON schema keys and enums.
  * @internal
  */
-function extractSchemaTokens(schema: unknown, maxTokens = 64): string[] {
+function extractSchemaTokens(
+  schema: unknown,
+  tokenize: (text: string) => string[] = tokenizeText,
+  maxTokens = 64,
+): string[] {
   const tokens: string[] = [];
   const visited = new Set<object>();
 
   const pushTokens = (value: string): void => {
-    for (const token of tokenizeText(value)) {
+    for (const token of tokenize(value)) {
       if (tokens.length >= maxTokens) return;
       tokens.push(token);
     }
@@ -257,6 +306,9 @@ function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
 
   const documents: SearchDocument[] = metadata.map((tool) => {
     const schemaTokens = extractSchemaTokens(tool.inputSchema);
+    // Fuzzy matching uses unfolded terms, so a folded plural that misses
+    // (`cookies` to `cooky`) can still prefix-match `cookie`.
+    const rawSchemaTokens = extractSchemaTokens(tool.inputSchema, splitTerms);
     const tokensByField: Record<SearchFieldName, string[]> = {
       name: tokenizeText(tool.name),
       source: tokenizeText(tool.source),
@@ -284,10 +336,10 @@ function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
     }
 
     const tokenSet = new Set<string>([
-      ...tokensByField.name,
-      ...tokensByField.source,
-      ...tokensByField.description,
-      ...tokensByField.schema,
+      ...splitTerms(tool.name),
+      ...splitTerms(tool.source),
+      ...splitTerms(tool.description),
+      ...rawSchemaTokens,
     ]);
     const tokenList = Array.from(tokenSet);
 
@@ -299,8 +351,9 @@ function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
       tokensByField,
       termFrequencyByField,
       tokenList,
+      ownNameTokens: ownNameTokens(tool),
       trigrams: toTrigrams(
-        [tool.name, tool.source, tool.description, schemaTokens.join(" ")]
+        [tool.name, tool.source, tool.description, rawSchemaTokens.join(" ")]
           .filter(Boolean)
           .join(" "),
       ),
@@ -746,8 +799,9 @@ export class MCPManager {
   /**
    * Search tools by query string.
    *
-   * Uses weighted lexical ranking (name/source/description/schema) with
-   * fuzzy fallback for typo tolerance.
+   * Uses weighted lexical ranking (name/source/description/schema, with
+   * plurals folded), boosts tools whose own name the query spells out, and
+   * falls back to fuzzy matching for typo tolerance.
    *
    * @param query - Search query
    * @param limit - Maximum results to return
@@ -763,11 +817,15 @@ export class MCPManager {
 
     const normalizedQuery = normalizeText(query);
     const queryTokens = tokenizeText(query);
+    const rawQueryTokens = splitTerms(query);
     if (!normalizedQuery || queryTokens.length === 0) {
       return [];
     }
 
     const queryTrigrams = toTrigrams(query);
+    // A repeated query term ("skill" in "list skills get skill") counts once, so
+    // it cannot outweigh the terms that tell tools apart.
+    const uniqueQueryTokens = new Set(queryTokens);
     const docCount = Math.max(this.searchIndex.documents.length, 1);
     const scored = this.searchIndex.documents
       .map((document) => {
@@ -781,7 +839,7 @@ export class MCPManager {
           const termFrequency = document.termFrequencyByField[field];
           const fieldLength = document.tokensByField[field].length;
 
-          for (const token of queryTokens) {
+          for (const token of uniqueQueryTokens) {
             const tf = termFrequency.get(token) ?? 0;
             if (tf === 0) continue;
 
@@ -807,9 +865,15 @@ export class MCPManager {
         if (document.normalizedDescription.includes(normalizedQuery)) {
           lexicalScore += DESCRIPTION_PHRASE_BONUS;
         }
+        if (
+          document.ownNameTokens.length > 0 &&
+          document.ownNameTokens.every((token) => uniqueQueryTokens.has(token))
+        ) {
+          lexicalScore += NAME_COVERAGE_BONUS;
+        }
 
         const trigramScore = jaccardSimilarity(queryTrigrams, document.trigrams);
-        const partialTokenScore = scorePartialTokenMatches(queryTokens, document.tokenList);
+        const partialTokenScore = scorePartialTokenMatches(rawQueryTokens, document.tokenList);
         const fuzzyScore = trigramScore * 0.7 + partialTokenScore * 0.3;
 
         const combinedScore =

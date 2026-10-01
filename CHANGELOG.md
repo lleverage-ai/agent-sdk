@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent without the option is unchanged. The log-mode runtime is not available
   yet, so `createAgent` throws a `ConfigurationError` for `mode: "log"`.
 
+### Changed
+
+- `MCPManager.searchTools()`, and so `search_tools`, now ranks the tools a
+  query names first. A tool whose own name appears in the query, in snake
+  case (`list_skills`) or as words (`list skills`), gets a fixed boost, so a
+  query naming several tools returns all of them first. Plural terms now match
+  their singular (`emails` finds `find_email`), and a term repeated in the
+  query counts once.
+
 ## [1.0.0-rc.3] - 2026-09-30
 
 Third release candidate for 1.0.0. `call_tool` now returns proxied object and
