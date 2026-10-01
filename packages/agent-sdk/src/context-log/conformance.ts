@@ -995,6 +995,10 @@ export function createContextLogStoreConformanceCases(
     check(version.reason === "host_policy_change", "a custom reason is stored");
     check(version.core === "A changed core.", "the new core is stored");
     check(custom.head.entryCount === 1, "an empty prepare keeps the inherited path");
+    check(
+      custom.head.pathDigest !== head.pathDigest,
+      "a transition changes the path digest even without new entries",
+    );
   });
 
   define(
