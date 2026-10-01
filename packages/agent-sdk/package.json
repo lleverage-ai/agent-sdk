@@ -135,7 +135,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "clean": "rm -rf dist coverage"
+    "clean": "rm -rf dist coverage",
+    "eval:tool-search": "bun tests/tool-search-eval/run.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
