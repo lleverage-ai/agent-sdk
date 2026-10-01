@@ -177,5 +177,6 @@ Rules every store follows:
   inherited by any branch. A stream without a head needs a transition; a root
   transition (no parent) is only allowed on a stream without a head.
 - `pathDigest` is opaque and store-defined: rereading a head returns the same
-  digest, and every write that adds entries changes it. A prepare that appends
-  nothing keeps the digest but still moves `revision`.
+  digest, and every write that adds entries or starts a new version changes
+  it. A prepare without a transition that appends nothing keeps the digest but
+  still moves `revision`.

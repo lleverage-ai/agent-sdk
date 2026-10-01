@@ -361,9 +361,10 @@ export interface ContextHead extends ContextPathRef {
   /**
    * Opaque digest of the path up to the head, so hosts can cache a projected
    * path by digest. Rereading a head returns the same digest, and every write
-   * that adds entries changes it. A prepare that appends nothing keeps the
-   * digest but still moves {@link ContextHead.revision}; use the revision to
-   * detect every committed write. Stores choose the algorithm.
+   * that adds entries or starts a new version changes it. A prepare without a
+   * transition that appends nothing keeps the digest but still moves
+   * {@link ContextHead.revision}; use the revision to detect every committed
+   * write. Stores choose the algorithm.
    */
   pathDigest: string;
   /** Starts at 1 for a new head and increases by 1 on every move. `0` means no head yet. */
