@@ -375,8 +375,9 @@ export class AgentSession {
     try {
       const history = this.messages.length > 0 ? [...this.messages] : undefined;
       // With a checkpointer the agent prepends the thread's checkpoint, so the
-      // local history is passed as a fallback it uses only when it loads no
-      // checkpoint. `messages` stays free for hooks to add to.
+      // local history is passed as a fallback. The agent drops it when it has
+      // a checkpoint and otherwise turns it into `messages` before PreGenerate
+      // hooks run.
       const checkpointed = Boolean(this.threadId && this.agent.options.checkpointer);
       const generateOptions: GenerateOptions = checkpointed
         ? { prompt, threadId: this.threadId, _historyUnlessCheckpointed: history }

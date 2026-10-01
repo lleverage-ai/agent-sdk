@@ -13,7 +13,12 @@ import { describe, expect, it } from "vitest";
 import { FileSaver } from "../src/checkpointer/file-saver.js";
 import { MemorySaver } from "../src/checkpointer/memory-saver.js";
 import type { HookCallback, PreGenerateInput } from "../src/index.js";
-import { createAgent } from "../src/index.js";
+import {
+  COMMON_SECRET_PATTERNS,
+  createAgent,
+  createGuardrailsHooks,
+  createSecretsFilterHooks,
+} from "../src/index.js";
 import { AgentSession } from "../src/session.js";
 
 type PromptMessage = { role: string; content: string | Array<{ type: string; text?: string }> };
@@ -273,12 +278,15 @@ describe("AgentSession history with a real agent", () => {
       await agent.dispose();
     });
 
-    it("keeps the session's history when a hook rebuilds the options from public fields", async () => {
+    it("does not duplicate history when a hook rebuilds the options from public fields", async () => {
       const { model, requests } = createRecordingModel();
       const rebuild: HookCallback = async (input) => {
-        const { prompt, threadId } = (input as PreGenerateInput).options;
+        const { prompt, threadId, messages } = (input as PreGenerateInput).options;
         return {
-          hookSpecificOutput: { hookEventName: "PreGenerate", updatedInput: { prompt, threadId } },
+          hookSpecificOutput: {
+            hookEventName: "PreGenerate",
+            updatedInput: { prompt, threadId, messages },
+          },
         };
       };
       const agent = createAgent({
@@ -308,12 +316,12 @@ describe("AgentSession history with a real agent", () => {
       const { model, requests } = createRecordingModel({ failFirstCall: true });
       const retry: HookCallback = async (input) => {
         if (input.hook_event_name !== "PostGenerateFailure") return {};
-        const { prompt, threadId } = input.options;
+        const { prompt, threadId, messages } = input.options;
         return {
           hookSpecificOutput: {
             hookEventName: "PostGenerateFailure",
             retry: true,
-            updatedInput: { prompt, threadId },
+            updatedInput: { prompt, threadId, messages },
           },
         };
       };
@@ -337,6 +345,82 @@ describe("AgentSession history with a real agent", () => {
       expect(requests()).toEqual([
         ["user:U0", "assistant:A0", "user:U1"],
         ["user:U0", "assistant:A0", "user:U1"],
+      ]);
+      await agent.dispose();
+    });
+  });
+
+  describe("input-security hooks on a new checkpointed thread", () => {
+    const awsKey = "AKIAABCDEFGHIJKLMNOP";
+
+    it("lets the secrets filter redact secrets in initial messages", async () => {
+      const { model, requests } = createRecordingModel();
+      const checkpointer = new MemorySaver();
+      const [redactInput] = createSecretsFilterHooks({
+        patterns: [COMMON_SECRET_PATTERNS.AWS_ACCESS_KEY],
+        filterOutput: false,
+      });
+      const agent = createAgent({ model, checkpointer, hooks: { PreGenerate: [redactInput] } });
+      const session = new AgentSession({
+        agent,
+        threadId: "thread-1",
+        initialMessages: [
+          { role: "user", content: `My key is ${awsKey}` },
+          { role: "assistant", content: "A0" },
+        ],
+      });
+
+      await runTurns(session, ["U1", "U2"]);
+
+      expect(requests()[0]).toEqual(["user:My key is [REDACTED]", "assistant:A0", "user:U1"]);
+      expect(JSON.stringify(requests())).not.toContain(awsKey);
+      expect(JSON.stringify(await checkpointer.load("thread-1"))).not.toContain(awsKey);
+      await agent.dispose();
+    });
+
+    it("lets guardrails deny blocked content in initial messages", async () => {
+      const { model, requests } = createRecordingModel();
+      const [checkInput] = createGuardrailsHooks({ blockedInputPatterns: [/forbidden/i] });
+      const agent = createAgent({
+        model,
+        checkpointer: new MemorySaver(),
+        hooks: { PreGenerate: [checkInput] },
+      });
+      const session = new AgentSession({
+        agent,
+        threadId: "thread-1",
+        initialMessages: [{ role: "user", content: "a forbidden request" }],
+      });
+
+      await expect(runTurns(session, ["U1"])).rejects.toThrow("Generation denied by hook");
+      expect(requests()).toEqual([]);
+      await agent.dispose();
+    });
+
+    it("lets hooks see the session's history again after delete and invalidate", async () => {
+      const { model, requests } = createRecordingModel();
+      const checkpointer = new MemorySaver();
+      const seen: number[] = [];
+      const record: HookCallback = async (input) => {
+        seen.push((input as PreGenerateInput).options.messages?.length ?? 0);
+        return {};
+      };
+      const agent = createAgent({ model, checkpointer, hooks: { PreGenerate: [record] } });
+      const session = new AgentSession({ agent, threadId: "thread-1" });
+
+      await runTurns(session, ["U1", "U2"]);
+      await checkpointer.delete("thread-1");
+      agent.invalidateCheckpoint("thread-1");
+      await runTurns(session, ["U3"]);
+
+      // Turn 2 used the checkpoint; turn 3 had none, so hooks saw all 4 messages.
+      expect(seen).toEqual([0, 0, 4]);
+      expect(requests()[2]).toEqual([
+        "user:U1",
+        "assistant:A1",
+        "user:U2",
+        "assistant:A2",
+        "user:U3",
       ]);
       await agent.dispose();
     });

@@ -610,8 +610,30 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
   const { buildMessages, createStreamingCompactionState } = messageRuntime;
   const { save: saveCheckpoint } = checkpoints;
 
-  async function beginRun(genOptions: GenerateOptions): Promise<RunStart> {
-    const runId = await checkpoints.resolveRunId(genOptions);
+  /**
+   * Turn `_historyUnlessCheckpointed` into ordinary input before PreGenerate.
+   *
+   * Uses the agent's effective (cached) checkpoint load, the one message
+   * assembly uses. With a checkpoint the fallback is dropped, because the
+   * checkpoint already holds that history; without one it is placed before
+   * `messages`, so PreGenerate hooks (redaction, guardrails) see and can
+   * transform or deny it like any other input.
+   */
+  async function resolveHistoryFallback(genOptions: GenerateOptions): Promise<GenerateOptions> {
+    const { _historyUnlessCheckpointed: history, ...rest } = genOptions;
+    if (history === undefined) {
+      return genOptions;
+    }
+    const checkpoint = rest.threadId ? await checkpoints.load(rest.threadId) : undefined;
+    if (checkpoint || history.length === 0) {
+      return rest;
+    }
+    return { ...rest, messages: [...history, ...(rest.messages ?? [])] };
+  }
+
+  async function beginRun(requestedOptions: GenerateOptions): Promise<RunStart> {
+    const runId = await checkpoints.resolveRunId(requestedOptions);
+    const genOptions = await resolveHistoryFallback(requestedOptions);
 
     // Invoke unified PreGenerate hooks
     const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
@@ -623,13 +645,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     return {
       runId,
-      effectiveGenOptions: {
-        ...preGenResult.effectiveOptions,
-        _runId: runId,
-        _historyUnlessCheckpointed:
-          preGenResult.effectiveOptions._historyUnlessCheckpointed ??
-          genOptions._historyUnlessCheckpointed,
-      },
+      effectiveGenOptions: { ...preGenResult.effectiveOptions, _runId: runId },
       cachedResult: preGenResult.cachedResult,
     };
   }
@@ -1168,9 +1184,6 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         nextOptions = {
           ...errorDecision.updatedOptions,
           _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
-          _historyUnlessCheckpointed:
-            errorDecision.updatedOptions._historyUnlessCheckpointed ??
-            effectiveGenOptions._historyUnlessCheckpointed,
         };
       }
       // Update retry state

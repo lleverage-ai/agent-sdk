@@ -13,16 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   checkpointer and the session has a `threadId`. The agent already prepends the
   thread's checkpoint messages, so from the second turn on the model received
   every earlier turn twice (`U1, A1, U1, A1, U2`). In that setup the session
-  now passes only the new `prompt`, plus its own history as a fallback that the
-  agent uses only when the generation loads no checkpoint for the thread. The
-  decision uses the same checkpoint load that supplies the model's history.
-  `initialMessages` therefore reach the model only while there is no
-  checkpoint, and `getMessages()` remains a display copy of the session's
-  turns. Because the history is no longer in `messages`, PreGenerate hooks in
-  a checkpointed session see only the prompt in `options` (as they already did
-  for the checkpoint's history), and any `messages` a hook adds are always
-  sent. Sessions without a checkpointer or `threadId` still pass their history
-  as `messages`.
+  now passes its own history as a fallback. Before PreGenerate hooks run, the
+  agent drops the fallback if its checkpoint load for the thread finds a
+  checkpoint, and otherwise passes it to hooks and the model as `messages` as
+  before. `initialMessages` therefore reach the model only while there is no
+  checkpoint, still through input hooks such as the secrets filter and
+  guardrails, and `getMessages()` remains a display copy of the session's
+  turns. Sessions without a checkpointer or `threadId` are unchanged.
 
 ## [1.0.0-rc.3] - 2026-09-30
 
