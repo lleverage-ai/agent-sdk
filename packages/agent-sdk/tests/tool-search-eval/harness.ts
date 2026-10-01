@@ -36,6 +36,8 @@ export interface EvalCase {
 /** Rank of each case's label, 1-based; null when the label was not returned. */
 export interface CaseResult {
   testCase: EvalCase;
+  /** Whether the label is in the catalogue this case could see. */
+  labelVisible: boolean;
   rank: number | null;
   results: string[];
 }
@@ -44,7 +46,7 @@ export interface CaseResult {
 export interface EvalMetrics {
   /** Cases with a label that is present in the case's catalogue. */
   n: number;
-  /** Cases whose label is not in the case's catalogue (excluded from n). */
+  /** Cases whose label is not in the catalogue the case could see (excluded from n). */
   labelMissing: number;
   recallAt: Record<number, number>;
   /** Mean reciprocal rank, counting a label outside the result limit as 0. */
@@ -110,19 +112,16 @@ export function runCases(
 
     const results = manager.searchTools(testCase.query, limit).map((metadata) => metadata.name);
     const index = testCase.label === null ? -1 : results.indexOf(testCase.label);
-    return { testCase, rank: index >= 0 ? index + 1 : null, results };
+    const labelVisible =
+      testCase.label !== null && visible.some((entry) => qualifiedName(entry) === testCase.label);
+    return { testCase, labelVisible, rank: index >= 0 ? index + 1 : null, results };
   });
 }
 
-/** Aggregate recall@k and MRR over the cases that have a label in their catalogue. */
-export function summarise(
-  catalogue: EvalTool[],
-  results: CaseResult[],
-  ks: readonly number[] = DEFAULT_KS,
-): EvalMetrics {
-  const names = new Set(catalogue.map(qualifiedName));
+/** Aggregate recall@k and MRR over the cases whose label their catalogue holds. */
+export function summarise(results: CaseResult[], ks: readonly number[] = DEFAULT_KS): EvalMetrics {
   const labelled = results.filter((result) => result.testCase.label !== null);
-  const scored = labelled.filter((result) => names.has(result.testCase.label as string));
+  const scored = labelled.filter((result) => result.labelVisible);
   const n = scored.length;
 
   const recallAt: Record<number, number> = {};

@@ -35,7 +35,7 @@ const groups: Array<[string, typeof results]> = [
 
 const report = groups.map(([group, groupResults]) => ({
   group,
-  ...summarise(catalogue, groupResults),
+  ...summarise(groupResults),
 }));
 
 if (asJson) {

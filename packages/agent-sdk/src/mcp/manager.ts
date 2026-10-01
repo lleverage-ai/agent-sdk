@@ -67,6 +67,7 @@ interface SearchDocument {
   normalizedDescription: string;
   tokensByField: Record<SearchFieldName, string[]>;
   termFrequencyByField: Record<SearchFieldName, Map<string, number>>;
+  /** Unfolded terms from every field, for partial-token fuzzy matching */
   tokenList: string[];
   /** Terms of the tool's own name, without its plugin or server prefix */
   ownNameTokens: string[];
@@ -125,13 +126,21 @@ function foldPlural(term: string): string {
 }
 
 /**
+ * Split text into normalized terms, without plural folding.
+ * @internal
+ */
+function splitTerms(text: string): string[] {
+  const normalized = normalizeText(text);
+  if (!normalized) return [];
+  return normalized.split(/\s+/).filter(Boolean);
+}
+
+/**
  * Split text into normalized terms, with plurals folded.
  * @internal
  */
 function tokenizeText(text: string): string[] {
-  const normalized = normalizeText(text);
-  if (!normalized) return [];
-  return normalized.split(/\s+/).filter(Boolean).map(foldPlural);
+  return splitTerms(text).map(foldPlural);
 }
 
 /**
@@ -166,12 +175,16 @@ function buildTermFrequency(tokens: string[]): Map<string, number> {
  * Extract useful search terms from JSON schema keys and enums.
  * @internal
  */
-function extractSchemaTokens(schema: unknown, maxTokens = 64): string[] {
+function extractSchemaTokens(
+  schema: unknown,
+  tokenize: (text: string) => string[] = tokenizeText,
+  maxTokens = 64,
+): string[] {
   const tokens: string[] = [];
   const visited = new Set<object>();
 
   const pushTokens = (value: string): void => {
-    for (const token of tokenizeText(value)) {
+    for (const token of tokenize(value)) {
       if (tokens.length >= maxTokens) return;
       tokens.push(token);
     }
@@ -291,6 +304,9 @@ function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
 
   const documents: SearchDocument[] = metadata.map((tool) => {
     const schemaTokens = extractSchemaTokens(tool.inputSchema);
+    // Fuzzy matching uses unfolded terms, so a folded plural that misses
+    // (`cookies` to `cooky`) can still prefix-match `cookie`.
+    const rawSchemaTokens = extractSchemaTokens(tool.inputSchema, splitTerms);
     const tokensByField: Record<SearchFieldName, string[]> = {
       name: tokenizeText(tool.name),
       source: tokenizeText(tool.source),
@@ -318,10 +334,10 @@ function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
     }
 
     const tokenSet = new Set<string>([
-      ...tokensByField.name,
-      ...tokensByField.source,
-      ...tokensByField.description,
-      ...tokensByField.schema,
+      ...splitTerms(tool.name),
+      ...splitTerms(tool.source),
+      ...splitTerms(tool.description),
+      ...rawSchemaTokens,
     ]);
     const tokenList = Array.from(tokenSet);
 
@@ -335,7 +351,7 @@ function buildSearchIndex(metadata: MCPToolMetadata[]): SearchIndex {
       tokenList,
       ownNameTokens: ownNameTokens(tool),
       trigrams: toTrigrams(
-        [tool.name, tool.source, tool.description, schemaTokens.join(" ")]
+        [tool.name, tool.source, tool.description, rawSchemaTokens.join(" ")]
           .filter(Boolean)
           .join(" "),
       ),
@@ -799,6 +815,7 @@ export class MCPManager {
 
     const normalizedQuery = normalizeText(query);
     const queryTokens = tokenizeText(query);
+    const rawQueryTokens = splitTerms(query);
     if (!normalizedQuery || queryTokens.length === 0) {
       return [];
     }
@@ -854,7 +871,7 @@ export class MCPManager {
         }
 
         const trigramScore = jaccardSimilarity(queryTrigrams, document.trigrams);
-        const partialTokenScore = scorePartialTokenMatches(queryTokens, document.tokenList);
+        const partialTokenScore = scorePartialTokenMatches(rawQueryTokens, document.tokenList);
         const fuzzyScore = trigramScore * 0.7 + partialTokenScore * 0.3;
 
         const combinedScore =

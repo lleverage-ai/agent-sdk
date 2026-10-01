@@ -117,6 +117,23 @@ describe("MCPManager", () => {
       expect(top?.name).toBe("mail__find_email");
     });
 
+    it("still finds a tool by prefix when plural folding misses", () => {
+      // "cookies" folds to "cooky", which no term matches; the fuzzy fallback
+      // still compares unfolded terms, so "cookies" prefix-matches "cookie".
+      const localManager = new MCPManager();
+      localManager.registerPluginTools("web", {
+        get_cookie: tool({
+          description: "Fetch a browser session value by key.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(localManager.searchTools("cookies").map((result) => result.name)).toEqual([
+        "web__get_cookie",
+      ]);
+    });
+
     it.each([
       "skill management list_skills get_skill change_skill_draft",
       "skill management list skills get skill change skill draft",

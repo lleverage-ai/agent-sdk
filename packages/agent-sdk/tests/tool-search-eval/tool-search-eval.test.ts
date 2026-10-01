@@ -25,7 +25,7 @@ describe("tool search evaluation fixture", () => {
       .map((result) => `${result.testCase.query} -> ${result.testCase.label} (${result.rank})`);
 
     expect(misses).toEqual([]);
-    expect(summarise(catalogue, results).recallAt[3]).toBe(1);
+    expect(summarise(results).recallAt[3]).toBe(1);
   });
 
   it("returns nothing for queries that match no tool", () => {
@@ -47,5 +47,16 @@ describe("tool search evaluation fixture", () => {
         expect(sources.has(name.split("__")[0] ?? "")).toBe(true);
       }
     }
+  });
+
+  it("leaves labels the case cannot see out of the denominator", () => {
+    const filtered = runCases(catalogue, [
+      { query: "emails", label: "mail__find_email", sources: ["chat"] },
+      { query: "emails", label: "mail__find_email", tools: ["chat__forward_to_channel"] },
+      { query: "emails", label: "mail__missing_tool" },
+      { query: "emails", label: "mail__find_email" },
+    ]);
+
+    expect(summarise(filtered)).toMatchObject({ n: 1, labelMissing: 3 });
   });
 });
