@@ -379,6 +379,9 @@ export class MemoryContextLogStore implements ContextLogStore {
         record,
         rootDigest: sha256(
           canonicalContextJson({
+            // The version id makes every new version's digest distinct, even
+            // an empty one with the same core, contract and prefix.
+            versionId: record.id,
             core: transition.core,
             contract: transition.contract,
             inherited: inheritedDigest,

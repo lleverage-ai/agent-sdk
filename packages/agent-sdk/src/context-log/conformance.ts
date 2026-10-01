@@ -999,6 +999,24 @@ export function createContextLogStoreConformanceCases(
       custom.head.pathDigest !== head.pathDigest,
       "a transition changes the path digest even without new entries",
     );
+    const again = await prepare(stream(), [], {
+      transition: transition({
+        reason: "host_policy_change",
+        core: "A changed core.",
+        parent: { versionId: custom.head.versionId, inheritedCount: 0 },
+      }),
+    });
+    const repeat = await prepare(stream(), [], {
+      transition: transition({
+        reason: "host_policy_change",
+        core: "A changed core.",
+        parent: { versionId: again.head.versionId, inheritedCount: 0 },
+      }),
+    });
+    check(
+      repeat.head.pathDigest !== again.head.pathDigest,
+      "every new version changes the path digest, even an identical empty one",
+    );
   });
 
   define(
