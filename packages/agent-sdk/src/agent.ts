@@ -1529,10 +1529,12 @@ export function createAgent(options: AgentOptions): Agent {
                     await checkpoints.commit(effectiveGenOptions.threadId, newCheckpoint);
                   }
                   // Clear messages from effectiveGenOptions to prevent duplication
-                  // The retry will use checkpoint messages only
+                  // The retry will use checkpoint messages only, so it must
+                  // load the compacted checkpoint rather than the run's snapshot
                   effectiveGenOptions = {
                     ...effectiveGenOptions,
                     messages: undefined,
+                    _checkpointSnapshot: undefined,
                   };
                 }
 

@@ -54,6 +54,11 @@ export interface AgentSessionOptions {
   /**
    * Thread ID for checkpointing and conversation persistence.
    * If provided, the session will use checkpointing for state recovery.
+   *
+   * When the agent also has a checkpointer, the checkpoint is the model's
+   * conversation history: each turn passes only the new prompt, the session's
+   * own messages are used only when the generation loads no checkpoint for the
+   * thread, and {@link AgentSession.getMessages} is a display copy.
    */
   threadId?: string;
 
@@ -80,8 +85,9 @@ export interface AgentSessionOptions {
 
   /**
    * Initial messages to populate the conversation.
-   * If threadId is provided and checkpointing is enabled, this may be
-   * overridden by restored messages.
+   * If threadId is provided and checkpointing is enabled, these reach the
+   * model only while the generation loads no checkpoint for the thread; an
+   * existing checkpoint's history takes their place.
    */
   initialMessages?: ModelMessage[];
 
@@ -220,6 +226,9 @@ export class AgentSession {
 
   /**
    * Get the current conversation messages.
+   *
+   * With a checkpointer and threadId, this is a display copy of the turns
+   * handled by this session; the model's history comes from the checkpoint.
    */
   getMessages(): ModelMessage[] {
     return [...this.messages];
@@ -364,11 +373,15 @@ export class AgentSession {
    */
   private async *generate(prompt: string): AsyncGenerator<SessionOutput, void, unknown> {
     try {
-      const generateOptions: GenerateOptions = {
-        prompt,
-        messages: this.messages.length > 0 ? this.messages : undefined,
-        threadId: this.threadId,
-      };
+      const history = this.messages.length > 0 ? [...this.messages] : undefined;
+      // With a checkpointer the agent prepends the thread's checkpoint, so the
+      // local history is passed as a fallback. The agent drops it when it has
+      // a checkpoint and otherwise turns it into `messages` before PreGenerate
+      // hooks run.
+      const checkpointed = Boolean(this.threadId && this.agent.options.checkpointer);
+      const generateOptions: GenerateOptions = checkpointed
+        ? { prompt, threadId: this.threadId, _historyUnlessCheckpointed: history }
+        : { prompt, messages: history, threadId: this.threadId };
 
       const result = await this.agent.generate(generateOptions);
 

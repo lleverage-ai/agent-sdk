@@ -43,6 +43,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   their singular (`emails` finds `find_email`), and a term repeated in the
   query counts once.
 
+### Fixed
+
+- `AgentSession` no longer resends earlier turns when the agent has a
+  checkpointer and the session has a `threadId`. The agent already prepends the
+  thread's checkpoint messages, so from the second turn on the model received
+  every earlier turn twice (`U1, A1, U1, A1, U2`). In that setup the session
+  now passes its own history as a fallback. Before PreGenerate hooks run, the
+  agent drops the fallback if its checkpoint load for the thread finds a
+  checkpoint, and otherwise passes it to hooks and the model as `messages` as
+  before. `initialMessages` therefore reach the model only while there is no
+  checkpoint, still through input hooks such as the secrets filter and
+  guardrails, and `getMessages()` remains a display copy of the session's
+  turns. Sessions without a checkpointer or `threadId` are unchanged.
+
 ## [1.0.0-rc.3] - 2026-09-30
 
 Third release candidate for 1.0.0. `call_tool` now returns proxied object and

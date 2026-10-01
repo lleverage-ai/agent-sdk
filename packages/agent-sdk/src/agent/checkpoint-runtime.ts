@@ -138,8 +138,15 @@ export interface CheckpointRuntime {
    * Resolve the run id for a generation. Uses `_runId` when set; otherwise,
    * when the thread has a pending interrupt, continues that interrupt's run
    * id; otherwise mints a new one. Forked sessions always mint a new id.
+   *
+   * @param loaded - The thread's checkpoint when the caller has already
+   *   loaded it for this generation (`{ checkpoint: undefined }` for a miss),
+   *   so the thread is not loaded twice.
    */
-  resolveRunId(genOptions: GenerateOptions): Promise<string>;
+  resolveRunId(
+    genOptions: GenerateOptions,
+    loaded?: { checkpoint: Checkpoint | undefined },
+  ): Promise<string>;
 }
 
 /**
@@ -319,10 +326,15 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
     return withInterrupt;
   }
 
-  async function resolveRunId(genOptions: GenerateOptions): Promise<string> {
+  async function resolveRunId(
+    genOptions: GenerateOptions,
+    loaded?: { checkpoint: Checkpoint | undefined },
+  ): Promise<string> {
     let runId = genOptions._runId;
     if (!runId && genOptions.threadId) {
-      const existingCheckpoint = await loadCheckpoint(genOptions.threadId);
+      const existingCheckpoint = loaded
+        ? loaded.checkpoint
+        : await loadCheckpoint(genOptions.threadId);
       if (existingCheckpoint?.pendingInterrupt) {
         runId = getCheckpointRunId(existingCheckpoint);
       }

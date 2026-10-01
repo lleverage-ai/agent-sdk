@@ -610,8 +610,38 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
   const { buildMessages, createStreamingCompactionState } = messageRuntime;
   const { save: saveCheckpoint } = checkpoints;
 
-  async function beginRun(genOptions: GenerateOptions): Promise<RunStart> {
-    const runId = await checkpoints.resolveRunId(genOptions);
+  /**
+   * Turn `_historyUnlessCheckpointed` into ordinary input before PreGenerate.
+   *
+   * Uses the agent's effective (cached) checkpoint load, the one message
+   * assembly uses. With a checkpoint the fallback is dropped, because the
+   * checkpoint already holds that history; without one it is placed before
+   * `messages`, so PreGenerate hooks (redaction, guardrails) see and can
+   * transform or deny it like any other input.
+   */
+  async function resolveHistoryFallback(
+    genOptions: GenerateOptions,
+  ): Promise<{ options: GenerateOptions; loaded?: GenerateOptions["_checkpointSnapshot"] }> {
+    const { _historyUnlessCheckpointed: history, ...rest } = genOptions;
+    if (history === undefined) {
+      return { options: genOptions };
+    }
+    const checkpoint = rest.threadId ? await checkpoints.load(rest.threadId) : undefined;
+    const loaded = rest.threadId ? { threadId: rest.threadId, checkpoint } : undefined;
+    if (checkpoint || history.length === 0) {
+      return { options: rest, loaded };
+    }
+    return { options: { ...rest, messages: [...history, ...(rest.messages ?? [])] }, loaded };
+  }
+
+  async function beginRun(requestedOptions: GenerateOptions): Promise<RunStart> {
+    // A snapshot belongs to one run. Follow-up generations spread the previous
+    // run's options after its checkpoint was saved, so never reuse one.
+    const { _checkpointSnapshot: _previousRunSnapshot, ...freshOptions } = requestedOptions;
+    // One checkpoint load serves the fallback decision, the run id and (via
+    // `_checkpointSnapshot`) message assembly, so they cannot disagree.
+    const { options: genOptions, loaded } = await resolveHistoryFallback(freshOptions);
+    const runId = await checkpoints.resolveRunId(genOptions, loaded);
 
     // Invoke unified PreGenerate hooks
     const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];
@@ -623,7 +653,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     return {
       runId,
-      effectiveGenOptions: { ...preGenResult.effectiveOptions, _runId: runId },
+      effectiveGenOptions: {
+        ...preGenResult.effectiveOptions,
+        _runId: runId,
+        ...(loaded && { _checkpointSnapshot: loaded }),
+      },
       cachedResult: preGenResult.cachedResult,
     };
   }
@@ -1162,6 +1196,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         nextOptions = {
           ...errorDecision.updatedOptions,
           _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
+          _checkpointSnapshot:
+            errorDecision.updatedOptions._checkpointSnapshot ??
+            effectiveGenOptions._checkpointSnapshot,
         };
       }
       // Update retry state
