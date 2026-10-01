@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `AgentSession` no longer resends earlier turns when the agent has a
+  checkpointer and the session has a `threadId`. The agent already prepends the
+  thread's checkpoint messages, so from the second turn on the model received
+  every earlier turn twice (`U1, A1, U1, A1, U2`). Once the checkpointer holds
+  the thread, the session sends only the new prompt. `initialMessages` are sent
+  with the first prompt only when the thread has no checkpoint yet, and
+  `getMessages()` remains a display copy of the session's turns. Sessions
+  without a checkpointer or `threadId` still send their own history.
+
 ## [1.0.0-rc.3] - 2026-09-30
 
 Third release candidate for 1.0.0. `call_tool` now returns proxied object and

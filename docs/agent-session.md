@@ -126,7 +126,11 @@ interface AgentSessionOptions {
   /** The agent to wrap */
   agent: Agent;
 
-  /** Thread ID for checkpointing (enables state persistence) */
+  /**
+   * Thread ID for checkpointing (enables state persistence).
+   * With a checkpointer, the checkpoint holds the model's history: once the
+   * thread has one, each turn sends only the new prompt.
+   */
   threadId?: string;
 
   /**
@@ -142,7 +146,10 @@ interface AgentSessionOptions {
   /** Custom formatter for task failure messages */
   formatTaskFailure?: (task: BackgroundTask) => string;
 
-  /** Initial messages to populate the conversation */
+  /**
+   * Initial messages to populate the conversation. With a checkpointer and
+   * threadId, they are sent only if the thread has no checkpoint yet.
+   */
   initialMessages?: ModelMessage[];
 
   /**
@@ -204,7 +211,10 @@ class AgentSession {
   /** Stop the session event loop */
   stop(): void;
 
-  /** Get current conversation messages */
+  /**
+   * Get current conversation messages (a display copy when the agent has a
+   * checkpointer and the session has a threadId)
+   */
   getMessages(): ModelMessage[];
 
   /** Get current turn count */
