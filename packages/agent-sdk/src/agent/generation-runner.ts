@@ -619,21 +619,25 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
    * `messages`, so PreGenerate hooks (redaction, guardrails) see and can
    * transform or deny it like any other input.
    */
-  async function resolveHistoryFallback(genOptions: GenerateOptions): Promise<GenerateOptions> {
+  async function resolveHistoryFallback(
+    genOptions: GenerateOptions,
+  ): Promise<{ options: GenerateOptions; loaded?: { checkpoint: Checkpoint | undefined } }> {
     const { _historyUnlessCheckpointed: history, ...rest } = genOptions;
     if (history === undefined) {
-      return genOptions;
+      return { options: genOptions };
     }
     const checkpoint = rest.threadId ? await checkpoints.load(rest.threadId) : undefined;
+    const loaded = rest.threadId ? { checkpoint } : undefined;
     if (checkpoint || history.length === 0) {
-      return rest;
+      return { options: rest, loaded };
     }
-    return { ...rest, messages: [...history, ...(rest.messages ?? [])] };
+    return { options: { ...rest, messages: [...history, ...(rest.messages ?? [])] }, loaded };
   }
 
   async function beginRun(requestedOptions: GenerateOptions): Promise<RunStart> {
-    const runId = await checkpoints.resolveRunId(requestedOptions);
-    const genOptions = await resolveHistoryFallback(requestedOptions);
+    // One checkpoint load serves both the fallback decision and the run id.
+    const { options: genOptions, loaded } = await resolveHistoryFallback(requestedOptions);
+    const runId = await checkpoints.resolveRunId(genOptions, loaded);
 
     // Invoke unified PreGenerate hooks
     const preGenerateHooks = effectiveHooks?.PreGenerate ?? [];

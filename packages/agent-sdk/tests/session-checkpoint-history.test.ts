@@ -426,6 +426,42 @@ describe("AgentSession history with a real agent", () => {
     });
   });
 
+  it("loads a new thread's checkpoint no more often than a plain generate()", async () => {
+    const countLoads = () => {
+      const checkpointer = new MemorySaver();
+      const load = checkpointer.load.bind(checkpointer);
+      let loads = 0;
+      checkpointer.load = async (threadId) => {
+        loads++;
+        return load(threadId);
+      };
+      return { checkpointer, loads: () => loads };
+    };
+
+    const plain = countLoads();
+    const plainAgent = createAgent({
+      model: createRecordingModel().model,
+      checkpointer: plain.checkpointer,
+    });
+    await plainAgent.generate({ prompt: "U1", threadId: "thread-1" });
+
+    const viaSession = countLoads();
+    const agent = createAgent({
+      model: createRecordingModel().model,
+      checkpointer: viaSession.checkpointer,
+    });
+    const session = new AgentSession({
+      agent,
+      threadId: "thread-1",
+      initialMessages: [{ role: "user", content: "U0" }],
+    });
+    await runTurns(session, ["U1"]);
+
+    expect(viaSession.loads()).toBe(plain.loads());
+    await plainAgent.dispose();
+    await agent.dispose();
+  });
+
   it("still sends its own history when the agent has no checkpointer", async () => {
     const { model, requests } = createRecordingModel();
     const agent = createAgent({ model });
