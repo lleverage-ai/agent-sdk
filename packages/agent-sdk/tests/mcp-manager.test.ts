@@ -96,6 +96,99 @@ describe("MCPManager", () => {
       expect(results).toHaveLength(2);
     });
 
+    it("matches plural query terms against singular names", () => {
+      const localManager = new MCPManager();
+      localManager.registerPluginTools("mail", {
+        find_email: tool({
+          description: "Find an email by sender or subject.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+      localManager.registerPluginTools("chat", {
+        forward_to_channel: tool({
+          description: "Forward emails to a chat channel.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      const [top] = localManager.searchTools("emails", 2);
+      expect(top?.name).toBe("mail__find_email");
+    });
+
+    it("folds statuses to status", () => {
+      const localManager = new MCPManager();
+      localManager.registerPluginTools("orders", {
+        get_status: tool({
+          description: "Get the state of an order.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+        get_order: tool({
+          description: "Get an order with its statuses and history.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+        update_status: tool({
+          description: "Set the statuses of an order.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      const [top] = localManager.searchTools("get statuses", 3);
+      expect(top?.name).toBe("orders__get_status");
+    });
+
+    it("still finds a tool by prefix when plural folding misses", () => {
+      // "cookies" folds to "cooky", which no term matches; the fuzzy fallback
+      // still compares unfolded terms, so "cookies" prefix-matches "cookie".
+      const localManager = new MCPManager();
+      localManager.registerPluginTools("web", {
+        get_cookie: tool({
+          description: "Fetch a browser session value by key.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(localManager.searchTools("cookies").map((result) => result.name)).toEqual([
+        "web__get_cookie",
+      ]);
+    });
+
+    it.each([
+      "skill management list_skills get_skill change_skill_draft",
+      "skill management list skills get skill change skill draft",
+    ])("ranks every tool the query names first: %s", (query) => {
+      const localManager = new MCPManager();
+      const skillTool = (description: string) =>
+        tool({ description, inputSchema: z.object({}), execute: async () => "ok" });
+      localManager.registerPluginTools("skills", {
+        list_skills: skillTool("List the skills in this workspace."),
+        get_skill: skillTool("Get a skill with its instructions and files."),
+        change_skill_draft: skillTool("Create or change a skill draft."),
+        discard_skill_draft: skillTool("Discard a skill draft."),
+        list_skill_resources: skillTool("List the resource files attached to a skill."),
+        list_skill_providers: skillTool("List the integration providers a skill can use."),
+        list_skill_credentials: skillTool("List the credentials a skill can use."),
+        revise_skill_draft_after_test_failure: skillTool(
+          "Revise a skill draft after a skill test fails.",
+        ),
+      });
+
+      const topThree = localManager
+        .searchTools(query, 3)
+        .map((result) => result.name)
+        .sort();
+      expect(topThree).toEqual([
+        "skills__change_skill_draft",
+        "skills__get_skill",
+        "skills__list_skills",
+      ]);
+    });
+
     it("respects limit parameter", () => {
       const results = manager.searchTools("", 1);
       expect(results).toHaveLength(1);

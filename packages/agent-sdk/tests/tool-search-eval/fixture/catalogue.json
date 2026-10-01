@@ -1,0 +1,446 @@
+[
+  {
+    "source": "mail",
+    "tool": "find_email",
+    "description": "Find an email by sender, subject or text in a mailbox folder.",
+    "params": [
+      {
+        "name": "query",
+        "required": true
+      },
+      {
+        "name": "folder",
+        "required": false
+      },
+      {
+        "name": "limit",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "mail",
+    "tool": "send_email",
+    "description": "Send an email to one or more recipients.",
+    "params": [
+      {
+        "name": "to",
+        "required": true
+      },
+      {
+        "name": "subject",
+        "required": true
+      },
+      {
+        "name": "body",
+        "required": true
+      },
+      {
+        "name": "cc",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "mail",
+    "tool": "create_draft_reply",
+    "description": "Create a draft reply to an existing email message.",
+    "params": [
+      {
+        "name": "messageId",
+        "required": true
+      },
+      {
+        "name": "body",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "mail",
+    "tool": "list_mail_folders",
+    "description": "List the folders in the connected mailbox.",
+    "params": [
+      {
+        "name": "parentFolderId",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "chat",
+    "tool": "send_message_to_channel",
+    "description": "Post a message to a chat channel.",
+    "params": [
+      {
+        "name": "channel",
+        "required": true
+      },
+      {
+        "name": "text",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "chat",
+    "tool": "search_messages",
+    "description": "Search chat messages across channels.",
+    "params": [
+      {
+        "name": "query",
+        "required": true
+      },
+      {
+        "name": "channel",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "chat",
+    "tool": "forward_to_channel",
+    "description": "Forward emails to a chat channel.",
+    "params": [
+      {
+        "name": "channel",
+        "required": true
+      },
+      {
+        "name": "messageId",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "chat",
+    "tool": "list_channels",
+    "description": "List the chat channels the workspace can see.",
+    "params": [
+      {
+        "name": "cursor",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "skills",
+    "tool": "list_skills",
+    "description": "List the skills in this workspace.",
+    "params": []
+  },
+  {
+    "source": "skills",
+    "tool": "get_skill",
+    "description": "Get a skill with its instructions and files.",
+    "params": [
+      {
+        "name": "skillId",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "skills",
+    "tool": "change_skill_draft",
+    "description": "Create or change a skill draft.",
+    "params": [
+      {
+        "name": "skillId",
+        "required": false
+      },
+      {
+        "name": "update",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "skills",
+    "tool": "discard_skill_draft",
+    "description": "Discard a skill draft.",
+    "params": [
+      {
+        "name": "skillId",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "skills",
+    "tool": "list_skill_resources",
+    "description": "List the resource files attached to a skill.",
+    "params": [
+      {
+        "name": "skillId",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "skills",
+    "tool": "list_skill_providers",
+    "description": "List the integration providers a skill can use.",
+    "params": []
+  },
+  {
+    "source": "skills",
+    "tool": "list_skill_credentials",
+    "description": "List the credentials a skill can use.",
+    "params": [
+      {
+        "name": "provider",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "skills",
+    "tool": "revise_skill_draft_after_test_failure",
+    "description": "Revise a skill draft after a skill test fails.",
+    "params": [
+      {
+        "name": "skillId",
+        "required": true
+      },
+      {
+        "name": "failure",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "skills",
+    "tool": "run_skill_tests",
+    "description": "Run the saved tests for a skill and report the results.",
+    "params": [
+      {
+        "name": "skillId",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "data-tables",
+    "tool": "list_data_tables",
+    "description": "List the data tables in this project.",
+    "params": []
+  },
+  {
+    "source": "data-tables",
+    "tool": "get_data_table_schema",
+    "description": "Get the columns and types of a data table.",
+    "params": [
+      {
+        "name": "tableId",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "data-tables",
+    "tool": "query_data_table",
+    "description": "Query the records of a data table with filters and sorting.",
+    "params": [
+      {
+        "name": "tableId",
+        "required": true
+      },
+      {
+        "name": "filter",
+        "required": false
+      },
+      {
+        "name": "sort",
+        "required": false
+      },
+      {
+        "name": "limit",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "data-tables",
+    "tool": "create_data_table_record",
+    "description": "Create a record (row) in a data table.",
+    "params": [
+      {
+        "name": "tableId",
+        "required": true
+      },
+      {
+        "name": "values",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "data-tables",
+    "tool": "update_data_table_record",
+    "description": "Update a record in a data table.",
+    "params": [
+      {
+        "name": "tableId",
+        "required": true
+      },
+      {
+        "name": "recordId",
+        "required": true
+      },
+      {
+        "name": "values",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "data-tables",
+    "tool": "delete_data_table_record",
+    "description": "Delete a record from a data table.",
+    "params": [
+      {
+        "name": "tableId",
+        "required": true
+      },
+      {
+        "name": "recordId",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "files",
+    "tool": "list_files_and_folders",
+    "description": "List files and folders in a document library.",
+    "params": [
+      {
+        "name": "path",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "files",
+    "tool": "get_file",
+    "description": "Download a file from a document library.",
+    "params": [
+      {
+        "name": "path",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "files",
+    "tool": "upload_file",
+    "description": "Upload a file to a document library.",
+    "params": [
+      {
+        "name": "path",
+        "required": true
+      },
+      {
+        "name": "content",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "files",
+    "tool": "search_files",
+    "description": "Search files by name or content.",
+    "params": [
+      {
+        "name": "query",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "calendar",
+    "tool": "list_events",
+    "description": "List calendar events in a time range.",
+    "params": [
+      {
+        "name": "start",
+        "required": true
+      },
+      {
+        "name": "end",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "calendar",
+    "tool": "create_event",
+    "description": "Create a calendar event or meeting.",
+    "params": [
+      {
+        "name": "title",
+        "required": true
+      },
+      {
+        "name": "start",
+        "required": true
+      },
+      {
+        "name": "end",
+        "required": true
+      },
+      {
+        "name": "attendees",
+        "required": false
+      }
+    ]
+  },
+  {
+    "source": "calendar",
+    "tool": "find_free_time",
+    "description": "Find free time slots shared by the attendees.",
+    "params": [
+      {
+        "name": "attendees",
+        "required": true
+      },
+      {
+        "name": "duration",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "documents",
+    "tool": "convert_pdf_invoice_to_ubl",
+    "description": "Convert a PDF invoice into a UBL XML document.",
+    "params": [
+      {
+        "name": "file",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "documents",
+    "tool": "merge_pdf",
+    "description": "Merge several PDF files into one.",
+    "params": [
+      {
+        "name": "files",
+        "required": true
+      }
+    ]
+  },
+  {
+    "source": "documents",
+    "tool": "extract_text_from_file",
+    "description": "Extract the text of a PDF, Word or image file.",
+    "params": [
+      {
+        "name": "file",
+        "required": true
+      }
+    ]
+  }
+]
