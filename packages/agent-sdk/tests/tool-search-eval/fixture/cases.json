@@ -1,0 +1,155 @@
+[
+  {
+    "query": "emails",
+    "label": "mail__find_email",
+    "tags": ["plural"]
+  },
+  {
+    "query": "recent inbox emails",
+    "label": "mail__find_email",
+    "tags": ["plural"]
+  },
+  {
+    "query": "reply to an email with a draft",
+    "label": "mail__create_draft_reply",
+    "tags": []
+  },
+  {
+    "query": "mail folders",
+    "label": "mail__list_mail_folders",
+    "tags": ["plural"]
+  },
+  {
+    "query": "skill management list_skills get_skill change_skill_draft",
+    "label": "skills__list_skills",
+    "tags": ["multi-tool"]
+  },
+  {
+    "query": "skill management list_skills get_skill change_skill_draft",
+    "label": "skills__get_skill",
+    "tags": ["multi-tool"]
+  },
+  {
+    "query": "skill management list_skills get_skill change_skill_draft",
+    "label": "skills__change_skill_draft",
+    "tags": ["multi-tool"]
+  },
+  {
+    "query": "skill management list skills get skill change skill draft",
+    "label": "skills__list_skills",
+    "tags": ["multi-tool"]
+  },
+  {
+    "query": "skill management list skills get skill change skill draft",
+    "label": "skills__get_skill",
+    "tags": ["multi-tool"]
+  },
+  {
+    "query": "skill management list skills get skill change skill draft",
+    "label": "skills__change_skill_draft",
+    "tags": ["multi-tool"]
+  },
+  {
+    "query": "query_data_table get_data_table_schema",
+    "label": "data-tables__query_data_table",
+    "tags": ["multi-tool"]
+  },
+  {
+    "query": "query_data_table get_data_table_schema",
+    "label": "data-tables__get_data_table_schema",
+    "tags": ["multi-tool"]
+  },
+  {
+    "query": "query data table records",
+    "label": "data-tables__query_data_table",
+    "tags": []
+  },
+  {
+    "query": "data table columns",
+    "label": "data-tables__get_data_table_schema",
+    "tags": ["plural"]
+  },
+  {
+    "query": "add a row to a data table",
+    "label": "data-tables__create_data_table_record",
+    "tags": []
+  },
+  {
+    "query": "convert pdf invoice to ubl",
+    "label": "documents__convert_pdf_invoice_to_ubl",
+    "tags": ["rare"]
+  },
+  {
+    "query": "ubl",
+    "label": "documents__convert_pdf_invoice_to_ubl",
+    "tags": ["rare"]
+  },
+  {
+    "query": "merge pdfs",
+    "label": "documents__merge_pdf",
+    "tags": ["rare", "plural"]
+  },
+  {
+    "query": "calendar meetings next week",
+    "label": "calendar__list_events",
+    "tags": ["plural"]
+  },
+  {
+    "query": "schedule a meeting",
+    "label": "calendar__create_event",
+    "tags": []
+  },
+  {
+    "query": "free slots for attendees",
+    "label": "calendar__find_free_time",
+    "tags": ["plural"]
+  },
+  {
+    "query": "post a message to a channel",
+    "label": "chat__send_message_to_channel",
+    "tags": []
+  },
+  {
+    "query": "search slack messages",
+    "label": "chat__search_messages",
+    "tags": ["plural"]
+  },
+  {
+    "query": "browse document library folders",
+    "label": "files__list_files_and_folders",
+    "tags": ["plural"]
+  },
+  {
+    "query": "find emial",
+    "label": "mail__find_email",
+    "tags": ["near-miss"]
+  },
+  {
+    "query": "forward emails",
+    "label": "chat__forward_to_channel",
+    "tags": ["permissions-filtered"],
+    "sources": ["chat", "calendar"]
+  },
+  {
+    "query": "list files",
+    "label": "files__list_files_and_folders",
+    "tags": ["permissions-filtered"],
+    "sources": ["files"]
+  },
+  {
+    "query": "list skill credentials",
+    "label": "skills__list_skill_credentials",
+    "tags": ["permissions-filtered"],
+    "sources": ["skills"]
+  },
+  {
+    "query": "kubernetes helm deployment",
+    "label": null,
+    "tags": ["empty"]
+  },
+  {
+    "query": "zzqx",
+    "label": null,
+    "tags": ["empty"]
+  }
+]
