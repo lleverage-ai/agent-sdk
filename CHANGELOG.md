@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.4] - 2026-10-02
+
+Fourth release candidate for 1.0.0. `search_tools` now ranks the tools a
+query names first.
+
 ### Changed
 
 - `MCPManager.searchTools()`, and so `search_tools`, now ranks the tools a
@@ -798,7 +803,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.4...HEAD
+[1.0.0-rc.4]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...agent-sdk@1.0.0-rc.4
 [1.0.0-rc.3]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.2...agent-sdk@1.0.0-rc.3
 [1.0.0-rc.2]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.1...agent-sdk@1.0.0-rc.2
 [1.0.0-rc.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.9...agent-sdk@1.0.0-rc.1
