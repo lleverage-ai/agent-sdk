@@ -1,0 +1,39 @@
+import { describe, expect, it } from "vitest";
+
+import { MemoryContextLogStore } from "../../src/index.js";
+import {
+  createContextLogStoreConformanceCases,
+  defineContextLogStoreConformanceSuite,
+} from "../../src/testing/index.js";
+
+defineContextLogStoreConformanceSuite(
+  "MemoryContextLogStore",
+  { createStore: () => new MemoryContextLogStore() },
+  { describe, it },
+);
+
+describe("context log store conformance suite", () => {
+  it("runs every case against one shared store with distinct threads", async () => {
+    const shared = new MemoryContextLogStore();
+    let threads = 0;
+    const cases = createContextLogStoreConformanceCases({
+      createStore: () => shared,
+      createThreadId: () => `shared-${++threads}`,
+    });
+    for (const testCase of cases) await testCase.run();
+    expect(threads).toBe(cases.length);
+  });
+
+  it("fails against a store that ignores the expected revision", async () => {
+    const store = new MemoryContextLogStore();
+    const broken = Object.create(store) as MemoryContextLogStore;
+    broken.prepare = async (request) => {
+      const head = await store.readHead(request.stream);
+      return store.prepare({ ...request, expectedRevision: head?.revision ?? 0 });
+    };
+    const testCase = createContextLogStoreConformanceCases({ createStore: () => broken }).find(
+      (candidate) => candidate.name.startsWith("a stale expected revision"),
+    );
+    await expect(testCase!.run()).rejects.toThrow(/ContextLogError of kind "conflict"/);
+  });
+});

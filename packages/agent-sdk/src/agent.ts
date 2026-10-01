@@ -225,6 +225,15 @@ export function createAgent(options: AgentOptions): Agent {
     );
   }
 
+  // The context log contracts ship ahead of the log-mode runtime.
+  // Opting in must fail loudly rather than silently keep legacy history.
+  if (options.contextLog && (options.contextLog.mode ?? "off") !== "off") {
+    throw new ConfigurationError(
+      `Context log mode "${options.contextLog.mode}" is not available in this release; use mode "off" or omit contextLog`,
+      { configKey: "contextLog.mode", actualValue: options.contextLog.mode },
+    );
+  }
+
   // Determine prompt mode
   // - 'static': Use systemPrompt string directly
   // - 'builder': Use PromptBuilder to generate dynamic prompts

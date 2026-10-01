@@ -162,6 +162,9 @@ export {
   MemorySaver,
   updateCheckpoint,
 } from "./checkpointer/index.js";
+// Context log mode (experimental). The store conformance suite is exported
+// from `@lleverage-ai/agent-sdk/testing`.
+export * from "./context-log/index.js";
 // Context Manager types
 export type {
   CompactionPressureState,
