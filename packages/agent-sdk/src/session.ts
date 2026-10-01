@@ -56,9 +56,9 @@ export interface AgentSessionOptions {
    * If provided, the session will use checkpointing for state recovery.
    *
    * When the agent also has a checkpointer, the checkpoint is the model's
-   * conversation history: once the thread has a checkpoint, each turn sends
-   * only the new prompt, and {@link AgentSession.getMessages} is a display
-   * copy that is not resubmitted.
+   * conversation history: whenever a generation loads a checkpoint for the
+   * thread, the session's own messages are not added to it, and
+   * {@link AgentSession.getMessages} is a display copy.
    */
   threadId?: string;
 
@@ -85,9 +85,9 @@ export interface AgentSessionOptions {
 
   /**
    * Initial messages to populate the conversation.
-   * If threadId is provided and checkpointing is enabled, these are sent with
-   * the first prompt only when the thread has no checkpoint yet; an existing
-   * checkpoint's history takes their place.
+   * If threadId is provided and checkpointing is enabled, these reach the
+   * model only while the generation loads no checkpoint for the thread; an
+   * existing checkpoint's history takes their place.
    */
   initialMessages?: ModelMessage[];
 
@@ -373,11 +373,13 @@ export class AgentSession {
    */
   private async *generate(prompt: string): AsyncGenerator<SessionOutput, void, unknown> {
     try {
-      const history = await this.historyToSubmit();
       const generateOptions: GenerateOptions = {
         prompt,
-        messages: history.length > 0 ? history : undefined,
+        messages: this.messages.length > 0 ? this.messages : undefined,
         threadId: this.threadId,
+        // The agent prepends the thread's checkpoint to `messages`, so the
+        // local history is used only when the generation loads no checkpoint.
+        _messagesUnlessCheckpointed: true,
       };
 
       const result = await this.agent.generate(generateOptions);
@@ -412,27 +414,6 @@ export class AgentSession {
         error: error instanceof Error ? error : new Error(String(error)),
       };
     }
-  }
-
-  /**
-   * Messages to send with the next prompt.
-   *
-   * The agent prepends a thread's checkpoint messages to the messages it is
-   * given, so once the checkpointer holds the thread, resending the local
-   * history would duplicate every earlier turn in the model request. Before
-   * that (or without a checkpointer or threadId) the local history, including
-   * any initial messages, is the only copy and must be sent.
-   *
-   * The store is checked on every turn rather than once, because a host can
-   * delete the thread and call `invalidateCheckpoint()`, after which the
-   * agent starts from no checkpoint again.
-   */
-  private async historyToSubmit(): Promise<ModelMessage[]> {
-    const checkpointer = this.agent.options.checkpointer;
-    if (!this.threadId || !checkpointer) {
-      return this.messages;
-    }
-    return (await checkpointer.exists(this.threadId)) ? [] : this.messages;
   }
 
   /**

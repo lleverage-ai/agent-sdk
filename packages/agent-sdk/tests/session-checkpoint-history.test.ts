@@ -4,9 +4,13 @@
  * agent's checkpointer.
  */
 
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { LanguageModel, ModelMessage } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
+import { FileSaver } from "../src/checkpointer/file-saver.js";
 import { MemorySaver } from "../src/checkpointer/memory-saver.js";
 import { createAgent } from "../src/index.js";
 import { AgentSession } from "../src/session.js";
@@ -135,6 +139,74 @@ describe("AgentSession history with a real agent", () => {
     await runTurns(session, ["U2"]);
 
     expect(requests()[1]).toEqual(["user:U1", "assistant:A1", "user:U2"]);
+    await agent.dispose();
+  });
+
+  it("uses the checkpoint the agent has cached after the store deletes it", async () => {
+    const { model, requests } = createRecordingModel();
+    const checkpointer = new MemorySaver();
+    const agent = createAgent({ model, checkpointer });
+    const session = new AgentSession({ agent, threadId: "thread-1" });
+
+    await runTurns(session, ["U1"]);
+    // Without invalidateCheckpoint() the agent keeps using its cached copy.
+    await checkpointer.delete("thread-1");
+    await runTurns(session, ["U2"]);
+
+    expect(requests()[1]).toEqual(["user:U1", "assistant:A1", "user:U2"]);
+    await agent.dispose();
+  });
+
+  it("sends its own history when the stored checkpoint is not a valid checkpoint", async () => {
+    const { model, requests } = createRecordingModel();
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "session-history-"));
+    try {
+      const checkpointer = new FileSaver({ dir });
+      await fs.writeFile(checkpointer.getFilePath("thread-1"), JSON.stringify({ foo: "bar" }));
+      expect(await checkpointer.exists("thread-1")).toBe(true);
+      expect(await checkpointer.load("thread-1")).toBeUndefined();
+
+      const agent = createAgent({ model, checkpointer });
+      const session = new AgentSession({
+        agent,
+        threadId: "thread-1",
+        initialMessages: [
+          { role: "user", content: "U0" },
+          { role: "assistant", content: "A0" },
+        ],
+      });
+      await runTurns(session, ["U1"]);
+
+      expect(requests()[0]).toEqual(["user:U0", "assistant:A0", "user:U1"]);
+      await agent.dispose();
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not depend on the checkpointer's exists()", async () => {
+    const { model, requests } = createRecordingModel();
+    const checkpointer = new MemorySaver();
+    checkpointer.exists = async () => {
+      throw new Error("exists() unavailable");
+    };
+    const agent = createAgent({ model, checkpointer });
+    const session = new AgentSession({ agent, threadId: "thread-1" });
+
+    await runTurns(session, ["U1", "U2"]);
+
+    expect(requests()).toEqual([["user:U1"], ["user:U1", "assistant:A1", "user:U2"]]);
+    await agent.dispose();
+  });
+
+  it("sends its own history when the session has no threadId", async () => {
+    const { model, requests } = createRecordingModel();
+    const agent = createAgent({ model, checkpointer: new MemorySaver() });
+    const session = new AgentSession({ agent });
+
+    await runTurns(session, ["U1", "U2"]);
+
+    expect(requests()).toEqual([["user:U1"], ["user:U1", "assistant:A1", "user:U2"]]);
     await agent.dispose();
   });
 

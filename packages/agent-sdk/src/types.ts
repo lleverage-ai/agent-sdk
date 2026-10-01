@@ -2315,6 +2315,15 @@ export interface GenerateOptions {
    * @internal
    */
   _runId?: string;
+
+  /**
+   * Internal flag: `messages` is the caller's own copy of the thread history,
+   * so drop it when the generation loads a checkpoint for `threadId` (which
+   * already holds that history) and use it only when there is none. Used by
+   * `AgentSession`.
+   * @internal
+   */
+  _messagesUnlessCheckpointed?: boolean;
 }
 
 /**
