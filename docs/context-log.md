@@ -120,6 +120,23 @@ Nothing is sent without a committed manifest, and nothing generates from
 output that has not been committed. An output lost to a crash before commit
 leaves the call with an `unknown` outcome.
 
+## Rules for the log-mode runtime
+
+These constrain the runtime that later releases add on top of the contracts:
+
+- **Redaction and guardrails apply before commit.** In log mode, the model
+  only sees projections of committed entries, so content can reach it without
+  passing through `options.messages`. Any check that legacy mode applies to
+  `options.messages` (for example the secrets filter and guardrail
+  `PreGenerate` hooks) must run on user input, producer output and tool
+  results before they are committed.
+- **One snapshot per call.** A call reads its stream's head once. Producers,
+  admission, projection and the manifest all use that head's path. Decisions
+  about history never combine separate reads.
+- **Log mode and legacy history stay separate.** A log-mode agent never reads
+  or writes `Checkpoint.messages` history, and the legacy checkpoint fallback
+  paths do not apply to it.
+
 ## How log mode maps to legacy concepts
 
 | Legacy mode | Log mode |
