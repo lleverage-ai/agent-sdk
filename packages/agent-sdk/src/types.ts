@@ -24,7 +24,7 @@ import type {
 
 import type { BackendProtocol } from "./backend.js";
 import type { AgentState } from "./backends/state.js";
-import type { BaseCheckpointSaver, Interrupt } from "./checkpointer/types.js";
+import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
 
 // =============================================================================
 // Re-export AI SDK Types
@@ -2325,6 +2325,15 @@ export interface GenerateOptions {
    * @internal
    */
   _historyUnlessCheckpointed?: ModelMessage[];
+
+  /**
+   * Internal: the checkpoint for `threadId` that decided
+   * `_historyUnlessCheckpointed` (`checkpoint: undefined` for a miss). Message
+   * assembly uses it instead of loading again, so both decisions see the same
+   * snapshot even if a hook or another writer changes the store in between.
+   * @internal
+   */
+  _checkpointSnapshot?: { threadId: string; checkpoint: Checkpoint | undefined };
 }
 
 /**

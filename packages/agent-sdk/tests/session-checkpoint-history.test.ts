@@ -16,6 +16,7 @@ import type { HookCallback, PreGenerateInput } from "../src/index.js";
 import {
   COMMON_SECRET_PATTERNS,
   createAgent,
+  createCheckpoint,
   createGuardrailsHooks,
   createSecretsFilterHooks,
 } from "../src/index.js";
@@ -457,9 +458,85 @@ describe("AgentSession history with a real agent", () => {
     });
     await runTurns(session, ["U1"]);
 
-    expect(viaSession.loads()).toBe(plain.loads());
+    expect(viaSession.loads()).toBeLessThanOrEqual(plain.loads());
     await plainAgent.dispose();
     await agent.dispose();
+  });
+
+  describe("when the store changes between the history decision and message assembly", () => {
+    it("ignores a checkpoint a PreGenerate hook creates for a new thread", async () => {
+      const { model, requests } = createRecordingModel();
+      const checkpointer = new MemorySaver();
+      let created = false;
+      const createOnce: HookCallback = async () => {
+        if (!created) {
+          created = true;
+          await checkpointer.save(
+            createCheckpoint({
+              threadId: "thread-1",
+              messages: [{ role: "user", content: "OTHER" }],
+              state: { todos: [], files: {} },
+            }),
+          );
+        }
+        return {};
+      };
+      const agent = createAgent({ model, checkpointer, hooks: { PreGenerate: [createOnce] } });
+      const session = new AgentSession({
+        agent,
+        threadId: "thread-1",
+        initialMessages: [
+          { role: "user", content: "U0" },
+          { role: "assistant", content: "A0" },
+        ],
+      });
+
+      await runTurns(session, ["U1"]);
+
+      expect(requests()[0]).toEqual(["user:U0", "assistant:A0", "user:U1"]);
+      await agent.dispose();
+    });
+
+    it("keeps the checkpoint it decided on when a PreGenerate hook deletes and invalidates it", async () => {
+      const { model, requests } = createRecordingModel();
+      const checkpointer = new MemorySaver();
+      let turn = 0;
+      const agentRef: { current?: ReturnType<typeof createAgent> } = {};
+      const deleteOnSecondTurn: HookCallback = async () => {
+        if (++turn === 2) {
+          await checkpointer.delete("thread-1");
+          agentRef.current?.invalidateCheckpoint("thread-1");
+        }
+        return {};
+      };
+      const agent = createAgent({
+        model,
+        checkpointer,
+        hooks: { PreGenerate: [deleteOnSecondTurn] },
+      });
+      agentRef.current = agent;
+      const session = new AgentSession({ agent, threadId: "thread-1" });
+
+      await runTurns(session, ["U1", "U2"]);
+
+      expect(requests()[1]).toEqual(["user:U1", "assistant:A1", "user:U2"]);
+      await agent.dispose();
+    });
+
+    it("never reuses a snapshot passed in from an earlier run", async () => {
+      const { model, requests } = createRecordingModel();
+      const agent = createAgent({ model, checkpointer: new MemorySaver() });
+      await agent.generate({ prompt: "U1", threadId: "thread-1" });
+
+      await agent.generate({
+        prompt: "U2",
+        threadId: "thread-1",
+        _checkpointSnapshot: { threadId: "thread-1", checkpoint: undefined },
+      });
+
+      expect(requests()[1]).toEqual(["user:U1", "assistant:A1", "user:U2"]);
+      await agent.dispose();
+    });
   });
 
   it("still sends its own history when the agent has no checkpointer", async () => {

@@ -370,7 +370,11 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
     let checkpoint: Checkpoint | undefined;
 
     if (genOptions.threadId) {
-      checkpoint = await checkpoints.load(genOptions.threadId);
+      const snapshot = genOptions._checkpointSnapshot;
+      checkpoint =
+        snapshot?.threadId === genOptions.threadId
+          ? snapshot.checkpoint
+          : await checkpoints.load(genOptions.threadId);
       if (checkpoint) {
         // Prepend checkpoint messages
         messages.push(...checkpoint.messages);
