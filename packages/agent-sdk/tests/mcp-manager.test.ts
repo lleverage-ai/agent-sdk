@@ -117,6 +117,30 @@ describe("MCPManager", () => {
       expect(top?.name).toBe("mail__find_email");
     });
 
+    it("folds statuses to status", () => {
+      const localManager = new MCPManager();
+      localManager.registerPluginTools("orders", {
+        get_status: tool({
+          description: "Get the state of an order.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+        get_order: tool({
+          description: "Get an order with its statuses and history.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+        update_status: tool({
+          description: "Set the statuses of an order.",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      const [top] = localManager.searchTools("get statuses", 3);
+      expect(top?.name).toBe("orders__get_status");
+    });
+
     it("still finds a tool by prefix when plural folding misses", () => {
       // "cookies" folds to "cooky", which no term matches; the fuzzy fallback
       // still compares unfolded terms, so "cookies" prefix-matches "cookie".

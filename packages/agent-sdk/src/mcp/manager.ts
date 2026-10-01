@@ -120,6 +120,8 @@ function foldPlural(term: string): string {
   if (term.length <= 3) return term;
   if (term.length > 4 && term.endsWith("ies")) return `${term.slice(0, -3)}y`;
   if (/(ss|us|is)$/.test(term)) return term;
+  // "statuses" to "status"; a general "-uses" rule would break "causes".
+  if (term.endsWith("tuses")) return term.slice(0, -2);
   if (/(ch|sh|x|ss)es$/.test(term)) return term.slice(0, -2);
   if (term.endsWith("s")) return term.slice(0, -1);
   return term;
