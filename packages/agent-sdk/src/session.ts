@@ -171,10 +171,6 @@ export class AgentSession {
   // Track pending interrupt for resumption
   private pendingInterrupt: Interrupt | null = null;
 
-  // Whether the agent's checkpointer already holds this thread's history, so
-  // the local messages must not be sent again.
-  private checkpointHoldsHistory = false;
-
   constructor(options: AgentSessionOptions) {
     this.agent = options.agent;
     this.threadId = options.threadId;
@@ -426,16 +422,17 @@ export class AgentSession {
    * history would duplicate every earlier turn in the model request. Before
    * that (or without a checkpointer or threadId) the local history, including
    * any initial messages, is the only copy and must be sent.
+   *
+   * The store is checked on every turn rather than once, because a host can
+   * delete the thread and call `invalidateCheckpoint()`, after which the
+   * agent starts from no checkpoint again.
    */
   private async historyToSubmit(): Promise<ModelMessage[]> {
     const checkpointer = this.agent.options.checkpointer;
     if (!this.threadId || !checkpointer) {
       return this.messages;
     }
-    if (!this.checkpointHoldsHistory) {
-      this.checkpointHoldsHistory = await checkpointer.exists(this.threadId);
-    }
-    return this.checkpointHoldsHistory ? [] : this.messages;
+    return (await checkpointer.exists(this.threadId)) ? [] : this.messages;
   }
 
   /**

@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AgentSession` no longer resends earlier turns when the agent has a
   checkpointer and the session has a `threadId`. The agent already prepends the
   thread's checkpoint messages, so from the second turn on the model received
-  every earlier turn twice (`U1, A1, U1, A1, U2`). Once the checkpointer holds
-  the thread, the session sends only the new prompt. `initialMessages` are sent
+  every earlier turn twice (`U1, A1, U1, A1, U2`). The session now checks the
+  checkpointer before each turn and, when it holds the thread, sends only the
+  new prompt. `initialMessages` are sent
   with the first prompt only when the thread has no checkpoint yet, and
   `getMessages()` remains a display copy of the session's turns. Sessions
   without a checkpointer or `threadId` still send their own history.

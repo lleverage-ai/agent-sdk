@@ -123,6 +123,21 @@ describe("AgentSession history with a real agent", () => {
     await agent.dispose();
   });
 
+  it("sends its own history again after the host deletes and invalidates the thread", async () => {
+    const { model, requests } = createRecordingModel();
+    const checkpointer = new MemorySaver();
+    const agent = createAgent({ model, checkpointer });
+    const session = new AgentSession({ agent, threadId: "thread-1" });
+
+    await runTurns(session, ["U1"]);
+    await checkpointer.delete("thread-1");
+    agent.invalidateCheckpoint("thread-1");
+    await runTurns(session, ["U2"]);
+
+    expect(requests()[1]).toEqual(["user:U1", "assistant:A1", "user:U2"]);
+    await agent.dispose();
+  });
+
   it("still sends its own history when the agent has no checkpointer", async () => {
     const { model, requests } = createRecordingModel();
     const agent = createAgent({ model });
