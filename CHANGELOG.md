@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.10] - 2026-10-02
+
+Tenth release candidate for 1.0.0. A log-mode resume now checks which
+projection adapter the interrupt's head version was created under, before
+the interrupted tool runs. Legacy agents are unchanged.
+
+### Migration notes
+
+- Legacy mode: no change.
+- Log mode: a resume under the same adapter id, including a new adapter
+  version, is unchanged and still declares an `adapter_change` on its
+  continuation. A resume under a different adapter id now fails with
+  `transition_required` before the tool runs, instead of running the tool
+  and then failing to plan the continuation. Resume it with the adapter it
+  was raised under.
+
 ### Fixed
 
 - **Log mode: a resume checks the projection adapter** (LLE-14019).
@@ -1446,7 +1462,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.9...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.10...HEAD
+[1.0.0-rc.10]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.9...agent-sdk@1.0.0-rc.10
 [1.0.0-rc.9]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.8...agent-sdk@1.0.0-rc.9
 [1.0.0-rc.8]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.7...agent-sdk@1.0.0-rc.8
 [1.0.0-rc.7]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.6...agent-sdk@1.0.0-rc.7
