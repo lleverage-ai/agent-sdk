@@ -170,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     holds the summary, then the retained tail re-appended unchanged in path
     order (reasoning and tool call/result pairs intact), then the call's new
     input. Runtime context is never summarised. Later calls append to the
-    child instead of summarising again.
+    child and reuse its summary until the context policy asks for another
+    compaction.
   - Compaction runs at the start of an attempt and between tool-loop steps,
     with the same context policy and `PreCompact` / `PostCompact` hooks. The
     summary passes the `PreGenerate` hooks before it is committed.

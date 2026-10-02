@@ -409,7 +409,8 @@ child path = the parent's leading runtime context (inherited)
 
 and the call's own `prepare` commits the transition and those entries
 before the compacted context is first sent. Later calls append to the
-child, so they reuse the summary instead of summarising again.
+child and reuse its summary until the context policy asks for another
+compaction.
 
 - **When.** At the start of each attempt, on its head snapshot after the
   producers and the `PreGenerate` screening of new input, and between the
