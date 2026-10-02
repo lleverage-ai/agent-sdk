@@ -1061,6 +1061,14 @@ describe("log-mode compaction planning", () => {
       ]);
     });
 
+    it("declares no transition when a manager drops history without a summary", async () => {
+      const compactor = createLogCompactor(async (messages) => ({
+        compacted: true,
+        messages: messages.slice(-3),
+      }));
+      expect(await plan(compactor, [path[2]!, path[3]!, ...group])).toBeUndefined();
+    });
+
     it("declares no transition when restoring a split group keeps every entry", async () => {
       // A custom manager that summarises only the resolution: restoring it
       // would leave every entry plus a summary, which is no compaction.

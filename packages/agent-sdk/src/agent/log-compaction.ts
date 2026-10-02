@@ -496,10 +496,11 @@ export function createLogCompactor(
 
     // Progress: if every conversation entry is still kept (nothing was
     // summarised, or the groups brought back all that was), a child would
-    // only add a summary to the same entries. The head's version stays
-    // current, and no transition is declared.
+    // only add a summary to the same entries. Without a summary, a child
+    // would drop history that nothing summarises. Either way the head's
+    // version stays current, and no transition is declared.
     const compactable = sources.filter((source) => source.kind === "path");
-    if (compactable.every((source) => retained.has(source.index))) {
+    if (summary.length === 0 || compactable.every((source) => retained.has(source.index))) {
       return undefined;
     }
 

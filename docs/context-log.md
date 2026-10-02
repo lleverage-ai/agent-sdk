@@ -437,7 +437,8 @@ compaction.
   retraction of such a target is dropped.
 - **Only progress is committed.** When the child would keep every
   conversation entry (for example a single tool block over budget on its
-  own), no transition is declared and the head's version stays current.
+  own), or a context manager drops history without returning a summary, no
+  transition is declared and the head's version stays current.
 - **The summary is new content.** It is an `assistant` entry (or a `user`
   entry, if a custom context manager returns one) and passes the
   `PreGenerate` hooks before it is committed, so the secrets filter redacts
