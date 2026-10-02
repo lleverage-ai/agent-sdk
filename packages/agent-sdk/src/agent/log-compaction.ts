@@ -32,7 +32,13 @@
  *   manager is shown them too, as system messages it counts but never
  *   summarises. The child drops them: compaction is the only place they
  *   leave the request. When the manager keeps every conversation entry, a
- *   child without a summary that only drops them is still progress.
+ *   child without a summary that only drops them is still progress, but
+ *   only when it brings the request back under budget (otherwise it would
+ *   be declared again on every turn).
+ * - The budget is counted on the request the model would be sent: the
+ *   call's adapter projection of the path and new input, with its update
+ *   labels, retraction notices and any host rendering (LLE-14056). The
+ *   view above is only what the manager keeps or summarises.
  * - Nothing is compacted while a call waits for its interrupt's resolution.
  * - The summary is new content: it passes the PreGenerate screening
  *   (redaction, guardrails) before it is committed.
@@ -90,6 +96,13 @@ export interface LogCompactionInput {
   options: GenerateOptions;
   /** Screens new entries (the summary) before they are committed. */
   screen: (entries: ContextEntryInput[]) => Promise<ContextEntryInput[]>;
+  /**
+   * Projects entries with the call's adapter, core, contract and target:
+   * the messages the model would be sent. The budget is counted on them
+   * (LLE-14056), so update labels, retraction notices and a host adapter's
+   * own rendering are budgeted exactly.
+   */
+  project: (entries: readonly ContextEntryInput[]) => Promise<ModelMessage[]>;
 }
 
 /**
@@ -366,6 +379,12 @@ function mapKept(
  */
 export function createLogCompactor(
   compactIfNeeded: MessageRuntime["compactMessagesIfNeeded"],
+  /**
+   * Whether `messages`, as the model would be sent them, would still ask
+   * for compaction. A prune-only child (no summary) is declared only when
+   * it would not, so it is not declared again on every turn.
+   */
+  wouldCompact: (messages: ModelMessage[]) => boolean,
 ): LogCompactor {
   return async (input) => {
     const { stream, head, core, path, pending, options } = input;
@@ -459,7 +478,16 @@ export function createLogCompactor(
       },
     };
     const compactOptions: CompactOptions = { contextLog };
-    const outcome = await compactIfNeeded(view, options, stream.threadId, compactOptions);
+    // The budget is the request the model would be sent (LLE-14056); the
+    // view is what the manager keeps or summarises.
+    const budgetMessages = await input.project([...path, ...pending]);
+    const outcome = await compactIfNeeded(
+      view,
+      options,
+      stream.threadId,
+      compactOptions,
+      budgetMessages,
+    );
     if (!outcome.compacted) {
       return undefined;
     }
@@ -562,6 +590,13 @@ export function createLogCompactor(
     const append = rebaseSupersession(prefix, [...screened, ...tail, ...pending]);
     const entries = [...prefix, ...append];
     assertToolGroupsKept([...path, ...pending], entries);
+    // A prune-only child is progress only when it brings the request back
+    // under budget. Otherwise the next turn's superseded entry would ask
+    // for it again, and a compaction (a cache break) would follow every
+    // turn while the conversation stays inside the keep window.
+    if (kept.length === 0 && wouldCompact(await input.project(entries))) {
+      return undefined;
+    }
 
     return {
       transition: {

@@ -818,9 +818,14 @@ export function createAgent(options: AgentOptions): Agent {
   const { createStreamingCompactionState } = messageRuntime;
   // Log mode records compaction as a transition in the log, through the
   // same context policy and compaction hooks.
+  const compactionManager = options.contextManager;
   const logCompactor: LogCompactor | undefined =
-    logContext && options.contextManager
-      ? createLogCompactor(messageRuntime.compactMessagesIfNeeded)
+    logContext && compactionManager
+      ? createLogCompactor(
+          messageRuntime.compactMessagesIfNeeded,
+          (messages) =>
+            compactionManager.shouldCompact(messages, { budgetMessages: messages }).trigger,
+        )
       : undefined;
 
   /**

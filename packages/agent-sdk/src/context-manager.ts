@@ -1357,6 +1357,20 @@ export interface UsageAnchor {
 }
 
 /**
+ * Options for {@link ContextManager.shouldCompact}.
+ *
+ * @experimental
+ * @category Context
+ */
+export interface ShouldCompactOptions {
+  /**
+   * The messages the model is actually sent, when they differ from the
+   * messages being compacted. The token budget is counted on them.
+   */
+  budgetMessages?: ModelMessage[];
+}
+
+/**
  * Manages conversation context with token tracking and auto-compaction.
  *
  * @category Context
@@ -1390,9 +1404,17 @@ export interface ContextManager {
   /**
    * Check if compaction is needed based on current token usage.
    * @param messages - Current message history
+   * @param options - `budgetMessages`: the messages the model is actually
+   *   sent, when they differ from `messages` (a log-mode agent passes its
+   *   projected request; `messages` is then the compaction view). The token
+   *   budget is counted on them; a custom `policy.shouldCompact` still
+   *   receives `messages`. Managers that ignore it budget `messages`.
    * @returns Object with trigger status and optional reason
    */
-  shouldCompact(messages: ModelMessage[]): {
+  shouldCompact(
+    messages: ModelMessage[],
+    options?: ShouldCompactOptions,
+  ): {
     trigger: boolean;
     reason?: CompactionTrigger;
   };
@@ -1671,6 +1693,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
   const shouldCompact = (
     messages: ModelMessage[],
+    options?: ShouldCompactOptions,
   ): { trigger: boolean; reason?: CompactionTrigger } => {
     if (!policy.enabled) {
       return { trigger: false };
@@ -1680,7 +1703,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       return { trigger: false };
     }
 
-    const budget = getBudget(messages);
+    const budget = getBudget(options?.budgetMessages ?? messages);
 
     // Custom policy override
     if (policy.shouldCompact) {

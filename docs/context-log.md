@@ -121,8 +121,12 @@ as its parent.
 Compaction is the only place superseded entries are dropped: the child
 inherits only active entries. Because the request still carries them, the
 context manager is shown superseded entries and retractions too (as system
-messages it counts but never summarises), and when it keeps every
-conversation message a compaction that only drops them is still declared. `activeContextEntries(path)` returns those
+messages it never summarises). The token budget is counted on the request
+the adapter actually projects, with its update labels, retraction notices
+and any host rendering (`ShouldCompactOptions.budgetMessages`). When the
+manager keeps every conversation message, a compaction that only drops
+superseded entries is declared only if the pruned request is back under
+budget, so it never repeats on every turn. `activeContextEntries(path)` returns those
 (the current value of each slot and every non-runtime entry) for hosts and
 compaction planning; a projection adapter should not use it to drop
 entries.

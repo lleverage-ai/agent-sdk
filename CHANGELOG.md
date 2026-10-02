@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `ContextManager.shouldCompact(messages, options?)` accepts
+  `ShouldCompactOptions.budgetMessages` (experimental): the messages the
+  model is actually sent, when they differ from the messages being
+  compacted. The built-in manager counts its token budget on them; a
+  custom `policy.shouldCompact` still receives `messages`. Managers that
+  ignore the option keep budgeting `messages`. (LLE-14056)
+
+### Changed
+
+- **Log mode: compaction budgets the projected request** (LLE-14056). The
+  context policy's token budget is now counted on the call's projection
+  with the configured adapter (update labels, retraction notices and any
+  host rendering included), not on the compaction view, which only decides
+  what is kept or summarised. `PreCompact`'s `tokens_before` is counted on
+  the same request. A prune-only compaction (a child that only drops
+  superseded entries and retractions, with no summary) is declared only
+  when the pruned request is back under budget, so it is not declared again
+  on every turn while the conversation stays inside the keep window.
+
 ## [1.0.0-rc.10] - 2026-10-02
 
 Tenth release candidate for 1.0.0. A log-mode resume now checks which

@@ -181,6 +181,7 @@ export type {
   CompactionTask,
   CompactionTaskStatus,
   CompactOptions,
+  ShouldCompactOptions,
   ContextManager,
   ContextManagerOptions,
   UsageAnchor,

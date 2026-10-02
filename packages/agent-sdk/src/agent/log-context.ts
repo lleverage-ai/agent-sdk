@@ -1077,6 +1077,7 @@ export function createLogContextRuntime(
           runId: run.id,
           screenOptions: screened.options,
           screen,
+          target,
         })
       : undefined;
     if (compaction) {
@@ -1142,6 +1143,7 @@ export function createLogContextRuntime(
     runId: string;
     screenOptions: GenerateOptions;
     screen: LogInputScreen;
+    target: ContextModelRef;
   }): Promise<LogCompaction | undefined> {
     const compactor = deps.compactor?.();
     if (!compactor) return Promise.resolve(undefined);
@@ -1157,6 +1159,7 @@ export function createLogContextRuntime(
       options: input.options,
       // Only the screened entries are used, as for outputs.
       screen: async (items) => (await input.screen(input.screenOptions, items)).pending,
+      project: (entries) => project(input.core, input.contract, entries, input.target),
     });
   }
 
@@ -1211,6 +1214,7 @@ export function createLogContextRuntime(
           runId: plan.run.id,
           screenOptions: plan.options,
           screen,
+          target: plan.target,
         }),
     });
   }
