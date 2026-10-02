@@ -24,7 +24,10 @@ type ModelMessage = NonNullable<GenerateOptions["messages"]>[number];
 /**
  * Generation options a hook may change in log mode. They control how a call
  * runs, not what it says: limits, sampling, cancellation, transport and
- * telemetry. Every other option is fixed for the call.
+ * telemetry. Every other option is fixed for the call. `providerOptions` is
+ * deliberately not here: some providers accept model input through it (for
+ * example replacement instructions or server-side history), which would
+ * bypass the log.
  *
  * @internal
  */
@@ -36,7 +39,6 @@ export const LOG_MODE_OPERATIONAL_OPTIONS: ReadonlySet<keyof GenerateOptions> = 
   "stopSequences",
   "signal",
   "shouldStopAfterStep",
-  "providerOptions",
   "headers",
   "telemetry",
   "experimental_telemetry",
@@ -358,7 +360,9 @@ export function assertLogModeRetryOptions(
   next: GenerateOptions,
 ): GenerateOptions {
   assertOperationalChangesOnly(
-    snapshotOptions(withoutInput(previous)),
+    // Snapshot with the input, so a hook that spreads the previous options
+    // unchanged passes; any change to the input is still rejected.
+    snapshotOptions(previous),
     next,
     "PostGenerateFailure",
   );

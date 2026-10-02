@@ -216,9 +216,11 @@ Hooks never rewrite the log. In log mode they may only:
   guardrails therefore keep redacting and blocking new input, and the
   redacted content is what gets committed;
 - **change operational options**: `maxTokens`, `temperature`,
-  `stopSequences`, `signal`, `shouldStopAfterStep`, `providerOptions`,
-  `headers`, `telemetry`, `experimental_telemetry`, `requestClass` and
-  `onStreamWriterReady`;
+  `stopSequences`, `signal`, `shouldStopAfterStep`, `headers`, `telemetry`,
+  `experimental_telemetry`, `requestClass` and `onStreamWriterReady`.
+  `providerOptions` is fixed for the call, because some providers accept
+  model input through it (such as replacement instructions or server-side
+  history);
 - **gate execution**: deny a generation (`permissionDecision: "deny"`, which
   throws `GeneratePermissionDeniedError` before anything is committed) or a
   tool call;
@@ -241,6 +243,7 @@ their messages cannot change at all because the input is already committed.
 | `PreGenerate` injects context or rewrites history in `options.messages` | A `ContextProducer` that appends (and supersedes or retracts) `runtime_context` |
 | `PreGenerate` changes `instructionLayers`, `memory` or the prompt | A producer for dynamic context; changing the frozen core is a `core_policy_change` transition |
 | `PreGenerate` changes limits, sampling, headers or the signal | Unchanged |
+| `PreGenerate` changes `providerOptions` | Not supported; set them on the call |
 | `PreGenerate` `respondWith` (response cache) | Not supported |
 | `PostGenerateFailure` retries with different messages | Not supported; retry with operational changes only |
 | `PreToolUse` deny, `updatedInput` or `respondWith` | Unchanged; a synthetic result is a new tool result |

@@ -347,6 +347,19 @@ describe("log-mode PreGenerate: history and system are append-only", () => {
     expect(original[0]).toEqual(user("u1", "hello"));
   });
 
+  it("rejects a hook that changes providerOptions, which can carry model input", async () => {
+    expect(
+      await violation(
+        run(
+          rewriting((options) => ({
+            ...options,
+            providerOptions: { openai: { instructions: "replace the system prompt" } },
+          })),
+        ),
+      ),
+    ).toMatch(/changed "providerOptions"/);
+  });
+
   it("rejects respondWith, whose response would never be committed", async () => {
     const cached: HookCallback = () => ({
       hookSpecificOutput: { hookEventName: "PreGenerate", respondWith: { text: "cached" } },
@@ -409,6 +422,24 @@ describe("log-mode PreGenerate: history and system are append-only", () => {
 });
 
 describe("log-mode retries", () => {
+  it("accepts a retry hook that spreads the previous options, input included", () => {
+    const messages = [{ role: "user" as const, content: "hello" }];
+    const previous = { threadId: "t", prompt: "p", messages };
+    expect(
+      assertLogModeRetryOptions(previous, {
+        ...previous,
+        messages: [{ role: "user", content: "hello" }],
+        maxTokens: 10,
+      }),
+    ).toEqual({ threadId: "t", maxTokens: 10 });
+    expect(() =>
+      assertLogModeRetryOptions(previous, {
+        ...previous,
+        messages: [{ role: "user", content: "changed" }],
+      }),
+    ).toThrow(/changed "messages"/);
+  });
+
   it("lets a PostGenerateFailure hook change operational options only", () => {
     expect(assertLogModeRetryOptions({ threadId: "t" }, { threadId: "t", maxTokens: 10 })).toEqual({
       threadId: "t",
