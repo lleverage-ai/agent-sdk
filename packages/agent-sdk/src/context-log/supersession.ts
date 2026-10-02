@@ -4,7 +4,7 @@
  * @packageDocumentation
  */
 
-import type { ContextEntry } from "./types.js";
+import type { ContextEntryInput } from "./types.js";
 
 /**
  * Returns the entries of a path that a projection should emit, in order.
@@ -13,6 +13,9 @@ import type { ContextEntry } from "./types.js";
  * `supersedes`, whether or not the later entry is a retraction. Retractions
  * themselves are never emitted. Every other entry, including user, assistant
  * and tool result entries, is kept unchanged.
+ *
+ * Accepts committed entries or bare entry inputs (for example a projection
+ * adapter's input, which ends with entries that are not committed yet).
  *
  * @param path - The complete path, in position order (every page, not one)
  * @returns The entries to project, in position order
@@ -32,7 +35,7 @@ import type { ContextEntry } from "./types.js";
  * @experimental
  * @category Context Log
  */
-export function activeContextEntries(path: readonly ContextEntry[]): ContextEntry[] {
+export function activeContextEntries<T extends ContextEntryInput>(path: readonly T[]): T[] {
   const superseded = new Set<string>();
   for (const entry of path) {
     if (entry.kind === "runtime_context" && entry.supersedes !== undefined) {

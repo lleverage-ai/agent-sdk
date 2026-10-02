@@ -31,8 +31,8 @@
  * inputs to this module rather than hidden inside it; see
  * `docs/architecture/generation-modes.md` for the table.
  *
- * Module-scope helpers ({@link projectMessagesForModel},
- * {@link createToolExecutionContext}, {@link mapSteps}, …) are pure and
+ * Module-scope helpers ({@link createToolExecutionContext}, {@link mapSteps},
+ * …) and the capability projection in `./model-capabilities.ts` are pure and
  * applied per attempt with that attempt's model.
  *
  * @packageDocumentation
@@ -49,7 +49,7 @@ import type {
 } from "ai";
 import { streamText } from "ai";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
-import type { AgentError } from "../errors/index.js";
+import { type AgentError, ConfigurationError } from "../errors/index.js";
 import {
   createRetryLoopState,
   invokePreGenerateHooks,
@@ -83,7 +83,9 @@ import type {
   ToolResultPart,
 } from "../types.js";
 import type { CheckpointRuntime } from "./checkpoint-runtime.js";
+import type { LogCallPlan, LogContextRuntime } from "./log-context.js";
 import type { MessageRuntime, StreamingCompactionState } from "./messages.js";
+import { projectMessagesForModel, resolveModelInputCapabilities } from "./model-capabilities.js";
 import {
   buildStopConditions,
   type GenerateSignalState,
@@ -91,57 +93,11 @@ import {
   wrapToolsWithExecutionContext,
 } from "./tool-pipeline.js";
 
+export { projectMessagesForModel };
+
 // =============================================================================
-// Model-capability projection
+// Tool execution context
 // =============================================================================
-
-type ToolContentOutputPart =
-  | { type: "text"; text: string; [key: string]: unknown }
-  | { type: "media"; data: string; mediaType: string; [key: string]: unknown }
-  | { type: "image-data"; data: string; mediaType: string; [key: string]: unknown }
-  | { type: "image-url"; url: string; [key: string]: unknown }
-  | { type: "image-file-id"; fileId: string | Record<string, string>; [key: string]: unknown }
-  | {
-      type: "file-data";
-      data: string;
-      mediaType: string;
-      filename?: string;
-      [key: string]: unknown;
-    }
-  | { type: "file-url"; url: string; [key: string]: unknown }
-  | { type: "file-id"; fileId: string | Record<string, string>; [key: string]: unknown }
-  | { type: "custom"; [key: string]: unknown }
-  | { type: string; [key: string]: unknown };
-
-type ToolContentOutput = {
-  type: "content";
-  value: ToolContentOutputPart[];
-  [key: string]: unknown;
-};
-
-/** @internal */
-function isToolContentOutput(output: unknown): output is ToolContentOutput {
-  return (
-    typeof output === "object" &&
-    output !== null &&
-    (output as { type?: unknown }).type === "content" &&
-    Array.isArray((output as { value?: unknown }).value)
-  );
-}
-
-/** @internal */
-function resolveModelInputCapabilities(
-  options: AgentOptions,
-  model: AgentOptions["model"],
-): ModelInputCapabilities | undefined {
-  const resolver = options.modelCapabilities;
-
-  if (!resolver) {
-    return undefined;
-  }
-
-  return typeof resolver === "function" ? resolver(model) : resolver;
-}
 
 /**
  * Per-call execution context injected into tools via
@@ -197,111 +153,6 @@ export async function createToolModelOutput({
   return typeof output === "string"
     ? { type: "text" as const, value: output }
     : { type: "json" as const, value: output ?? null };
-}
-
-/** @internal */
-function downgradeToolContentOutput(
-  output: unknown,
-  capabilities: ModelInputCapabilities | undefined,
-): unknown {
-  if (
-    typeof output === "object" &&
-    output !== null &&
-    (output as { type?: unknown }).type === "json" &&
-    "value" in output
-  ) {
-    return {
-      ...output,
-      value: downgradeToolContentOutput((output as { value: unknown }).value, capabilities),
-    };
-  }
-
-  if (!isToolContentOutput(output)) {
-    return output;
-  }
-
-  const value: ToolContentOutputPart[] = [];
-
-  for (const part of output.value) {
-    switch (part.type) {
-      case "text":
-        value.push(part);
-        break;
-      case "image-data":
-      case "image-url":
-      case "image-file-id":
-      case "media":
-        value.push(
-          capabilities?.imageInput === false
-            ? {
-                type: "text",
-                text: "[Image omitted: active model does not support image input.]",
-              }
-            : part,
-        );
-        break;
-      case "file-data":
-      case "file-url":
-      case "file-id":
-        value.push(
-          capabilities?.fileInput === false
-            ? {
-                type: "text",
-                text: "[File omitted: active model does not support file input.]",
-              }
-            : part,
-        );
-        break;
-      case "custom":
-        value.push(part);
-        break;
-      default:
-        value.push(part);
-        break;
-    }
-  }
-
-  return { ...output, value };
-}
-
-/**
- * Replace tool-result media the active model cannot accept with text
- * placeholders. Returns the input array untouched when nothing needs
- * downgrading.
- *
- * @internal
- */
-export function projectMessagesForModel(
-  messages: ModelMessage[],
-  capabilities: ModelInputCapabilities | undefined,
-): ModelMessage[] {
-  if (capabilities?.imageInput !== false && capabilities?.fileInput !== false) {
-    return messages;
-  }
-
-  return messages.map((message) => {
-    if (message.role !== "tool" || !Array.isArray(message.content)) {
-      return message;
-    }
-
-    return {
-      ...message,
-      content: message.content.map((part) => {
-        if (part.type !== "tool-result") {
-          return part;
-        }
-
-        const output = "output" in part ? part.output : undefined;
-        const result = "result" in part ? (part as { result?: unknown }).result : undefined;
-
-        return {
-          ...part,
-          ...("output" in part ? { output: downgradeToolContentOutput(output, capabilities) } : {}),
-          ...("result" in part ? { result: downgradeToolContentOutput(result, capabilities) } : {}),
-        };
-      }),
-    };
-  }) as ModelMessage[];
 }
 
 // =============================================================================
@@ -383,6 +234,11 @@ export interface GenerationRunnerDeps {
   repairToolCallOptions: RepairToolCallOptions;
   /** Next background-task follow-up prompt, or `null` when the queue is drained. */
   getNextTaskPrompt: () => Promise<string | null>;
+  /**
+   * Set when the agent runs in context log mode: requests are projected from
+   * the log instead of assembled from checkpoint messages and caller history.
+   */
+  logContext?: LogContextRuntime;
 }
 
 /**
@@ -418,6 +274,11 @@ export interface AttemptContext {
   currentModel: LanguageModel;
   messages: ModelMessage[];
   checkpoint: Checkpoint | undefined;
+  /**
+   * Log mode only: the projected request. `messages` is its projection, which
+   * already includes the frozen core and the capability projection.
+   */
+  logPlan?: LogCallPlan;
   /** Thread used for checkpoint persistence and telemetry (the request `threadId`). */
   checkpointThreadId: string | undefined;
   startStep: number;
@@ -606,6 +467,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     getSystemPrompt,
     repairToolCallOptions,
     getNextTaskPrompt,
+    logContext,
   } = deps;
   const { buildMessages, createStreamingCompactionState } = messageRuntime;
   const { save: saveCheckpoint } = checkpoints;
@@ -634,7 +496,36 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     return { options: { ...rest, messages: [...history, ...(rest.messages ?? [])] }, loaded };
   }
 
+  /**
+   * Log-mode {@link beginRun}. Caller history is rejected and the checkpoint
+   * fallback does not apply: the new user input reaches PreGenerate hooks as
+   * `messages`, so redaction and guardrails see it before it is committed.
+   */
+  async function beginLogModeRun(
+    requestedOptions: GenerateOptions,
+    log: LogContextRuntime,
+  ): Promise<RunStart> {
+    const genOptions = log.prepareRunInput(requestedOptions);
+    const runId = await checkpoints.resolveRunId(genOptions);
+    const preGenResult = await invokePreGenerateHooks<GenerateResult>(
+      effectiveHooks?.PreGenerate ?? [],
+      { ...genOptions, _runId: runId },
+      getAgent(),
+    );
+    return {
+      runId,
+      effectiveGenOptions: {
+        ...log.acceptRunInput(preGenResult.effectiveOptions),
+        _runId: runId,
+      },
+      cachedResult: preGenResult.cachedResult,
+    };
+  }
+
   async function beginRun(requestedOptions: GenerateOptions): Promise<RunStart> {
+    if (logContext) {
+      return beginLogModeRun(requestedOptions, logContext);
+    }
     // A snapshot belongs to one run. Follow-up generations spread the previous
     // run's options after its checkpoint was saved, so never reuse one.
     const { _checkpointSnapshot: _previousRunSnapshot, ...freshOptions } = requestedOptions;
@@ -723,11 +614,26 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     return createRetryLoopState(options.model, options.generationRetryPolicy?.maxRetries);
   }
 
+  /** Log mode: control state from the checkpoint, the request from the log. */
+  async function buildLogModeMessages(
+    effectiveGenOptions: GenerateOptions,
+    currentModel: LanguageModel,
+    log: LogContextRuntime,
+  ): Promise<{ messages: ModelMessage[]; checkpoint?: Checkpoint; logPlan: LogCallPlan }> {
+    const checkpoint = effectiveGenOptions.threadId
+      ? await checkpoints.load(effectiveGenOptions.threadId)
+      : undefined;
+    const logPlan = await log.plan(effectiveGenOptions, currentModel);
+    return { messages: logPlan.messages, checkpoint, logPlan };
+  }
+
   async function beginAttempt(
     effectiveGenOptions: GenerateOptions,
     currentModel: LanguageModel,
   ): Promise<AttemptContext> {
-    const { messages, checkpoint } = await buildMessages(effectiveGenOptions);
+    const { messages, checkpoint, logPlan } = logContext
+      ? await buildLogModeMessages(effectiveGenOptions, currentModel, logContext)
+      : { ...(await buildMessages(effectiveGenOptions)), logPlan: undefined };
     const maxSteps = options.maxSteps ?? 10;
     const startStep = checkpoint?.step ?? 0;
     const checkpointThreadId = effectiveGenOptions.threadId;
@@ -742,6 +648,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       currentModel,
       messages,
       checkpoint,
+      ...(logPlan && { logPlan }),
       checkpointThreadId,
       startStep,
       maxSteps,
@@ -768,13 +675,13 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       streamingContext,
     });
 
-    // Build prompt context and generate system prompt
-    const promptContext = buildPromptContext(
-      effectiveGenOptions,
-      messages,
-      effectiveGenOptions.threadId,
-    );
-    const systemPrompt = getSystemPrompt(promptContext);
+    // Build prompt context and generate system prompt. In log mode the
+    // projected messages already carry the version's frozen core.
+    const systemPrompt = attempt.logPlan
+      ? undefined
+      : getSystemPrompt(
+          buildPromptContext(effectiveGenOptions, messages, effectiveGenOptions.threadId),
+        );
 
     const initialParams = {
       system: systemPrompt,
@@ -810,10 +717,14 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       model: currentModel,
       ...repairToolCallOptions,
       system: initialParams.system,
-      messages: projectMessagesForModel(
-        initialParams.messages,
-        toolExecutionContext.agentSdk.modelCapabilities,
-      ),
+      // Log mode: the projection adapter already applied the capability
+      // projection recorded in the version's contract.
+      messages: attempt.logPlan
+        ? initialParams.messages
+        : projectMessagesForModel(
+            initialParams.messages,
+            toolExecutionContext.agentSdk.modelCapabilities,
+          ),
       tools: wrapToolsWithExecutionContext(initialParams.tools as ToolSet, toolExecutionContext),
       maxOutputTokens: initialParams.maxTokens,
       temperature: initialParams.temperature,
@@ -1032,6 +943,13 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     );
 
     let followUpPrompt = await getNextTaskPrompt();
+    if (followUpPrompt !== null && logContext) {
+      // These follow-ups build their request outside the projection.
+      throw new ConfigurationError(
+        "Background follow-up turns in streamDataResponse() are not supported in context log mode yet; set waitForBackgroundTasks: false",
+        { configKey: "waitForBackgroundTasks" },
+      );
+    }
     while (followUpPrompt !== null) {
       const followUpRequestOptions: GenerateOptions = {
         ...followUpBaseOptions,

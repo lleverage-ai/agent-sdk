@@ -20,6 +20,11 @@ import {
   createToolModelOutput,
   mapSteps,
 } from "./agent/generation-runner.js";
+import {
+  createLogContextRuntime,
+  isLogModeEnabled,
+  validateLogModeOptions,
+} from "./agent/log-context.js";
 import { buildMessagesFromStepResponses, createMessageRuntime } from "./agent/messages.js";
 import {
   createToolPipeline,
@@ -225,14 +230,13 @@ export function createAgent(options: AgentOptions): Agent {
     );
   }
 
-  // The context log contracts ship ahead of the log-mode runtime.
-  // Opting in must fail loudly rather than silently keep legacy history.
-  if (options.contextLog && (options.contextLog.mode ?? "off") !== "off") {
-    throw new ConfigurationError(
-      `Context log mode "${options.contextLog.mode}" is not available in this release; use mode "off" or omit contextLog`,
-      { configKey: "contextLog.mode", actualValue: options.contextLog.mode },
-    );
-  }
+  // Context log mode is opt-in. Reject options it cannot honour before
+  // anything else is built; legacy agents skip every check.
+  validateLogModeOptions(options);
+  const logContext =
+    options.contextLog && isLogModeEnabled(options)
+      ? createLogContextRuntime({ ...options, contextLog: options.contextLog })
+      : undefined;
 
   // Determine prompt mode
   // - 'static': Use systemPrompt string directly
@@ -789,6 +793,7 @@ export function createAgent(options: AgentOptions): Agent {
       };
       await invokeHooksWithTimeout(loadedHooks, input, null, agent);
     },
+    ...(logContext && { logCursor: logContext.cursor }),
   });
   const { save: saveCheckpoint } = checkpoints;
 
@@ -819,6 +824,7 @@ export function createAgent(options: AgentOptions): Agent {
     getSystemPrompt,
     repairToolCallOptions,
     getNextTaskPrompt,
+    ...(logContext && { logContext }),
   });
 
   /**
@@ -896,6 +902,14 @@ export function createAgent(options: AgentOptions): Agent {
     response: unknown,
     genOptions?: Partial<GenerateOptions>,
   ): Promise<ResumeOutcome> {
+    // This legacy path rebuilds history in the checkpoint, which log mode
+    // never reads or writes.
+    if (logContext) {
+      throw new ConfigurationError(
+        "resume() and resumeDataResponse() are not supported in context log mode yet",
+        { configKey: "contextLog.mode" },
+      );
+    }
     // This legacy path invokes raw tools and InterruptResolved hooks outside
     // the generation tool pipeline. Never imply the workflow gate protects it.
     if (options.workflowExecutionGate) {
@@ -1362,8 +1376,10 @@ export function createAgent(options: AgentOptions): Agent {
           // When checkpointing is active, the checkpoint already contains the
           // full conversation history (saved above). Passing explicit messages
           // would cause buildMessages() to load checkpoint messages AND append
-          // the same messages again, causing duplication.
-          const hasCheckpointing = !!(effectiveGenOptions.threadId && options.checkpointer);
+          // the same messages again, causing duplication. In log mode the log
+          // is the history and caller messages are rejected.
+          const hasCheckpointing =
+            !!logContext || !!(effectiveGenOptions.threadId && options.checkpointer);
           let lastResult: GenerateResult = finalResult;
           let runningMessages: ModelMessage[] = hasCheckpointing
             ? []
@@ -1940,7 +1956,9 @@ export function createAgent(options: AgentOptions): Agent {
             return;
           }
 
-          const hasCheckpointing = !!(effectiveGenOptions.threadId && options.checkpointer);
+          // In log mode the log is the history and caller messages are rejected.
+          const hasCheckpointing =
+            !!logContext || !!(effectiveGenOptions.threadId && options.checkpointer);
           let currentMessages: ModelMessage[] = hasCheckpointing
             ? []
             : streamingCompaction.finalize(steps, text);
