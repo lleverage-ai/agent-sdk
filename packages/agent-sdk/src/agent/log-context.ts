@@ -33,6 +33,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { LanguageModel, ModelMessage, UserModelMessage } from "ai";
+import type { DelegationStreamClaim } from "../context-log/delegation.js";
 import { ContextLogConflictError, ContextLogInvalidError } from "../context-log/errors.js";
 import { assertContextJson } from "../context-log/json.js";
 import { resolveContextProducers, runContextProducers } from "../context-log/producers.js";
@@ -181,6 +182,8 @@ export interface LogCallPlan {
   previousCall: LogPreviousCall | undefined;
   /** The run's shared state. */
   run: LogRunState;
+  /** The delegation's claim on the stream, moved forward by each of the call's commits. */
+  claim?: DelegationStreamClaim;
   /**
    * The call's options after the PreGenerate hooks, without `prompt` or
    * `messages` (the input is `append`).
@@ -399,6 +402,15 @@ export function createLogContextRuntime(
 
     // One head read serves the version, the path and the cursor.
     const head = await store.readHead(stream);
+    // A delegation only plans on the head it last left its stream at, so a
+    // second delivery of the same delegation never appends to the stream.
+    const claim = genOptions._contextClaim;
+    if (claim && (head?.revision ?? 0) !== claim.revision) {
+      throw new ContextLogConflictError("delegation_claim_lost", {
+        head,
+        message: `Delegation stream "${stream.streamId}" moved to revision ${head?.revision ?? 0} outside this delegation (expected ${claim.revision}); it is not planned again`,
+      });
+    }
 
     let core: string;
     let contract: Readonly<Record<string, string>>;
@@ -485,6 +497,7 @@ export function createLogContextRuntime(
       outputKeyPrefix: `output:${run.id}:${head?.revision ?? 0}`,
       previousCall,
       run,
+      ...(claim && { claim }),
       options: screened.options,
     };
   }
@@ -516,7 +529,12 @@ export function createLogContextRuntime(
       plan,
       model,
       project: (entries) => project(plan.core, plan.contract, entries, plan.target),
-      onHead: (head) => cursors.set(plan.stream.threadId, toCursor(plan.stream, head)),
+      onHead: (head) => {
+        cursors.set(plan.stream.threadId, toCursor(plan.stream, head));
+        if (plan.claim) {
+          plan.claim.revision = head.revision;
+        }
+      },
       // Only the screened entries are used: the generation's options are
       // fixed once it started, so operational changes here are ignored.
       screenOutputs: async (items) => (await screen(plan.options, [...items])).pending,
