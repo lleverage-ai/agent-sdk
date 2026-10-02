@@ -405,6 +405,12 @@ it only appends:
 | `resume()` approves or answers | A `tool_result` entry with a `tool-approval-response` part (the **resolution**), then the tool runs, then a `tool_result` entry with its result |
 | `resume()` rejects | The resolution and the denial result, in one write; nothing runs |
 
+The resolution records the decision: `approved` and the approval's
+`reason`, or, for a custom interrupt, `approved: true` with the answer as
+canonical JSON in `reason` (so a custom answer must be JSON-serialisable).
+The `PreGenerate` hooks screen it like any other text, and the AI SDK never
+sends it to a provider.
+
 Both entries are outputs of the interrupted call (`appendOutputs` on its
 manifest, which still owns the head), so they pass the `PreGenerate` hooks
 before commit like any other output. Their keys are
@@ -443,6 +449,13 @@ Rules:
   An interrupt that is not on that stream's path is a
   `ContextLogNotFoundError` (resource `interrupt`). If the stream moved past
   the interrupted call, it cannot be resumed (`head_moved`).
+- **Control state is restored first.** `resume()` loads the checkpoint
+  through the agent's checkpoint runtime, so a fresh agent restores the
+  thread's todos and files before the tool runs, and the checkpoint it saves
+  keeps any changes the tool made.
+- **`AgentSession`** holds background task results that arrive while an
+  interrupt is pending, and processes them after the interrupt is resumed. A
+  task is removed only once the turn that carries its result has run.
 - Workflow-gated agents still cannot use `resume()`.
 
 ### Crash safety
@@ -459,7 +472,16 @@ whether the call ran. A host whose ledger makes a repeated execution of the
 same tool call id safe sets `contextLog.inDoubtResume: "reexecute"`. The
 resume then runs the call again through the pipeline with the same tool call
 id, so a `PreToolUse` hook keyed by it can answer with the recorded result
-(`respondWith`) instead of running the side effect a second time.
+(`respondWith`) instead of running the side effect a second time. The
+re-run repeats the decision the log recorded (the approval, or the custom
+answer when it is still valid JSON after screening), not the one passed to
+the new `resume()`; a rejection never re-runs anything.
+
+The host's single-writer requirement (see [the commit
+boundary](#the-commit-boundary)) covers resume too. The SDK does not fence
+two concurrent resumes of the same interrupt: the resolution is an
+idempotent output commit, so both could commit it and both could run the
+tool. Hold the stream's run lease across `resume()` as across a generation.
 
 Other failure points recover without that:
 

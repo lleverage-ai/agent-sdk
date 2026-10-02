@@ -27,10 +27,12 @@
  */
 
 import type { Tool, ToolExecutionOptions } from "ai";
+import type { AgentState } from "../backends/state.js";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
 import { isApprovalInterrupt, updateCheckpoint } from "../checkpointer/types.js";
 import { ContextLogConflictError } from "../context-log/errors.js";
 import { invokeLogModePreGenerateHooks } from "../context-log/hooks.js";
+import { assertContextJson, canonicalContextJson } from "../context-log/json.js";
 import type { ToolResultContextEntryInput } from "../context-log/types.js";
 import { ValidationError } from "../errors/index.js";
 import { invokeHooksWithTimeout } from "../hooks.js";
@@ -86,6 +88,8 @@ export interface LogResumeDeps {
   pendingResponses: Map<string, unknown>;
   /** Approval decisions the permission layer consults, keyed by tool call id. */
   approvalDecisions: Map<string, boolean>;
+  /** Live agent state (todos, files); snapshotted into the checkpoint after the tool ran. */
+  state: AgentState;
 }
 
 /** A validated approval response. */
@@ -111,6 +115,37 @@ function parseApprovalResponse(response: unknown): ApprovalDecision {
     approved: candidate.approved,
     ...(candidate.reason !== undefined && { reason: candidate.reason }),
   };
+}
+
+/**
+ * A custom interrupt's answer as recorded in its resolution: canonical JSON
+ * in the approval response's `reason`, so the PreGenerate hooks screen it
+ * as text and the AI SDK never sends it to a provider.
+ */
+function encodeAnswer(response: unknown): string | undefined {
+  if (response === undefined) return undefined;
+  try {
+    assertContextJson(response, "response");
+  } catch (error) {
+    throw new ValidationError(
+      `A custom interrupt's response must be JSON-serialisable in context log mode: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      { fieldErrors: { response: ["must be JSON-serialisable"] } },
+    );
+  }
+  return canonicalContextJson(response);
+}
+
+/** The answer a committed resolution recorded, or `undefined` when it recorded none. */
+function decodeAnswer(reason: string | undefined): { answer: unknown } | undefined {
+  if (reason === undefined) return undefined;
+  try {
+    return { answer: JSON.parse(reason) as unknown };
+  } catch {
+    // Screening rewrote it beyond JSON; the caller's response is used.
+    return undefined;
+  }
 }
 
 /** The AI SDK's text for a tool error (`getErrorMessage`), so results match a normal step. */
@@ -226,11 +261,20 @@ export function createLogResume(
     }
   }
 
+  /** The checkpoint with the agent's live todos and files, which the resumed tool may have changed. */
+  function withLiveState(checkpoint: Checkpoint): Checkpoint {
+    return updateCheckpoint(checkpoint, {
+      state: { todos: [...deps.state.todos], files: { ...deps.state.files } },
+    });
+  }
+
   return async function resume(threadId, interruptId, response, genOptions = {}) {
     if (!options.checkpointer) {
       throw new Error("Cannot resume: checkpointer is required");
     }
-    const checkpoint = await options.checkpointer.load(threadId);
+    // Through the checkpoint runtime, so a fresh agent restores the thread's
+    // todos and files before the resumed tool runs.
+    const checkpoint = await checkpoints.load(threadId);
     if (!checkpoint) {
       throw new Error(`Cannot resume: no checkpoint found for thread ${threadId}`);
     }
@@ -247,6 +291,7 @@ export function createLogResume(
       throw new Error("Cannot resume: the interrupt was not raised by a tool call");
     }
     const approval = isApprovalInterrupt(interrupt) ? parseApprovalResponse(response) : undefined;
+    const answer = approval ? undefined : encodeAnswer(response);
     const telemetry = buildExecutionTelemetryFromIds({
       runId: getCheckpointRunId(checkpoint) ?? createRunId(),
       threadId,
@@ -283,6 +328,27 @@ export function createLogResume(
         });
       }
 
+      // An in-doubt resume repeats the decision the log already recorded.
+      let decided = { response, approval };
+      if (site.state === "resolving") {
+        const recorded = site.resolution;
+        if (approval && recorded) {
+          decided = {
+            response: {
+              approved: recorded.approved,
+              ...(recorded.reason !== undefined && { reason: recorded.reason }),
+            },
+            approval: {
+              approved: recorded.approved,
+              ...(recorded.reason !== undefined && { reason: recorded.reason }),
+            },
+          };
+        } else if (!approval) {
+          const recordedAnswer = decodeAnswer(recorded?.reason);
+          if (recordedAnswer) decided = { response: recordedAnswer.answer, approval };
+        }
+      }
+
       if (site.state === "pending") {
         // Never commit a resolution for a resume that was already cancelled.
         genOptions.signal?.throwIfAborted();
@@ -298,7 +364,10 @@ export function createLogResume(
                 approvalId: interrupt.id,
                 // A custom interrupt is answered: the call goes ahead.
                 approved: approval?.approved ?? true,
-                ...(approval?.reason !== undefined && { reason: approval.reason }),
+                // An approval's reason, or a custom interrupt's answer.
+                ...(approval
+                  ? approval.reason !== undefined && { reason: approval.reason }
+                  : answer !== undefined && { reason: answer }),
               },
             ],
           },
@@ -332,8 +401,8 @@ export function createLogResume(
           tools,
           signalState,
           interrupt,
-          response,
-          approval,
+          decided.response,
+          decided.approval,
           genOptions.signal,
         );
         // A late result after cancellation is never committed.
@@ -354,7 +423,7 @@ export function createLogResume(
             threadId,
             next,
             telemetry.runId,
-            checkpoint,
+            withLiveState(checkpoint),
           );
           return { type: "re-interrupted", interrupt: next, checkpoint: marked ?? checkpoint };
         }
@@ -380,7 +449,10 @@ export function createLogResume(
     // an ordinary generation continue from the path.
     await checkpoints.commit(
       threadId,
-      updateCheckpoint(checkpoint, { pendingInterrupt: undefined, step: checkpoint.step + 1 }),
+      updateCheckpoint(withLiveState(checkpoint), {
+        pendingInterrupt: undefined,
+        step: checkpoint.step + 1,
+      }),
     );
     return {
       type: "continue",

@@ -236,6 +236,8 @@ export interface LogInterruptSite {
    * - `resolved` - The call's result is committed
    */
   state: "pending" | "resolving" | "resolved";
+  /** This round's committed resolution, when there is one. */
+  resolution?: { approved: boolean; reason?: string };
   /** The projected input of the step that made the call, as tools receive it. */
   messages: ModelMessage[];
 }
@@ -362,6 +364,16 @@ function newUserMessages(genOptions: GenerateOptions): UserModelMessage[] {
     assertContextJson(message, `messages[${index}]`);
   });
   return messages as UserModelMessage[];
+}
+
+/** The approval response a resolution entry recorded. @internal */
+function readResolution(
+  entry: ContextEntryInput | undefined,
+): { approved: boolean; reason?: string } | undefined {
+  if (entry?.kind !== "tool_result") return undefined;
+  const part = entry.message.content.find((item) => item.type === "tool-approval-response");
+  if (part?.type !== "tool-approval-response") return undefined;
+  return { approved: part.approved, ...(part.reason !== undefined && { reason: part.reason }) };
 }
 
 /** Turn a head into a checkpoint cursor. @internal */
@@ -643,7 +655,17 @@ export function createLogContextRuntime(
       toContextModelRef(model),
     );
     cursors.set(threadId, toCursor(stream, head));
-    return { stream, head, manifestId, call: location.call, keys, state, messages };
+    const resolution = readResolution(path.find((entry) => entry.key === keys.resolution));
+    return {
+      stream,
+      head,
+      manifestId,
+      call: location.call,
+      keys,
+      state,
+      ...(resolution && { resolution }),
+      messages,
+    };
   }
 
   async function commitInterruptOutputs(

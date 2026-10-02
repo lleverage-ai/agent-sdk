@@ -145,16 +145,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     The provider receives the same input as a run that was never interrupted.
   - Approved and answered calls run again through the normal tool pipeline
     (permission mode, `PreToolUse` / `PostToolUse` hooks, signal catching),
-    with the tool call's committed input.
+    with the tool call's committed input, after the thread's todos and files
+    are restored from the checkpoint.
+  - The resolution records the decision: the approval and its reason, or a
+    custom interrupt's answer as canonical JSON in `reason` (log-mode custom
+    answers must be JSON-serialisable).
   - The resolution is committed before the tool runs. A resume that finds a
     resolution without a result fails with a `ContextLogConflictError`
     (reason `resume_in_doubt`) instead of running the tool again, unless
     `contextLog.inDoubtResume` is `"reexecute"`, which a host sets when its
-    tool ledger makes repeating a tool call id safe.
+    tool ledger makes repeating a tool call id safe. The re-run repeats the
+    recorded decision. Resume is covered by the host's single-writer
+    requirement: the SDK does not fence concurrent resumes.
   - A generation on a stream with an unresolved interrupt fails with a
     `ContextLogConflictError` (reason `interrupt_pending`) before anything is
     committed.
   - Log-mode screening treats `approvalId` as structure, like `toolCallId`.
+  - A log-mode `AgentSession` holds background task results that arrive
+    while an interrupt is pending until it is resumed, and removes a task
+    only after the turn carrying its result ran.
 
 ### Changed
 

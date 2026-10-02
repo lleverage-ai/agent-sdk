@@ -896,6 +896,7 @@ export function createAgent(options: AgentOptions): Agent {
       getAgent: () => agent,
       pendingResponses,
       approvalDecisions,
+      state,
     });
 
   /**

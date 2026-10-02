@@ -22,6 +22,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { describeProviderCall } from "../../src/agent/log-boundary.js";
 import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
 import {
+  type Agent,
   type AgentOptions,
   type ContextAppendOutputsRequest,
   type ContextAppendOutputsResult,
@@ -34,6 +35,8 @@ import {
   isContextLogError,
   MemoryContextLogStore,
 } from "../../src/index.js";
+import { AgentSession } from "../../src/session.js";
+import { createBackgroundTask } from "../../src/task-store/types.js";
 
 const THREAD = "thread-1";
 const STREAM: ContextStreamRef = { threadId: THREAD, branchId: "main", streamId: "main" };
@@ -391,7 +394,8 @@ describe("log-mode resume", () => {
       },
       call: ["c1", "ask", { question: "Name?" }] as [string, string, object],
       response: "Alice",
-      resolution: { approved: true },
+      // The answer is recorded as canonical JSON.
+      resolution: { approved: true, reason: '"Alice"' },
     },
   ];
 
@@ -559,6 +563,98 @@ describe("log-mode resume", () => {
     expect(continuation[0]!.prompt).toEqual(referenceStep.prompt);
     expect(path[3]!.message.content).toEqual([
       expect.objectContaining({ output: { type: "error-text", value: "Error: boom" } }),
+    ]);
+  });
+
+  it("restores the thread's todos and files before the resumed tool runs, and keeps its changes", async () => {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    const holder: { agent?: Agent } = {};
+    const notesTools = () => ({
+      notes: tool({
+        description: "Reads the notes",
+        inputSchema: jsonSchema<Record<string, never>>({ type: "object", properties: {} }),
+        execute: async (_input, options) => {
+          await interruptOf(options)({});
+          const state = holder.agent!.state;
+          state.todos = [
+            ...state.todos,
+            {
+              id: "t2",
+              content: "follow up",
+              status: "pending",
+              createdAt: "2026-10-02T00:00:00Z",
+            },
+          ];
+          return `notes:${state.files["/notes.md"]?.content.join("\n") ?? "missing"}`;
+        },
+      }),
+    });
+    const first = logAgent(scriptedModel([toolCalls(["c1", "notes", {}])]).model, store, {
+      tools: notesTools(),
+      checkpointer,
+    });
+    first.state.todos = [
+      { id: "t1", content: "draft", status: "in_progress", createdAt: "2026-10-01T00:00:00Z" },
+    ];
+    first.state.files = {
+      "/notes.md": { content: ["remember"], created_at: "x", modified_at: "x" },
+    };
+    const interrupt = await expectInterrupted(first.generate({ prompt: "go", threadId: THREAD }));
+
+    // A fresh agent, as after a restart, starts with empty live state.
+    const resumed = logAgent(scriptedModel([text("done")]).model, store, {
+      tools: notesTools(),
+      checkpointer,
+    });
+    holder.agent = resumed;
+    await resumed.resume(THREAD, interrupt.id, "ok");
+
+    const path = await readPath(store);
+    expect(path[3]!.message.content).toEqual([
+      expect.objectContaining({ output: { type: "text", value: "notes:remember" } }),
+    ]);
+    const saved = await checkpointer.load(THREAD);
+    expect(saved?.state.files["/notes.md"]?.content).toEqual(["remember"]);
+    expect(saved?.state.todos.map((todo) => todo.id)).toEqual(["t1", "t2"]);
+  });
+
+  it("records a custom answer the tool does not echo", async () => {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    const ackTools = () => ({
+      ask: tool({
+        description: "Asks the user",
+        inputSchema: askInput,
+        execute: async (input, options) => {
+          await interruptOf(options)(input);
+          return "noted";
+        },
+      }),
+    });
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["c1", "ask", { question: "Pin?" }])]).model, store, {
+        tools: ackTools(),
+        checkpointer,
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+
+    await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: ackTools(),
+      checkpointer,
+    }).resume(THREAD, interrupt.id, { choice: "blue", count: 2 });
+
+    const path = await readPath(store);
+    expect(path[2]!.message.content).toEqual([
+      {
+        type: "tool-approval-response",
+        approvalId: interrupt.id,
+        approved: true,
+        reason: '{"choice":"blue","count":2}',
+      },
+    ]);
+    expect(path[3]!.message.content).toEqual([
+      expect.objectContaining({ output: { type: "text", value: "noted" } }),
     ]);
   });
 
@@ -761,6 +857,44 @@ describe("log-mode resume crash safety", () => {
     ]);
   });
 
+  it("re-runs an in-doubt custom answer with the answer the log recorded", async () => {
+    const store = new CrashingStore();
+    const checkpointer = new MemorySaver();
+    const answers: unknown[] = [];
+    const ackTools = () => ({
+      ask: tool({
+        description: "Asks the user",
+        inputSchema: askInput,
+        execute: async (input, options) => {
+          answers.push(await interruptOf(options)(input));
+          return "noted";
+        },
+      }),
+    });
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["c1", "ask", { question: "Colour?" }])]).model, store, {
+        tools: ackTools(),
+        checkpointer,
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+    store.crashOnAppend = store.appendCalls + 2;
+    await expect(
+      logAgent(scriptedModel([text("never")]).model, store, {
+        tools: ackTools(),
+        checkpointer,
+      }).resume(THREAD, interrupt.id, "blue"),
+    ).rejects.toThrow("process crashed");
+
+    const result = await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: ackTools(),
+      checkpointer,
+      contextLog: { mode: "log", store, inDoubtResume: "reexecute" },
+    }).resume(THREAD, interrupt.id, "a different answer");
+
+    expect(result.status).toBe("complete");
+    expect(answers).toEqual(["blue", "blue"]);
+  });
+
   it("does not run the tool again when only clearing the interrupt was lost", async () => {
     const { store, checkpointer, interrupt } = await interruptedStore();
     const runs: string[] = [];
@@ -813,5 +947,51 @@ describe("log-mode resume crash safety", () => {
         (caught: unknown) => caught,
       );
     expect(isContextLogError(error, "not_found")).toBe(true);
+  });
+});
+
+describe("AgentSession with a pending log-mode interrupt", () => {
+  it("holds background task results until the interrupt is resumed", async () => {
+    const store = new MemoryContextLogStore();
+    const { model, requests } = scriptedModel([
+      toolCalls(["c1", "ask", { question: "Name?" }]),
+      text("resumed"),
+      text("task handled"),
+    ]);
+    const agent = logAgent(model, store, {
+      tools: askTools(),
+      checkpointer: new MemorySaver(),
+      waitForBackgroundTasks: false,
+    });
+    const session = new AgentSession({ agent, threadId: THREAD });
+    const replies: string[] = [];
+    let sent = false;
+    for await (const output of session.run()) {
+      if (output.type === "waiting_for_input" && !sent) {
+        sent = true;
+        session.sendMessage("go");
+      } else if (output.type === "interrupt") {
+        // A background task finishes while the interrupt is pending.
+        agent.taskManager.registerTask(
+          createBackgroundTask({
+            id: "task-1",
+            subagentType: "researcher",
+            description: "research",
+          }),
+        );
+        agent.taskManager.updateTask("task-1", { status: "completed", result: "found it" });
+        session.respondToInterrupt(output.interrupt.id, "Alice");
+      } else if (output.type === "generation_complete") {
+        replies.push(output.fullText);
+        if (replies.length === 2) session.stop();
+      } else if (output.type === "error") {
+        throw output.error;
+      }
+    }
+
+    expect(replies).toEqual(["resumed", "task handled"]);
+    expect(JSON.stringify(requests[2]!.prompt)).toContain("found it");
+    expect(agent.taskManager.getTask("task-1")).toBeUndefined();
+    await agent.dispose();
   });
 });
