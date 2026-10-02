@@ -392,4 +392,106 @@ describe("Stream lifecycle events", () => {
       expect(turnEnd.finishReason).toBe("stop");
     }
   });
+
+  it("forwards each step's provider metadata on turn-end and the last step's on finish", async () => {
+    const model = createMockModel();
+    const agent = createAgent({ model });
+
+    const usage = { promptTokens: 8, completionTokens: 0, totalTokens: 8 };
+    const toolStepMetadata = { anthropic: { stopDetails: null } };
+    const refusalMetadata = {
+      anthropic: {
+        stopDetails: { type: "refusal", category: "cyber", explanation: "declined" },
+      },
+    };
+    const mockStream = {
+      fullStream: (async function* () {
+        yield { type: "start-step" as const };
+        yield {
+          type: "finish-step" as const,
+          response: { id: "msg_turn1" },
+          finishReason: "tool-calls" as const,
+          usage,
+          providerMetadata: toolStepMetadata,
+        };
+        yield { type: "start-step" as const };
+        yield {
+          type: "finish-step" as const,
+          response: { id: "msg_turn2" },
+          finishReason: "content-filter" as const,
+          usage,
+          providerMetadata: refusalMetadata,
+        };
+        // AI SDK's own finish part carries no provider metadata.
+        yield {
+          type: "finish" as const,
+          finishReason: "content-filter" as const,
+          totalUsage: usage,
+        };
+      })(),
+      text: Promise.resolve(""),
+      usage: Promise.resolve(usage),
+      finishReason: Promise.resolve("content-filter" as const),
+      steps: Promise.resolve([]),
+    };
+    vi.mocked(streamText).mockReturnValue(mockStream as any);
+
+    const collected: StreamPart[] = [];
+    for await (const part of agent.stream({ prompt: "test" })) {
+      collected.push(part);
+    }
+
+    const turnEnds = collected.filter((p) => p.type === "turn-end");
+    expect(turnEnds.map((p) => (p.type === "turn-end" ? p.providerMetadata : undefined))).toEqual([
+      toolStepMetadata,
+      refusalMetadata,
+    ]);
+    const finish = collected.find((p) => p.type === "finish");
+    expect(finish).toEqual({
+      type: "finish",
+      finishReason: "content-filter",
+      usage,
+      providerMetadata: refusalMetadata,
+    });
+  });
+
+  it("omits providerMetadata when the provider sent none", async () => {
+    const model = createMockModel();
+    const agent = createAgent({ model });
+
+    const usage = { promptTokens: 1, completionTokens: 1, totalTokens: 2 };
+    const mockStream = {
+      fullStream: (async function* () {
+        yield { type: "start-step" as const };
+        yield {
+          type: "finish-step" as const,
+          response: { id: "msg_1" },
+          finishReason: "stop" as const,
+          usage,
+          providerMetadata: undefined,
+        };
+        yield {
+          type: "finish" as const,
+          finishReason: "stop" as const,
+          totalUsage: usage,
+        };
+      })(),
+      text: Promise.resolve(""),
+      usage: Promise.resolve(usage),
+      finishReason: Promise.resolve("stop" as const),
+      steps: Promise.resolve([]),
+    };
+    vi.mocked(streamText).mockReturnValue(mockStream as any);
+
+    const collected: StreamPart[] = [];
+    for await (const part of agent.stream({ prompt: "test" })) {
+      collected.push(part);
+    }
+
+    for (const part of collected) {
+      if (part.type === "turn-end" || part.type === "finish") {
+        expect("providerMetadata" in part).toBe(false);
+      }
+    }
+  });
 });

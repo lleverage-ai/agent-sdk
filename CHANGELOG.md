@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Provider metadata on `turn-end` and `finish` stream parts** (LLE-14109).
+  `turn-end` carries its model call's `providerMetadata`, and `finish`
+  carries the last model call's, because AI SDK only reports it per step on
+  `finish-step`. This lets a consumer of `agent.stream()` read, for example,
+  Anthropic's `providerMetadata.anthropic.stopDetails` on a refusal. The field
+  is optional and omitted when the provider sent none.
+
 ## [1.0.0-rc.11] - 2026-10-02
 
 Eleventh release candidate for 1.0.0. In log mode, compaction now budgets
