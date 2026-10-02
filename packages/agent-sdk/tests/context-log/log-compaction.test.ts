@@ -137,6 +137,7 @@ function createCompactingManager(
   maxMessages: number,
   overrides: {
     keepMessageCount?: number;
+    keepToolResultCount?: number;
     summary?: string;
     commitCompaction?: () => void;
   } = {},
@@ -150,7 +151,10 @@ function createCompactingManager(
           ? { trigger: true, reason: "token_threshold" }
           : { trigger: false },
     },
-    summarization: { keepMessageCount: overrides.keepMessageCount ?? 2, keepToolResultCount: 0 },
+    summarization: {
+      keepMessageCount: overrides.keepMessageCount ?? 2,
+      keepToolResultCount: overrides.keepToolResultCount ?? 0,
+    },
     summarizer: async (request) => {
       requests.push(request);
       return { text: overrides.summary ?? `summary ${requests.length}` };
@@ -621,11 +625,10 @@ describe("log-mode compaction", () => {
       text("deployed it"),
       text("a2"),
     ]);
-    // The second run's view (core, go, settings, the call, its resolution,
-    // its result, the reply and q2) has eight messages. Keeping the last
-    // three keeps the result; the built-in retention would keep the call
-    // with it but summarise the resolution between them.
-    const manager = createCompactingManager(7, { keepMessageCount: 3 });
+    // The second run's view (core, go, settings, the call, its resolution
+    // shown with its result, the reply and q2) has seven messages. Keeping
+    // the last three keeps the result, and with it the call and resolution.
+    const manager = createCompactingManager(6, { keepMessageCount: 3 });
     const agent = logAgent(model, store, {
       contextManager: manager.contextManager,
       tools: deploy,
@@ -1020,8 +1023,8 @@ describe("log-mode compaction planning", () => {
         options: {},
         screen: async (screened) => screened,
       });
-    const builtIn = (keepMessageCount: number) => {
-      const manager = createCompactingManager(0, { keepMessageCount });
+    const builtIn = (keepMessageCount: number, keepToolResultCount = 0) => {
+      const manager = createCompactingManager(0, { keepMessageCount, keepToolResultCount });
       const compactor = createLogCompactor(
         async (messages, _options, _threadId, compactOptions) => ({
           compacted: true,
@@ -1061,6 +1064,31 @@ describe("log-mode compaction planning", () => {
       ]);
     });
 
+    it("counts a resolution and its result once against the tool-result quota", async () => {
+      // A second interrupted call with its own resolution and result.
+      const second = group.map((entry) =>
+        JSON.parse(
+          JSON.stringify(entry)
+            .replaceAll("d1", "d2")
+            .replace(/"key":"(\w+)"/, '"key":"$1-2"'),
+        ),
+      ) as ContextEntryInput[];
+      // Keeping the last two results keeps both calls whole; the last
+      // message alone would keep only the second.
+      const { compactor, requests } = builtIn(1, 2);
+      const compaction = await plan(compactor, [path[2]!, ...group, path[3]!, path[5]!, ...second]);
+      expect(requests).toHaveLength(1);
+      expect(compaction!.entries.map((entry) => entry.key)).toEqual([
+        "k:summary:0",
+        "call",
+        "resolution",
+        "result",
+        "call-2",
+        "resolution-2",
+        "result-2",
+      ]);
+    });
+
     it("declares no transition when a manager drops history without a summary", async () => {
       const compactor = createLogCompactor(async (messages) => ({
         compacted: true,
@@ -1070,18 +1098,15 @@ describe("log-mode compaction planning", () => {
     });
 
     it("declares no transition when restoring a split group keeps every entry", async () => {
-      // A custom manager that summarises only the resolution: restoring it
-      // would leave every entry plus a summary, which is no compaction.
+      // A custom manager that keeps the call and summarises its resolution
+      // and result: restoring them would leave every entry plus a summary,
+      // which is no compaction.
       const compactor = createLogCompactor(async (messages) => ({
         compacted: true,
         messages: [
           ...messages.filter((message) => message.role === "system"),
           { role: "assistant", content: "summary" },
-          ...messages.filter(
-            (message) =>
-              message.role === "assistant" ||
-              (message.role === "tool" && !JSON.stringify(message).includes("Approval")),
-          ),
+          ...messages.filter((message) => message.role === "assistant"),
         ],
       }));
       expect(await plan(compactor, group)).toBeUndefined();

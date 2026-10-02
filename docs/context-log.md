@@ -427,9 +427,11 @@ compaction.
   and content, so assistant reasoning and provider options replay byte for
   byte, and a store that keeps content by digest stores no second copy. A
   tool call, its approval request, its resolution and its result are kept
-  or summarised together. The context manager is shown a resolution as a
-  result of its call, so its retention keeps or summarises the whole block
-  before it generates a summary; with another manager, keeping any of them
+  or summarised together. The context manager is shown a resolution and the
+  result that follows it as one tool message, so its retention keeps or
+  summarises the whole block before it generates a summary, and the pair
+  counts once against its tool-result quota; with another manager, keeping
+  any of them
   keeps all of them (a child that would still split them is refused with
   `ContextLogInvalidError`, reason `compaction_split_tool_call`). A
   re-appended entry whose `supersedes` target is no longer on the child's
