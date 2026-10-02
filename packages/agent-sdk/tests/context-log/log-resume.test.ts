@@ -1351,6 +1351,34 @@ describe("log-mode resume across a projection adapter change (LLE-14019)", () =>
     expect(await readPath(store)).toEqual(before);
     expect(model.requests).toHaveLength(0);
   });
+
+  it("refuses through resumeStream() too, and the original adapter then resumes once", async () => {
+    const adapter = hostAdapter("host/adapter", "1");
+    const { store, checkpointer, interrupt } = await interruptUnder(adapter);
+    const runs: Array<{ approved: boolean; messages: number }> = [];
+
+    const refused = logAgent(scriptedModel([text("never")]).model, store, {
+      tools: recordingTools(runs),
+      checkpointer,
+      contextLog: { mode: "log", store, projection: hostAdapter("host/other", "1") },
+    }).resumeStream(THREAD, interrupt.id, { approved: true });
+    const error = await drain(refused).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(isContextLogError(error, "conflict") && error.reason).toBe("transition_required");
+    expect(runs).toEqual([]);
+
+    // The interrupt is still pending; the adapter it was raised under
+    // resumes it, and the tool runs exactly once.
+    const result = await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: recordingTools(runs),
+      checkpointer,
+      contextLog: { mode: "log", store, projection: adapter },
+    }).resume(THREAD, interrupt.id, { approved: true });
+    expect(result.status).toBe("complete");
+    expect(runs).toEqual([{ approved: true, messages: 2 }]);
+  });
 });
 
 describe("AgentSession with a pending log-mode interrupt", () => {
