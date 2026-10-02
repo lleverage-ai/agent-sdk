@@ -453,8 +453,32 @@ export interface ContextManifestInput {
   ordinal?: number;
   /** Retry attempt for the same ordinal, starting at 1. Optional in the contract; a store may require it. */
   attempt?: number;
+  /**
+   * Set when the call's tool definitions differ from the previous call's on
+   * the same stream, so a change in the cached prefix can be attributed.
+   * `cause` is `model_change` when the previous call targeted another model,
+   * otherwise `tool_definition`. The log-mode runtime sets it; stores persist
+   * it unchanged.
+   */
+  toolSnapshotChange?: ContextToolSnapshotChange;
   /** Host-defined metadata. */
   metadata?: ContextMetadata;
+}
+
+/**
+ * How a call's tool definitions changed from the previous call's on the same
+ * stream.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextToolSnapshotChange {
+  /** Lowercase hexadecimal SHA-256 of the previous call's `toolSnapshot`. */
+  previousDigest: string;
+  /** Lowercase hexadecimal SHA-256 of this call's `toolSnapshot`. */
+  digest: string;
+  /** Why the definitions changed: `model_change` or `tool_definition`. */
+  cause: "model_change" | "tool_definition";
 }
 
 /**
@@ -529,6 +553,19 @@ export interface ContextPrepareRequest {
   append: ContextEntryInput[];
   /** What the call will send. */
   manifest: ContextManifestInput;
+  /**
+   * Closes the call this prepare supersedes, in the same atomic write. It
+   * must be the manifest the head points at (`head.lastManifestId` at
+   * `expectedRevision`); anything else is `invalid`. If that call has no
+   * outcome, the store records one: `completed` when entries were appended
+   * after its prepare (its outputs), otherwise `unknown` when it was
+   * dispatched, otherwise `cancelled`. A call with an outcome is left
+   * unchanged. Once the head has moved past a call it can never be
+   * dispatched or commit outputs, so a crash between this prepare and a
+   * separate `recordOutcome` can no longer leave it open for good.
+   * Optional and additive: a request without it behaves as before.
+   */
+  closeSuperseded?: string;
 }
 
 /**
@@ -928,9 +965,11 @@ export interface ContextLogCursor {
  * Log mode is off by default, and an agent without this option behaves
  * exactly as before. In log mode the store is the agent's history: each
  * request is a projection of the stream's head path through the projection
- * adapter, under the frozen core of the head's version. The log-mode runtime
- * is still being built: in this release it projects requests from the log,
- * but does not yet commit inputs or outputs (see `docs/context-log.md`).
+ * adapter, under the frozen core of the head's version. Every provider call
+ * commits its input before dispatch, and each step's outputs are committed
+ * before the next request is projected from them and before the run returns
+ * (see `docs/context-log.md`). Pass the innermost provider model: the
+ * commit boundary must be the last thing before the provider.
  *
  * In log mode `createAgent` rejects `promptBuilder` and `contextManager`, and
  * requires a core: a static `systemPrompt` or {@link ContextLogOptions.resolveCore}.
@@ -958,7 +997,7 @@ export interface ContextLogOptions {
   resolveCore?: ContextCoreResolver;
   /** Producers that append runtime context before each call. */
   producers?: readonly ContextProducer[];
-  /** Authorises every prepare and dispatch. */
+  /** Authorises every prepare and dispatch. A refusal fails the call before anything is sent. */
   admit?: ContextAdmitHook;
 }
 

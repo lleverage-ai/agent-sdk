@@ -42,9 +42,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   agent without the option is unchanged.
 - Log-mode request projection (experimental). With `contextLog.mode: "log"`
   each request is a projection of the stream's head path through the
-  projection adapter, under the frozen core stored on the head's version. The
-  runtime does not commit inputs or outputs yet, so log mode is not usable on
-  its own in this release. See [docs/context-log.md](./docs/context-log.md):
+  projection adapter, under the frozen core stored on the head's version. See
+  [docs/context-log.md](./docs/context-log.md):
   - `createMessageProjectionAdapter()`, the default adapter. Capability
     projection of tool-result media happens inside it, keyed by the version's
     contract (`ContextProjectionContractKey`).
@@ -54,16 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Caller-supplied history (`messages`) is rejected; the prompt reaches
     `PreGenerate` hooks as a user message in `options.messages`, so the
     secrets filter and guardrails see it before it is sent.
-  - `promptBuilder`, `contextManager`, `contextLog.producers`,
-    `contextLog.admit`, `resume()`, `resumeDataResponse()` and
-    `streamDataResponse()` background follow-ups are rejected in log mode
-    until their log-mode support lands.
+  - `promptBuilder` is rejected in log mode (the core is frozen per
+    version). `contextManager`, `resume()` and `resumeDataResponse()` are
+    rejected until their log-mode support lands.
   - Checkpoints hold control state and a `ContextLogCursor` under
     `metadata.contextLog`, never messages.
   - Every provider step of a tool loop is projected through the adapter, and
     retry hooks cannot change a log-mode call's input.
-- Append-only context producers and hook rules for log mode (experimental;
-  dormant until the log-mode runtime wires them in):
+- Append-only context producers and hook rules for log mode (experimental):
   - `createSlotContextProducer()` builds a `ContextProducer` that keeps one
     value per slot: unchanged values are deduplicated, a changed value
     supersedes the slot's latest entry, removed configuration is retracted,
@@ -74,9 +71,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     not defeat it; without one, no source fingerprint is persisted.
   - `AgentPlugin.contextProducers` and `PluginOptions.contextProducers` let
     plugins register producers. They run after the agent's own
-    `contextLog.producers`, and producer names must be unique. Like
-    `contextLog.producers`, they are rejected in log mode until the commit
-    runtime lands.
+    `contextLog.producers`, and producer names must be unique.
   - In log mode, `PreGenerate` hooks run one after another and see only new,
     not-yet-committed input, including new tool calls and tool results as
     text, and object keys and numbers inside caller data. They may deny it, transform its text (so the secrets filter and
@@ -92,6 +87,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     which also covers call-level `providerOptions`. A rejected retry throws
     `ContextLogInvalidError` rather than `ValidationError`. See the hook mapping in
     [docs/context-log.md](./docs/context-log.md#hooks-in-log-mode).
+- Log-mode commit boundary (experimental). Every provider call in log mode,
+  including each tool-loop step, AI SDK retry and fallback attempt, goes
+  through a boundary around the terminal provider model that commits the
+  call's input before dispatch and its outputs before anything uses them:
+  - `prepare` (new input, any declared transition and the manifest, by
+    compare-and-swap with an idempotency key), `contextLog.admit` at prepare
+    and at dispatch, `markDispatched`, then the provider call. The manifest's
+    `inputDigest`, `toolSnapshot` and `callOptions` describe exactly the
+    provider call options.
+  - Each step's assistant output and tool results pass the `PreGenerate`
+    hooks (redaction, guardrails) and are committed with `appendOutputs`
+    before the next step is projected from them; the last step is committed
+    before the run returns. A failed output commit fails the run.
+  - Producers (`contextLog.producers`, plugin `contextProducers`) are wired
+    in: each attempt runs them on its head snapshot, the new user input and
+    their output pass `invokeLogModePreGenerateHooks`, and the first prepare
+    commits both against that snapshot's revision. In log mode the
+    `PreGenerate` hooks now run per attempt over new entries, not once per
+    run over `options.messages`.
+  - Retries and fallbacks are separate attempts that commit the run's input
+    once. A call to another model than the stream's previous call (for
+    example a fallback, with or without different capabilities) is a declared
+    `model_change` transition.
+  - A call left open by a crash, or whose outcome could not be recorded, is
+    closed by the next prepare on its stream in the same atomic write
+    (`cancelled` before dispatch, otherwise `unknown`, or `completed` if its
+    outputs were committed). `ContextPrepareRequest.closeSuperseded` is the
+    additive store-contract field for this, with conformance cases.
+  - Once a provider answered and its outputs were lost, or a reply was
+    committed, the run is never retried and never falls back.
+  - Hosts must enforce one writer per stream across the generation, tool and
+    output lifecycle; the boundary treats any superseded call as crashed.
+  - `ContextManifestInput.toolSnapshotChange` (`ContextToolSnapshotChange`)
+    attributes a tool-definition change to a model change or a definition
+    change.
+  - `GenerateOptions.contextStream` selects the branch and stream a log-mode
+    call runs on (both default to `"main"`).
+  - `streamDataResponse()` background follow-ups run in log mode, each
+    passing `PreGenerate` and committing through its own boundary.
+  - Model id strings, and models that already have a boundary, are rejected
+    in log mode: pass the innermost provider model.
 
 ### Changed
 

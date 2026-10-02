@@ -489,7 +489,7 @@ export async function POST(req: Request) {
 - [Observability](./docs/observability.md) — Logging, metrics, and tracing
 - [Persistence](./docs/persistence.md) — Memory and checkpointing
 - [Context Compaction](./docs/context-compaction.md) — Automatic, protocol-aware context management, provider usage anchors, and bounded tool-result summaries
-- [Context Log (experimental)](./docs/context-log.md) — Append-only context log contracts, the in-memory store, the store conformance suite and log-mode request projection
+- [Context Log (experimental)](./docs/context-log.md) — Append-only context log contracts, the in-memory store, the store conformance suite, and the log-mode runtime (request projection, producers, hook rules and commit before dispatch)
 - [Error Handling](./docs/errors.md) — Typed errors and recovery
 - [API Reference](./docs/api-reference.md) — Complete API documentation
 
