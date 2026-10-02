@@ -26,7 +26,7 @@
 
 import type { ModelMessage } from "ai";
 import type { Checkpoint } from "../checkpointer/types.js";
-import type { ContextManager } from "../context-manager.js";
+import type { CompactOptions, ContextManager } from "../context-manager.js";
 import { invokeHooksWithTimeout } from "../hooks.js";
 import {
   buildExecutionTelemetryFromIds,
@@ -171,11 +171,15 @@ export interface MessageRuntime {
     checkpoint?: Checkpoint;
   }>;
 
-  /** Compact `messages` if the context policy requires it, emitting hooks. */
+  /**
+   * Compact `messages` if the context policy requires it, emitting hooks.
+   * `compactOptions` is passed to `ContextManager.compact` (log mode sets it).
+   */
   compactMessagesIfNeeded(
     messages: ModelMessage[],
     genOptions: GenerateOptions,
     threadId: string | undefined,
+    compactOptions?: CompactOptions,
   ): Promise<CompactionOutcome>;
 
   /**
@@ -214,6 +218,7 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
     messages: ModelMessage[],
     genOptions: GenerateOptions,
     threadId: string | undefined,
+    compactOptions?: CompactOptions,
   ): Promise<{ compacted: boolean; messages: ModelMessage[] }> {
     // Skip compaction if _skipCompaction flag is set (used during summary generation)
     if (!contextManager || genOptions._skipCompaction) {
@@ -249,7 +254,10 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
     }
 
     // Perform compaction
-    const compactionResult = await contextManager.compact(messages, getAgent(), reason);
+    // Legacy calls keep their three-argument shape for custom managers.
+    const compactionResult = compactOptions
+      ? await contextManager.compact(messages, getAgent(), reason, compactOptions)
+      : await contextManager.compact(messages, getAgent(), reason);
 
     // Emit PostCompact hook with metrics
     const postCompactHooks = hooks?.PostCompact ?? [];

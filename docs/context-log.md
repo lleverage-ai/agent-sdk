@@ -6,9 +6,9 @@
 > [hook rules](#hooks-in-log-mode) and the
 > [commit boundary](#the-commit-boundary), which commits every call's input
 > before dispatch and every model output before anything uses it,
+> [compaction](#compaction) as a committed transition,
 > [interrupts and resume](#interrupts-and-resume), and delegated
-> [subagents on their own streams](#subagent-streams).
-> Compaction lands in a later release. Agents
+> [subagents on their own streams](#subagent-streams). Agents
 > without `contextLog: { mode: "log" }` keep their legacy behaviour. The
 > exports may change before they are marked stable.
 
@@ -305,8 +305,6 @@ Rules in log mode:
   Both ids default to `"main"`; set `contextStream: { branchId, streamId }` on
   the call to choose others (for example the host's session branch, or a
   delegated child's own stream). `contextStream` is rejected outside log mode.
-- **Not yet supported.** `contextManager` (compaction) throws until its
-  log-mode support lands.
 
 ## The commit boundary
 
@@ -393,6 +391,83 @@ run records the pending interrupt and ends the follow-ups.
 In `streamRaw()`, the last step is committed by the stream's `onFinish`; the
 AI SDK cannot fail an already-returned stream, so a failed final commit closes
 the call as `unknown` instead, and the log stays consistent.
+
+## Compaction
+
+With a `contextManager`, log mode compacts by a declared **`compaction`**
+transition, never by rewriting history. When the context policy asks for
+compaction, the call plans a child of the head's version:
+
+```text
+child path = the parent's leading runtime context (inherited)
+           + the summary
+           + the retained tail, re-appended unchanged in path order
+           + the call's new input
+```
+
+and the call's own `prepare` commits the transition and those entries
+before the compacted context is first sent. Later calls append to the
+child and reuse its summary until the context policy asks for another
+compaction.
+
+- **When.** At the start of each attempt, on its head snapshot after the
+  producers and the `PreGenerate` screening of new input, and between the
+  steps of a tool loop, after the previous step's outputs are committed.
+  Never while a call waits for its interrupt's resolution: such a stream
+  fails with `interrupt_pending` before compaction is considered, and a
+  resume's continuation compacts like any other generation. The
+  decision is the context manager's policy (`shouldCompact`), and the
+  `PreCompact` and `PostCompact` hooks run as in legacy mode.
+- **Runtime context is never summarised.** The context manager sees every
+  active `runtime_context` entry as a system message, which it always keeps,
+  like the prompt-builder context it replaces. A version inherits a leading
+  entry count, so the child inherits the leading run of active runtime
+  context; everything after it is either summarised or re-appended.
+- **The retained tail is re-appended exactly.** Each kept entry keeps its key
+  and content, so assistant reasoning and provider options replay byte for
+  byte, and a store that keeps content by digest stores no second copy. A
+  tool call, its approval request, its resolution and its result are kept
+  or summarised together: when the context manager keeps any of them, all
+  of them are kept (a child that would still split them is refused with
+  `ContextLogInvalidError`, reason `compaction_split_tool_call`). A re-appended entry whose `supersedes`
+  target is no longer on the child's path loses the reference (it is the
+  slot's current value), and a retraction of such a target is dropped.
+- **The summary is new content.** It is an `assistant` entry (or a `user`
+  entry, if a custom context manager returns one) and passes the
+  `PreGenerate` hooks before it is committed, so the secrets filter redacts
+  it. Kept messages are recognised by identity: a custom `ContextManager`
+  must return the messages it keeps as the same objects it was given, and
+  every other message it returns is treated as new content.
+- **Summaries run on their own stream.** A log-mode agent only accepts new
+  user input, so it cannot generate a summary itself: configure
+  `ContextManagerOptions.summarizer`. Each `SummaryRequest` carries
+  `contextLog` (`CompactionContextLog`): the run id, the compacted stream, a
+  `sourceDigest` identifying the compacted source, and `summaryStream`,
+  `{ threadId, branchId, streamId: "<runId>/summary/<sourceDigest>" }`. Run
+  the summary there, for example on a log-mode summary agent with
+  `contextStream: { branchId, streamId }`. Without a summarizer the
+  compaction fails.
+- **A failed commit fails the run.** If the `prepare` that carries the
+  transition fails after its identical-request retries, nothing compacted is
+  sent and the step fails. The run is not retried and does not fall back,
+  so a retry hook cannot summarise and compact again.
+- **Input is committed once.** A run's input is never appended again once a
+  prepare committed it, even after a compaction summarised it off the path,
+  so a retry after a later failure resends the same compacted context.
+- **Supersession is checked first.** New runtime context that supersedes a
+  missing entry, a non-runtime entry or an entry that is already superseded
+  fails with `invalid_supersession`, as it would at commit.
+- **No legacy write.** `commitCompaction` is not called for a log-mode
+  compaction (the transition is the commit), and `onCompact` still reports
+  the generated result. The legacy error-fallback compaction, which rewrites
+  checkpoint messages after a context-length error, does not run in log
+  mode.
+- **Pinned messages.** `pinMessage()` indices refer to the messages the
+  context manager is shown (the core, then the active entries), which
+  change between calls; prefer runtime context for content that must stay.
+
+A compaction on a call that also changes model creates one `compaction`
+version under the new model's contract.
 
 ## Interrupts and resume
 
@@ -677,7 +752,7 @@ run, gives them an isolated copy, and resends the attempt's own input.
 | `threadId` | `ContextStreamRef.threadId`; branches and streams are explicit |
 | System prompt rebuilt every generation | Frozen core bytes on the version; changing it is a `core_policy_change` transition |
 | Prompt builder context (dates, memory, files) | `ContextProducer`s appending `runtime_context` entries, deduplicated by key and superseded rather than rewritten |
-| Compaction replaces the messages array | A `compaction` transition: a child version that inherits a prefix and appends the summary |
+| Compaction replaces the messages array | A `compaction` transition: a child version that inherits the leading runtime context, then holds the summary and the re-appended retained tail (see [Compaction](#compaction)) |
 | Forking or editing a message | A `branch` transition on a new branch, inheriting the unedited prefix |
 | `PreGenerate.updatedInput` | Only operational options and transforms of new input; see [Hooks in log mode](#hooks-in-log-mode) |
 | Checkpoint save after a generation | `appendOutputs` for each step's output and tool results, then `recordOutcome` |

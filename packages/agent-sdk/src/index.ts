@@ -167,6 +167,7 @@ export {
 export * from "./context-log/index.js";
 // Context Manager types
 export type {
+  CompactionContextLog,
   CompactionPressureState,
   CompactionPolicy,
   CompactionResult,
@@ -179,6 +180,7 @@ export type {
   SummaryUsage,
   CompactionTask,
   CompactionTaskStatus,
+  CompactOptions,
   ContextManager,
   ContextManagerOptions,
   UsageAnchor,

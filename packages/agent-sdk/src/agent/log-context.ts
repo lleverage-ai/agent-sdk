@@ -76,6 +76,7 @@ import {
   sha256Hex,
   toEntryInput,
 } from "./log-boundary.js";
+import type { LogCompaction, LogCompactor } from "./log-compaction.js";
 import {
   findUnresolvedInterrupts,
   INTERRUPT_PENDING_REASON,
@@ -140,12 +141,6 @@ export function validateLogModeOptions(options: AgentOptions): void {
       { configKey: "systemPrompt" },
     );
   }
-  if (options.contextManager) {
-    throw new ConfigurationError(
-      "contextManager is not supported in context log mode yet: compaction must be recorded as a transition in the log",
-      { configKey: "contextManager" },
-    );
-  }
   assertTerminalModel(options.model, "model");
   assertTerminalModel(options.fallbackModel, "fallbackModel");
 }
@@ -169,12 +164,17 @@ export interface LogCallPlan {
   stream: ContextStreamRef;
   /** The head the plan was built from, or `null` when the stream has none. */
   head: ContextHead | null;
-  /** The transition that creates the stream's first version, when it has no head. */
+  /**
+   * The transition the call's prepare declares: `initial` on a stream
+   * without a head, `model_change`, or `compaction` when the context policy
+   * compacted the path.
+   */
   transition: ContextTransition | undefined;
   /**
-   * Entries to append after the head's path: the run's new user input not
-   * yet committed, then producer output, both as the PreGenerate hooks left
-   * them.
+   * Entries to append after the head's path (after the inherited prefix
+   * when compacting: the summary and the retained tail come first): the
+   * run's new user input not yet committed, then producer output, both as
+   * the PreGenerate hooks left them.
    */
   append: ContextEntryInput[];
   /** The projected request messages, including the core system message. */
@@ -187,7 +187,10 @@ export interface LogCallPlan {
   core: string;
   /** The version's contract, as projected. */
   contract: Readonly<Record<string, string>>;
-  /** Content of the head's path followed by `append`: what the adapter projected. */
+  /**
+   * What the adapter projected: the head's path followed by `append`, or
+   * the compacted child's path.
+   */
   entries: ContextEntryInput[];
   /** Prefix for the keys of this call's output entries. */
   outputKeyPrefix: string;
@@ -392,12 +395,26 @@ function toCursor(stream: ContextStreamRef, head: ContextHead | null): ContextLo
 }
 
 /**
+ * Dependencies of {@link createLogContextRuntime} built after it.
+ *
+ * @internal
+ */
+export interface LogContextRuntimeDeps {
+  /**
+   * The compactor, when the agent has a context manager. Read at call
+   * time, because it is built from the agent's message runtime.
+   */
+  compactor?: () => LogCompactor | undefined;
+}
+
+/**
  * Create the log-mode runtime for an agent whose options enable log mode.
  *
  * @internal
  */
 export function createLogContextRuntime(
   options: AgentOptions & { contextLog: ContextLogOptions },
+  deps: LogContextRuntimeDeps = {},
 ): LogContextRuntime {
   const { store, resolveCore, admit } = options.contextLog;
   const adapter: ProjectionAdapter =
@@ -543,11 +560,19 @@ export function createLogContextRuntime(
     }
 
     // The run's input keeps its keys across retries, so a retry finds the
-    // input an earlier attempt committed instead of appending it again.
+    // input an earlier attempt committed instead of appending it again. Once
+    // a prepare committed it, it is never appended again: a compaction may
+    // have summarised it off the path since.
     const onPath = new Set(path.map((entry) => entry.key));
-    const userEntries: UserContextEntryInput[] = input
-      .map((message, index) => ({ kind: "user" as const, key: `user:${run.id}:${index}`, message }))
-      .filter((entry) => !onPath.has(entry.key));
+    const userEntries: UserContextEntryInput[] = run.inputCommitted
+      ? []
+      : input
+          .map((message, index) => ({
+            kind: "user" as const,
+            key: `user:${run.id}:${index}`,
+            message,
+          }))
+          .filter((entry) => !onPath.has(entry.key));
     // Producers run against this same head and path; entries already on the
     // path are dropped. Then the new input and producer output pass the
     // PreGenerate hooks (redaction, guardrails) before anything is committed
@@ -560,9 +585,33 @@ export function createLogContextRuntime(
       ...(genOptions.signal ? { signal: genOptions.signal } : {}),
     });
     const screened = await screen(genOptions, [...userEntries, ...produced]);
-    const append = screened.pending;
+    let append = screened.pending;
 
-    const entries: ContextEntryInput[] = [...path.map(toEntryInput), ...append];
+    const committed = path.map(toEntryInput);
+    let entries: ContextEntryInput[] = [...committed, ...append];
+    // On the same snapshot, the context policy may compact the path. The
+    // compaction transition replaces any model_change (the child is created
+    // under this call's contract) and is committed by the call's prepare,
+    // before the compacted context is first sent.
+    const compaction = head
+      ? await compactPath({
+          stream,
+          head,
+          core,
+          contract,
+          path: committed,
+          pending: append,
+          options: genOptions,
+          runId: run.id,
+          screenOptions: screened.options,
+          screen,
+        })
+      : undefined;
+    if (compaction) {
+      transition = compaction.transition;
+      append = compaction.append;
+      entries = compaction.entries;
+    }
     const messages = await project(core, contract, entries, target);
 
     cursors.set(threadId, toCursor(stream, head));
@@ -585,6 +634,36 @@ export function createLogContextRuntime(
       ...(claim && { claim }),
       options: screened.options,
     };
+  }
+
+  /** Plans a compaction with the agent's compactor, if it has one. */
+  function compactPath(input: {
+    stream: ContextStreamRef;
+    head: ContextHead;
+    core: string;
+    contract: Readonly<Record<string, string>>;
+    path: readonly ContextEntryInput[];
+    pending: readonly ContextEntryInput[];
+    options: GenerateOptions;
+    runId: string;
+    screenOptions: GenerateOptions;
+    screen: LogInputScreen;
+  }): Promise<LogCompaction | undefined> {
+    const compactor = deps.compactor?.();
+    if (!compactor) return Promise.resolve(undefined);
+    return compactor({
+      stream: input.stream,
+      head: input.head,
+      core: input.core,
+      contract: input.contract,
+      path: input.path,
+      pending: input.pending,
+      // Unique per call: each head revision is planned once per run.
+      keyPrefix: `compaction:${input.runId}:${input.head.revision}`,
+      options: input.options,
+      // Only the screened entries are used, as for outputs.
+      screen: async (items) => (await input.screen(input.screenOptions, items)).pending,
+    });
   }
 
   async function project(
@@ -623,6 +702,21 @@ export function createLogContextRuntime(
       // Only the screened entries are used: the generation's options are
       // fixed once it started, so operational changes here are ignored.
       screenOutputs: async (items) => (await screen(plan.options, [...items])).pending,
+      // Between tool-loop steps the policy may compact the committed path;
+      // the next call's prepare commits the compaction before it is sent.
+      compact: (entries, head) =>
+        compactPath({
+          stream: plan.stream,
+          head,
+          core: plan.core,
+          contract: plan.contract,
+          path: entries,
+          pending: [],
+          options: plan.options,
+          runId: plan.run.id,
+          screenOptions: plan.options,
+          screen,
+        }),
     });
   }
 
