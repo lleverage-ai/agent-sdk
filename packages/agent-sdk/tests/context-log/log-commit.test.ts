@@ -951,6 +951,40 @@ describe("log-mode producers and screening", () => {
     expect(JSON.stringify(requests[1]!.prompt)).not.toContain("AKIAIOSFODNN7EXAMPLE");
   });
 
+  it("never retries a run whose outputs a guardrail blocked", async () => {
+    const store = new MemoryContextLogStore();
+    let executions = 0;
+    const tools = {
+      fetch: tool({
+        inputSchema: jsonSchema<Record<string, never>>({ type: "object", properties: {} }),
+        execute: async () => {
+          executions++;
+          return "forbidden content";
+        },
+      }),
+    };
+    const [inputFilter] = createGuardrailsHooks({ blockedInputPatterns: [/forbidden/] });
+    const retryEverything = vi.fn(async () => ({
+      hookSpecificOutput: {
+        hookEventName: "PostGenerateFailure" as const,
+        retry: true,
+        retryDelayMs: 0,
+      },
+    }));
+    const { model, requests } = createScriptedModel([toolCalls(["c1", "fetch", {}]), text("x")]);
+
+    await expect(
+      logAgent(model, store, {
+        tools,
+        hooks: { PreGenerate: [inputFilter], PostGenerateFailure: [retryEverything] },
+      }).generate({ prompt: "go", threadId: THREAD }),
+    ).rejects.toThrow();
+
+    expect(retryEverything).toHaveBeenCalledTimes(1);
+    expect(requests).toHaveLength(1);
+    expect(executions).toBe(1);
+  });
+
   it("fails the run without committing outputs a guardrail blocks", async () => {
     const store = new MemoryContextLogStore();
     const tools = {

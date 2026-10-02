@@ -49,8 +49,13 @@ import type {
 } from "ai";
 import { streamText } from "ai";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
+import { isContextLogError } from "../context-log/errors.js";
 import { createLogModeRetryGuard, invokeLogModePreGenerateHooks } from "../context-log/hooks.js";
-import { type AgentError, ConfigurationError } from "../errors/index.js";
+import {
+  type AgentError,
+  ConfigurationError,
+  GeneratePermissionDeniedError,
+} from "../errors/index.js";
 import {
   createRetryLoopState,
   invokePreGenerateHooks,
@@ -1274,6 +1279,15 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     }
   }
 
+  /** Log-mode failures no retry can fix. */
+  function isFinalLogModeFailure(error: AgentError): boolean {
+    return (
+      error instanceof GeneratePermissionDeniedError ||
+      isContextLogError(error, "invalid") ||
+      isContextLogError(error, "refused")
+    );
+  }
+
   async function retryOrThrow(
     normalizedError: AgentError,
     effectiveGenOptions: GenerateOptions,
@@ -1297,6 +1311,14 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       fallbackModel: options.fallbackModel,
       retryPolicy: options.generationRetryPolicy,
     });
+
+    // Log mode: a denial, a hook violation or an admit refusal is not
+    // transient. Retrying would only repeat it, and after a step's outputs
+    // were blocked it would re-run the model and its tools. The hooks above
+    // still observe the failure.
+    if (errorDecision.shouldRetry && logContext && isFinalLogModeFailure(normalizedError)) {
+      throw normalizedError;
+    }
 
     if (errorDecision.shouldRetry) {
       let nextOptions = effectiveGenOptions;
