@@ -312,9 +312,9 @@ describe("log-mode PreGenerate: history and system are append-only", () => {
 
   it("rejects a string message whose other fields are not plain JSON", async () => {
     const entry = {
-      kind: "user",
-      key: "u1",
-      message: { role: "user", content: "hello", providerOptions: { a: { at: new Date(0) } } },
+      kind: "assistant",
+      key: "a1",
+      message: { role: "assistant", content: "hello", providerOptions: { a: { at: new Date(0) } } },
     } as unknown as ContextEntryInput;
     const spread = rewriting((options) => ({ ...options, maxTokens: 1 }));
     expect(
@@ -327,6 +327,45 @@ describe("log-mode PreGenerate: history and system are append-only", () => {
         }),
       ),
     ).toMatch(/changed a field other than the text/);
+  });
+
+  it("screens a new user message's provider options as data, and refuses ones that are not plain JSON", async () => {
+    const [secrets] = createSecretsFilterHooks();
+    const entry: ContextEntryInput = {
+      kind: "user",
+      key: "u1",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "hello", providerOptions: { p: { [AWS_KEY]: 1 } } }],
+        providerOptions: { anthropic: { context: `key ${AWS_KEY}` } },
+      },
+    };
+    const { pending } = await invokeLogModePreGenerateHooks({
+      hooks: [secrets],
+      options: {},
+      pending: [entry],
+      agent: agent(),
+    });
+    expect(JSON.stringify(pending)).not.toContain(AWS_KEY);
+    expect(pending[0]).toMatchObject({
+      message: {
+        content: [{ type: "text", text: "hello", providerOptions: { p: { "[REDACTED]": 1 } } }],
+        providerOptions: { anthropic: { context: "key [REDACTED]" } },
+      },
+    });
+
+    const notJson = {
+      kind: "user",
+      key: "u2",
+      message: { role: "user", content: "hello", providerOptions: { a: { at: new Date(0) } } },
+    } as unknown as ContextEntryInput;
+    const error = await invokeLogModePreGenerateHooks({
+      hooks: [secrets],
+      options: {},
+      pending: [notJson],
+      agent: agent(),
+    }).catch((caught: unknown) => caught);
+    expect(isContextLogError(error, "invalid") && error.reason).toBe("not_json");
   });
 
   it("keeps a string message's other fields when its text is redacted", async () => {

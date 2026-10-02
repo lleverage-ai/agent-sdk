@@ -41,7 +41,7 @@ import {
   ContextLogInvalidError,
   ContextLogNotFoundError,
 } from "../context-log/errors.js";
-import { assertContextJson } from "../context-log/json.js";
+import { assertContextJsonOpaque } from "../context-log/json.js";
 import { resolveContextProducers, runContextProducers } from "../context-log/producers.js";
 import {
   buildProjectionContract,
@@ -270,8 +270,9 @@ export interface LogInterruptSite {
 export interface LogContextRuntime {
   /**
    * Turn a run's caller options into PreGenerate input. Rejects caller
-   * history and requires a `threadId`; the prompt becomes a user message in
-   * `messages`, so PreGenerate hooks see (and may redact or deny) it.
+   * history and requires a `threadId`; the prompt, or each message of
+   * `input`, becomes a user message in `messages`, so PreGenerate hooks see
+   * (and may redact or deny) it.
    */
   prepareRunInput(genOptions: GenerateOptions): GenerateOptions;
   /**
@@ -371,18 +372,56 @@ async function readPreviousCall(
   };
 }
 
+/** Part types a user message of new input may contain. @internal */
+const USER_PART_TYPES: ReadonlySet<string> = new Set(["text", "image", "file"]);
+
+/**
+ * Checks new user input: user messages only, each plain JSON with string
+ * content or text, image and file parts. @internal
+ */
+function assertUserMessages(messages: readonly ModelMessage[], field: string): void {
+  messages.forEach((message, index) => {
+    if (typeof message !== "object" || message === null || message.role !== "user") {
+      const role = typeof message === "object" && message !== null ? message.role : undefined;
+      // Name the role only when it is a known one: caller input is unscreened.
+      const known = ["system", "assistant", "tool"].includes(role as string);
+      throw new ValidationError(
+        `Context log mode only accepts new user input; ${field}[${index}] ${
+          known ? `has role "${role}"` : "is not a user message"
+        }`,
+        { fieldErrors: { [field]: ["only user messages are accepted in context log mode"] } },
+      );
+    }
+    const content: unknown = message.content;
+    if (typeof content !== "string") {
+      if (!Array.isArray(content)) {
+        throw new ValidationError(
+          `${field}[${index}] must have string content or an array of parts`,
+          { fieldErrors: { [field]: ["content must be a string or an array of parts"] } },
+        );
+      }
+      content.forEach((part: unknown, partIndex) => {
+        const type =
+          typeof part === "object" && part !== null ? (part as { type?: unknown }).type : undefined;
+        if (typeof type !== "string" || !USER_PART_TYPES.has(type)) {
+          throw new ValidationError(
+            `${field}[${index}].content[${partIndex}] must be a text, image or file part`,
+            { fieldErrors: { [field]: ["user parts must be text, image or file parts"] } },
+          );
+        }
+      });
+    }
+    // File and image data must be strings (base64, data URL or URL): the log
+    // holds plain JSON only. The error never names a key inside the message,
+    // which may be a secret the hooks have not screened yet.
+    assertContextJsonOpaque(message, `${field}[${index}]`);
+  });
+}
+
 /** The new user input of a run, after PreGenerate. @internal */
 function newUserMessages(genOptions: GenerateOptions): UserModelMessage[] {
   const messages = genOptions.messages ?? [];
-  messages.forEach((message, index) => {
-    if (message.role !== "user") {
-      throw new ValidationError(
-        `Context log mode only accepts new user input; message ${index} has role "${message.role}"`,
-        { fieldErrors: { messages: ["only user messages are accepted in context log mode"] } },
-      );
-    }
-    assertContextJson(message, `messages[${index}]`);
-  });
+  assertUserMessages(messages, "messages");
   return messages as UserModelMessage[];
 }
 
@@ -445,10 +484,23 @@ export function createLogContextRuntime(
     }
     if (genOptions.messages && genOptions.messages.length > 0) {
       throw new ValidationError(
-        "Context log mode does not accept caller-supplied messages: the log is the history. Pass new user input as prompt",
+        "Context log mode does not accept caller-supplied messages: the log is the history. Pass new user input as prompt or input",
         { fieldErrors: { messages: ["not accepted in context log mode"] } },
       );
     }
+    const input = genOptions.input;
+    if (input !== undefined && !Array.isArray(input)) {
+      throw new ValidationError("input must be an array of user messages", {
+        fieldErrors: { input: ["must be an array of user messages"] },
+      });
+    }
+    if (input && input.length > 0 && genOptions.prompt) {
+      throw new ValidationError(
+        "Pass the run's new input as prompt or as input, not both: their order would be ambiguous",
+        { fieldErrors: { input: ["cannot be combined with prompt"] } },
+      );
+    }
+    if (input) assertUserMessages(input, "input");
     if (genOptions._historyUnlessCheckpointed && genOptions._historyUnlessCheckpointed.length > 0) {
       throw new ValidationError(
         "Context log mode does not accept caller-supplied history: the log is the history",
@@ -457,17 +509,25 @@ export function createLogContextRuntime(
     }
     const {
       prompt,
+      input: _input,
       messages: _messages,
       _historyUnlessCheckpointed: _history,
       _checkpointSnapshot: _snapshot,
       _logRun: _previousRun,
       ...rest
     } = genOptions;
+    if (input && input.length > 0) {
+      // A copy, so a caller that reuses or changes its array while the run is
+      // in flight cannot change what a retry plans. The input is plain JSON,
+      // so the round trip only drops undefined properties: the messages are
+      // the bytes the log will hold, before and after commit.
+      return { ...rest, messages: JSON.parse(JSON.stringify(input)) as UserModelMessage[] };
+    }
     return prompt ? { ...rest, messages: [{ role: "user", content: prompt }] } : rest;
   }
 
   function acceptRunInput(effectiveOptions: GenerateOptions): GenerateOptions {
-    const { prompt, ...rest } = effectiveOptions;
+    const { prompt, input: _input, ...rest } = effectiveOptions;
     const messages: ModelMessage[] = [
       ...(rest.messages ?? []),
       ...(prompt ? [{ role: "user" as const, content: prompt }] : []),

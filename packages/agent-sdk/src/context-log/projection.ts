@@ -6,7 +6,7 @@
  */
 
 import type { ModelMessage } from "ai";
-import { projectMessagesForModel } from "../agent/model-capabilities.js";
+import { projectMessagesForModel, projectUserMediaForModel } from "../agent/model-capabilities.js";
 import type { ModelInputCapabilities } from "../types.js";
 import { canonicalContextJson } from "./json.js";
 import { activeContextEntries } from "./supersession.js";
@@ -99,8 +99,10 @@ function renderEntry(entry: ContextEntryInput): ModelMessage {
  *   string payload as is, any other payload as canonical JSON (sorted keys).
  * - When the contract records `imageInput: "false"` or `fileInput: "false"`,
  *   tool-result media is replaced by the same text placeholders legacy mode
- *   uses. The decision follows the version's contract, not the live model
- *   settings, so a path always projects to the same messages.
+ *   uses, and so are user image and file parts (a file part with an image
+ *   media type counts as an image). The decision follows the version's
+ *   contract, not the live model settings, so a path always projects to the
+ *   same messages.
  *
  * A host that renders runtime context or converts between providers
  * differently supplies its own adapter, with its own id and version.
@@ -129,7 +131,13 @@ export function createMessageProjectionAdapter(): ProjectionAdapter {
       for (const entry of activeContextEntries(entries)) {
         messages.push(renderEntry(entry));
       }
-      return { messages: projectMessagesForModel(messages, contractCapabilities(contract)) };
+      const capabilities = contractCapabilities(contract);
+      return {
+        messages: projectUserMediaForModel(
+          projectMessagesForModel(messages, capabilities),
+          capabilities,
+        ),
+      };
     },
   };
 }

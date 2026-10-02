@@ -16,7 +16,7 @@ import { buildPreGenerateInput, throwIfGenerationDenied } from "../generation-he
 import { extractRespondWith, extractUpdatedInput, invokeHooksWithTimeout } from "../hooks.js";
 import type { Agent, GenerateOptions, HookCallback, HookEvent } from "../types.js";
 import { ContextLogInvalidError } from "./errors.js";
-import { assertContextJson, canonicalContextJson } from "./json.js";
+import { assertContextJson, assertContextJsonOpaque, canonicalContextJson } from "./json.js";
 import type { ContextEntryInput } from "./types.js";
 
 type ModelMessage = NonNullable<GenerateOptions["messages"]>[number];
@@ -47,7 +47,7 @@ export const LOG_MODE_OPERATIONAL_OPTIONS: ReadonlySet<keyof GenerateOptions> = 
 ]);
 
 /** Options that describe the input; the runtime supplies them as pending entries. */
-const INPUT_OPTIONS = ["prompt", "messages"] as const;
+const INPUT_OPTIONS = ["prompt", "input", "messages"] as const;
 
 function violation(event: HookEvent, detail: string): ContextLogInvalidError {
   return new ContextLogInvalidError(
@@ -150,7 +150,7 @@ function isolateOptions(options: GenerateOptions): {
         if (plainJson(after) !== snapshots.get(key)) {
           throw violation(
             event,
-            key === "prompt" || key === "messages"
+            key === "prompt" || key === "input" || key === "messages"
               ? `changed "${key}" (history is append-only)`
               : `changed "${key}"`,
           );
@@ -203,7 +203,13 @@ interface TextLocation {
  * payload) every object key, string and finite number is screened: a secret
  * can sit in a property name or a numeric value as easily as in a string.
  */
-function collectTexts(value: unknown, path: Path, data: boolean, into: TextLocation[]): void {
+function collectTexts(
+  value: unknown,
+  path: Path,
+  data: boolean,
+  into: TextLocation[],
+  callerOptions = false,
+): void {
   if (typeof value === "string") {
     into.push({ path, kind: "value" });
     return;
@@ -214,7 +220,7 @@ function collectTexts(value: unknown, path: Path, data: boolean, into: TextLocat
   }
   if (Array.isArray(value)) {
     value.forEach((item, index) => {
-      collectTexts(item, [...path, index], data, into);
+      collectTexts(item, [...path, index], data, into, callerOptions);
     });
     return;
   }
@@ -225,10 +231,14 @@ function collectTexts(value: unknown, path: Path, data: boolean, into: TextLocat
     if (data) {
       into.push({ path: [...path, key], kind: "key" });
       collectTexts(item, [...path, key], true, into);
-    } else if (key === "input" || (key === "value" && jsonOutput)) {
+    } else if (
+      key === "input" ||
+      (key === "value" && jsonOutput) ||
+      (key === "providerOptions" && callerOptions)
+    ) {
       collectTexts(item, [...path, key], true, into);
     } else if (!STRUCTURAL_KEYS.has(key)) {
-      collectTexts(item, [...path, key], false, into);
+      collectTexts(item, [...path, key], false, into, callerOptions);
     }
   }
 }
@@ -332,7 +342,16 @@ function present(pending: readonly ContextEntryInput[]): {
   const messages: ModelMessage[] = [];
   const presentations: Presentation[] = [];
   pending.forEach((entry, index) => {
-    if (entry.kind !== "runtime_context" && typeof entry.message.content === "string") {
+    // Provider options on caller input can carry model input (for example
+    // a document's title or context), so a user message's are screened as
+    // data, at message and part level. A provider's own output keeps its
+    // provider options and metadata unscreened (signatures, item ids).
+    const callerOptions = entry.kind === "user";
+    if (
+      entry.kind !== "runtime_context" &&
+      typeof entry.message.content === "string" &&
+      !(callerOptions && entry.message.providerOptions !== undefined)
+    ) {
       messages.push(structuredClone(entry.message));
       presentations.push({ kind: "native", index, role: entry.message.role });
       return;
@@ -341,7 +360,15 @@ function present(pending: readonly ContextEntryInput[]): {
     const target = entry.kind === "runtime_context" ? "payload" : "message";
     const root = entry.kind === "runtime_context" ? entry.payload : entry.message;
     if (entry.kind === "runtime_context") collectTexts(root, [], true, locations);
-    else collectTexts(entry.message.content, ["content"], false, locations);
+    else {
+      collectTexts(entry.message.content, ["content"], false, locations, callerOptions);
+      if (callerOptions && entry.message.providerOptions !== undefined) {
+        // Only plain JSON can be screened in full; anything else could hide
+        // input from the filters.
+        assertContextJsonOpaque(entry.message.providerOptions, `pending[${index}].providerOptions`);
+        collectTexts(entry.message.providerOptions, ["providerOptions"], true, locations);
+      }
+    }
     if (locations.length === 0) return;
     const role = entry.kind === "runtime_context" ? "user" : entry.message.role;
     messages.push({

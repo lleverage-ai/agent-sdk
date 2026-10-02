@@ -69,6 +69,27 @@ export function assertContextJson(value: unknown, path = "value"): void {
 }
 
 /**
+ * Like {@link assertContextJson}, but the error names only `label`, never the
+ * path inside the value: for caller input, whose object keys may be secrets
+ * that the input-security hooks have not screened yet.
+ *
+ * @internal
+ */
+export function assertContextJsonOpaque(value: unknown, label: string): void {
+  try {
+    assertContextJson(value);
+  } catch (error) {
+    if (error instanceof ContextLogInvalidError) {
+      throw new ContextLogInvalidError(
+        error.reason,
+        `${label} is not plain JSON (encode binary data, dates and URLs as strings)`,
+      );
+    }
+    throw error;
+  }
+}
+
+/**
  * Serialises a JSON value with object keys sorted, so equal values always
  * produce equal strings. Use it for digests and request comparison, never to
  * store content (stored content keeps its own key order).
