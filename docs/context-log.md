@@ -412,7 +412,10 @@ compaction.
 
 - **When.** At the start of each attempt, on its head snapshot after the
   producers and the `PreGenerate` screening of new input, and between the
-  steps of a tool loop, after the previous step's outputs are committed. The
+  steps of a tool loop, after the previous step's outputs are committed.
+  Never while a call waits for its interrupt's resolution: such a stream
+  fails with `interrupt_pending` before compaction is considered, and a
+  resume's continuation compacts like any other generation. The
   decision is the context manager's policy (`shouldCompact`), and the
   `PreCompact` and `PostCompact` hooks run as in legacy mode.
 - **Runtime context is never summarised.** The context manager sees every
@@ -423,9 +426,10 @@ compaction.
 - **The retained tail is re-appended exactly.** Each kept entry keeps its key
   and content, so assistant reasoning and provider options replay byte for
   byte, and a store that keeps content by digest stores no second copy. A
-  tool call and its result are kept or summarised together; a child that
-  splits them is refused (`ContextLogInvalidError`, reason
-  `compaction_split_tool_call`). A re-appended entry whose `supersedes`
+  tool call, its approval request, its resolution and its result are kept
+  or summarised together: when the context manager keeps any of them, all
+  of them are kept (a child that would still split them is refused with
+  `ContextLogInvalidError`, reason `compaction_split_tool_call`). A re-appended entry whose `supersedes`
   target is no longer on the child's path loses the reference (it is the
   slot's current value), and a retraction of such a target is dropped.
 - **The summary is new content.** It is an `assistant` entry (or a `user`
@@ -452,7 +456,8 @@ compaction.
   so a retry after a later failure resends the same compacted context.
 - **Supersession is checked first.** New runtime context that supersedes a
   missing entry, a non-runtime entry or an entry that is already superseded
-  fails with `invalid_supersession`, as it would at commit. `commitCompaction` is not called for a log-mode
+  fails with `invalid_supersession`, as it would at commit.
+- **No legacy write.** `commitCompaction` is not called for a log-mode
   compaction (the transition is the commit), and `onCompact` still reports
   the generated result. The legacy error-fallback compaction, which rewrites
   checkpoint messages after a context-length error, does not run in log

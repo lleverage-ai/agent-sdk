@@ -12,13 +12,13 @@ import { jsonSchema, type LanguageModel, type ModelMessage, tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import { createLogCompactor } from "../../src/agent/log-compaction.js";
+import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
 import {
   type Agent,
   type AgentOptions,
   type ContextEntry,
   type ContextEntryInput,
   type ContextHead,
-  ContextLogInvalidError,
   type ContextLogStore,
   ContextLogUnavailableError,
   type ContextManager,
@@ -540,7 +540,7 @@ describe("log-mode compaction", () => {
     expect(requests).toHaveLength(1);
   });
 
-  it("refuses a compaction that splits a tool call from its result", async () => {
+  it("keeps a tool call with its result when the manager keeps only one of them", async () => {
     const store = new MemoryContextLogStore();
     const { model, requests } = createScriptedModel([thinkThenEcho("c1"), text("a1"), text("a2")]);
     const real = createCompactingManager(Number.POSITIVE_INFINITY).contextManager;
@@ -573,14 +573,100 @@ describe("log-mode compaction", () => {
     const agent = logAgent(model, store, { contextManager: splitting, tools: echoTools });
 
     await agent.generate({ prompt: "q1", threadId: THREAD });
-    const before = await store.readHead(STREAM);
-    const error = await agent.generate({ prompt: "q2", threadId: THREAD }).catch((e) => e);
-    expect(
-      error instanceof ContextLogInvalidError ||
-        (error as { cause?: unknown }).cause instanceof ContextLogInvalidError,
-    ).toBe(true);
-    expect(requests).toHaveLength(2);
-    expect(await store.readHead(STREAM)).toEqual(before);
+    const before = await readPath(store);
+    await agent.generate({ prompt: "q2", threadId: THREAD });
+
+    // The manager dropped the call and kept its result: the call is kept too.
+    expect(requests).toHaveLength(3);
+    const path = await readPath(store);
+    expect(path.map((entry) => entry.kind)).toEqual([
+      "assistant",
+      "runtime_context",
+      "assistant",
+      "tool_result",
+      "user",
+      "assistant",
+    ]);
+    expect(content(path.slice(2, 4))).toEqual(content(before.slice(2, 4)));
+  });
+
+  it("keeps an approval request, its resolution and its result with the call after a resume", async () => {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    const runs: string[] = [];
+    const deploy = {
+      deploy: tool({
+        inputSchema: jsonSchema<{ env: string }>({
+          type: "object",
+          properties: { env: { type: "string" } },
+          required: ["env"],
+        }),
+        execute: async (input, options) => {
+          const interrupt = (
+            options as unknown as {
+              interrupt: (request: unknown, options?: { type?: string }) => Promise<unknown>;
+            }
+          ).interrupt;
+          const decision = (await interrupt(
+            { toolName: "deploy", args: input },
+            { type: "approval" },
+          )) as { approved: boolean };
+          runs.push(`${options.toolCallId}:${decision.approved}`);
+          return `deployed:${input.env}`;
+        },
+      }),
+    };
+    const { model, requests } = createScriptedModel([
+      [{ type: "tool-call", toolCallId: "c1", toolName: "deploy", input: '{"env":"prod"}' }],
+      text("deployed it"),
+      text("a2"),
+    ]);
+    // The second run's view (core, go, settings, the call, its resolution,
+    // its result, the reply and q2) has eight messages. Keeping the last
+    // three keeps the result; the built-in retention would keep the call
+    // with it but summarise the resolution between them.
+    const manager = createCompactingManager(7, { keepMessageCount: 3 });
+    const agent = logAgent(model, store, {
+      contextManager: manager.contextManager,
+      tools: deploy,
+      checkpointer,
+    });
+
+    const interrupted = await agent.generate({ prompt: "go", threadId: THREAD });
+    expect(interrupted.status).toBe("interrupted");
+    if (interrupted.status !== "interrupted") return;
+    // Nothing is compacted around the pending interrupt.
+    await agent.resume(THREAD, interrupted.interrupt.id, { approved: true });
+    expect(runs).toEqual(["c1:true"]);
+    expect(manager.requests).toHaveLength(0);
+    const before = await readPath(store);
+    // go, settings, the call, its resolution, its result, the reply.
+    const group = before.slice(2, 5);
+    expect(group.map((entry) => entry.kind)).toEqual(["assistant", "tool_result", "tool_result"]);
+
+    await agent.generate({ prompt: "q2", threadId: THREAD });
+
+    expect(manager.requests).toHaveLength(1);
+    const head = await store.readHead(STREAM);
+    expect((await store.readVersion(head!.versionId)).reason).toBe("compaction");
+    const path = await readPath(store);
+    expect(path.map((entry) => entry.kind)).toEqual([
+      "assistant",
+      "runtime_context",
+      "assistant",
+      "tool_result",
+      "tool_result",
+      "assistant",
+      "user",
+      "assistant",
+    ]);
+    // The call with its approval request, the resolution and the result are
+    // re-appended together and unchanged, in order.
+    expect(content(path.slice(2, 5))).toEqual(content(group));
+    expect(JSON.stringify(path[2])).toContain("tool-approval-request");
+    expect(JSON.stringify(path[3])).toContain("tool-approval-response");
+    expect(JSON.stringify(path[4])).toContain("deployed:prod");
+    expect(requests).toHaveLength(3);
   });
 });
 
@@ -854,6 +940,37 @@ describe("log-mode compaction planning", () => {
       expect(compactIfNeeded).not.toHaveBeenCalled();
     },
   );
+
+  it("never compacts while a call waits for its interrupt's resolution", async () => {
+    const compactIfNeeded = vi.fn(async (messages: ModelMessage[]) => ({
+      compacted: true,
+      messages,
+    }));
+    const waiting: ContextEntryInput = {
+      kind: "assistant",
+      key: "waiting",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool-call", toolCallId: "t9", toolName: "deploy", input: {} },
+          { type: "tool-approval-request", approvalId: "int_t9", toolCallId: "t9" },
+        ],
+      },
+    };
+    const compaction = await createLogCompactor(compactIfNeeded)({
+      stream: STREAM,
+      head,
+      core: "",
+      contract: {},
+      path: [...path, waiting],
+      pending: [],
+      keyPrefix: "k",
+      options: {},
+      screen: async (entries) => entries,
+    });
+    expect(compaction).toBeUndefined();
+    expect(compactIfNeeded).not.toHaveBeenCalled();
+  });
 
   it("does nothing when the policy does not ask for compaction", async () => {
     const compactIfNeeded = vi.fn(async (messages: ModelMessage[]) => ({

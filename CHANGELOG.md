@@ -169,7 +169,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after a compaction summarised it:
   - The child version inherits the leading run of runtime context, then
     holds the summary, then the retained tail re-appended unchanged in path
-    order (reasoning and tool call/result pairs intact), then the call's new
+    order (reasoning, tool calls with their approval requests, resolutions
+    and results kept together), then the call's new
     input. Runtime context is never summarised. Later calls append to the
     child and reuse its summary until the context policy asks for another
     compaction.
