@@ -95,7 +95,8 @@ export interface AgentSessionOptions {
    * If threadId is provided and checkpointing is enabled, these reach the
    * model only while the generation loads no checkpoint for the thread; an
    * existing checkpoint's history takes their place.
-   * Not accepted in context log mode, where the log holds the history.
+   * Non-empty initial messages are not accepted in context log mode, where
+   * the log holds the history.
    */
   initialMessages?: ModelMessage[];
 
