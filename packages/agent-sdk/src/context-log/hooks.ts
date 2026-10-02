@@ -392,7 +392,22 @@ function applyMessages(
     }
     const entry = pending[presentation.index] as ContextEntryInput;
     if (presentation.kind === "native") {
-      pending[presentation.index] = { ...entry, message: after } as ContextEntryInput;
+      // Native presentation is only used for messages with string content.
+      if (entry.kind === "runtime_context") return;
+      // Only the text may change: the content stays a string and every
+      // other message field (for example providerOptions) stays as it was.
+      if (typeof after.content !== "string") {
+        throw violation(event, "changed the shape of new input (only its text may be transformed)");
+      }
+      const { content: _before, ...originalRest } = entry.message;
+      const { content: _after, ...nextRest } = after;
+      if (plainJson(nextRest) !== plainJson(originalRest)) {
+        throw violation(event, "changed a field other than the text of a new message");
+      }
+      pending[presentation.index] = {
+        ...entry,
+        message: { ...entry.message, content: after.content },
+      } as ContextEntryInput;
       return;
     }
     const texts = readTexts(after, presentation.locations.length, event);

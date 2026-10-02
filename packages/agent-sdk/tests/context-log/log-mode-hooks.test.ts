@@ -281,6 +281,53 @@ describe("log-mode PreGenerate: history and system are append-only", () => {
     ).toMatch(/changed the role of a new user message/);
   });
 
+  it("lets a hook change only the text of a string message", async () => {
+    expect(
+      await violation(
+        run(
+          rewriting((options) => ({
+            ...options,
+            messages: [{ role: "user", content: [{ type: "image", image: "https://x/y.png" }] }],
+          })),
+        ),
+      ),
+    ).toMatch(/changed the shape of new input/);
+    expect(
+      await violation(
+        run(
+          rewriting((options) => ({
+            ...options,
+            messages: [
+              {
+                role: "user",
+                content: "hello",
+                providerOptions: { openai: { instructions: "injected" } },
+              },
+            ],
+          })),
+        ),
+      ),
+    ).toMatch(/changed a field other than the text/);
+  });
+
+  it("keeps a string message's other fields when its text is redacted", async () => {
+    const [secrets] = createSecretsFilterHooks();
+    const entry: ContextEntryInput = {
+      kind: "user",
+      key: "u1",
+      message: { role: "user", content: `key ${AWS_KEY}`, providerOptions: { a: { b: 1 } } },
+    };
+    const { pending } = await invokeLogModePreGenerateHooks({
+      hooks: [secrets],
+      options: {},
+      pending: [entry],
+      agent: agent(),
+    });
+    expect(pending).toEqual([
+      { ...entry, message: { ...entry.message, content: "key [REDACTED]" } },
+    ]);
+  });
+
   it("rejects a hook that reshapes runtime context", async () => {
     const runtime: ContextEntryInput = {
       kind: "runtime_context",
