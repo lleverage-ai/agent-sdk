@@ -108,6 +108,7 @@ const userMediaContract = (adapterVersion: string) => ({
   imageInput: "true",
   fileInput: "true",
   userMedia: "placeholder",
+  supersession: "append",
 });
 
 describe("adapter_change", () => {
@@ -246,10 +247,11 @@ describe("core_policy_change", () => {
         core: "Core v2",
         contract: {
           adapter: "agent-sdk/messages",
-          adapterVersion: "1",
+          adapterVersion: "2",
           imageInput: "true",
           fileInput: "true",
           userMedia: "placeholder",
+          supersession: "append",
           coreVersion: "2",
         },
       },
@@ -343,10 +345,11 @@ describe("core_policy_change", () => {
     const [version] = await readLineage(other);
     expect(version!.contract).toEqual({
       adapter: "agent-sdk/messages",
-      adapterVersion: "1",
+      adapterVersion: "2",
       imageInput: "true",
       fileInput: "true",
       userMedia: "placeholder",
+      supersession: "append",
     });
   });
 

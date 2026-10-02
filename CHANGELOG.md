@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Log mode: supersession is append-only in the projection** (LLE-14025).
+  `createMessageProjectionAdapter()` (now version `2`) keeps superseded
+  `runtime_context` entries and retractions in their original positions
+  instead of dropping them, so a slot change (a date, a memory digest) only
+  extends the projected prefix and the provider's prompt cache survives it.
+  An entry that supersedes another is rendered with the line
+  `(updates earlier context)` before its payload; a retraction is rendered as
+  `(removes earlier context: the following no longer applies)` followed by
+  the retracted entry's text. Keys and producer names are never rendered.
+  The runtime records `supersession: "append"` in the contract of every
+  version it creates; versions without it (created before this release)
+  keep projecting as before. Compaction is unchanged: the child still
+  inherits only active entries (`activeContextEntries()`), so it is the only
+  place superseded entries are dropped.
+
+### Migration notes
+
+- **Default adapter.** Existing log-mode streams on the default adapter
+  declare one `adapter_change` on their next call (version `1` to `2`); the
+  new version projects append-only, which re-sends superseded entries once.
+- **Host adapters** that wrap `createMessageProjectionAdapter()` get the new
+  behaviour on versions that record `supersession: "append"`. Bump your
+  adapter's version so existing streams move to such a version with an
+  `adapter_change`; without a bump, existing versions keep dropping
+  superseded entries and new streams project append-only. Hosts that persist
+  contracts must keep the `supersession` key.
+
 ## [1.0.0-rc.7] - 2026-10-02
 
 Seventh release candidate for 1.0.0. It adds four log-mode changes that

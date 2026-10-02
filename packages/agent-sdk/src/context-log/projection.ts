@@ -16,12 +16,16 @@ import type {
   ProjectedModelInput,
   ProjectionAdapter,
   ProjectionInput,
+  RuntimeContextEntryInput,
 } from "./types.js";
 
 /** Identifier of the adapter returned by {@link createMessageProjectionAdapter}. */
 const MESSAGE_PROJECTION_ADAPTER_ID = "agent-sdk/messages";
-/** Version of the adapter returned by {@link createMessageProjectionAdapter}. */
-const MESSAGE_PROJECTION_ADAPTER_VERSION = "1";
+/**
+ * Version of the adapter returned by {@link createMessageProjectionAdapter}.
+ * "2": superseded runtime context and retractions stay in the projection.
+ */
+const MESSAGE_PROJECTION_ADAPTER_VERSION = "2";
 
 /**
  * The contract values the runtime records for an adapter and a model's
@@ -54,6 +58,24 @@ export function buildProjectionContract(
 export const USER_MEDIA_CONTRACT_KEY = "userMedia";
 
 /**
+ * Contract key recording that the version projects runtime context
+ * append-only: a superseded entry stays in its original position, the entry
+ * that supersedes it is rendered as an update where it was committed, and a
+ * retraction is rendered as a notice. The projected prefix therefore never
+ * changes when a slot changes, so the provider's prompt cache keeps it.
+ *
+ * The runtime records it on every version it creates; versions created
+ * before it existed lack it and keep dropping superseded entries and
+ * retractions, so a version always projects to the same bytes. Like
+ * {@link USER_MEDIA_CONTRACT_KEY} it is not compared with the expected
+ * contract; the default adapter's version change is what moves an existing
+ * stream to a new version that records it (an `adapter_change`).
+ *
+ * @internal
+ */
+export const SUPERSESSION_CONTRACT_KEY = "supersession";
+
+/**
  * Contract key recording the host's core version
  * (`ContextLogOptions.coreVersion`) on every version the log-mode
  * runtime creates while the option is set.
@@ -82,6 +104,7 @@ export function newVersionContract(
   return {
     ...expected,
     [USER_MEDIA_CONTRACT_KEY]: "placeholder",
+    [SUPERSESSION_CONTRACT_KEY]: "append",
     ...(coreVersion !== undefined && { [CORE_VERSION_CONTRACT_KEY]: coreVersion }),
   };
 }
@@ -108,7 +131,22 @@ function contractCapabilities(contract: Readonly<Record<string, string>>): Model
   };
 }
 
-/** Render one active entry as a model message. @internal */
+/** Label that opens a runtime context entry that supersedes another. */
+const UPDATE_LABEL = "(updates earlier context)";
+/** Label of a retraction, followed by the text of the entry it retracts. */
+const RETRACTION_LABEL = "(removes earlier context: the following no longer applies)";
+
+/** The text a runtime context payload renders as. @internal */
+function payloadText(entry: RuntimeContextEntryInput): string {
+  return typeof entry.payload === "string" ? entry.payload : canonicalContextJson(entry.payload);
+}
+
+/** A single-text-part user message. @internal */
+function textMessage(text: string): ModelMessage {
+  return { role: "user", content: [{ type: "text", text }] };
+}
+
+/** Render one entry as a model message, without any supersession label. @internal */
 function renderEntry(entry: ContextEntryInput): ModelMessage {
   switch (entry.kind) {
     case "user":
@@ -116,19 +154,38 @@ function renderEntry(entry: ContextEntryInput): ModelMessage {
     case "tool_result":
       return entry.message;
     case "runtime_context":
-      return {
-        role: "user",
-        content: [
-          {
-            type: "text",
-            text:
-              typeof entry.payload === "string"
-                ? entry.payload
-                : canonicalContextJson(entry.payload),
-          },
-        ],
-      };
+      return textMessage(payloadText(entry));
   }
+}
+
+/**
+ * Renders a path append-only: every entry stays where it was committed. An
+ * entry that supersedes another opens with {@link UPDATE_LABEL}; a
+ * retraction renders {@link RETRACTION_LABEL} followed by the text of the
+ * entry it retracts (when that entry is in the input and is not itself a
+ * retraction), so the model knows
+ * which context no longer applies. Every rendered string is fixed SDK text
+ * or a screened payload; keys and producer names are never rendered.
+ *
+ * @internal
+ */
+function renderAppendOnly(entries: readonly ContextEntryInput[]): ModelMessage[] {
+  const runtime = new Map<string, RuntimeContextEntryInput>();
+  return entries.map((entry) => {
+    if (entry.kind !== "runtime_context") return renderEntry(entry);
+    runtime.set(entry.key, entry);
+    if (entry.supersedes === undefined) return renderEntry(entry);
+    if (entry.retraction === true) {
+      const target = runtime.get(entry.supersedes);
+      // A retraction has no content to quote (a host may retract one).
+      return textMessage(
+        target === undefined || target.retraction === true
+          ? RETRACTION_LABEL
+          : `${RETRACTION_LABEL}\n${payloadText(target)}`,
+      );
+    }
+    return textMessage(`${UPDATE_LABEL}\n${payloadText(entry)}`);
+  });
 }
 
 /**
@@ -138,10 +195,20 @@ function renderEntry(entry: ContextEntryInput): ModelMessage {
  *
  * - The version's core, when it is not empty, becomes the first message, a
  *   `system` message with exactly the core's bytes.
- * - Superseded entries and retractions are dropped (see `activeContextEntries`).
  * - `user`, `assistant` and `tool_result` entries are emitted exactly as stored.
  * - A `runtime_context` entry becomes a `user` message with one text part: a
  *   string payload as is, any other payload as canonical JSON (sorted keys).
+ * - Supersession is append-only on a version whose contract records
+ *   `supersession: "append"` (every version the runtime creates from
+ *   1.0.0-rc.8): a superseded entry stays where it is, an entry that
+ *   supersedes it is rendered where it was committed with the text
+ *   `(updates earlier context)` on a line before its payload, and a
+ *   retraction is rendered as
+ *   `(removes earlier context: the following no longer applies)` followed by
+ *   the retracted entry's text. A slot change therefore only appends to the
+ *   projected prefix and never rewrites it, so the provider's prompt cache
+ *   keeps it. Only compaction drops superseded entries. Older versions drop
+ *   superseded entries and retractions (see `activeContextEntries`).
  * - When the contract records `imageInput: "false"` or `fileInput: "false"`,
  *   tool-result media is replaced by the same text placeholders legacy mode
  *   uses. On a version whose contract records `userMedia: "placeholder"`
@@ -154,7 +221,7 @@ function renderEntry(entry: ContextEntryInput): ModelMessage {
  * A host that renders runtime context or converts between providers
  * differently supplies its own adapter, with its own id and version.
  *
- * @returns The adapter, with id `agent-sdk/messages` and version `1`
+ * @returns The adapter, with id `agent-sdk/messages` and version `2`
  *
  * @example
  * ```typescript
@@ -175,8 +242,12 @@ export function createMessageProjectionAdapter(): ProjectionAdapter {
     version: MESSAGE_PROJECTION_ADAPTER_VERSION,
     project({ core, contract, entries }: ProjectionInput): ProjectedModelInput {
       const messages: ModelMessage[] = core === "" ? [] : [{ role: "system", content: core }];
-      for (const entry of activeContextEntries(entries)) {
-        messages.push(renderEntry(entry));
+      if (contract[SUPERSESSION_CONTRACT_KEY] === "append") {
+        messages.push(...renderAppendOnly(entries));
+      } else {
+        for (const entry of activeContextEntries(entries)) {
+          messages.push(renderEntry(entry));
+        }
       }
       const capabilities = contractCapabilities(contract);
       const projected = projectMessagesForModel(messages, capabilities);

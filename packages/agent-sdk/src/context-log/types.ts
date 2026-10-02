@@ -192,8 +192,11 @@ export interface RuntimeContextEntryInput extends ContextEntryBase {
   /** Opaque payload for the projection adapter. Must be `null` for a retraction. */
   payload: ContextJsonValue;
   /**
-   * Key of the entry this one replaces. The earlier entry stays in the log;
-   * projection skips it from here on (see `activeContextEntries`).
+   * Key of the entry this one replaces. The earlier entry stays in the log
+   * and, under the default adapter, in the projection too: this entry is
+   * rendered as an update where it was committed, so the projected prefix
+   * is never rewritten. Only compaction drops the superseded entry (see
+   * `activeContextEntries`).
    *
    * The target must be a `runtime_context` entry that is earlier on the same
    * path (inherited, committed, or earlier in the same request) and still
@@ -204,9 +207,10 @@ export interface RuntimeContextEntryInput extends ContextEntryBase {
    */
   supersedes?: string;
   /**
-   * Marks a retraction: the entry only retires the entry it supersedes and is
-   * never emitted to the model itself. A retraction requires `supersedes` and
-   * a `null` payload.
+   * Marks a retraction: the entry retires the entry it supersedes. It has no
+   * content of its own; the default adapter renders it as a notice that the
+   * retired entry no longer applies, where it was committed. A retraction
+   * requires `supersedes` and a `null` payload.
    * @defaultValue false
    */
   retraction?: boolean;
@@ -774,8 +778,8 @@ export interface ContextProducerInput {
  * Producers only append. They must be deterministic for the same inputs and
  * path, so a retry re-derives the same entries. The runtime drops entries
  * whose key is already on the path (deduplication), and an entry that names
- * `supersedes` replaces an earlier entry at projection time without removing
- * it from the log.
+ * `supersedes` replaces an earlier entry without removing it from the log
+ * or (under the default adapter) from the projected prefix.
  *
  * @example
  * ```typescript
@@ -823,9 +827,11 @@ export interface ProjectionInput {
    */
   contract: Readonly<Record<string, string>>;
   /**
-   * The full path in position order, including superseded entries, followed
-   * by the entries the call is about to append. Pass them through
-   * `activeContextEntries` to drop superseded entries and retractions.
+   * The full path in position order, including superseded entries and
+   * retractions, followed by the entries the call is about to append. Keep
+   * superseded entries where they are: dropping one rewrites the projected
+   * prefix from its position and loses the provider's prompt cache on every
+   * slot change. Only compaction drops them.
    */
   entries: readonly ContextEntryInput[];
   /** The model the request will be sent to. */

@@ -99,13 +99,28 @@ enforce the rules at commit:
   forms one chain. A target that is missing, already superseded, not runtime
   context, or later in the request is an `invalid_supersession` conflict.
   An entry that supersedes itself is `invalid`.
-- A **retraction** (`retraction: true`) retires the entry it supersedes and
-  emits nothing itself. It needs `supersedes` and a `null` payload. A later
-  entry can supersede the retraction to give the slot a new value.
+- A **retraction** (`retraction: true`) retires the entry it supersedes. It
+  needs `supersedes` and a `null` payload. A later entry can supersede the
+  retraction to give the slot a new value.
 
-Superseded entries and retractions stay in the log. `activeContextEntries(path)`
-returns the entries a projection should emit: it drops superseded entries
-and retractions and keeps everything else in order.
+Supersession is **append-only**. Superseded entries and retractions stay in
+the log and in the projection, in their original positions: the projected
+prefix of a stream is only ever extended, never rewritten, so a slot that
+changes every turn (a date, a memory digest) never loses the provider's
+prompt cache. The default adapter renders an entry that supersedes another
+with the line `(updates earlier context)` before its payload, and a
+retraction as `(removes earlier context: the following no longer applies)`
+followed by the retracted entry's text. It never renders keys or producer
+names. Versions created before the runtime recorded `supersession: "append"`
+in their contract (before 1.0.0-rc.8) keep dropping superseded entries and
+retractions, so their projection never changes; the default adapter's
+version `2` moves such a stream to a new version with an `adapter_change`.
+
+Compaction is the only place superseded entries are dropped: the child
+inherits only active entries. `activeContextEntries(path)` returns those
+(the current value of each slot and every non-runtime entry) for hosts and
+compaction planning; a projection adapter should not use it to drop
+entries.
 
 ### Producers
 
@@ -321,7 +336,9 @@ Rules in log mode:
   replaces user image and file parts the same way (a file part with an
   `image/*` media type counts as an image). Versions created before that key
   existed don't have it and project user parts as stored, so a version's
-  projection never changes. The key is not compared, so its absence never
+  projection never changes. Likewise `supersession: "append"` (from
+  1.0.0-rc.8) keeps superseded runtime context and retractions in place
+  (see [Supersession and retraction](#supersession-and-retraction)). The key is not compared, so its absence never
   requires a transition. With `contextLog.coreVersion` set, versions also
   record `coreVersion` (`CORE_VERSION_CONTRACT_KEY`). A version whose
   recorded values differ from the current adapter, model and core version
