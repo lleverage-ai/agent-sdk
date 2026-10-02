@@ -790,6 +790,7 @@ export type {
   StreamingWriter,
   StreamingToolsFactory,
   StreamPart,
+  SubagentContextLog,
   SubagentCreateContext,
   SubagentDefinition,
   // Subagent types

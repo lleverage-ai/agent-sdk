@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isContextLogError } from "./context-log/errors.js";
 import type { TaskManager, TaskResources } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
 
@@ -351,6 +352,9 @@ export class OwnedTasks {
           "code" in error &&
           error.code === "subagent_cleanup_unresolved"
         )
+          throw error;
+        // A log-mode delegation that needs host recovery keeps its typed error.
+        if (isContextLogError(error, "refused") && error.reason === "delegation_recovery_required")
           throw error;
         return {
           error: true,

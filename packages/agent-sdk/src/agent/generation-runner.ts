@@ -49,8 +49,10 @@ import type {
 } from "ai";
 import { streamText } from "ai";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
+import type { DelegationScope } from "../context-log/delegation.js";
 import { isContextLogError } from "../context-log/errors.js";
 import { createLogModeRetryGuard, invokeLogModePreGenerateHooks } from "../context-log/hooks.js";
+import type { ContextStreamRef } from "../context-log/types.js";
 import {
   type AgentError,
   ConfigurationError,
@@ -118,20 +120,37 @@ export { projectMessagesForModel };
  * @internal
  */
 export interface ToolExecutionContext {
-  agentSdk: { currentModel: AgentOptions["model"]; modelCapabilities?: ModelInputCapabilities };
+  agentSdk: {
+    currentModel: AgentOptions["model"];
+    modelCapabilities?: ModelInputCapabilities;
+    /** Log mode only: the call's store and stream, for delegated subagents. */
+    contextLog?: DelegationScope;
+  };
 }
 
 /** @internal */
 export function createToolExecutionContext(
   options: AgentOptions,
   model: AgentOptions["model"],
+  logStream?: ContextStreamRef,
 ): ToolExecutionContext {
   const modelCapabilities = resolveModelInputCapabilities(options, model);
+  const contextLog: DelegationScope | undefined =
+    logStream && options.contextLog
+      ? {
+          store: options.contextLog.store,
+          stream: logStream,
+          ...(options.contextLog.subagentStream && {
+            subagentStream: options.contextLog.subagentStream,
+          }),
+        }
+      : undefined;
 
   return {
     agentSdk: {
       currentModel: model,
       ...(modelCapabilities ? { modelCapabilities } : {}),
+      ...(contextLog && { contextLog }),
     },
   };
 }
@@ -703,6 +722,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       ? {
           ...logPlan.options,
           ...(effectiveGenOptions._logRun && { _logRun: effectiveGenOptions._logRun }),
+          ...(effectiveGenOptions._contextClaim && {
+            _contextClaim: effectiveGenOptions._contextClaim,
+          }),
         }
       : effectiveGenOptions;
     const executionBaseTelemetry = buildExecutionTelemetryFromIds({
@@ -765,7 +787,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
     };
 
-    const toolExecutionContext = createToolExecutionContext(options, currentModel);
+    const toolExecutionContext = createToolExecutionContext(
+      options,
+      currentModel,
+      attempt.logPlan?.stream,
+    );
 
     return { signalState, activeTools, systemPrompt, initialParams, toolExecutionContext };
   }
@@ -1368,6 +1394,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
           // Log mode: the run's input keys and call numbering are the run's,
           // never a hook's (the retry guard hands hooks a copy).
           ...(effectiveGenOptions._logRun && { _logRun: effectiveGenOptions._logRun }),
+          ...(effectiveGenOptions._contextClaim && {
+            _contextClaim: effectiveGenOptions._contextClaim,
+          }),
         };
       }
       // Update retry state
