@@ -30,6 +30,7 @@ export type ContextLogErrorKind = "conflict" | "not_found" | "refused" | "unavai
  * - `key_taken` - An entry key already exists on the target path
  * - `dispatch_already_started` - The call was already dispatched or closed
  * - `invalid_lifecycle` - The call is not in a state that allows the operation
+ * - `invalid_supersession` - A `supersedes` target is not an active runtime context entry earlier on the path
  *
  * Stores may report additional, store-specific reasons.
  *
@@ -43,6 +44,7 @@ export type ContextLogConflictReason =
   | "key_taken"
   | "dispatch_already_started"
   | "invalid_lifecycle"
+  | "invalid_supersession"
   | (string & {});
 
 /**

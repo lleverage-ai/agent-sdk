@@ -399,6 +399,7 @@ export {
 } from "./recorder.js";
 // Context log store conformance suite (experimental)
 export {
+  type ConformanceManifestContext,
   type ConformanceTestApi,
   type ContextLogConformanceCase,
   type ContextLogStoreConformanceOptions,

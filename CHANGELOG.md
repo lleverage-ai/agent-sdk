@@ -25,11 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ContextLogNotFoundError`, `ContextLogRefusedError`,
     `ContextLogUnavailableError` and `ContextLogInvalidError` subclasses, plus
     `isContextLogError()`.
+  - `activeContextEntries()`, which applies supersession and retraction to a
+    path for projection. `RuntimeContextEntryInput.retraction` marks an entry
+    that retires its target and is never emitted.
   - `MemoryContextLogStore`, the in-memory reference store.
   - `defineContextLogStoreConformanceSuite()` and
     `createContextLogStoreConformanceCases()` in
     `@lleverage-ai/agent-sdk/testing`, a framework-agnostic suite any store
-    implementation can run.
+    implementation can run. A `completeManifest` hook supplies call fields
+    that a store requires.
 - `AgentOptions.contextLog` (experimental). Log mode is off by default and an
   agent without the option is unchanged. The log-mode runtime is not available
   yet, so `createAgent` throws a `ConfigurationError` for `mode: "log"`.

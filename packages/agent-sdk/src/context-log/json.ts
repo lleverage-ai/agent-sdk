@@ -44,9 +44,17 @@ export function assertContextJson(value: unknown, path = "value"): void {
     }
     seen.add(current);
     if (Array.isArray(current)) {
-      current.forEach((item, index) => {
-        visit(item, `${at}[${index}]`, false);
-      });
+      // An index loop, not forEach: a hole would otherwise be skipped here
+      // and persisted as null.
+      for (let index = 0; index < current.length; index += 1) {
+        if (!(index in current)) {
+          throw new ContextLogInvalidError(
+            "not_json",
+            `${at}[${index}] is a hole in a sparse array`,
+          );
+        }
+        visit(current[index], `${at}[${index}]`, false);
+      }
     } else if (isPlainObject(current)) {
       for (const [key, item] of Object.entries(current)) visit(item, `${at}.${key}`, true);
     } else {

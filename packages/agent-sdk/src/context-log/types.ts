@@ -181,13 +181,27 @@ export interface RuntimeContextEntryInput extends ContextEntryBase {
   kind: "runtime_context";
   /** Name of the {@link ContextProducer} that produced the entry. */
   producer: string;
-  /** Opaque payload for the projection adapter. */
+  /** Opaque payload for the projection adapter. Must be `null` for a retraction. */
   payload: ContextJsonValue;
   /**
-   * Key of an earlier entry on the same path that this entry replaces.
-   * The earlier entry stays in the log; projection skips superseded entries.
+   * Key of the entry this one replaces. The earlier entry stays in the log;
+   * projection skips it from here on (see `activeContextEntries`).
+   *
+   * The target must be a `runtime_context` entry that is earlier on the same
+   * path (inherited, committed, or earlier in the same request) and still
+   * active, that is, not already superseded. A slot therefore forms a single
+   * chain. Stores enforce this at commit: a malformed reference is
+   * `invalid`, and a target that is not an active runtime context entry on
+   * the path is a `conflict` with reason `invalid_supersession`.
    */
   supersedes?: string;
+  /**
+   * Marks a retraction: the entry only retires the entry it supersedes and is
+   * never emitted to the model itself. A retraction requires `supersedes` and
+   * a `null` payload.
+   * @defaultValue false
+   */
+  retraction?: boolean;
 }
 
 /**
@@ -364,7 +378,9 @@ export interface ContextHead extends ContextPathRef {
    * that adds entries or starts a new version changes it. A prepare without a
    * transition that appends nothing keeps the digest but still moves
    * {@link ContextHead.revision}; use the revision to detect every committed
-   * write. Stores choose the algorithm.
+   * write. Stores choose the algorithm. A store whose own digest depends only
+   * on content (for example a root over core, contract and inherited prefix)
+   * can expose a version-qualified digest to meet this contract.
    */
   pathDigest: string;
   /** Starts at 1 for a new head and increases by 1 on every move. `0` means no head yet. */
@@ -630,8 +646,13 @@ export interface ContextLogStore {
   markDispatched(manifestId: string): Promise<ContextManifest>;
 
   /**
-   * Appends a dispatched call's outputs, conditional on `expectedRevision`.
-   * Allowed until the call has an outcome other than `completed`.
+   * Appends a dispatched call's outputs. The write is conditional on
+   * `expectedRevision` **and** on the manifest still owning the head
+   * (`head.lastManifestId === manifestId`): once a later prepare has moved
+   * the head, the call's late outputs are refused with a `head_moved`
+   * conflict, even when the caller supplies the new head's revision, so they
+   * can never enter a newer call's context. Allowed until the call has an
+   * outcome other than `completed`.
    *
    * After an uncertain result, retry exactly the same request: a committed
    * request returns its entries with `created: false`, even after the head has

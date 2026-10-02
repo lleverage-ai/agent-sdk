@@ -24,6 +24,24 @@ describe("context log store conformance suite", () => {
     expect(threads).toBe(cases.length);
   });
 
+  it("completes every prepared manifest through the completeManifest hook", async () => {
+    const seen = new Set<string>();
+    const cases = createContextLogStoreConformanceCases({
+      createStore: () => new MemoryContextLogStore(),
+      completeManifest: (manifest, context) => {
+        seen.add(context.idempotencyKey);
+        expect(typeof manifest.ordinal).toBe("number");
+        expect(manifest.attempt).toBeGreaterThanOrEqual(1);
+        return {
+          ...manifest,
+          toolSnapshot: manifest.toolSnapshot === "[]" ? '["host"]' : manifest.toolSnapshot,
+        };
+      },
+    });
+    for (const testCase of cases) await testCase.run();
+    expect(seen.size).toBeGreaterThan(cases.length);
+  });
+
   it("fails against a store that ignores the expected revision", async () => {
     const store = new MemoryContextLogStore();
     const broken = Object.create(store) as MemoryContextLogStore;

@@ -59,19 +59,41 @@ All exports are marked `@experimental`.
     when the head has already moved past the manifest, so a stale candidate is
     never sent.
   - `appendOutputs({ manifestId, expectedRevision, items })` commits a
-    dispatched call's assistant output and tool results.
+    dispatched call's assistant output and tool results. It requires the
+    expected revision **and** that the manifest still owns the head
+    (`head.lastManifestId`). Once a later prepare has moved the head, a call's
+    late outputs are refused, so they never enter a newer call's context.
   - `recordOutcome(manifestId, outcome)` records `completed`, `failed`,
     `cancelled` or `unknown`.
 - **`ContextProducer`** returns `runtime_context` entries to append before a
   call. Producers are deterministic and append-only. The entry key is the
   deduplication key: the runtime skips entries whose key is already on the path.
-  `supersedes` names an earlier entry that projection should skip from now on.
+  See [Supersession and retraction](#supersession-and-retraction).
 - **`ProjectionAdapter`** turns a version and its path into model messages. It
   is versioned: changing its output for an existing path needs a new version
   and an `adapter_change` transition.
 - **`ContextAdmitHook`** lets the host authorise every prepare and every
   dispatch (for example by re-checking access). It allows or refuses; it never
   rewrites the request.
+
+### Supersession and retraction
+
+A `runtime_context` entry may name an earlier entry in `supersedes`. Stores
+enforce the rules at commit:
+
+- The target must be a `runtime_context` entry earlier on the same path. It
+  can be inherited, already committed, or earlier in the same request.
+- The target must still be active (not already superseded), so each slot
+  forms one chain. A target that is missing, already superseded, not runtime
+  context, or later in the request is an `invalid_supersession` conflict.
+  An entry that supersedes itself is `invalid`.
+- A **retraction** (`retraction: true`) retires the entry it supersedes and
+  emits nothing itself. It needs `supersedes` and a `null` payload. A later
+  entry can supersede the retraction to give the slot a new value.
+
+Superseded entries and retractions stay in the log. `activeContextEntries(path)`
+returns the entries a projection should emit: it drops superseded entries
+and retractions and keeps everything else in order.
 
 ### Errors
 
@@ -177,13 +199,19 @@ defineContextLogStoreConformanceSuite(
 
 The cases cover compare-and-swap conflicts, concurrent prepares, idempotent and
 uncertain retries, byte-exact content, pagination, the call lifecycle,
-transitions, branch inheritance and independent streams. A store may scope
+transitions, branch inheritance, independent streams, output ownership,
+racing writes, supersession and sparse-array rejection. If your store
+requires call fields that the contract leaves optional (such as `toolSnapshot`
+or `ordinal`), the suite fills deterministic placeholders, and the
+`completeManifest` hook can replace them with host-required values. A store may scope
 idempotency keys and manifest ids more narrowly (for example per session),
 and it may report additional, store-specific conflict reasons.
 
 Rules every store follows:
 
 - Writes are atomic and leave the log unchanged when they fail.
+- Content must survive a JSON round trip unchanged. Sparse arrays, `undefined`
+  array elements, non-finite numbers and non-plain objects are `invalid`.
 - Entries, versions and manifests never change after commit, except a
   manifest's dispatch time and outcome.
 - A path reference reads only versions created on its own stream; read an
@@ -193,6 +221,9 @@ Rules every store follows:
 - A transition's parent must be on the same thread and stream id, and can be
   inherited by any branch. A stream without a head needs a transition; a root
   transition (no parent) is only allowed on a stream without a head.
+- A store whose own digest depends only on content (for example a root over
+  core, contract and inherited prefix) can expose a version-qualified digest,
+  so that every new version still changes `pathDigest`.
 - `pathDigest` is opaque and store-defined: rereading a head returns the same
   digest, and every write that adds entries or starts a new version changes
   it. A prepare without a transition that appends nothing keeps the digest but

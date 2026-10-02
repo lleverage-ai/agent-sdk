@@ -156,7 +156,21 @@ function validateEntries(
     keys.add(entry.key);
     if (entry.kind === "runtime_context") {
       requireString(entry.producer, `${at}.producer`);
-      if (entry.supersedes !== undefined) requireString(entry.supersedes, `${at}.supersedes`);
+      if (entry.supersedes !== undefined) {
+        requireString(entry.supersedes, `${at}.supersedes`);
+        if (entry.supersedes === entry.key) {
+          throw new ContextLogInvalidError("invalid_supersession", `${at} supersedes itself`);
+        }
+      }
+      if (entry.retraction !== undefined && typeof entry.retraction !== "boolean") {
+        throw new ContextLogInvalidError("invalid_field", `${at}.retraction must be a boolean`);
+      }
+      if (entry.retraction && (entry.supersedes === undefined || entry.payload !== null)) {
+        throw new ContextLogInvalidError(
+          "invalid_retraction",
+          `${at} is a retraction, so it needs supersedes and a null payload`,
+        );
+      }
     } else {
       requireObject(entry.message, `${at}.message`);
     }
@@ -201,6 +215,29 @@ function validateManifest(manifest: ContextManifestInput): void {
   if (manifest.attempt !== undefined) requireCount(manifest.attempt, "manifest.attempt");
   validateMetadata(manifest.metadata, "manifest.metadata");
   assertContextJson(manifest, "manifest");
+}
+
+/**
+ * Whether every `supersedes` in `append` names an active runtime context entry
+ * earlier on the path (including earlier entries of the same request).
+ */
+function supersessionsAdmissible(
+  path: readonly ContextEntry[],
+  append: readonly ContextEntryInput[],
+): boolean {
+  const slots = new Map<string, { runtime: boolean; active: boolean }>();
+  const visit = (entry: ContextEntryInput): boolean => {
+    if (entry.kind === "runtime_context" && entry.supersedes !== undefined) {
+      const target = slots.get(entry.supersedes);
+      if (!target?.runtime || !target.active) return false;
+      target.active = false;
+    }
+    slots.set(entry.key, { runtime: entry.kind === "runtime_context", active: true });
+    return true;
+  };
+  // Committed entries were admitted when they were written.
+  for (const entry of path) visit(entry);
+  return append.every(visit);
 }
 
 /**
@@ -396,9 +433,14 @@ export class MemoryContextLogStore implements ContextLogStore {
     }
 
     const baseCount = isNewVersion ? target.record.inheritedCount : this.fullCount(target);
-    const taken = this.keysOnPath(target, baseCount, isNewVersion);
-    if (request.append.some((entry) => taken.has(entry.key))) {
+    const basePath = this.pathEntries(target, baseCount, isNewVersion);
+    if (request.append.some((entry) => basePath.some((onPath) => onPath.key === entry.key))) {
       throw new ContextLogConflictError("key_taken", { head: head ? clone(head) : null });
+    }
+    if (!supersessionsAdmissible(basePath, request.append)) {
+      throw new ContextLogConflictError("invalid_supersession", {
+        head: head ? clone(head) : null,
+      });
     }
     const staged = this.stageEntries(target, request.append, manifestId, now);
     const entryCount = this.fullCount(target) + staged.entries.length;
@@ -566,6 +608,21 @@ export class MemoryContextLogStore implements ContextLogStore {
   /** Digest of a head at the version's full path: its root until it has entries of its own. */
   private headDigest(version: StoredVersion): string {
     return version.pathDigests.at(-1) ?? version.rootDigest;
+  }
+
+  /** Parsed entries of a path: the version's own path, or its parent's inherited prefix. */
+  private pathEntries(version: StoredVersion, count: number, viaParent: boolean): ContextEntry[] {
+    const source = viaParent
+      ? version.record.parentVersionId
+        ? this.parentOf(version)
+        : undefined
+      : version;
+    const entries: ContextEntry[] = [];
+    if (!source) return entries;
+    for (let position = 1; position <= count; position += 1) {
+      entries.push(JSON.parse(this.serialisedEntryAt(source, position)) as ContextEntry);
+    }
+    return entries;
   }
 
   private keysOnPath(version: StoredVersion, count: number, viaParent: boolean): Set<string> {

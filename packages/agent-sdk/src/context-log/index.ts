@@ -20,4 +20,5 @@ export {
 } from "./errors.js";
 export { assertContextJson, canonicalContextJson } from "./json.js";
 export { MemoryContextLogStore } from "./memory-store.js";
+export { activeContextEntries } from "./supersession.js";
 export * from "./types.js";

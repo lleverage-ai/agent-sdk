@@ -46,6 +46,38 @@ export interface ContextLogStoreConformanceOptions {
    * @defaultValue a random UUID-based id
    */
   createThreadId?: () => string | Promise<string>;
+  /**
+   * Completes every manifest the suite prepares with host-required fields,
+   * for example a store-specific `metadata` shape. It must be deterministic:
+   * the same manifest and context must give the same result, so identical
+   * retries stay identical and different requests stay different.
+   *
+   * Before this hook runs, the suite fills any missing `toolSnapshot`
+   * (`"[]"`), `callOptions` (`"{}"`), `attempt` (`1`) and `ordinal` (unique per
+   * idempotency key within a case, so new calls never collide). The hook may
+   * replace those placeholders, but must not change `metadata`, because
+   * cases check that it round-trips.
+   * @defaultValue no further changes
+   */
+  completeManifest?: (
+    manifest: ContextManifestInput,
+    context: ConformanceManifestContext,
+  ) => ContextManifestInput;
+}
+
+/**
+ * Context passed to {@link ContextLogStoreConformanceOptions.completeManifest}.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ConformanceManifestContext {
+  /** The stream being prepared on. */
+  stream: ContextStreamRef;
+  /** The request's idempotency key. */
+  idempotencyKey: string;
+  /** The ordinal the suite assigned to this idempotency key. */
+  ordinal: number;
 }
 
 /**
@@ -240,7 +272,39 @@ export function createContextLogStoreConformanceCases(
     cases.push({
       name,
       run: async () => {
-        const store = await options.createStore();
+        const raw = await options.createStore();
+        // Ordinals are stable per idempotency key: retries reuse them and
+        // every new call gets a fresh one.
+        const ordinals = new Map<string, number>();
+        const store: ContextLogStore = {
+          readHead: (ref) => raw.readHead(ref),
+          readPath: (ref, readOptions) => raw.readPath(ref, readOptions),
+          readVersion: (id) => raw.readVersion(id),
+          readManifest: (id) => raw.readManifest(id),
+          markDispatched: (id) => raw.markDispatched(id),
+          appendOutputs: (request) => raw.appendOutputs(request),
+          recordOutcome: (id, outcome) => raw.recordOutcome(id, outcome),
+          prepare: (request) => {
+            const ordinalKey = JSON.stringify([request.stream?.threadId, request.idempotencyKey]);
+            if (!ordinals.has(ordinalKey)) ordinals.set(ordinalKey, ordinals.size + 1);
+            const ordinal = ordinals.get(ordinalKey)!;
+            const filled: ContextManifestInput = {
+              toolSnapshot: "[]",
+              callOptions: "{}",
+              ordinal,
+              attempt: 1,
+              ...request.manifest,
+            };
+            const completed = options.completeManifest
+              ? options.completeManifest(filled, {
+                  stream: request.stream,
+                  idempotencyKey: request.idempotencyKey,
+                  ordinal,
+                })
+              : filled;
+            return raw.prepare({ ...request, manifest: completed });
+          },
+        };
         try {
           const thread = options.createThreadId
             ? await options.createThreadId()
@@ -265,7 +329,7 @@ export function createContextLogStoreConformanceCases(
           };
           await body({ store, thread, stream, key, prepare });
         } finally {
-          await options.disposeStore?.(store);
+          await options.disposeStore?.(raw);
         }
       },
     });
@@ -1074,6 +1138,289 @@ export function createContextLogStoreConformanceCases(
       "a prepare without entries still moves the revision",
     );
   });
+
+  define(
+    "manifest call fields round-trip and are part of the request",
+    async ({ store, stream, key }) => {
+      const request: ContextPrepareRequest = {
+        stream: stream(),
+        expectedRevision: 0,
+        idempotencyKey: key("prepare"),
+        transition: transition(),
+        append: [user("u1")],
+        manifest: manifest({
+          toolSnapshot: '[{"name":"lookup","inputSchema":{"type":"object"}}]',
+          callOptions: '{"temperature":0}',
+          ordinal: 7,
+          attempt: 2,
+        }),
+      };
+      const first = await store.prepare(request);
+      const stored = await store.readManifest(first.manifest.id);
+      check(
+        stored.toolSnapshot === request.manifest.toolSnapshot,
+        "toolSnapshot round-trips byte for byte",
+      );
+      check(
+        stored.callOptions === request.manifest.callOptions,
+        "callOptions round-trips byte for byte",
+      );
+      check(stored.ordinal === 7 && stored.attempt === 2, "ordinal and attempt round-trip");
+      await rejects(
+        () => store.prepare({ ...request, manifest: { ...request.manifest, toolSnapshot: "[]" } }),
+        "conflict",
+        "idempotency_mismatch",
+      );
+      await rejects(
+        () => store.prepare({ ...request, manifest: { ...request.manifest, attempt: 3 } }),
+        "conflict",
+        "idempotency_mismatch",
+      );
+      same(await store.readHead(stream()), first.head, "mismatched retries write nothing");
+    },
+  );
+
+  define(
+    "a call's late outputs cannot enter a newer call's context",
+    async ({ store, stream, prepare }) => {
+      const first = await prepare(stream(), [user("u1")]);
+      await store.markDispatched(first.manifest.id);
+      const second = await prepare(stream(), [user("u2")]);
+      await rejects(
+        () =>
+          store.appendOutputs({
+            manifestId: first.manifest.id,
+            // The newer head's correct revision: ownership must still refuse it.
+            expectedRevision: second.head.revision,
+            items: [assistant("late")],
+          }),
+        "conflict",
+        "head_moved",
+      );
+      same(await store.readHead(stream()), second.head, "refused outputs write nothing");
+      same(
+        (await readAll(store, second.head)).map((entry) => entry.key),
+        ["u1", "u2"],
+        "the newer path is unchanged",
+      );
+    },
+  );
+
+  define(
+    "outputs and a new prepare racing on one revision: exactly one wins",
+    async ({ store, stream, key, prepare }) => {
+      const first = await prepare(stream(), [user("u1")]);
+      await store.markDispatched(first.manifest.id);
+      const results = await Promise.allSettled([
+        store.appendOutputs({
+          manifestId: first.manifest.id,
+          expectedRevision: first.head.revision,
+          items: [assistant("a1")],
+        }),
+        store.prepare({
+          stream: stream(),
+          expectedRevision: first.head.revision,
+          idempotencyKey: key("racing"),
+          append: [user("u2")],
+          manifest: manifest(),
+        }),
+      ]);
+      const won = results.filter((result) => result.status === "fulfilled");
+      check(won.length === 1, "exactly one of the racing writes must commit");
+      const lost = results.find((result) => result.status === "rejected") as PromiseRejectedResult;
+      check(
+        isContextLogError(lost.reason, "conflict"),
+        `the loser must conflict, got ${String(lost.reason)}`,
+      );
+      const head = (await store.readHead(stream()))!;
+      check(head.revision === first.head.revision + 1, "the head moved exactly once");
+      check(head.entryCount === first.head.entryCount + 1, "only the winner's entry was appended");
+    },
+  );
+
+  define(
+    "concurrent identical output appends commit once and recover idempotently",
+    async ({ store, stream, prepare }) => {
+      const first = await prepare(stream(), [user("u1")]);
+      await store.markDispatched(first.manifest.id);
+      const request = {
+        manifestId: first.manifest.id,
+        expectedRevision: first.head.revision,
+        items: [assistant("a1"), assistant("a2")],
+      };
+      const results = await Promise.allSettled([
+        store.appendOutputs(request),
+        store.appendOutputs(request),
+      ]);
+      const created = results.filter(
+        (result) => result.status === "fulfilled" && result.value.created,
+      );
+      check(created.length === 1, "exactly one identical append creates the entries");
+      for (const result of results) {
+        if (result.status === "rejected") {
+          check(
+            isContextLogError(result.reason, "conflict"),
+            `a loser may only conflict, got ${String(result.reason)}`,
+          );
+        }
+      }
+      const head = (await store.readHead(stream()))!;
+      check(head.revision === first.head.revision + 1, "the head moved exactly once");
+      same(
+        (await readAll(store, head)).map((entry) => entry.key),
+        ["u1", "a1", "a2"],
+        "the outputs were appended once",
+      );
+      const retry = await store.appendOutputs(request);
+      check(!retry.created, "a later identical retry reports created: false");
+      same(
+        retry.entries,
+        (
+          created[0] as PromiseFulfilledResult<
+            Awaited<ReturnType<ContextLogStore["appendOutputs"]>>
+          >
+        ).value.entries,
+        "the retry returns the committed entries",
+      );
+    },
+  );
+
+  define(
+    "sparse arrays anywhere in an entry are invalid and write nothing",
+    async ({ store, stream, key, prepare }) => {
+      const { head } = await prepare(stream(), [user("u1")]);
+      const sparse = (): unknown[] => {
+        const array: unknown[] = ["a"];
+        array[2] = "c";
+        return array;
+      };
+      const candidates: ContextEntryInput[] = [
+        {
+          kind: "assistant",
+          key: "sparse-message",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "tool-call", toolCallId: "c1", toolName: "t", input: { list: sparse() } },
+            ],
+          },
+        },
+        runtime("sparse-payload", { list: sparse() as RuntimeContextEntryInput["payload"] }),
+        { ...user("sparse-metadata"), metadata: { list: sparse() as never } },
+      ];
+      for (const entry of candidates) {
+        await rejects(
+          () =>
+            store.prepare({
+              stream: stream(),
+              expectedRevision: head.revision,
+              idempotencyKey: key("sparse"),
+              append: [entry],
+              manifest: manifest(),
+            }),
+          "invalid",
+        );
+      }
+      same(await store.readHead(stream()), head, "the head is unchanged");
+      same(
+        (await readAll(store, head)).map((entry) => entry.key),
+        ["u1"],
+        "the path is unchanged",
+      );
+    },
+  );
+
+  define(
+    "supersession forms chains of active runtime context on the path",
+    async ({ store, stream, prepare }) => {
+      const base = await prepare(stream(), [runtime("clock-1", { today: "1" }), user("u1")]);
+      // A chain across requests, and a retraction followed by a new value.
+      const chained = await prepare(stream(), [runtime("clock-2", { today: "2" }, "clock-1")]);
+      const retracted = await prepare(stream(), [
+        { ...runtime("clock-retract", null, "clock-2"), retraction: true },
+        runtime("clock-3", { today: "3" }, "clock-retract"),
+      ]);
+      const entries = await readAll(store, retracted.head);
+      same(
+        entries.map((entry) => entry.key),
+        ["clock-1", "u1", "clock-2", "clock-retract", "clock-3"],
+        "superseded entries stay in the log",
+      );
+      const retraction = entries[3];
+      check(
+        retraction?.kind === "runtime_context" &&
+          retraction.retraction === true &&
+          retraction.supersedes === "clock-2",
+        "a retraction round-trips",
+      );
+
+      const conflictCases: Array<[string, RuntimeContextEntryInput]> = [
+        ["a missing target", runtime("x1", 1, "missing")],
+        ["an already superseded target", runtime("x2", 1, "clock-1")],
+        ["a non-runtime target", runtime("x3", 1, "u1")],
+      ];
+      for (const [label, entry] of conflictCases) {
+        const error = await prepare(stream(), [entry]).then(
+          () => fail(`superseding ${label} must conflict`),
+          (caught: unknown) => caught,
+        );
+        check(
+          isContextLogError(error, "conflict") && error.reason === "invalid_supersession",
+          `superseding ${label} must be an invalid_supersession conflict, got ${String(error)}`,
+        );
+      }
+      // A forward reference within one request is not an earlier entry.
+      await rejects(
+        () => prepare(stream(), [runtime("y1", 1, "y2"), runtime("y2", 2)]),
+        "conflict",
+        "invalid_supersession",
+      );
+      await rejects(() => prepare(stream(), [runtime("self", 1, "self")]), "invalid");
+      await rejects(
+        () =>
+          prepare(stream(), [
+            { ...runtime("bad-retract", { not: "null" }, "clock-3"), retraction: true },
+          ]),
+        "invalid",
+      );
+      await rejects(
+        () => prepare(stream(), [{ ...runtime("bad-retract-2", null), retraction: true }]),
+        "invalid",
+      );
+      same(await store.readHead(stream()), retracted.head, "refused supersessions write nothing");
+      check(
+        chained.head.revision === base.head.revision + 1,
+        "each supersession is an ordinary append",
+      );
+    },
+  );
+
+  define(
+    "supersession follows the inherited prefix of a version",
+    async ({ store, stream, prepare }) => {
+      const base = await prepare(stream(), [
+        runtime("slot-1", { v: 1 }),
+        user("u1"),
+        runtime("late", { v: 1 }),
+      ]);
+      const child = await prepare(stream(), [runtime("slot-2", { v: 2 }, "slot-1")], {
+        transition: transition({
+          reason: "compaction",
+          parent: { versionId: base.head.versionId, inheritedCount: 2 },
+        }),
+      });
+      same(
+        (await readAll(store, child.head)).map((entry) => entry.key),
+        ["slot-1", "u1", "slot-2"],
+        "an inherited target can be superseded",
+      );
+      await rejects(
+        () => prepare(stream(), [runtime("x", 1, "late")]),
+        "conflict",
+        "invalid_supersession",
+      );
+    },
+  );
 
   return cases;
 }
