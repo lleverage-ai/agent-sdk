@@ -499,7 +499,31 @@ export class AgentSession {
         type: "error",
         error: error instanceof Error ? error : new Error(String(error)),
       };
+    } finally {
+      // Log mode: a resume can clear the interrupt and then fail in its
+      // continuation, or fail before clearing it. The checkpoint says which,
+      // and so whether held task events can run.
+      if (isLogModeEnabled(this.agent.options)) {
+        const threadId = this.threadId;
+        this.pendingInterrupt =
+          (await this.agent
+            .getInterrupt(threadId)
+            .catch(() => this.pendingInterrupt ?? undefined)) ?? null;
+      }
     }
+  }
+
+  /**
+   * Whether an event can start a turn now. In context log mode a stream with
+   * a pending interrupt takes no new input until the interrupt is resumed,
+   * so task events stay queued, and their tasks registered, until then.
+   */
+  private isEventReady(event: SessionEvent): boolean {
+    return !(
+      this.pendingInterrupt &&
+      (event.type === "task_completed" || event.type === "task_failed") &&
+      isLogModeEnabled(this.agent.options)
+    );
   }
 
   /**
@@ -519,17 +543,18 @@ export class AgentSession {
    * Wait for the next event.
    */
   private async waitForEvent(): Promise<SessionEvent | undefined> {
-    // Check if there's already an event in the queue
-    if (this.eventQueue.length > 0) {
-      return this.eventQueue.shift();
+    for (;;) {
+      // The first event that can start a turn now; held events keep their order.
+      const index = this.eventQueue.findIndex((event) => this.isEventReady(event));
+      if (index >= 0) {
+        return this.eventQueue.splice(index, 1)[0];
+      }
+
+      // Wait for an event to be enqueued
+      await new Promise<void>((resolve) => {
+        this.eventResolve = resolve;
+      });
     }
-
-    // Wait for an event to be enqueued
-    await new Promise<void>((resolve) => {
-      this.eventResolve = resolve;
-    });
-
-    return this.eventQueue.shift();
   }
 }
 

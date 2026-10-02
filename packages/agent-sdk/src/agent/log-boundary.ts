@@ -28,6 +28,10 @@
  * - Retries and fallback models are separate attempts: each provider call
  *   prepares its own manifest. A failed attempt is closed as `failed` (or
  *   `cancelled` when aborted).
+ * - When a tool raises an interrupt, the interrupted call's placeholder
+ *   result is not committed; the assistant entry records the interrupt as a
+ *   `tool-approval-request` part (see `./log-interrupts.ts`), and the result
+ *   is committed when the interrupt is resumed (`./log-resume.ts`).
  * - A call left open by a crash (prepared but not dispatched, or dispatched
  *   without committed outputs) is closed as `cancelled` or `unknown` by the
  *   next prepare on the stream. Its outputs can never be committed after that,
@@ -150,6 +154,18 @@ export interface LogCallBoundaryDeps {
 }
 
 /**
+ * A tool call that raised an interrupt during the attempt.
+ *
+ * @internal
+ */
+export interface LogInterruptMark {
+  /** The interrupt's id, recorded as the approval request's `approvalId`. */
+  interruptId: string;
+  /** The interrupted tool call. */
+  toolCallId: string;
+}
+
+/**
  * Log-mode `prepareStep`: commits the previous step's outputs and projects
  * every provider step after the first through the projection adapter.
  *
@@ -198,6 +214,14 @@ export interface LogCallBoundary {
    * could not be committed (a failed compaction commit fails the run).
    */
   isRetrySafe(): boolean;
+  /**
+   * Tells the boundary where to read the attempt's interrupt, if a tool
+   * raises one. The interrupted call's placeholder result is then never
+   * committed: the assistant entry records the interrupt as a
+   * `tool-approval-request` part, and the call's result is committed when
+   * the interrupt is resumed.
+   */
+  observeInterrupt(read: () => LogInterruptMark | undefined): void;
 }
 
 /** Lowercase hexadecimal SHA-256 of a string. @internal */
@@ -291,15 +315,80 @@ export function toEntryInput(entry: ContextEntry): ContextEntryInput {
   return input as ContextEntryInput;
 }
 
+/** A response message and its position among the generation's response messages. */
+interface IndexedMessage {
+  message: ModelMessage;
+  index: number;
+}
+
+/**
+ * Records an interrupt in a step's outputs: the assistant message that made
+ * the interrupted call gains a `tool-approval-request` part (the AI SDK's own
+ * record of a call waiting on a person, which it never sends to a provider),
+ * and the call's placeholder result is dropped, together with a tool message
+ * it leaves empty. The call's real result is committed on resume, so the
+ * provider later sees the same messages as a run that was never interrupted.
+ *
+ * Outputs that do not contain the interrupted call are returned unchanged.
+ *
+ * @internal
+ */
+export function recordInterruptInOutputs(
+  messages: readonly IndexedMessage[],
+  mark: LogInterruptMark,
+): IndexedMessage[] {
+  const callsInterrupted = ({ message }: IndexedMessage) =>
+    message.role === "assistant" &&
+    Array.isArray(message.content) &&
+    message.content.some(
+      (part) => part.type === "tool-call" && part.toolCallId === mark.toolCallId,
+    );
+  if (!messages.some(callsInterrupted)) {
+    return [...messages];
+  }
+  const result: IndexedMessage[] = [];
+  for (const indexed of messages) {
+    const { message } = indexed;
+    if (callsInterrupted(indexed) && message.role === "assistant") {
+      const content = message.content as Exclude<typeof message.content, string>;
+      result.push({
+        ...indexed,
+        message: {
+          ...message,
+          content: [
+            ...content,
+            {
+              type: "tool-approval-request",
+              approvalId: mark.interruptId,
+              toolCallId: mark.toolCallId,
+            },
+          ],
+        },
+      });
+      continue;
+    }
+    if (message.role === "tool") {
+      const content = message.content.filter(
+        (part) => part.type !== "tool-result" || part.toolCallId !== mark.toolCallId,
+      );
+      if (content.length > 0) {
+        result.push({ ...indexed, message: { ...message, content } });
+      }
+      continue;
+    }
+    result.push(indexed);
+  }
+  return result;
+}
+
 /** Map response messages to output entries keyed by their position in the generation. @internal */
 function toOutputEntries(
-  messages: readonly ModelMessage[],
+  messages: readonly IndexedMessage[],
   keyPrefix: string,
-  firstIndex: number,
   model: ContextModelRef,
 ): Array<AssistantContextEntryInput | ToolResultContextEntryInput> {
-  return messages.map((message, offset) => {
-    const key = `${keyPrefix}:${firstIndex + offset}`;
+  return messages.map(({ message, index }) => {
+    const key = `${keyPrefix}:${index}`;
     if (message.role === "assistant") {
       return { kind: "assistant", key, message, model };
     }
@@ -311,6 +400,57 @@ function toOutputEntries(
       `A model step produced a "${message.role}" message; only assistant and tool messages are outputs`,
     );
   });
+}
+
+/**
+ * Screens new outputs through the log-mode PreGenerate hooks, then commits
+ * them as outputs of `manifestId`, which must own `head`. Fails with a
+ * `head_moved` conflict when the store's resulting head shows that another
+ * writer moved the stream, because the caller could no longer continue from
+ * its own committed path.
+ *
+ * @internal
+ */
+export async function appendScreenedOutputs(params: {
+  store: ContextLogStore;
+  manifestId: string;
+  head: ContextHead | null;
+  items: Array<AssistantContextEntryInput | ToolResultContextEntryInput>;
+  screenOutputs: LogCallBoundaryDeps["screenOutputs"];
+}): Promise<{ head: ContextHead; entries: ContextEntryInput[] }> {
+  const { store, manifestId, head } = params;
+  // New outputs are new input to the next request: they pass the
+  // PreGenerate screening (redaction, guardrails) before commit, and the
+  // screened entries are what later requests are projected from.
+  const screened = await params.screenOutputs(params.items);
+  const items = screened.map((entry) => {
+    if (entry.kind !== "assistant" && entry.kind !== "tool_result") {
+      throw new ContextLogInvalidError(
+        "invalid_output",
+        "Output screening may only transform assistant outputs and tool results",
+      );
+    }
+    return entry;
+  });
+  const result = await withRetriedWrite(() =>
+    store.appendOutputs({ manifestId, expectedRevision: head?.revision ?? 0, items }),
+  );
+  // After an uncertain first try the store replays the commit with the
+  // stream's current head. Continue only while that head is still this
+  // call's: otherwise another writer moved it, and the next request would
+  // no longer be a projection of its own committed path.
+  if (
+    result.head.lastManifestId !== manifestId ||
+    result.head.versionId !== head?.versionId ||
+    result.head.entryCount !== (head?.entryCount ?? 0) + items.length
+  ) {
+    throw new ContextLogConflictError("head_moved", {
+      head: result.head,
+      message:
+        "Another writer moved the head after this call's outputs were committed; the call cannot continue from it",
+    });
+  }
+  return { head: result.head, entries: result.entries.map(toEntryInput) };
 }
 
 /**
@@ -375,6 +515,8 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   let failure: unknown;
   // Response messages of every step the AI SDK finished, from onStepFinish.
   let finishedMessages: ModelMessage[] = [];
+  // Reads the interrupt a tool raised during the attempt, if any.
+  let readInterrupt: (() => LogInterruptMark | undefined) | undefined;
 
   function moveHead(next: ContextHead): void {
     head = next;
@@ -559,49 +701,21 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       }
       return;
     }
-    if (fresh.length > 0) {
-      // New outputs are new input to the next request: they pass the
-      // PreGenerate screening (redaction, guardrails) before commit, and the
-      // screened entries are what later steps are projected from.
-      const screened = await deps.screenOutputs(
-        toOutputEntries(fresh, plan.outputKeyPrefix, committedCount, call.model),
-      );
-      const items = screened.map((entry) => {
-        if (entry.kind !== "assistant" && entry.kind !== "tool_result") {
-          throw new ContextLogInvalidError(
-            "invalid_output",
-            "Output screening may only transform assistant outputs and tool results",
-          );
-        }
-        return entry;
+    const indexed = fresh.map((message, offset) => ({ message, index: committedCount + offset }));
+    const mark = readInterrupt?.();
+    const outputs = mark ? recordInterruptInOutputs(indexed, mark) : indexed;
+    if (outputs.length > 0) {
+      const result = await appendScreenedOutputs({
+        store,
+        manifestId: call.manifestId,
+        head,
+        items: toOutputEntries(outputs, plan.outputKeyPrefix, call.model),
+        screenOutputs: deps.screenOutputs,
       });
-      const before = head;
-      const result = await withRetriedWrite(() =>
-        store.appendOutputs({
-          manifestId: call.manifestId,
-          expectedRevision: before?.revision ?? 0,
-          items,
-        }),
-      );
-      // After an uncertain first try the store replays the commit with the
-      // stream's current head. Continue only while that head is still this
-      // call's: otherwise another writer moved it, and the next request would
-      // no longer be a projection of its own committed path.
-      if (
-        result.head.lastManifestId !== call.manifestId ||
-        result.head.versionId !== before?.versionId ||
-        result.head.entryCount !== (before?.entryCount ?? 0) + items.length
-      ) {
-        throw new ContextLogConflictError("head_moved", {
-          head: result.head,
-          message:
-            "Another writer moved the head after this call's outputs were committed; the call cannot continue from it",
-        });
-      }
       moveHead(result.head);
-      committedOutputs.push(...result.entries.map(toEntryInput));
-      committedCount = responseMessages.length;
+      committedOutputs.push(...result.entries);
     }
+    committedCount = responseMessages.length;
     await withRetriedWrite(() => store.recordOutcome(call.manifestId, { status: "completed" }));
     open = undefined;
   }
@@ -734,6 +848,9 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       return completion;
     },
     isRetrySafe: () => !completed && !outputsLost && !compactionUncommitted,
+    observeInterrupt(read) {
+      readInterrupt = read;
+    },
     async abandon(cancelled = false) {
       if (closed && !open) return;
       closed = true;

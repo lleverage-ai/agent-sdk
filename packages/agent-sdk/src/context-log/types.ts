@@ -1003,6 +1003,23 @@ export interface ContextLogOptions {
   /** Authorises every prepare and dispatch. A refusal fails the call before anything is sent. */
   admit?: ContextAdmitHook;
   /**
+   * What `resume()` does when an earlier resume of the same interrupt
+   * committed its resolution but not the tool's result, for example because
+   * the process crashed while the tool ran. The tool may already have had
+   * its side effects.
+   *
+   * - `refuse` - Fail with a `ContextLogConflictError` (reason
+   *   `resume_in_doubt`) and never run the tool again
+   * - `reexecute` - Run the tool again, with the same tool call id, through
+   *   the normal tool pipeline. Use this only when the host's tool ledger
+   *   makes a repeated execution of a tool call id safe, for example a
+   *   `PreToolUse` hook that answers a recorded call with its recorded
+   *   result instead of running it again.
+   *
+   * @defaultValue "refuse"
+   */
+  inDoubtResume?: "refuse" | "reexecute";
+  /**
    * Chooses the stream of a subagent this agent delegates to with the `task`
    * tool. It must be deterministic, and distinct for every delegation.
    * @defaultValue `deriveSubagentContextStream`

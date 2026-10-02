@@ -1647,6 +1647,12 @@ export interface Agent {
    * `ApprovalResponse` with `{ approved: boolean }`. For custom interrupts,
    * provide the appropriate response type.
    *
+   * In context log mode the resolution and the tool's result are appended to
+   * the log as outputs of the interrupted call, the tool runs through the
+   * normal tool pipeline, and the continuation is an ordinary log-mode
+   * generation on the call's `contextStream`. See the "Interrupts and resume"
+   * section of `docs/context-log.md`, including its crash-safety rules.
+   *
    * @param threadId - The thread ID to resume
    * @param interruptId - The ID of the interrupt being responded to
    * @param response - The response to the interrupt

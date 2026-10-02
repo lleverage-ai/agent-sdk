@@ -27,6 +27,7 @@ import {
   isLogModeEnabled,
   validateLogModeOptions,
 } from "./agent/log-context.js";
+import { createLogResume, type ResumeOutcome } from "./agent/log-resume.js";
 import { buildMessagesFromStepResponses, createMessageRuntime } from "./agent/messages.js";
 import {
   createToolPipeline,
@@ -43,7 +44,7 @@ import {
   formatDefaultTaskCompletionPrompt,
   formatDefaultTaskFailurePrompt,
 } from "./background-task-formatting.js";
-import type { Checkpoint, Interrupt } from "./checkpointer/types.js";
+import type { Interrupt } from "./checkpointer/types.js";
 import {
   createCheckpoint,
   createInterrupt,
@@ -892,15 +893,23 @@ export function createAgent(options: AgentOptions): Agent {
   }
 
   /**
-   * Discriminated union returned by executeResumeCore.
-   *
-   * - `continue`: The tool executed successfully and generation should continue.
-   * - `re-interrupted`: The tool threw another interrupt during resume (e.g. a
-   *   multi-step wizard). The new interrupt has been persisted to the checkpoint.
+   * Log-mode resume: appends the resolution and the tool's result to the log
+   * and leaves the continuation to an ordinary log-mode generation; see
+   * `./agent/log-resume.ts`.
    */
-  type ResumeOutcome =
-    | { type: "continue"; threadId: string; genOptions?: Partial<GenerateOptions> }
-    | { type: "re-interrupted"; interrupt: Interrupt; checkpoint: Checkpoint };
+  const logResume =
+    logContext &&
+    createLogResume({
+      options,
+      logContext,
+      toolPipeline,
+      checkpoints,
+      hooks: effectiveHooks,
+      getAgent: () => agent,
+      pendingResponses,
+      approvalDecisions,
+      state,
+    });
 
   /**
    * Shared logic for resume() and resumeDataResponse().
@@ -915,21 +924,18 @@ export function createAgent(options: AgentOptions): Agent {
     response: unknown,
     genOptions?: Partial<GenerateOptions>,
   ): Promise<ResumeOutcome> {
-    // This legacy path rebuilds history in the checkpoint, which log mode
-    // never reads or writes.
-    if (logContext) {
-      throw new ConfigurationError(
-        "resume() and resumeDataResponse() are not supported in context log mode yet",
-        { configKey: "contextLog.mode" },
-      );
-    }
-    // This legacy path invokes raw tools and InterruptResolved hooks outside
-    // the generation tool pipeline. Never imply the workflow gate protects it.
+    // Resume invokes InterruptResolved hooks (and, in legacy mode, raw tools)
+    // outside a generation. Never imply the workflow gate protects it.
     if (options.workflowExecutionGate) {
       throw new ConfigurationError(
         "Workflow-gated agents cannot use resume() or resumeDataResponse(); supply resolved tool results through generate() or stream() instead",
         { configKey: "workflowExecutionGate" },
       );
+    }
+    // Log mode never reads or writes checkpoint history: the resolution and
+    // the tool's result are appended to the log instead.
+    if (logResume) {
+      return logResume(threadId, interruptId, response, genOptions);
     }
     if (!options.checkpointer) {
       throw new Error("Cannot resume: checkpointer is required");

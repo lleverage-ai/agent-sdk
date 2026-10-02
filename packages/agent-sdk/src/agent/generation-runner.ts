@@ -98,6 +98,7 @@ import {
   type LogContextRuntime,
   type LogInputScreen,
 } from "./log-context.js";
+import { INTERRUPT_PENDING_REASON } from "./log-interrupts.js";
 import type { MessageRuntime, StreamingCompactionState } from "./messages.js";
 import { projectMessagesForModel, resolveModelInputCapabilities } from "./model-capabilities.js";
 import {
@@ -754,6 +755,14 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     const { effectiveGenOptions, currentModel, messages, executionBaseTelemetry } = attempt;
 
     const signalState: GenerateSignalState = {};
+    // Log mode: an interrupted call's placeholder result is never committed;
+    // the call's result is committed when the interrupt is resumed.
+    attempt.logCall?.observeInterrupt(() => {
+      const interrupt = signalState.interrupt?.interrupt;
+      return interrupt?.toolCallId
+        ? { interruptId: interrupt.id, toolCallId: interrupt.toolCallId }
+        : undefined;
+    });
 
     // A mode that owns a writer (`streamDataResponse`) passes its context
     // explicitly; every other mode uses the caller's request-local one.
@@ -1334,7 +1343,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     return (
       error instanceof GeneratePermissionDeniedError ||
       isContextLogError(error, "invalid") ||
-      isContextLogError(error, "refused")
+      isContextLogError(error, "refused") ||
+      // Only resuming the interrupt can unblock the stream.
+      (isContextLogError(error, "conflict") && error.reason === INTERRUPT_PENDING_REASON)
     );
   }
 
