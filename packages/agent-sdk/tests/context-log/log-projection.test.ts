@@ -348,7 +348,13 @@ describe("log-mode request projection", () => {
     }).generate({ prompt: "hi", threadId: THREAD });
 
     expect(resolveCore).toHaveBeenCalledTimes(1);
-    expect(resolveCore).toHaveBeenCalledWith({ stream: STREAM, reason: "initial", parent: null });
+    expect(resolveCore).toHaveBeenCalledWith({
+      stream: STREAM,
+      reason: "initial",
+      parent: null,
+      target: { provider: "mock-provider", modelId: "mock-model-id" },
+      model: first.model,
+    });
     expect(first.requests[0]!.prompt[0]).toEqual({ role: "system", content: "Resolved core" });
 
     resolveCore.mockReturnValue("A newer resolved core");

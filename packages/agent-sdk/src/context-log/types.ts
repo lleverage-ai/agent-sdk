@@ -10,7 +10,14 @@
  * @packageDocumentation
  */
 
-import type { AssistantModelMessage, ModelMessage, ToolModelMessage, UserModelMessage } from "ai";
+import type {
+  AssistantModelMessage,
+  LanguageModel,
+  LanguageModelMiddleware,
+  ModelMessage,
+  ToolModelMessage,
+  UserModelMessage,
+} from "ai";
 import type { SubagentStreamResolver } from "./delegation.js";
 
 // =============================================================================
@@ -919,14 +926,31 @@ export interface ContextCoreInput {
   reason: ContextTransitionReason;
   /** The version and prefix the new version inherits, or `null` for a root version. */
   parent: ContextVersionParent | null;
+  /**
+   * The model the new version is projected for: the provider (the route the
+   * call takes) and the model id of the terminal provider model the call is
+   * sent to.
+   */
+  target: ContextModelRef;
+  /** The terminal provider model the call is sent to. */
+  model: LanguageModel;
 }
 
 /**
  * Resolves the frozen core system for a new version.
  *
- * The runtime calls it only when it creates a version. The returned bytes
- * are stored on the version, and every call on that version projects them
- * unchanged, so a resolver never re-renders the core of an existing version.
+ * The runtime calls it only when it creates a version: `initial` on a stream
+ * without a head, and `model_change` when a call targets another model than
+ * the stream's previous call (a fallback, or a host switching models) or a
+ * model that accepts different input. The returned bytes are stored on the
+ * version, and every call on that version projects them unchanged, so a
+ * resolver never re-renders the core of an existing version.
+ *
+ * On a `model_change` the resolver may return a core for the target model
+ * (for example a per-family policy). The `model_change` version records it,
+ * so the new core is declared by the same transition; returning the parent's
+ * bytes keeps the core unchanged. A resolver must be deterministic for its
+ * input: the same target must produce the same bytes.
  *
  * @experimental
  * @category Context Log
@@ -970,7 +994,8 @@ export interface ContextLogCursor {
  * commits its input before dispatch, and each step's outputs are committed
  * before the next request is projected from them and before the run returns
  * (see `docs/context-log.md`). Pass the innermost provider model: the
- * commit boundary must be the last thing before the provider.
+ * commit boundary must be the last thing before the provider. Transforms
+ * that change the request belong in {@link ContextLogOptions.requestMiddleware}.
  *
  * In log mode `createAgent` rejects `promptBuilder` and requires a core: a
  * static `systemPrompt` or {@link ContextLogOptions.resolveCore}. A
@@ -1002,6 +1027,23 @@ export interface ContextLogOptions {
   producers?: readonly ContextProducer[];
   /** Authorises every prepare and dispatch. A refusal fails the call before anything is sent. */
   admit?: ContextAdmitHook;
+  /**
+   * Host request middleware, run on every provider request between the
+   * projection and the commit boundary, in order (the first entry sees the
+   * projected request first). The wrap order is agent, projection, these
+   * middleware, commit boundary, provider, so the boundary commits and
+   * digests exactly what the provider receives. They apply to every
+   * provider call of a log-mode agent: each tool-loop step, each retry and
+   * each fallback attempt.
+   *
+   * Request middleware are part of the serialisation contract: they must be
+   * deterministic (the same projected request always becomes the same
+   * provider request) and pinned with the projection adapter's `id` and
+   * `version`, so a log can be reconstructed offline. Middleware that do not
+   * change the request (usage, telemetry, retries) can stay outside, around
+   * the agent.
+   */
+  requestMiddleware?: readonly LanguageModelMiddleware[];
   /**
    * What `resume()` does when an earlier resume of the same interrupt
    * committed its resolution but not the tool's result, for example because

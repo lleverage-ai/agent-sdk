@@ -25,6 +25,10 @@
  * - A compaction between steps is a declared `compaction` transition that
  *   the next call's prepare commits before the compacted context is sent.
  *   A failed commit fails the step.
+ * - Host request middleware (`contextLog.requestMiddleware`) wrap the
+ *   boundary, so they run after the projection and the boundary commits the
+ *   request they produce: agent → projection → request middleware →
+ *   boundary → provider.
  * - Retries and fallback models are separate attempts: each provider call
  *   prepares its own manifest. A failed attempt is closed as `failed` (or
  *   `cancelled` when aborted).
@@ -134,6 +138,11 @@ export interface LogCallBoundaryDeps {
   plan: LogBoundaryPlan;
   /** The attempt's terminal provider model. */
   model: LanguageModel;
+  /**
+   * Host request middleware, applied in order between the projected request
+   * and the boundary, so the boundary commits the request they produce.
+   */
+  requestMiddleware?: readonly LanguageModelMiddleware[];
   /** Projects a step's request from committed entries. */
   project: (entries: readonly ContextEntryInput[]) => Promise<ModelMessage[]>;
   /** Called whenever the boundary moves or observes the head. */
@@ -182,7 +191,10 @@ export type LogModePrepareStep = (step: {
  * @internal
  */
 export interface LogCallBoundary {
-  /** The terminal model wrapped by the boundary. Send every step through it. */
+  /**
+   * The terminal model wrapped by the boundary, and then by the host's
+   * request middleware. Send every step through it.
+   */
   readonly model: LanguageModel;
   /** The AI SDK `prepareStep` for the attempt. */
   readonly prepareStep: LogModePrepareStep;
@@ -818,10 +830,19 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       configKey: "model",
     });
   }
-  const model = wrapLanguageModel({
+  const boundaryModel = wrapLanguageModel({
     model: deps.model,
     middleware: { specificationVersion: "v4", wrapGenerate, wrapStream },
   });
+  boundaryModels.add(boundaryModel);
+  // Host request middleware run after the projection and before the
+  // boundary: the first one transforms the projected request first, and the
+  // boundary commits and digests the request the last one produces.
+  const requestMiddleware = deps.requestMiddleware ?? [];
+  const model =
+    requestMiddleware.length > 0
+      ? wrapLanguageModel({ model: boundaryModel, middleware: [...requestMiddleware] })
+      : boundaryModel;
   boundaryModels.add(model);
 
   return {

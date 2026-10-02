@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental `ContextLogOptions.requestMiddleware`: host
+  `LanguageModelMiddleware` run, in order, between the log-mode projection
+  and the commit boundary (agent → projection → request middleware →
+  boundary → provider), so the manifest's `inputDigest`, `toolSnapshot` and
+  `callOptions` describe the request as the provider receives it. They apply
+  to every provider call of a log-mode agent, including tool-loop steps,
+  retries and fallback attempts, and SDK-built subagents inherit them with
+  the projection adapter. They must be deterministic and pinned with the
+  adapter's `id` and `version`. Ignored outside log mode.
+- `ContextCoreInput.target` and `ContextCoreInput.model`: the target
+  `{ provider, modelId }` and terminal model of the version being created.
+
+### Changed
+
+- **BREAKING** (experimental): in log mode, `contextLog.resolveCore` is now
+  also called when a call creates a `model_change` version (a fallback, a
+  host switching models, or a model with different input capabilities). The
+  `model_change` version records the core the resolver returns for the target
+  model, so a host can switch to a per-family core; returning the parent's
+  bytes keeps the core. Previously a `model_change` version always kept the
+  parent's core. Agents with a static `systemPrompt` are unaffected. A
+  resolver that does not return a string now fails the call with a
+  `ContextLogInvalidError` (reason `invalid_core`) before anything is sent.
+
 ## [1.0.0-rc.4] - 2026-10-02
 
 Fourth release candidate for 1.0.0. It ships experimental context log mode,

@@ -13,7 +13,14 @@ import type {
   LanguageModelV3Content,
   LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
-import { APICallError, jsonSchema, type LanguageModel, Output, tool } from "ai";
+import {
+  APICallError,
+  jsonSchema,
+  type LanguageModel,
+  type LanguageModelMiddleware,
+  Output,
+  tool,
+} from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import { describeProviderCall, sha256Hex } from "../../src/agent/log-boundary.js";
@@ -844,6 +851,358 @@ describe("log-mode retries and fallbacks", () => {
       digest: sha256Hex(m3!.toolSnapshot!),
       cause: "model_change",
     });
+  });
+});
+
+/**
+ * Host request middleware that rewrites the request: it appends `tag` to the
+ * system message and sets a temperature and a provider option. `seen`
+ * records the model id of each request it rewrote.
+ */
+function rewritingMiddleware(tag: string, seen: string[] = []): LanguageModelMiddleware {
+  return {
+    specificationVersion: "v4",
+    transformParams: async ({ params, model }) => {
+      seen.push(model.modelId);
+      return {
+        ...params,
+        prompt: params.prompt.map((message) =>
+          message.role === "system"
+            ? { ...message, content: `${message.content} ${tag}` }
+            : message,
+        ),
+        temperature: 0.25,
+        providerOptions: { ...params.providerOptions, host: { tags: [tag] } },
+      };
+    },
+  };
+}
+
+const failingReply = () => {
+  throw new Error("Request timeout exceeded");
+};
+
+describe("log-mode request middleware", () => {
+  it.each(modes)(
+    "commits each tool-loop request as the middleware rewrote it in %s()",
+    async (mode) => {
+      const store = new MemoryContextLogStore();
+      const seen: Array<{ manifest: ContextManifest; request: LanguageModelV3CallOptions }> = [];
+      const { model, requests } = createScriptedModel(
+        [toolCalls(["c1", "echo", { value: "a" }]), text("done")],
+        {
+          onCall: async (request) => {
+            // The provider receives a request whose manifest is already committed.
+            const head = await store.readHead(STREAM);
+            seen.push({ manifest: await store.readManifest(head!.lastManifestId), request });
+          },
+        },
+      );
+
+      await runModes[mode](
+        logAgent(model, store, {
+          tools: echoTools,
+          contextLog: {
+            mode: "log",
+            store,
+            requestMiddleware: [rewritingMiddleware("[host]")],
+          },
+        }),
+      );
+
+      expect(requests).toHaveLength(2);
+      expect(seen).toHaveLength(2);
+      for (const { manifest, request } of seen) {
+        expect(request.prompt[0]).toEqual({ role: "system", content: "You are the core. [host]" });
+        expect(request.temperature).toBe(0.25);
+        expect(request.providerOptions).toEqual({ host: { tags: ["[host]"] } });
+        expect(manifest.dispatchedAt).not.toBeNull();
+        expect(manifest.inputDigest).toBe(describeProviderCall(request).inputDigest);
+        expect(JSON.parse(manifest.callOptions!)).toMatchObject({
+          temperature: 0.25,
+          providerOptions: { host: { tags: ["[host]"] } },
+        });
+      }
+      // The log keeps the entries; the version keeps the untransformed core.
+      const head = await store.readHead(STREAM);
+      expect((await store.readVersion(head!.versionId)).core).toBe("You are the core.");
+      expect((await readPath(store)).map((entry) => entry.kind)).toEqual([
+        "user",
+        "assistant",
+        "tool_result",
+        "assistant",
+      ]);
+    },
+  );
+
+  it("runs the middleware in order, the first one on the projected request", async () => {
+    const store = new MemoryContextLogStore();
+    const { model, requests } = createScriptedModel([text("A1")]);
+
+    await logAgent(model, store, {
+      contextLog: {
+        mode: "log",
+        store,
+        requestMiddleware: [rewritingMiddleware("first"), rewritingMiddleware("second")],
+      },
+    }).generate({ prompt: "go", threadId: THREAD });
+
+    expect(requests[0]!.prompt[0]).toEqual({
+      role: "system",
+      content: "You are the core. first second",
+    });
+    expect(requests[0]!.providerOptions).toEqual({ host: { tags: ["second"] } });
+    const [manifest] = await readManifests(store);
+    expect(manifest!.inputDigest).toBe(describeProviderCall(requests[0]!).inputDigest);
+  });
+
+  it("applies the middleware to every retry and fallback attempt", async () => {
+    const store = new MemoryContextLogStore();
+    const rewritten: string[] = [];
+    // The manifest each request was dispatched under, read when it arrives.
+    const dispatched: string[] = [];
+    const recordDispatch = async () => {
+      dispatched.push((await store.readHead(STREAM))!.lastManifestId);
+    };
+    let failed = false;
+    const primary = createScriptedModel([failingReply], {
+      onCall: async () => {
+        await recordDispatch();
+        if (failed) return;
+        failed = true;
+        throw new APICallError({
+          message: "overloaded",
+          url: "https://provider.test",
+          requestBodyValues: {},
+          statusCode: 529,
+          isRetryable: true,
+        });
+      },
+    });
+    const fallback = createScriptedModel([text("from fallback")], {
+      modelId: "fallback-model",
+      onCall: recordDispatch,
+    });
+
+    await logAgent(primary.model, store, {
+      fallbackModel: fallback.model,
+      contextLog: {
+        mode: "log",
+        store,
+        requestMiddleware: [rewritingMiddleware("[host]", rewritten)],
+      },
+    }).generate({ prompt: "go", threadId: THREAD });
+
+    // An AI SDK retry of the primary, its final failure, then the fallback.
+    expect(primary.requests).toHaveLength(2);
+    expect(fallback.requests).toHaveLength(1);
+    expect(rewritten).toEqual(["mock-model-id", "mock-model-id", "fallback-model"]);
+    const requests = [...primary.requests, ...fallback.requests];
+    const manifests = await Promise.all(dispatched.map((id) => store.readManifest(id)));
+    expect(manifests.map((m) => [m.model.modelId, m.outcome?.status])).toEqual([
+      ["mock-model-id", "failed"],
+      ["mock-model-id", "failed"],
+      ["fallback-model", "completed"],
+    ]);
+    for (const [index, request] of requests.entries()) {
+      expect(request.prompt[0]).toEqual({ role: "system", content: "You are the core. [host]" });
+      expect(manifests[index]!.inputDigest).toBe(describeProviderCall(request).inputDigest);
+    }
+  });
+
+  it("rejects request middleware that is not an array", () => {
+    const { model } = createScriptedModel([text("A1")]);
+    expect(() =>
+      createAgent({
+        model,
+        systemPrompt: "x",
+        contextLog: {
+          mode: "log",
+          store: new MemoryContextLogStore(),
+          requestMiddleware: rewritingMiddleware("x") as unknown as LanguageModelMiddleware[],
+        },
+      }),
+    ).toThrow(ConfigurationError);
+  });
+
+  it.each(modes)("never runs request middleware outside log mode in %s()", async (mode) => {
+    const rewritten: string[] = [];
+    const plain = createScriptedModel([text("A1")]);
+    const configured = createScriptedModel([text("A1")]);
+
+    await runModes[mode](createAgent({ model: plain.model, systemPrompt: "Legacy." }));
+    await runModes[mode](
+      createAgent({
+        model: configured.model,
+        systemPrompt: "Legacy.",
+        contextLog: {
+          mode: "off",
+          store: new MemoryContextLogStore(),
+          requestMiddleware: [rewritingMiddleware("[host]", rewritten)],
+        },
+      }),
+    );
+
+    expect(rewritten).toEqual([]);
+    const { abortSignal: _a, ...configuredRequest } = configured.requests[0]!;
+    const { abortSignal: _b, ...plainRequest } = plain.requests[0]!;
+    expect(JSON.stringify(configuredRequest)).toBe(JSON.stringify(plainRequest));
+  });
+});
+
+describe("log-mode core resolution on a model change", () => {
+  /** A core per model family, as a host's resolver might choose it. */
+  const familyCore = vi.fn(({ target }: { target: { modelId: string } }) =>
+    target.modelId.startsWith("claude") ? "Claude core" : "GPT core",
+  );
+
+  it("commits the target family's core for a fallback", async () => {
+    familyCore.mockClear();
+    const store = new MemoryContextLogStore();
+    const primary = createScriptedModel([failingReply], {
+      provider: "anthropic",
+      modelId: "claude-model",
+    });
+    const fallback = createScriptedModel([text("from fallback")], {
+      provider: "openai",
+      modelId: "gpt-model",
+    });
+    const rewritten: string[] = [];
+
+    await createAgent({
+      model: primary.model,
+      fallbackModel: fallback.model,
+      contextLog: {
+        mode: "log",
+        store,
+        resolveCore: familyCore,
+        requestMiddleware: [rewritingMiddleware("[host]", rewritten)],
+      },
+    }).generate({ prompt: "go", threadId: THREAD });
+
+    expect(primary.requests[0]!.prompt[0]).toEqual({
+      role: "system",
+      content: "Claude core [host]",
+    });
+    expect(fallback.requests[0]!.prompt[0]).toEqual({ role: "system", content: "GPT core [host]" });
+    // The same history follows the new core.
+    expect(fallback.requests[0]!.prompt.slice(1)).toEqual(primary.requests[0]!.prompt.slice(1));
+    expect(rewritten).toEqual(["claude-model", "gpt-model"]);
+
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version).toMatchObject({ reason: "model_change", inheritedCount: 1, core: "GPT core" });
+    const parent = await store.readVersion(version.parentVersionId!);
+    expect(parent).toMatchObject({ reason: "initial", core: "Claude core" });
+    expect(familyCore.mock.calls.map(([input]) => input)).toEqual([
+      {
+        stream: STREAM,
+        reason: "initial",
+        parent: null,
+        target: { provider: "anthropic", modelId: "claude-model" },
+        model: primary.model,
+      },
+      {
+        stream: STREAM,
+        reason: "model_change",
+        parent: { versionId: parent.id, inheritedCount: 1 },
+        target: { provider: "openai", modelId: "gpt-model" },
+        model: fallback.model,
+      },
+    ]);
+    const manifests = await readManifests(store);
+    expect(manifests.at(-1)!.inputDigest).toBe(
+      describeProviderCall(fallback.requests[0]!).inputDigest,
+    );
+    expect((await readPath(store)).map((entry) => entry.kind)).toEqual(["user", "assistant"]);
+  });
+
+  it.each(modes)(
+    "commits the new family's core when the host switches models in %s()",
+    async (mode) => {
+      familyCore.mockClear();
+      const store = new MemoryContextLogStore();
+      const claude = createScriptedModel([text("A1")], {
+        provider: "anthropic",
+        modelId: "claude-a",
+      });
+      const gpt = createScriptedModel([text("A2")], { provider: "openai", modelId: "gpt-b" });
+      const agentFor = (model: LanguageModel) =>
+        createAgent({ model, contextLog: { mode: "log", store, resolveCore: familyCore } });
+
+      await runModes[mode](agentFor(claude.model), "first");
+      await runModes[mode](agentFor(gpt.model), "second");
+
+      expect(gpt.requests[0]!.prompt).toEqual([
+        { role: "system", content: "GPT core" },
+        ...claude.requests[0]!.prompt.slice(1),
+        { role: "assistant", content: [{ type: "text", text: "A1" }] },
+        { role: "user", content: [{ type: "text", text: "second" }] },
+      ]);
+      const head = await store.readHead(STREAM);
+      const version = await store.readVersion(head!.versionId);
+      expect(version).toMatchObject({
+        reason: "model_change",
+        inheritedCount: 2,
+        core: "GPT core",
+      });
+      const [, sent] = await readManifests(store);
+      expect(sent!.inputDigest).toBe(describeProviderCall(gpt.requests[0]!).inputDigest);
+    },
+  );
+
+  it("keeps the core when the resolver returns the same bytes for the new model", async () => {
+    const store = new MemoryContextLogStore();
+    const resolveCore = vi.fn(() => "Shared core");
+    const first = createScriptedModel([text("A1")], { modelId: "claude-model" });
+    await createAgent({
+      model: first.model,
+      contextLog: { mode: "log", store, resolveCore },
+    }).generate({ prompt: "first", threadId: THREAD });
+    const second = createScriptedModel([text("A2")], { modelId: "claude-other" });
+
+    await createAgent({
+      model: second.model,
+      contextLog: { mode: "log", store, resolveCore },
+    }).generate({ prompt: "second", threadId: THREAD });
+
+    expect(resolveCore).toHaveBeenCalledTimes(2);
+    expect(resolveCore.mock.calls.map(([input]) => input.reason)).toEqual([
+      "initial",
+      "model_change",
+    ]);
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version).toMatchObject({ reason: "model_change", core: "Shared core" });
+    expect(second.requests[0]!.prompt.slice(0, first.requests[0]!.prompt.length)).toEqual(
+      first.requests[0]!.prompt,
+    );
+  });
+
+  it("does not resolve a core again while the model stays the same", async () => {
+    const store = new MemoryContextLogStore();
+    const resolveCore = vi.fn(() => "Core");
+    const { model } = createScriptedModel([text("A")]);
+    const agent = createAgent({ model, contextLog: { mode: "log", store, resolveCore } });
+
+    await agent.generate({ prompt: "first", threadId: THREAD });
+    await agent.generate({ prompt: "second", threadId: THREAD });
+
+    expect(resolveCore).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails before sending when the resolver does not return a string", async () => {
+    const store = new MemoryContextLogStore();
+    const { model, requests } = createScriptedModel([text("A")]);
+    const agent = createAgent({
+      model,
+      contextLog: { mode: "log", store, resolveCore: () => undefined as unknown as string },
+    });
+
+    const error = await agent.generate({ prompt: "first", threadId: THREAD }).catch((e) => e);
+
+    expect(isContextLogError(error, "invalid")).toBe(true);
+    expect(requests).toHaveLength(0);
   });
 });
 

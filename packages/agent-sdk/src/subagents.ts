@@ -134,8 +134,10 @@ export function createSubagent(parentAgent: Agent, options: SubagentOptions): Ag
 
 /**
  * Log-mode options for an SDK-built subagent: the delegation's store, with
- * the parent's admission hook and projection adapter. `undefined` when the
- * delegation is not in log mode. The parent's producers are not inherited.
+ * the parent's admission hook, projection adapter and request middleware
+ * (the adapter and the middleware are one serialisation contract).
+ * `undefined` when the delegation is not in log mode. The parent's producers
+ * and core resolver are not inherited.
  *
  * @internal
  */
@@ -152,6 +154,7 @@ export function subagentContextLogOptions(
     store: ctx.contextLog.store,
     ...(parent?.admit && { admit: parent.admit }),
     ...(parent?.projection && { projection: parent.projection }),
+    ...(parent?.requestMiddleware && { requestMiddleware: parent.requestMiddleware }),
   };
 }
 

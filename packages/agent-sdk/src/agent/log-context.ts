@@ -7,8 +7,9 @@
  * configured {@link ProjectionAdapter}:
  *
  * - The core is frozen per version. A static `systemPrompt` or
- *   `contextLog.resolveCore` supplies it only when a version is created; an
- *   existing version always projects its stored core.
+ *   `contextLog.resolveCore` supplies it only when a version is created
+ *   (`initial`, or `model_change` for the resolver, which then sees the
+ *   target model); an existing version always projects its stored core.
  * - Caller-supplied history is rejected. The only new content is the run's
  *   user input, which reaches PreGenerate hooks as `options.messages` so the
  *   input-security hooks (secret redaction, guardrails) see it before it can
@@ -48,6 +49,8 @@ import {
   projectionContractMismatches,
 } from "../context-log/projection.js";
 import {
+  type ContextCoreInput,
+  type ContextCoreResolver,
   type ContextEntry,
   type ContextEntryInput,
   type ContextHead,
@@ -140,6 +143,17 @@ export function validateLogModeOptions(options: AgentOptions): void {
       "Context log mode needs a frozen core: set a static systemPrompt (it may be empty) or contextLog.resolveCore",
       { configKey: "systemPrompt" },
     );
+  }
+  if (
+    contextLog.requestMiddleware !== undefined &&
+    (!Array.isArray(contextLog.requestMiddleware) ||
+      contextLog.requestMiddleware.some(
+        (middleware) => typeof middleware !== "object" || middleware === null,
+      ))
+  ) {
+    throw new ConfigurationError("contextLog.requestMiddleware must be an array of middleware", {
+      configKey: "contextLog.requestMiddleware",
+    });
   }
   assertTerminalModel(options.model, "model");
   assertTerminalModel(options.fallbackModel, "fallbackModel");
@@ -416,7 +430,7 @@ export function createLogContextRuntime(
   options: AgentOptions & { contextLog: ContextLogOptions },
   deps: LogContextRuntimeDeps = {},
 ): LogContextRuntime {
-  const { store, resolveCore, admit } = options.contextLog;
+  const { store, resolveCore, admit, requestMiddleware } = options.contextLog;
   const adapter: ProjectionAdapter =
     options.contextLog.projection ?? createMessageProjectionAdapter();
   // The agent's producers, then each plugin's; names must be unique.
@@ -528,15 +542,7 @@ export function createLogContextRuntime(
         previousCall !== undefined &&
         (previousCall.model.provider !== target.provider ||
           previousCall.model.modelId !== target.modelId);
-      if (mismatched.length > 0 || modelChanged) {
-        contract = { ...expectedContract };
-        transition = {
-          reason: "model_change",
-          parent: { versionId: head.versionId, inheritedCount: head.entryCount },
-          core,
-          contract: { ...expectedContract },
-        };
-      }
+      const declareModelChange = mismatched.length > 0 || modelChanged;
       path = await readFullPath(store, head);
       // A tool call waiting on an interrupt has no result yet, so no request
       // can be projected from this path until the interrupt is resumed.
@@ -551,9 +557,33 @@ export function createLogContextRuntime(
             )}); resume it with resume() or resumeDataResponse() before generating on this stream`,
         });
       }
+      if (declareModelChange) {
+        // The model_change version may adopt the host's core for the target
+        // model: it records the resolved core, so the transition that
+        // declares the model change declares the core change too. A
+        // resolver that returns the same bytes keeps the core unchanged.
+        const parent = { versionId: head.versionId, inheritedCount: head.entryCount };
+        if (resolveCore) {
+          core = await resolveVersionCore(resolveCore, {
+            stream,
+            reason: "model_change",
+            parent,
+            target,
+            model,
+          });
+        }
+        contract = { ...expectedContract };
+        transition = { reason: "model_change", parent, core, contract: { ...expectedContract } };
+      }
     } else {
       core = resolveCore
-        ? await resolveCore({ stream, reason: "initial", parent: null })
+        ? await resolveVersionCore(resolveCore, {
+            stream,
+            reason: "initial",
+            parent: null,
+            target,
+            model,
+          })
         : (options.systemPrompt ?? "");
       contract = expectedContract;
       transition = { reason: "initial", parent: null, core, contract: { ...expectedContract } };
@@ -636,6 +666,21 @@ export function createLogContextRuntime(
     };
   }
 
+  /** Resolves the core of a new version with the host's resolver. */
+  async function resolveVersionCore(
+    resolver: ContextCoreResolver,
+    input: ContextCoreInput,
+  ): Promise<string> {
+    const core = await resolver(input);
+    if (typeof core !== "string") {
+      throw new ContextLogInvalidError(
+        "invalid_core",
+        `contextLog.resolveCore must return a string for a ${input.reason} version`,
+      );
+    }
+    return core;
+  }
+
   /** Plans a compaction with the agent's compactor, if it has one. */
   function compactPath(input: {
     stream: ContextStreamRef;
@@ -692,6 +737,7 @@ export function createLogContextRuntime(
       admit,
       plan,
       model,
+      ...(requestMiddleware && { requestMiddleware }),
       project: (entries) => project(plan.core, plan.contract, entries, plan.target),
       onHead: (head) => {
         cursors.set(plan.stream.threadId, toCursor(plan.stream, head));
