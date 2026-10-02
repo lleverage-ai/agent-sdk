@@ -25,7 +25,12 @@ import type {
 import type { BackendProtocol } from "./backend.js";
 import type { AgentState } from "./backends/state.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
-import type { ContextLogOptions, ContextProducer } from "./context-log/types.js";
+import type {
+  ContextLogOptions,
+  ContextLogStore,
+  ContextProducer,
+  ContextStreamRef,
+} from "./context-log/types.js";
 
 // =============================================================================
 // Re-export AI SDK Types
@@ -3975,6 +3980,21 @@ export interface SubagentDefinition {
 }
 
 /**
+ * Context log mode only: where a delegated subagent's history lives.
+ *
+ * @experimental
+ * @category Subagents
+ */
+export interface SubagentContextLog {
+  /** The parent's store. The subagent must use the same store. */
+  store: ContextLogStore;
+  /** The delegation's own stream, derived from the parent's stream and the tool call. */
+  stream: ContextStreamRef;
+  /** The stream of the parent call that delegated. */
+  parentStream: ContextStreamRef;
+}
+
+/**
  * Context passed to subagent factory functions.
  *
  * @category Subagents
@@ -3982,6 +4002,28 @@ export interface SubagentDefinition {
 export interface SubagentCreateContext {
   /** Stable originating tool call identity for durable delegation ownership. */
   toolCallId?: string;
+
+  /**
+   * Context log mode only: the delegation's own stream in the parent's
+   * store. Set when the parent call runs in log mode; `undefined` otherwise.
+   *
+   * The factory must return an agent in log mode on this store, without the
+   * parent's checkpointer (the child's history is its stream):
+   *
+   * ```typescript
+   * create: (ctx) =>
+   *   createSubagent(parent, {
+   *     model,
+   *     systemPrompt: "You are a researcher.",
+   *     contextLog: ctx.contextLog && { mode: "log", store: ctx.contextLog.store },
+   *   }),
+   * ```
+   *
+   * The task tool then runs the child on `stream`. See `docs/context-log.md`.
+   *
+   * @experimental
+   */
+  contextLog?: SubagentContextLog;
 
   /** Delegation/attempt cancellation, including factory and asynchronous initialisation. */
   signal?: AbortSignal;

@@ -56,6 +56,14 @@ Host admission, worker recovery and executor policy remain outside the SDK.
 See [the owned-task guide](./migration/owned-tasks.md) for failure codes, replay
 limits, callback contracts and the difference between attempt and run cleanup.
 
+## Context log mode
+
+Under a parent in context log mode (experimental), each delegation runs on
+its own stream in the parent's store, the factory receives that stream as
+`ctx.contextLog`, and recreating a delegation either reads its committed
+reply back or fails with `DelegationRecoveryRequiredError`. See
+[subagent streams](./context-log.md#subagent-streams).
+
 ## Advanced Subagent Execution
 
 For programmatic control over subagent execution:

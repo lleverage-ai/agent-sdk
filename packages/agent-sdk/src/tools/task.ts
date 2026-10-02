@@ -11,8 +11,20 @@
 import type { LanguageModel, Tool, ToolExecutionOptions } from "ai";
 import { tool } from "ai";
 import { z } from "zod";
+import {
+  type DelegationScope,
+  readDelegationScope,
+  readSubagentDelegation,
+  resolveSubagentContextStream,
+} from "../context-log/delegation.js";
+import {
+  ContextLogInvalidError,
+  DelegationRecoveryRequiredError,
+  isContextLogError,
+} from "../context-log/errors.js";
+import { ConfigurationError } from "../errors/index.js";
 import { invokeHooksWithTimeout } from "../hooks.js";
-import { createSubagent } from "../subagents.js";
+import { createSubagent, subagentContextLogOptions } from "../subagents.js";
 import type { BackgroundTask, BaseTaskStore } from "../task-store/index.js";
 import { createBackgroundTask, updateBackgroundTask } from "../task-store/index.js";
 import type {
@@ -21,6 +33,7 @@ import type {
   HookCallback,
   StreamingContext,
   StreamingMetadata,
+  SubagentContextLog,
   SubagentCreateContext,
   SubagentDefinition,
   SubagentStartInput,
@@ -419,6 +432,75 @@ export async function cleanupStaleTasks(store: BaseTaskStore, maxAge: number): P
 }
 
 // =============================================================================
+// Log-mode delegation streams
+// =============================================================================
+
+/**
+ * Open a log-mode delegation's child stream. A stream without a head starts
+ * the delegation; a final reply on it is the delegation's result; any other
+ * head means the child stopped mid-task, and the task is never replayed.
+ *
+ * @internal
+ */
+async function openDelegationStream(
+  scope: DelegationScope,
+  toolCallId: string | undefined,
+  subagentType: string,
+): Promise<{ contextLog: SubagentContextLog } | { completedText: string }> {
+  if (!toolCallId) {
+    throw new ContextLogInvalidError(
+      "missing_delegation_identity",
+      "A log-mode delegation needs its originating toolCallId to find its stream",
+    );
+  }
+  const stream = resolveSubagentContextStream(
+    { parent: scope.stream, toolCallId, subagentType },
+    scope.subagentStream,
+  );
+  const state = await readSubagentDelegation(scope.store, stream);
+  if (state.status === "completed") {
+    return { completedText: state.text };
+  }
+  if (state.status === "unfinished") {
+    throw new DelegationRecoveryRequiredError(stream, state.head);
+  }
+  return { contextLog: { store: scope.store, stream, parentStream: scope.stream } };
+}
+
+/**
+ * A log-mode delegation's child must keep its history on its stream in the
+ * parent's store, and must not save control state over the parent's
+ * checkpoint (both use the same threadId).
+ *
+ * @internal
+ */
+function assertLogModeSubagent(
+  subagent: Agent,
+  contextLog: SubagentContextLog,
+  parentAgent: Agent,
+): void {
+  const childLog = subagent.options.contextLog;
+  if (childLog?.mode !== "log" || childLog.store !== contextLog.store) {
+    throw new ConfigurationError(
+      'In context log mode a subagent factory must return an agent with contextLog: { mode: "log", store: ctx.contextLog.store }',
+      { configKey: "contextLog" },
+    );
+  }
+  const checkpointer = subagent.options.checkpointer;
+  if (checkpointer && checkpointer === parentAgent.options.checkpointer) {
+    throw new ConfigurationError(
+      "A log-mode subagent cannot share its parent's checkpointer: both would save control state under the same threadId",
+      { configKey: "checkpointer" },
+    );
+  }
+}
+
+/** Whether a delegation failed because its child stream needs host recovery. @internal */
+function isDelegationRecoveryRequired(error: unknown): boolean {
+  return isContextLogError(error, "refused") && error.reason === "delegation_recovery_required";
+}
+
+// =============================================================================
 // Helper Functions
 // =============================================================================
 
@@ -444,6 +526,7 @@ function createGeneralPurposeSubagent(
         systemPrompt:
           systemPrompt ??
           `You are a general-purpose assistant. Complete the requested task thoroughly and return a clear summary of what was accomplished.`,
+        contextLog: subagentContextLogOptions(parentAgent, ctx),
       }),
   };
 }
@@ -576,6 +659,9 @@ ${subagentDescriptions}`;
       const isStreamingSubagent =
         subagentDef.streaming === true && streamingContext?.writer != null;
 
+      // Log mode: the parent call's store and stream, if any.
+      const delegationScope = readDelegationScope(toolOptions);
+
       // Execute task function
       const executeTask = async (signal?: AbortSignal): Promise<string> => {
         signal?.throwIfAborted();
@@ -591,6 +677,30 @@ ${subagentDescriptions}`;
           backgroundTasks.set(taskId, runningTask);
         }
         Object.assign(task, runningTask);
+
+        // Log mode: the delegation runs on its own stream. A finished child
+        // stream is read back without running anything again.
+        let childContextLog: SubagentContextLog | undefined;
+        if (delegationScope) {
+          const opened = await openDelegationStream(
+            delegationScope,
+            toolOptions?.toolCallId,
+            subagent_type,
+          );
+          if ("completedText" in opened) {
+            return opened.completedText;
+          }
+          childContextLog = opened.contextLog;
+        }
+        const childStreamOptions = childContextLog
+          ? {
+              threadId: childContextLog.stream.threadId,
+              contextStream: {
+                branchId: childContextLog.stream.branchId,
+                streamId: childContextLog.stream.streamId,
+              },
+            }
+          : {};
 
         // Determine the model to use
         // Priority: subagentDef.model > defaultModel > parentAgent.model
@@ -609,6 +719,7 @@ ${subagentDescriptions}`;
         // Build context for the subagent factory
         const createContext: SubagentCreateContext = {
           toolCallId: toolOptions?.toolCallId,
+          ...(childContextLog && { contextLog: childContextLog }),
           signal,
           model: subagentModel,
           allowedTools: subagentDef.allowedTools,
@@ -626,6 +737,9 @@ ${subagentDescriptions}`;
 
         // Create the subagent with resolved context
         const subagent = await subagentDef.create(createContext);
+        if (childContextLog) {
+          assertLogModeSubagent(subagent, childContextLog, parentAgent);
+        }
         // Own initialisation before a cancellation/failing hook can abandon it.
         if (signal) await subagent.ready;
         signal?.throwIfAborted();
@@ -666,6 +780,7 @@ ${subagentDescriptions}`;
 
           // Stream the subagent's response
           const streamResult = await subagent.streamRaw({
+            ...childStreamOptions,
             signal,
             prompt: description,
             maxTokens: (max_turns ?? defaultMaxTurns) * 4096,
@@ -704,6 +819,7 @@ ${subagentDescriptions}`;
         } else {
           // Non-streaming execution - use generate() as before
           const result = await subagent.generate({
+            ...childStreamOptions,
             signal,
             prompt: description,
             maxTokens: (max_turns ?? defaultMaxTurns) * 4096,
@@ -877,6 +993,13 @@ ${subagentDescriptions}`;
         // Optional persistence for foreground tasks
         if (taskStore) {
           await taskStore.save(failedTask);
+        }
+
+        // A delegation that needs host recovery rejects with its typed error,
+        // so the host's tool error handling (or a direct caller) can tell it
+        // apart from an ordinary failed task.
+        if (isDelegationRecoveryRequired(error)) {
+          throw error;
         }
 
         return {

@@ -11,6 +11,7 @@
  */
 
 import type { AssistantModelMessage, ModelMessage, ToolModelMessage, UserModelMessage } from "ai";
+import type { SubagentStreamResolver } from "./delegation.js";
 
 // =============================================================================
 // JSON values and metadata
@@ -999,6 +1000,12 @@ export interface ContextLogOptions {
   producers?: readonly ContextProducer[];
   /** Authorises every prepare and dispatch. A refusal fails the call before anything is sent. */
   admit?: ContextAdmitHook;
+  /**
+   * Chooses the stream of a subagent this agent delegates to with the `task`
+   * tool. It must be deterministic, and distinct for every delegation.
+   * @defaultValue `deriveSubagentContextStream`
+   */
+  subagentStream?: SubagentStreamResolver;
 }
 
 /**

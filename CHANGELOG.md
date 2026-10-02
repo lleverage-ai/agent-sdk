@@ -128,6 +128,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     passing `PreGenerate` and committing through its own boundary.
   - Model id strings, and models that already have a boundary, are rejected
     in log mode: pass the innermost provider model.
+- Log-mode subagent streams (experimental). When a log-mode agent delegates
+  with the `task` tool, the subagent runs on its own stream in the parent's
+  store, and the parent receives its reply as an ordinary tool result:
+  - `SubagentCreateContext.contextLog` (`SubagentContextLog`) gives the
+    factory the store, the child stream and the parent's stream. The factory
+    must return an agent in log mode on that store, without the parent's
+    checkpointer; the task tool runs it on the child stream.
+  - The child stream defaults to
+    `<parent stream>/subagent/<type>-<digest of the toolCallId>` on the
+    parent's branch (`deriveSubagentContextStream()`); hosts can choose it
+    with `contextLog.subagentStream`.
+  - Recreating a delegation whose stream holds a committed final reply
+    returns that reply without running anything. A stream with any other
+    head fails with `DelegationRecoveryRequiredError` (a
+    `ContextLogRefusedError`, reason `delegation_recovery_required`); the task
+    is never replayed. `readSubagentDelegation()` reads a child stream's
+    state.
+  - The built-in general-purpose and plugin subagents run in log mode under a
+    log-mode parent, with the parent's `admit` hook and projection adapter.
+  - `createSubagent()` now passes `contextLog` through to the subagent.
 
 ### Changed
 
