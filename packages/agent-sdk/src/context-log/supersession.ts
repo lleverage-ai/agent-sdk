@@ -14,13 +14,19 @@ import type { ContextEntry } from "./types.js";
  * themselves are never emitted. Every other entry, including user, assistant
  * and tool result entries, is kept unchanged.
  *
- * @param path - The full path, in position order
+ * @param path - The complete path, in position order (every page, not one)
  * @returns The entries to project, in position order
  *
  * @example
  * ```typescript
- * const page = await store.readPath(head);
- * const visible = activeContextEntries(page.entries);
+ * // Supersession can reach across pages, so pass the complete path once.
+ * const path: ContextEntry[] = [];
+ * for (let after: number | null = 0; after !== null; ) {
+ *   const page = await store.readPath(head, { after });
+ *   path.push(...page.entries);
+ *   after = page.nextAfter;
+ * }
+ * const visible = activeContextEntries(path);
  * ```
  *
  * @experimental
