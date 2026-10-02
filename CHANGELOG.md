@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Log mode: prepare a compaction summary ahead of time** (LLE-14017).
+  `Agent.prepareCompaction({ threadId, contextStream?, pendingMessages? })`
+  (experimental, log mode only) reads the stream's head once and plans the
+  compaction its next call would make, with `pendingMessages` (default 1)
+  placeholder user messages standing in for that call's new input. When the
+  policy would compact, the context manager's `summarizer` runs on its own
+  summary stream, as in a call. Nothing is committed, the compacted stream
+  is never written, and no compaction hooks run. It returns
+  `{ prepared: true, head }` or `{ prepared: false, reason }`
+  (`no_context_manager`, `no_head`, `transition_pending`, `not_needed`).
+  The new `summaryRequestDigest(request)` identifies what a `SummaryRequest`
+  summarises (messages, output limit, strategy and tier, not the trigger or
+  the run): when the next call's head, new input count and history match,
+  its summary request has the same digest, so a summarizer that keeps
+  summaries by digest answers it without a model call. When the head
+  moved, the digest differs and the summary is generated again.
+
 - `ContextManager.shouldCompact(messages, options?)` accepts
   `ShouldCompactOptions.budgetMessages` (experimental): the messages the
   model is actually sent, when they differ from the messages being

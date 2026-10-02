@@ -204,6 +204,7 @@ export {
   DEFAULT_COMPACTION_POLICY,
   DEFAULT_SUMMARIZATION_CONFIG,
   SUMMARY_TOOL_RESULT_MAX_CHARS,
+  summaryRequestDigest,
 } from "./context-manager.js";
 
 // Error types
@@ -787,6 +788,8 @@ export type {
   StdioMCPServerConfig,
   // Streaming types
   StreamingContext,
+  PrepareCompactionOptions,
+  PrepareCompactionResult,
   StreamingMetadata,
   StreamingWriter,
   StreamingToolsFactory,

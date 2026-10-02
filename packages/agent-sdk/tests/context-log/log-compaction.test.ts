@@ -37,6 +37,7 @@ import {
   isContextLogError,
   MemoryContextLogStore,
   type SummaryRequest,
+  summaryRequestDigest,
 } from "../../src/index.js";
 
 /**
@@ -1454,5 +1455,110 @@ describe("log-mode compaction budget (LLE-14056)", () => {
 
     expect(await run()).toBe(0);
     expect(await run(inflating)).toBeGreaterThan(0);
+  });
+});
+
+describe("log-mode prepared compaction summaries (LLE-14017)", () => {
+  /** A message-count manager whose summarizer keeps summaries by request digest. */
+  function cachingManager(maxMessages: number) {
+    const cache = new Map<string, string>();
+    const generated: string[] = [];
+    const digests: string[] = [];
+    const contextManager = createContextManager({
+      maxTokens: 1_000_000,
+      policy: {
+        shouldCompact: (_budget, messages) =>
+          messages.length > maxMessages
+            ? { trigger: true, reason: "token_threshold" }
+            : { trigger: false },
+      },
+      summarization: { keepMessageCount: 2, keepToolResultCount: 0 },
+      summarizer: async (request) => {
+        const digest = summaryRequestDigest(request);
+        digests.push(digest);
+        const known = cache.get(digest);
+        if (known !== undefined) return { text: known };
+        const text = `summary ${generated.length + 1}`;
+        generated.push(digest);
+        cache.set(digest, text);
+        return { text };
+      },
+    });
+    return { contextManager, generated, digests };
+  }
+
+  async function fourTurns(maxMessages = 10) {
+    const store = new MemoryContextLogStore();
+    const manager = cachingManager(maxMessages);
+    const agent = logAgent(createScriptedModel([text("a")]).model, store, {
+      contextManager: manager.contextManager,
+    });
+    for (const prompt of ["q1", "q2", "q3", "q4"]) {
+      await agent.generate({ prompt, threadId: THREAD });
+    }
+    expect(manager.digests).toHaveLength(0);
+    return { store, manager, agent };
+  }
+
+  it("generates the next call's summary ahead of time, and the call reuses it", async () => {
+    const { store, manager, agent } = await fourTurns();
+    const before = await store.readHead(STREAM);
+
+    const prepared = await agent.prepareCompaction!({ threadId: THREAD });
+
+    expect(prepared).toEqual({ prepared: true, head: before });
+    expect(manager.generated).toHaveLength(1);
+    // Nothing was committed to the compacted stream.
+    expect(await store.readHead(STREAM)).toEqual(before);
+
+    // The next call compacts with the same summary request: no new summary.
+    await agent.generate({ prompt: "q5", threadId: THREAD });
+    expect(manager.digests).toHaveLength(2);
+    expect(manager.digests[1]).toBe(manager.digests[0]);
+    expect(manager.generated).toHaveLength(1);
+    const head = await store.readHead(STREAM);
+    expect((await store.readVersion(head!.versionId)).reason).toBe("compaction");
+    const summary = (await readPath(store)).find((entry) => entry.key.includes(":summary:"));
+    expect(summary?.kind === "assistant" && summary.message.content).toBe(
+      "[Previous conversation summary]\n\nsummary 1",
+    );
+  });
+
+  it("falls back to summarising when the next call's request differs", async () => {
+    const { manager, agent } = await fourTurns();
+
+    // Prepared for two new messages; the call brings one, so the retained
+    // tail differs and so does the summarised history.
+    await agent.prepareCompaction!({ threadId: THREAD, pendingMessages: 2 });
+    await agent.generate({ prompt: "q5", threadId: THREAD });
+
+    expect(manager.digests).toHaveLength(2);
+    expect(manager.digests[1]).not.toBe(manager.digests[0]);
+    expect(manager.generated).toHaveLength(2);
+  });
+
+  it("prepares nothing when the policy would not compact or the stream is empty", async () => {
+    const { manager, agent } = await fourTurns(20);
+    expect(await agent.prepareCompaction!({ threadId: THREAD })).toEqual({
+      prepared: false,
+      reason: "not_needed",
+    });
+    expect(await agent.prepareCompaction!({ threadId: "other-thread" })).toEqual({
+      prepared: false,
+      reason: "no_head",
+    });
+    expect(manager.digests).toHaveLength(0);
+  });
+
+  it("is refused outside log mode", async () => {
+    const agent = createAgent({
+      model: createScriptedModel([text("a")]).model,
+      systemPrompt: "core",
+    });
+    const error = await agent.prepareCompaction!({ threadId: THREAD }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as Error).name).toBe("ConfigurationError");
   });
 });

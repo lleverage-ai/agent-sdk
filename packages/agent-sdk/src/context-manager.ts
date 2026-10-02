@@ -9,8 +9,10 @@
  * @packageDocumentation
  */
 
+import { createHash } from "node:crypto";
 import type { LanguageModel, ModelMessage } from "ai";
 import type { CompactionTrigger } from "./canonical.js";
+import { canonicalContextJson } from "./context-log/json.js";
 import type { ContextStreamRef } from "./context-log/types.js";
 import type { Agent } from "./types.js";
 
@@ -1291,6 +1293,49 @@ export interface SummaryRequest {
    * @experimental
    */
   contextLog?: CompactionContextLog;
+}
+
+/**
+ * A digest of what a {@link SummaryRequest} asks to be summarised: its
+ * messages, output limit, strategy and tier, in canonical JSON. The trigger
+ * reason and the context log details (run, streams) are excluded, so two
+ * requests for the same summary match across runs.
+ *
+ * A summarizer may keep summaries by this digest and answer a later request
+ * with the same digest without a model call, for example the request a
+ * log-mode call makes after `Agent.prepareCompaction` generated its summary
+ * ahead of time (LLE-14017).
+ *
+ * @param request - The summary request
+ * @returns Lowercase hexadecimal SHA-256
+ *
+ * @example
+ * ```typescript
+ * const summaries = new Map<string, string>();
+ * const summarizer: SummaryExecutor = async (request) => {
+ *   const digest = summaryRequestDigest(request);
+ *   const known = summaries.get(digest);
+ *   if (known !== undefined) return { text: known };
+ *   const text = await summarise(request);
+ *   summaries.set(digest, text);
+ *   return { text };
+ * };
+ * ```
+ *
+ * @experimental
+ * @category Context
+ */
+export function summaryRequestDigest(request: SummaryRequest): string {
+  return createHash("sha256")
+    .update(
+      canonicalContextJson({
+        messages: request.messages,
+        maxTokens: request.maxTokens,
+        strategy: request.strategy,
+        tier: request.tier ?? null,
+      }),
+    )
+    .digest("hex");
 }
 
 /**

@@ -51,7 +51,7 @@ import {
   isApprovalInterrupt,
   updateCheckpoint,
 } from "./checkpointer/types.js";
-import { type AgentError, ConfigurationError } from "./errors/index.js";
+import { type AgentError, ConfigurationError, ValidationError } from "./errors/index.js";
 import { normalizeError } from "./generation-helpers.js";
 import { invokeHooksWithTimeout } from "./hooks.js";
 import { MCPManager } from "./mcp/manager.js";
@@ -87,6 +87,7 @@ import type {
   MCPConnectionFailedInput,
   MCPConnectionRestoredInput,
   PostCheckpointLoadInput,
+  PrepareCompactionOptions,
   StreamingContext,
   StreamPart,
   SubagentDefinition,
@@ -241,7 +242,10 @@ export function createAgent(options: AgentOptions): Agent {
       ? createLogContextRuntime(
           { ...options, contextLog: options.contextLog },
           // Built below from the message runtime; read only once a call runs.
-          { compactor: () => logCompactor },
+          {
+            compactor: () => logCompactor,
+            prepareCompactor: () => createPrepareCompactor?.(),
+          },
         )
       : undefined;
 
@@ -826,6 +830,37 @@ export function createAgent(options: AgentOptions): Agent {
           (messages) =>
             compactionManager.shouldCompact(messages, { budgetMessages: messages }).trigger,
         )
+      : undefined;
+  // LLE-14017: plans the next compaction to generate its summary ahead of
+  // time. It calls the context manager directly: no compaction hooks run,
+  // because nothing is compacted, and the plan is never committed.
+  const createPrepareCompactor:
+    | (() => { compactor: LogCompactor; summarised: () => boolean })
+    | undefined =
+    logContext && compactionManager
+      ? () => {
+          let summarised = false;
+          const compactor = createLogCompactor(
+            async (messages, _genOptions, _threadId, compactOptions, budgetMessages) => {
+              const { trigger, reason } = compactionManager.shouldCompact(
+                messages,
+                budgetMessages ? { budgetMessages } : undefined,
+              );
+              if (!trigger || !reason) return { compacted: false, messages };
+              const result = await compactionManager.compact(
+                messages,
+                agent,
+                reason,
+                compactOptions,
+              );
+              summarised = result.summary !== "";
+              return { compacted: true, messages: result.newMessages };
+            },
+            (messages) =>
+              compactionManager.shouldCompact(messages, { budgetMessages: messages }).trigger,
+          );
+          return { compactor, summarised: () => summarised };
+        }
       : undefined;
 
   /**
@@ -2382,6 +2417,29 @@ export function createAgent(options: AgentOptions): Agent {
         ...resumeOptions,
         prompt: undefined,
       });
+    },
+
+    async prepareCompaction(prepareOptions: PrepareCompactionOptions) {
+      if (!logContext) {
+        throw new ConfigurationError("prepareCompaction() is available in context log mode only", {
+          configKey: "contextLog",
+        });
+      }
+      const pendingMessages = prepareOptions.pendingMessages ?? 1;
+      if (!Number.isInteger(pendingMessages) || pendingMessages < 0) {
+        throw new ValidationError("pendingMessages must be a non-negative integer", {
+          fieldErrors: { pendingMessages: ["must be a non-negative integer"] },
+        });
+      }
+      return logContext.prepareCompaction(
+        {
+          threadId: prepareOptions.threadId,
+          ...(prepareOptions.contextStream && { contextStream: prepareOptions.contextStream }),
+          ...(prepareOptions.signal && { signal: prepareOptions.signal }),
+        },
+        options.model,
+        pendingMessages,
+      );
     },
 
     async *resumeStream(
