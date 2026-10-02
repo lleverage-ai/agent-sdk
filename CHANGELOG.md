@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.6] - 2026-10-02
+
+Sixth release candidate for 1.0.0. It adds two log-mode changes that hosts
+need to map their product events onto the log: a run's new input can be
+several user messages, including image and file parts, each committed as
+its own `user` entry; and a model step with parallel tool calls commits one
+`tool_result` entry per result. Provider input for existing logs is
+unchanged. Legacy agents are unchanged.
+
+### Migration notes
+
+- **Legacy mode.** No code change and no behaviour change from rc.5.
+  `GenerateOptions.input` is rejected outside log mode, so legacy callers
+  keep using `prompt` or `messages`.
+- **Log mode, several user messages and attachments.** Hosts that joined
+  queued messages into one `prompt`, or relocated attachments, can pass them
+  as `input`: an array of `UserModelMessage`s, each committed as its own
+  `user` entry, in order. Messages must be plain JSON: text, image and file
+  parts only, with image and file data as a string (base64, a data URL or a
+  URL) and a `mediaType` on file parts. `input` is rejected together with
+  `prompt`. A retry resends the committed input and never appends it again.
+  A new user message's `providerOptions` (message and part level) are
+  screened by the `PreGenerate` hooks like caller data, so a secrets filter
+  or guardrail sees them. Context versions created by rc.6 record
+  `userMedia: "placeholder"` in their contract; on those, user image and
+  file parts the version's capability contract excludes project as the
+  legacy text placeholders. Versions created earlier lack the key and
+  project user parts as stored, and the key is not compared, so its absence
+  never forces a transition. A store that persists only known contract
+  keys must keep `userMedia`, or a reloaded version projects user media as
+  stored.
+- **Log mode, parallel tool results.** A step whose tool message holds more
+  than one result now commits one entry per result, in call order, keyed
+  `<step key>:<part index>` (the step's entry key in rc.5 was
+  `<step key>`). A step with a single result, or a tool message with
+  message-level provider options, keeps one entry and its rc.5 key. Hosts
+  whose `ContextLogStore` mapped one `tool_result` entry to several product
+  events can now map each entry to one event; hosts that matched on entry
+  keys must accept the `:<part index>` suffix. Logs written by rc.5 stay
+  readable and need no rewrite: a multi-result entry and its split form
+  give the provider the same input, because the AI SDK merges adjacent
+  tool messages.
+
 ### Added
 
 - **Log mode:** `GenerateOptions.input` takes a run's new input as an array
@@ -1164,7 +1207,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.5...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.6...HEAD
+[1.0.0-rc.6]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.5...agent-sdk@1.0.0-rc.6
 [1.0.0-rc.5]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.4...agent-sdk@1.0.0-rc.5
 [1.0.0-rc.4]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...agent-sdk@1.0.0-rc.4
 [1.0.0-rc.3]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.2...agent-sdk@1.0.0-rc.3
