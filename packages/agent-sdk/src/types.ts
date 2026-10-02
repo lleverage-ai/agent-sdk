@@ -30,6 +30,7 @@ import type { DelegationStreamClaim } from "./context-log/delegation.js";
 import type {
   ContextLogOptions,
   ContextLogStore,
+  ContextPathRef,
   ContextProducer,
   ContextStreamRef,
 } from "./context-log/types.js";
@@ -2177,11 +2178,22 @@ export interface GenerateOptions {
    * on. Each defaults to `"main"`. A host uses its own session branch id as
    * `branchId`, and a delegated child its own `streamId`.
    *
+   * `branchFrom` declares that the stream continues another branch's path,
+   * for example when a user forks the conversation, edits a message or
+   * regenerates a reply. On a stream without a head, the call's prepare
+   * commits a `branch` transition whose version inherits exactly that path
+   * (`parent: { versionId, inheritedCount: entryCount }`) instead of starting
+   * a root version. Once the stream has a head, the head must descend from
+   * that branch transition, or the call fails with a
+   * `ContextLogConflictError` (reason `branch_source_mismatch`) before
+   * anything is committed. The reference must be on the same thread and
+   * stream id as the call, on another branch.
+   *
    * Rejected when the agent is not in context log mode.
    *
    * @experimental
    */
-  contextStream?: { branchId?: string; streamId?: string };
+  contextStream?: { branchId?: string; streamId?: string; branchFrom?: ContextPathRef };
 
   /** Maximum tokens to generate */
   maxTokens?: number;

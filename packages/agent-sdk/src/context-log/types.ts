@@ -940,9 +940,10 @@ export interface ContextCoreInput {
  * Resolves the frozen core system for a new version.
  *
  * The runtime calls it only when it creates a version: `initial` on a stream
- * without a head, and `model_change` when a call targets another model than
- * the stream's previous call (a fallback, or a host switching models) or a
- * model that accepts different input. The returned bytes are stored on the
+ * without a head, `branch` on a stream without a head whose call declares
+ * `contextStream.branchFrom`, and `model_change` when a call targets another
+ * model than the stream's previous call (a fallback, or a host switching
+ * models) or a model that accepts different input. The returned bytes are stored on the
  * version, and every call on that version projects them unchanged, so a
  * resolver never re-renders the core of an existing version.
  *

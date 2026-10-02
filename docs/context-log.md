@@ -335,6 +335,7 @@ Rules in log mode:
   Both ids default to `"main"`; set `contextStream: { branchId, streamId }` on
   the call to choose others (for example the host's session branch, or a
   delegated child's own stream). `contextStream` is rejected outside log mode.
+  See [Branches](#branches) for a branch that continues another branch's path.
 
 ## The commit boundary
 
@@ -507,7 +508,7 @@ const agent = createAgent({
   contextLog: {
     mode: "log",
     store,
-    // Called for `initial` and `model_change` versions only.
+    // Called for `initial`, `model_change` and `branch` versions only.
     resolveCore: ({ target }) => corePromptFor(familyOf(target.modelId)),
   },
 });
@@ -515,6 +516,49 @@ const agent = createAgent({
 
 A compaction planned by the same call replaces the `model_change`, as
 before, and its child records the resolved core.
+
+### Branches
+
+A fork, an edited message and a regenerated reply all continue another
+branch's path up to some point, then diverge. The host declares that point
+with `contextStream.branchFrom`, a `ContextPathRef` on the source branch (the
+same thread and stream id, another branch id):
+
+```typescript
+// The user edits their second message: the new branch keeps everything
+// before it and continues with the edited text.
+await agent.generate({
+  input: [{ role: "user", content: "second, edited" }],
+  threadId: sessionId,
+  contextStream: {
+    branchId: newBranchId,
+    branchFrom: { stream: sourceStream, versionId, entryCount: editedMessagePosition },
+  },
+});
+```
+
+- On a stream without a head, the call's prepare commits a **`branch`**
+  transition: a version with `parent: { versionId, inheritedCount: entryCount }`
+  that inherits exactly that path. The source branch is never written.
+- The version keeps the source version's core. With `contextLog.resolveCore`,
+  the runtime calls the resolver with `reason: "branch"` and the inherited
+  `parent`, as for a `model_change`. The version records the call's
+  capability contract; a different adapter id or version still fails with
+  `transition_required`.
+- The inherited path is projected as it was committed, followed by the call's
+  new input. A regenerated reply needs no new input: run the branch without
+  a prompt and the model answers the inherited path again.
+- A path whose tool calls are waiting on an interrupt can't be continued:
+  the call fails with the interrupt conflict.
+- The first call on a branch is never compacted (it has no head to compact
+  from); the next call is.
+- Every call of the run may keep declaring the same source, including
+  retries and later tool-loop steps. Once the stream has a head, the head's
+  versions must lead back to a `branch` transition from exactly that path.
+  Otherwise (the branch already started elsewhere, or as a root) the call
+  fails with a `ContextLogConflictError` (reason `branch_source_mismatch`)
+  before anything is committed. Calls that don't declare a source continue
+  the head as usual.
 
 ## Compaction
 
