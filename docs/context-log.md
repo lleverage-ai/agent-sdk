@@ -887,6 +887,13 @@ Rules:
   decision. A thrown error becomes an `error-text` result, as in a normal
   step. A rejection does not run the tool: its result is
   `Tool "<name>" was denied by user[: <reason>]`, as in legacy mode.
+- **A resume checks the adapter.** The head's version must have been
+  projected by the agent's adapter. Another adapter `id` is refused with
+  `transition_required` before the tool runs, as a generation would be. A
+  new version of the same adapter (or other model capabilities) is
+  resumed, and its continuation declares the `adapter_change` or
+  `model_change`; the tool's `messages` are the current adapter's rendering
+  of the history, handed to the tool and never sent or committed.
 - **An unresolved interrupt blocks the stream.** A call whose approval
   request has no result cannot be projected, so `generate()` and the other
   modes fail with a `ContextLogConflictError` (reason `interrupt_pending`)

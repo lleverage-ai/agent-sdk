@@ -322,8 +322,10 @@ export interface LogContextRuntime {
   createCall(plan: LogCallPlan, model: LanguageModel, screen: LogInputScreen): LogCallBoundary;
   /**
    * Read the stream's head once and find where `interrupt` was recorded on
-   * its path. Fails when it is not on the path, or when the stream has moved
-   * past the interrupted call while it is still unresolved.
+   * its path. Fails when it is not on the path, when the stream has moved
+   * past the interrupted call while it is still unresolved, or with
+   * `transition_required` when the head's version was created under another
+   * adapter id (LLE-14019).
    */
   readInterrupt(
     genOptions: GenerateOptions,
@@ -1253,11 +1255,32 @@ export function createLogContextRuntime(
       });
     }
     const version = await store.readVersion(head.versionId);
+    // LLE-14019: the head's version must have been projected by this
+    // adapter. Another adapter id is never continued (`plan()` refuses it
+    // with `transition_required`), so a resume refuses it here, before the
+    // interrupted tool runs: an approved side effect never runs for a
+    // continuation that cannot be planned. A new version of the same
+    // adapter (or other capabilities) is resumed: the resolution and result
+    // do not depend on the projection, and the continuation's plan declares
+    // the `adapter_change` or `model_change`. The tool's `messages` are then
+    // this adapter's rendering of the history under the version's contract;
+    // they are only handed to the tool, never sent or committed.
+    const target = toContextModelRef(model);
+    const mismatched = projectionContractMismatches(
+      version.contract,
+      buildProjectionContract(adapter, resolveModelInputCapabilities(options, model)),
+    );
+    if (mismatched.includes("adapter")) {
+      throw new ContextLogConflictError("transition_required", {
+        head,
+        message: `The stream's head version was created under a different projection adapter (${mismatched.join(", ")}); interrupt ${interrupt.id} cannot be resumed with this adapter`,
+      });
+    }
     const messages = await project(
       version.core,
       version.contract,
       path.slice(0, location.index).map(toEntryInput),
-      toContextModelRef(model),
+      target,
     );
     cursors.set(threadId, toCursor(stream, head));
     const resolution = readResolution(path.find((entry) => entry.key === keys.resolution));

@@ -30,10 +30,12 @@ import {
   type ContextLogStore,
   type ContextStreamRef,
   createAgent,
+  createMessageProjectionAdapter,
   createSecretsFilterHooks,
   type GenerateResult,
   isContextLogError,
   MemoryContextLogStore,
+  type ProjectionAdapter,
   type StreamPart,
 } from "../../src/index.js";
 import { AgentSession } from "../../src/session.js";
@@ -1257,6 +1259,195 @@ describe("log-mode resume crash safety", () => {
         (caught: unknown) => caught,
       );
     expect(isContextLogError(error, "not_found")).toBe(true);
+  });
+});
+
+describe("log-mode resume across a projection adapter change (LLE-14019)", () => {
+  /** The default adapter under a host id and version. */
+  const hostAdapter = (id: string, version: string): ProjectionAdapter => {
+    const inner = createMessageProjectionAdapter();
+    return { id, version, project: (input) => inner.project(input) };
+  };
+
+  /**
+   * A later version of the same adapter that renders observably differently:
+   * user text gains a `[v2] ` prefix. Entries are never changed in place.
+   */
+  const renamingAdapter = (id: string, version: string): ProjectionAdapter => {
+    const inner = createMessageProjectionAdapter();
+    return {
+      id,
+      version,
+      project: async (input) => {
+        const { messages } = await inner.project(input);
+        return {
+          messages: messages.map((message) =>
+            message.role === "user" && typeof message.content === "string"
+              ? { ...message, content: `[v2] ${message.content}` }
+              : message,
+          ),
+        };
+      },
+    };
+  };
+
+  /** What the tool was handed last. */
+  let handed: ModelMessage[] = [];
+
+  /** A deploy tool that records each approved run and the messages it was handed. */
+  const recordingTools = (runs: Array<{ approved: boolean; messages: number }>) => ({
+    deploy: tool({
+      description: "Deploys",
+      inputSchema: deployInput,
+      execute: async (input, options) => {
+        const decision = (await interruptOf(options)(
+          { toolName: "deploy", args: input },
+          { type: "approval" },
+        )) as { approved: boolean };
+        runs.push({ approved: decision.approved, messages: options.messages.length });
+        handed = structuredClone(options.messages);
+        return `deployed:${input.env}`;
+      },
+    }),
+  });
+
+  async function interruptUnder(adapter: ProjectionAdapter) {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["call-1", "deploy", { env: "prod" }])]).model, store, {
+        tools: recordingTools([]),
+        checkpointer,
+        contextLog: { mode: "log", store, projection: adapter },
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+    return { store, checkpointer, interrupt };
+  }
+
+  it("resumes an interrupt raised under an earlier version of the same adapter", async () => {
+    const { store, checkpointer, interrupt } = await interruptUnder(
+      hostAdapter("host/adapter", "1"),
+    );
+    const before = await store.readHead(STREAM);
+    const runs: Array<{ approved: boolean; messages: number }> = [];
+
+    const result = await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: recordingTools(runs),
+      checkpointer,
+      contextLog: { mode: "log", store, projection: renamingAdapter("host/adapter", "2") },
+    }).resume(THREAD, interrupt.id, { approved: true });
+
+    expect(result.status).toBe("complete");
+    // The tool ran once, handed the history before its call (the core and
+    // the prompt) as the CURRENT adapter renders it.
+    expect(runs).toEqual([{ approved: true, messages: 2 }]);
+    expect(handed).toEqual([
+      { role: "system", content: "You are the core." },
+      { role: "user", content: "[v2] go" },
+    ]);
+    // The committed history is never transformed by the projection.
+    const prompt = (await readPath(store)).find((entry) => entry.kind === "user");
+    expect(prompt?.kind === "user" && prompt.message).toEqual({ role: "user", content: "go" });
+    // The resolution and result are outputs of the interrupted call; the
+    // continuation's plan declared the adapter change.
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version).toMatchObject({
+      reason: "adapter_change",
+      parentVersionId: before!.versionId,
+      contract: { adapter: "host/adapter", adapterVersion: "2" },
+    });
+  });
+
+  it("refuses an interrupt raised under another adapter before the tool runs", async () => {
+    const { store, checkpointer, interrupt } = await interruptUnder(
+      hostAdapter("host/adapter", "1"),
+    );
+    const before = await readPath(store);
+    const runs: Array<{ approved: boolean; messages: number }> = [];
+    const model = scriptedModel([text("never")]);
+
+    const error = await logAgent(model.model, store, {
+      tools: recordingTools(runs),
+      checkpointer,
+      contextLog: { mode: "log", store, projection: hostAdapter("host/other", "1") },
+    })
+      .resume(THREAD, interrupt.id, { approved: true })
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(isContextLogError(error, "conflict") && error.reason).toBe("transition_required");
+    // Nothing ran, nothing was committed and nothing was sent.
+    expect(runs).toEqual([]);
+    expect(await readPath(store)).toEqual(before);
+    expect(model.requests).toHaveLength(0);
+  });
+
+  it("refuses through resumeStream() too, and the original adapter then resumes once", async () => {
+    const adapter = hostAdapter("host/adapter", "1");
+    const { store, checkpointer, interrupt } = await interruptUnder(adapter);
+    const runs: Array<{ approved: boolean; messages: number }> = [];
+
+    const refused = logAgent(scriptedModel([text("never")]).model, store, {
+      tools: recordingTools(runs),
+      checkpointer,
+      contextLog: { mode: "log", store, projection: hostAdapter("host/other", "1") },
+    }).resumeStream(THREAD, interrupt.id, { approved: true });
+    const error = await drain(refused).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(isContextLogError(error, "conflict") && error.reason).toBe("transition_required");
+    expect(runs).toEqual([]);
+
+    // The interrupt is still pending; the adapter it was raised under
+    // resumes it, and the tool runs exactly once.
+    const result = await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: recordingTools(runs),
+      checkpointer,
+      contextLog: { mode: "log", store, projection: adapter },
+    }).resume(THREAD, interrupt.id, { approved: true });
+    expect(result.status).toBe("complete");
+    expect(runs).toEqual([{ approved: true, messages: 2 }]);
+  });
+
+  it("refuses a custom answer through resumeDataResponse() under another adapter", async () => {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    const answers: string[] = [];
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["c1", "ask", { question: "Name?" }])]).model, store, {
+        tools: askTools(answers),
+        checkpointer,
+        contextLog: { mode: "log", store, projection: hostAdapter("host/adapter", "1") },
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+    const before = await readPath(store);
+    const model = scriptedModel([text("never")]);
+
+    const error = await logAgent(model.model, store, {
+      tools: askTools(answers),
+      checkpointer,
+      contextLog: { mode: "log", store, projection: hostAdapter("host/other", "1") },
+    })
+      .resumeDataResponse(THREAD, interrupt.id, "Alice")
+      .then(
+        (response) => response.text(),
+        (caught: unknown) => {
+          throw caught;
+        },
+      )
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(isContextLogError(error, "conflict") && error.reason).toBe("transition_required");
+    expect(answers).toEqual([]);
+    expect(await readPath(store)).toEqual(before);
+    expect(model.requests).toHaveLength(0);
   });
 });
 
