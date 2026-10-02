@@ -981,7 +981,8 @@ export interface ContextCoreInput {
  * another model than the stream's previous call (a fallback, or a host
  * switching models) or a model that accepts different input, and
  * `core_policy_change` when {@link ContextLogOptions.coreVersion} differs
- * from the version recorded on the head's version. It is not called for an
+ * from the version recorded on the head's version, and `branch` on a stream
+ * without a head whose call declares `contextStream.branchFrom`. It is not called for an
  * `adapter_change`, which keeps the core. The returned bytes are stored on the
  * version, and every call on that version projects them unchanged, so a
  * resolver never re-renders the core of an existing version.

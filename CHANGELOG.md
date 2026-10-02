@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Log mode:** `contextStream.branchFrom` (a `ContextPathRef` on the call's
+  thread and stream id, on another branch) declares that a new branch
+  continues another branch's path, for a fork, an edited message or a
+  regenerated reply. On a stream without a head, the call's prepare commits
+  a `branch` transition whose version inherits exactly that path, keeps the
+  source version's core (or the core `contextLog.resolveCore` returns for
+  `reason: "branch"`) and records the call's contract. Later calls may keep
+  declaring it: the head must still descend from that transition, or the
+  call fails with a `branch_source_mismatch` conflict before anything is
+  committed (LLE-14001).
+
 - `Agent.resumeStream()` resumes a pending interrupt like `resume()` and
   streams the continuation as `StreamPart`s through `stream()`. In context log
   mode it commits the resolution and result exactly as `resume()` does, never

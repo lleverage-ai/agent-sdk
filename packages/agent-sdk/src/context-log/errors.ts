@@ -49,6 +49,7 @@ export type ContextLogConflictReason =
   | "invalid_lifecycle"
   | "invalid_supersession"
   | "delegation_claim_lost"
+  | "branch_source_mismatch"
   | (string & {});
 
 /**

@@ -65,6 +65,7 @@ import {
   type ContextLogOptions,
   type ContextLogStore,
   type ContextModelRef,
+  type ContextPathRef,
   type ContextRunInputRef,
   type ContextStreamRef,
   type ContextTransition,
@@ -346,8 +347,8 @@ function toContextModelRef(model: LanguageModel): ContextModelRef {
   return { provider: identity.provider ?? "unknown", modelId: identity.modelId ?? "unknown" };
 }
 
-/** Read every page of a head's path. @internal */
-async function readFullPath(store: ContextLogStore, head: ContextHead): Promise<ContextEntry[]> {
+/** Read every page of a head's (or any path reference's) path. @internal */
+async function readFullPath(store: ContextLogStore, head: ContextPathRef): Promise<ContextEntry[]> {
   const path: ContextEntry[] = [];
   let after = 0;
   for (;;) {
@@ -367,7 +368,7 @@ async function readFullPath(store: ContextLogStore, head: ContextHead): Promise<
   if (path.length !== head.entryCount) {
     throw new ContextLogInvalidError(
       "incomplete_path",
-      `Context log store returned ${path.length} entries for a head with ${head.entryCount}`,
+      `Context log store returned ${path.length} entries for a path reference with ${head.entryCount}`,
     );
   }
   return path;
@@ -474,6 +475,106 @@ function readResolution(
   const part = entry.message.content.find((item) => item.type === "tool-approval-response");
   if (part?.type !== "tool-approval-response") return undefined;
   return { approved: part.approved, ...(part.reason !== undefined && { reason: part.reason }) };
+}
+
+/**
+ * Head versions whose lineage a run has checked, per declared source (a
+ * caller that changes its declaration mid-run is checked again). @internal
+ */
+const checkedLineage = new WeakMap<object, Set<string>>();
+
+function lineageKey(versionId: string, from: ContextPathRef): string {
+  return JSON.stringify([versionId, from.stream.branchId, from.versionId, from.entryCount]);
+}
+
+function lineageChecked(run: object, versionId: string, from: ContextPathRef): boolean {
+  return checkedLineage.get(run)?.has(lineageKey(versionId, from)) ?? false;
+}
+
+function markLineageChecked(run: object, versionId: string, from: ContextPathRef): void {
+  const checked = checkedLineage.get(run) ?? new Set<string>();
+  checked.add(lineageKey(versionId, from));
+  checkedLineage.set(run, checked);
+}
+
+/**
+ * Checks a call's declared branch source: a path reference on the call's
+ * thread and stream id, on another branch. Only ids are named in errors.
+ *
+ * @internal
+ */
+function assertBranchSource(from: unknown, stream: ContextStreamRef): ContextPathRef {
+  const fail = (detail: string): never => {
+    throw new ValidationError(`contextStream.branchFrom ${detail}`, {
+      fieldErrors: { contextStream: [`branchFrom ${detail}`] },
+    });
+  };
+  if (typeof from !== "object" || from === null) {
+    return fail("must be a context path reference");
+  }
+  const ref = from as Partial<ContextPathRef>;
+  const source = ref.stream;
+  if (
+    typeof source !== "object" ||
+    source === null ||
+    typeof source.threadId !== "string" ||
+    typeof source.branchId !== "string" ||
+    typeof source.streamId !== "string" ||
+    typeof ref.versionId !== "string" ||
+    ref.versionId.length === 0 ||
+    typeof ref.entryCount !== "number" ||
+    !Number.isSafeInteger(ref.entryCount) ||
+    ref.entryCount < 0
+  ) {
+    return fail("must be a context path reference (stream, versionId and entryCount)");
+  }
+  if (source.threadId !== stream.threadId || source.streamId !== stream.streamId) {
+    return fail("must be on the call's thread and stream id");
+  }
+  if (source.branchId === stream.branchId) {
+    return fail("must be on another branch than the call");
+  }
+  return {
+    stream: { threadId: source.threadId, branchId: source.branchId, streamId: source.streamId },
+    versionId: ref.versionId,
+    entryCount: ref.entryCount,
+  };
+}
+
+/**
+ * Checks that a stream's head descends from the `branch` transition a call
+ * declares: walking the head's versions back along its own branch, the first
+ * version whose parent is on another branch must inherit exactly the declared
+ * path. A root version, or a branch from another path, is a conflict.
+ *
+ * @internal
+ */
+async function assertBranchLineage(
+  store: ContextLogStore,
+  stream: ContextStreamRef,
+  head: ContextHead,
+  from: ContextPathRef,
+): Promise<void> {
+  let version = await store.readVersion(head.versionId);
+  while (version.parentVersionId !== null) {
+    const parent = await store.readVersion(version.parentVersionId);
+    if (parent.stream.branchId !== stream.branchId) {
+      if (
+        version.reason === "branch" &&
+        version.parentVersionId === from.versionId &&
+        parent.stream.branchId === from.stream.branchId &&
+        version.inheritedCount === from.entryCount
+      ) {
+        return;
+      }
+      break;
+    }
+    version = parent;
+  }
+  throw new ContextLogConflictError("branch_source_mismatch", {
+    head,
+    message: `Branch "${stream.branchId}" already has a head that does not continue the declared branch source (version ${from.versionId} at ${from.entryCount} entries)`,
+  });
 }
 
 /** Turn a head into a checkpoint cursor. @internal */
@@ -605,6 +706,10 @@ export function createLogContextRuntime(
     );
 
     // One head read serves the version, the path and the cursor.
+    const branchFrom =
+      genOptions.contextStream?.branchFrom === undefined
+        ? undefined
+        : assertBranchSource(genOptions.contextStream.branchFrom, stream);
     const head = await store.readHead(stream);
     // A delegation only plans on the head it last left its stream at, so a
     // second delivery of the same delegation never appends to the stream.
@@ -622,6 +727,13 @@ export function createLogContextRuntime(
     let path: ContextEntry[] = [];
     let previousCall: LogPreviousCall | undefined;
     if (head) {
+      // A run that declared its branch source keeps declaring it on every
+      // call; once the branch transition is committed, the head must still
+      // continue it (checked once per run and version).
+      if (branchFrom && !lineageChecked(run, head.versionId, branchFrom)) {
+        await assertBranchLineage(store, stream, head, branchFrom);
+        markLineageChecked(run, head.versionId, branchFrom);
+      }
       const version = await store.readVersion(head.versionId);
       const mismatched = projectionContractMismatches(version.contract, expectedContract);
       if (mismatched.includes("adapter")) {
@@ -696,6 +808,44 @@ export function createLogContextRuntime(
         contract = newVersionContract(expectedContract, coreVersion);
         transition = { reason, parent, core, contract: { ...contract } };
       }
+    } else if (branchFrom) {
+      // A new branch (a fork, an edited message or a regenerated reply)
+      // inherits exactly the declared path of another branch. The branch
+      // transition is the declared cause of the new version: it keeps the
+      // source version's core unless the host's resolver returns another,
+      // and records this call's contract.
+      const source = await store.readVersion(branchFrom.versionId);
+      const mismatched = projectionContractMismatches(source.contract, expectedContract);
+      if (mismatched.includes("adapter")) {
+        throw new ContextLogConflictError("transition_required", {
+          head,
+          message: `The branch source's version was created under a different projection adapter (${mismatched.join(", ")}); log mode continues a path only under the same adapter`,
+        });
+      }
+      path = await readFullPath(store, branchFrom);
+      const unresolved = findUnresolvedInterrupts(path);
+      if (unresolved.length > 0) {
+        throw new ContextLogConflictError(INTERRUPT_PENDING_REASON, {
+          head,
+          message: `The branch source has an unresolved interrupt (${unresolved
+            .map((pending) => pending.approvalId)
+            .join(", ")}); a branch can only continue a path whose tool calls have results`,
+        });
+      }
+      const parent = { versionId: branchFrom.versionId, inheritedCount: branchFrom.entryCount };
+      // Like every transition, the branch records this call's contract (and
+      // `coreVersion`), so it also resolves an adapter version, capability or
+      // core version that differs from the source's. When the host's core
+      // version changed, the branch adopts the current core.
+      const corePolicyChanged =
+        coreVersion !== undefined && source.contract[CORE_VERSION_CONTRACT_KEY] !== coreVersion;
+      core = resolveCore
+        ? await resolveVersionCore(resolveCore, { stream, reason: "branch", parent, target, model })
+        : corePolicyChanged
+          ? (options.systemPrompt ?? "")
+          : source.core;
+      contract = newVersionContract(expectedContract, coreVersion);
+      transition = { reason: "branch", parent, core, contract: { ...contract } };
     } else {
       core = resolveCore
         ? await resolveVersionCore(resolveCore, {
