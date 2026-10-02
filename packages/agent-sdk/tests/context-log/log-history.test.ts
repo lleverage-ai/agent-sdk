@@ -313,6 +313,89 @@ describe("log-mode imported history", () => {
     expect(await store.readHead(MAIN)).toBeNull();
   });
 
+  it("rejects malformed content and non-JSON history as ValidationError, never quoting it (LLE-14090)", async () => {
+    const store = new MemoryContextLogStore();
+    const { model, requests } = createRecordingModel();
+    const agent = logAgent(model, store);
+    const SECRET = "AKIAIOSFODNN7EXAMPLE";
+    const root = { reason: LEGACY_PROJECTION_IMPORT_REASON };
+    const entry = (message: unknown) => ({ key: "h:0", message });
+    const cases: Array<{ history: unknown; detail: RegExp }> = [
+      // The shapes that used to reach the tool-call check and throw TypeError.
+      {
+        history: { root, entries: [entry({ role: "tool", content: null })] },
+        detail: /tool results/,
+      },
+      { history: { entries: [entry({ role: "tool", content: SECRET })] }, detail: /tool results/ },
+      {
+        history: { root, entries: [entry({ role: "assistant", content: 7 })] },
+        detail: /string or a list of parts/,
+      },
+      {
+        history: { root, entries: [entry({ role: "user", content: [null] })] },
+        detail: /must be an object/,
+      },
+      {
+        history: { root, entries: [entry({ role: "user", content: [{ text: SECRET }] })] },
+        detail: /string type/,
+      },
+      {
+        history: {
+          root,
+          entries: [entry({ role: "tool", content: [{ type: "text", text: SECRET }] })],
+        },
+        detail: /tool result or approval response/,
+      },
+      {
+        history: {
+          root,
+          entries: [
+            entry({
+              role: "assistant",
+              content: [{ type: "tool-call", toolName: "x", input: {} }],
+            }),
+          ],
+        },
+        detail: /toolCallId/,
+      },
+      { history: { root, entries: [entry(null)] }, detail: /user, assistant or tool message/ },
+      // Not plain JSON: once ContextLogInvalidError, now ValidationError.
+      {
+        history: {
+          root,
+          entries: [entry({ role: "user", content: [{ type: "text", text: 1n }] })],
+        },
+        detail: /entries\[0\]\.message must be plain JSON/,
+      },
+      {
+        history: {
+          root,
+          entries: [{ ...entry({ role: "user", content: "x" }), metadata: { at: new Date() } }],
+        },
+        detail: /entries\[0\]\.metadata must be plain JSON/,
+      },
+      {
+        history: { root: { ...root, metadata: { n: 1n } }, entries: [] },
+        detail: /root\.metadata must be plain JSON/,
+      },
+    ];
+    for (const { history, detail } of cases) {
+      const error = await agent
+        .generate({
+          prompt: "Hi",
+          threadId: THREAD,
+          contextHistory: history as ContextHistoryInput,
+        })
+        .catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as Error).message).toMatch(detail);
+      expect(JSON.stringify((error as ValidationError).fieldErrors)).toMatch(detail);
+      expect((error as Error).message).not.toContain(SECRET);
+    }
+    expect(await store.readHead(MAIN)).toBeNull();
+    expect(requests).toHaveLength(0);
+  });
+
   it("refuses contextHistory outside log mode", async () => {
     const { model } = createRecordingModel();
     await expect(

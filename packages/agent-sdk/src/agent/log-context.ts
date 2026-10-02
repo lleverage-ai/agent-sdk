@@ -45,6 +45,7 @@ import {
   ContextLogConflictError,
   ContextLogInvalidError,
   ContextLogNotFoundError,
+  isContextLogError,
 } from "../context-log/errors.js";
 import { markCallerSupplied } from "../context-log/hooks.js";
 import { assertContextJsonOpaque } from "../context-log/json.js";
@@ -489,6 +490,15 @@ export function assertContextHistory(value: unknown): ContextHistoryInput {
       fieldErrors: { contextHistory: [detail] },
     });
   };
+  // Plain JSON only; a failure names the field, never its content.
+  const json = (field: unknown, path: string) => {
+    try {
+      assertContextJsonOpaque(field, `contextHistory.${path}`);
+    } catch (error) {
+      if (isContextLogError(error, "invalid")) fail(`${path} must be plain JSON`);
+      throw error;
+    }
+  };
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return fail("must be an object with entries");
   }
@@ -502,9 +512,7 @@ export function assertContextHistory(value: unknown): ContextHistoryInput {
     ) {
       return fail(`root.reason must be "${LEGACY_PROJECTION_IMPORT_REASON}"`);
     }
-    if (history.root.metadata !== undefined) {
-      assertContextJsonOpaque(history.root.metadata, "contextHistory.root.metadata");
-    }
+    if (history.root.metadata !== undefined) json(history.root.metadata, "root.metadata");
   }
   const keys = new Set<string>();
   history.entries.forEach((entry: unknown, index) => {
@@ -526,17 +534,55 @@ export function assertContextHistory(value: unknown): ContextHistoryInput {
     }
     if (keys.has(key as string)) fail(`entries[${index}].key repeats an earlier key`);
     keys.add(key as string);
-    const role = (message as { role?: unknown } | undefined)?.role;
+    if (typeof message !== "object" || message === null || Array.isArray(message)) {
+      fail(`entries[${index}].message must be a user, assistant or tool message`);
+    }
+    const { role, content } = message as { role?: unknown; content?: unknown };
     if (role !== "user" && role !== "assistant" && role !== "tool") {
       fail(`entries[${index}].message must be a user, assistant or tool message`);
     }
-    assertContextJsonOpaque(message, `contextHistory.entries[${index}].message`);
-    if (metadata !== undefined) {
-      assertContextJsonOpaque(metadata, `contextHistory.entries[${index}].metadata`);
-    }
+    const shape = historyContentProblem(role as "user" | "assistant" | "tool", content);
+    if (shape) fail(`entries[${index}].message ${shape}`);
+    json(message, `entries[${index}].message`);
+    if (metadata !== undefined) json(metadata, `entries[${index}].metadata`);
   });
   // A copy, so the caller cannot change what a retry plans.
   return JSON.parse(JSON.stringify(history)) as ContextHistoryInput;
+}
+
+/**
+ * What is wrong with a history message's content for its role, if anything:
+ * user and assistant content is a string or a list of parts, tool content a
+ * list of tool results (or approval responses); every part is an object with
+ * a string `type`, and tool calls and results name their call by a string
+ * `toolCallId`. Never quotes the content.
+ */
+function historyContentProblem(
+  role: "user" | "assistant" | "tool",
+  content: unknown,
+): string | undefined {
+  if (typeof content === "string") {
+    return role === "tool" ? "content must be a list of tool results" : undefined;
+  }
+  if (!Array.isArray(content)) {
+    return role === "tool"
+      ? "content must be a list of tool results"
+      : "content must be a string or a list of parts";
+  }
+  for (const [index, part] of content.entries()) {
+    if (typeof part !== "object" || part === null || Array.isArray(part)) {
+      return `content[${index}] must be an object`;
+    }
+    const { type, toolCallId } = part as { type?: unknown; toolCallId?: unknown };
+    if (typeof type !== "string") return `content[${index}] must have a string type`;
+    if (role === "tool" && type !== "tool-result" && type !== "tool-approval-response") {
+      return `content[${index}] must be a tool result or approval response`;
+    }
+    if ((type === "tool-call" || type === "tool-result") && typeof toolCallId !== "string") {
+      return `content[${index}] must name its tool call with a string toolCallId`;
+    }
+  }
+  return undefined;
 }
 
 /**
