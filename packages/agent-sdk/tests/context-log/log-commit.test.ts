@@ -985,6 +985,34 @@ describe("log-mode producers and screening", () => {
     expect(executions).toBe(1);
   });
 
+  it("never retries a run that failed after its reply was committed", async () => {
+    const store = new MemoryContextLogStore();
+    class FailingSaver extends MemorySaver {
+      override async save(): Promise<void> {
+        throw new Error("checkpoint store down");
+      }
+    }
+    const retryEverything = vi.fn(async () => ({
+      hookSpecificOutput: {
+        hookEventName: "PostGenerateFailure" as const,
+        retry: true,
+        retryDelayMs: 0,
+      },
+    }));
+    const { model, requests } = createScriptedModel([text("A1"), text("A2")]);
+
+    await expect(
+      logAgent(model, store, {
+        checkpointer: new FailingSaver(),
+        hooks: { PostGenerateFailure: [retryEverything] },
+      }).generate({ prompt: "go", threadId: THREAD }),
+    ).rejects.toThrow();
+
+    expect(retryEverything).toHaveBeenCalledTimes(1);
+    expect(requests).toHaveLength(1);
+    expect((await readPath(store)).map((entry) => entry.kind)).toEqual(["user", "assistant"]);
+  });
+
   it("fails the run without committing outputs a guardrail blocks", async () => {
     const store = new MemoryContextLogStore();
     const tools = {

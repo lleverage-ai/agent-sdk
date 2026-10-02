@@ -1583,6 +1583,7 @@ export function createAgent(options: AgentOptions): Agent {
             normalizedError,
             effectiveGenOptions,
             retryState,
+            { logCall },
           );
         }
       }
@@ -2046,6 +2047,7 @@ export function createAgent(options: AgentOptions): Agent {
             normalizedError,
             effectiveGenOptions,
             retryState,
+            { logCall },
           );
         } finally {
           // A consumer that stops iterating early skips `catch`. Closing is a
@@ -2110,6 +2112,7 @@ export function createAgent(options: AgentOptions): Agent {
             normalizedError,
             effectiveGenOptions,
             retryState,
+            { logCall },
           );
         }
       }
@@ -2253,6 +2256,7 @@ export function createAgent(options: AgentOptions): Agent {
             normalizedError,
             effectiveGenOptions,
             retryState,
+            { logCall },
           );
         }
       }

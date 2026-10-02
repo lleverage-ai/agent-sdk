@@ -185,6 +185,8 @@ export interface LogCallBoundary {
    * outputs. Never throws.
    */
   abandon(cancelled?: boolean): Promise<void>;
+  /** Whether `complete()` committed the attempt's last step. */
+  isCompleted(): boolean;
 }
 
 /** Lowercase hexadecimal SHA-256 of a string. @internal */
@@ -345,6 +347,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   let committedCount = 0;
   const committedOutputs: ContextEntryInput[] = [];
   let completion: Promise<void> | undefined;
+  let completed = false;
   let closed = false;
   // The first commit failure (prepare, dispatch or outputs). The AI SDK can
   // turn it into a stream error part and still finish, so complete() and
@@ -711,9 +714,11 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
           ),
         );
         closed = true;
+        completed = true;
       })();
       return completion;
     },
+    isCompleted: () => completed,
     async abandon(cancelled = false) {
       if (closed && !open) return;
       closed = true;

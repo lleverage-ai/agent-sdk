@@ -438,6 +438,7 @@ export interface GenerationRunner {
     normalizedError: AgentError,
     effectiveGenOptions: GenerateOptions,
     retryState: RetryLoopState,
+    attempt?: { logCall?: LogCallBoundary },
   ): Promise<GenerateOptions>;
 }
 
@@ -1315,6 +1316,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     normalizedError: AgentError,
     effectiveGenOptions: GenerateOptions,
     retryState: RetryLoopState,
+    attempt?: { logCall?: LogCallBoundary },
   ): Promise<GenerateOptions> {
     // Handle error with PostGenerateFailure hooks and fallback logic
     const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
@@ -1339,7 +1341,14 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     // transient. Retrying would only repeat it, and after a step's outputs
     // were blocked it would re-run the model and its tools. The hooks above
     // still observe the failure.
-    if (errorDecision.shouldRetry && logContext && isFinalLogModeFailure(normalizedError)) {
+    // Nor is a failure after the attempt's call was committed (for example a
+    // checkpoint save or a PostGenerate hook): a retry would run the model
+    // and its tools again and append a second reply.
+    if (
+      errorDecision.shouldRetry &&
+      logContext &&
+      (isFinalLogModeFailure(normalizedError) || attempt?.logCall?.isCompleted())
+    ) {
       throw normalizedError;
     }
 

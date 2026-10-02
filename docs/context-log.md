@@ -345,6 +345,7 @@ Failures:
 | The provider call fails | The call is closed as `failed` (`cancelled` when aborted). A retry or fallback is a new attempt with its own manifest; the run's input is committed once. |
 | An output commit fails | The run fails, including a streaming run whose failed commit the AI SDK turned into an error part. The call is closed as `unknown`, and nothing generates from the uncommitted output. |
 | The AI SDK throws after the provider answered (for example on invalid structured output) | The finished step's output is still committed and the call completed, then the error propagates. |
+| Something fails after the run's last step was committed (a checkpoint save, a `PostGenerate` hook) | The error propagates and is never retried: a retry would run the model and its tools again and append a second reply. |
 | The process crashes after prepare, or after dispatch before the output commit | The call stays open. The next prepare on the stream closes it: `cancelled` if it was never dispatched, `unknown` if it was (`completed` if its outputs were committed). Its outputs can no longer be committed, because the head has moved past its manifest. Tool side effects are recovered by the host's tool ledger, never by replaying the call. |
 
 A fallback model whose input capabilities differ from the head version's

@@ -1024,8 +1024,10 @@ export interface AgentOptions {
    * the agent's history and every model request is a projection of them.
    * Log mode is off by default: without this option, or with `mode: "off"`,
    * the agent behaves exactly as before. With `mode: "log"`, every provider
-   * call commits its input before dispatch and its outputs before anything
-   * uses them (see `docs/context-log.md`).
+   * call commits its input before dispatch, and each step's outputs are
+   * committed before the next request is projected from them and before the
+   * run returns (see `docs/context-log.md`). Streamed chunks reach the caller
+   * as they arrive, before that commit.
    *
    * @experimental
    * @defaultValue undefined

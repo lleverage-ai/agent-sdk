@@ -952,9 +952,10 @@ export interface ContextLogCursor {
  * Log mode is off by default, and an agent without this option behaves
  * exactly as before. In log mode the store is the agent's history: each
  * request is a projection of the stream's head path through the projection
- * adapter, under the frozen core of the head's version, and every provider
- * call commits its input before dispatch and its outputs before anything uses
- * them (see `docs/context-log.md`). Pass the innermost provider model: the
+ * adapter, under the frozen core of the head's version. Every provider call
+ * commits its input before dispatch, and each step's outputs are committed
+ * before the next request is projected from them and before the run returns
+ * (see `docs/context-log.md`). Pass the innermost provider model: the
  * commit boundary must be the last thing before the provider.
  *
  * In log mode `createAgent` rejects `promptBuilder` and `contextManager`, and
