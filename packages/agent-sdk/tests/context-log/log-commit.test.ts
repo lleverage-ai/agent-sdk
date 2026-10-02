@@ -1068,6 +1068,20 @@ describe("log-mode commit edge cases", () => {
     expect(manifest!.outcome?.status).toBe("completed");
   });
 
+  it("commits a streamed reply when the consumer stops after the finish part", async () => {
+    const store = new MemoryContextLogStore();
+    const { model } = createScriptedModel([text("A1")]);
+    const agent = logAgent(model, store);
+
+    for await (const part of agent.stream({ prompt: "go", threadId: THREAD })) {
+      if (part.type === "finish") break;
+    }
+
+    expect((await readPath(store)).map((entry) => entry.kind)).toEqual(["user", "assistant"]);
+    const [manifest] = await readManifests(store);
+    expect(manifest!.outcome?.status).toBe("completed");
+  });
+
   it("fails a stream whose intermediate output commit failed, even if the store recovers", async () => {
     const store = new FaultyStore().fail("appendOutputs", "unavailable", 3);
     const { model, requests } = createScriptedModel([

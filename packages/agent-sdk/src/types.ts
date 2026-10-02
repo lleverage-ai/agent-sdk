@@ -1023,9 +1023,9 @@ export interface AgentOptions {
    * In log mode, persisted context log entries are the source of truth for
    * the agent's history and every model request is a projection of them.
    * Log mode is off by default: without this option, or with `mode: "off"`,
-   * the agent behaves exactly as before. The log-mode runtime is not
-   * available yet, so `createAgent` rejects `mode: "log"` with a
-   * {@link ConfigurationError}.
+   * the agent behaves exactly as before. With `mode: "log"`, every provider
+   * call commits its input before dispatch and its outputs before anything
+   * uses them (see `docs/context-log.md`).
    *
    * @experimental
    * @defaultValue undefined

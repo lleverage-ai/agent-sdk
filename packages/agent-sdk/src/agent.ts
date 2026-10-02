@@ -1681,6 +1681,9 @@ export function createAgent(options: AgentOptions): Agent {
             ...runner.buildModelCallParams(attempt),
             prepareStep: runner.prepareStepFor(attempt, streamingCompaction.prepareStep),
             onStepFinish: (stepResult) => {
+              // Log mode: the boundary keeps finished steps, so a received
+              // reply is still committed if the consumer stops early.
+              logCall?.onStepFinish(stepResult);
               streamingCompaction.appendStep(stepResult);
             },
             // stream() reads `output` from the caller's options rather than

@@ -53,9 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Caller-supplied history (`messages`) is rejected; the prompt reaches
     `PreGenerate` hooks as a user message in `options.messages`, so the
     secrets filter and guardrails see it before it is sent.
-  - `promptBuilder`, `contextManager`, `contextLog.producers`, `resume()` and
-    `resumeDataResponse()` are rejected in log mode until their log-mode
-    support lands.
+  - `promptBuilder` is rejected in log mode (the core is frozen per
+    version). `contextManager`, `resume()` and `resumeDataResponse()` are
+    rejected until their log-mode support lands.
   - Checkpoints hold control state and a `ContextLogCursor` under
     `metadata.contextLog`, never messages.
   - Every provider step of a tool loop is projected through the adapter, and
