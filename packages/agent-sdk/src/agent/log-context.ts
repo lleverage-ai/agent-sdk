@@ -327,7 +327,11 @@ export function createLogContextRuntime(
       transition = { reason: "initial", parent: null, core, contract: { ...expectedContract } };
     }
 
-    const runId = genOptions._runId ?? "run";
+    // Entry keys must be unique per call, so never fall back to a constant.
+    const runId = genOptions._runId;
+    if (!runId) {
+      throw new ContextLogInvalidError("missing_run_id", "A log-mode plan needs a run id");
+    }
     const revision = head?.revision ?? 0;
     const append: UserContextEntryInput[] = input.map((message, index) => ({
       kind: "user",
