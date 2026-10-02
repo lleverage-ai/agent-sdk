@@ -1768,6 +1768,29 @@ export interface Agent {
   ): AsyncGenerator<StreamPart>;
 
   /**
+   * Log mode only: generates, ahead of time, the summary the stream's next
+   * call would ask its context manager for when it compacts (LLE-14017).
+   *
+   * Reads the stream's head once and plans a compaction as the next call
+   * would, with `pendingMessages` placeholder user messages standing in for
+   * its new input (so the manager's retention cut-off falls where the next
+   * call's will). When the policy would compact, the context manager's
+   * `summarizer` runs on its own summary stream, exactly as in a call.
+   * Nothing is committed and the compacted stream is never written; no
+   * compaction hooks run.
+   *
+   * The next call compacts as usual. When it summarises the same history
+   * (its new input count and the summarised messages match), its summary
+   * request has the same `summaryRequestDigest`, so a summarizer that keeps
+   * summaries by that digest answers it without a model call. A changed
+   * request has a different digest, and the summary is generated again.
+   * `signal` reaches the summarizer as `SummaryRequest.signal`.
+   *
+   * @experimental
+   */
+  prepareCompaction?(options: PrepareCompactionOptions): Promise<PrepareCompactionResult>;
+
+  /**
    * The task manager for background task tracking.
    *
    * Provides access to background tasks (bash commands and subagents).
@@ -4404,3 +4427,58 @@ export interface SseMCPServerConfig extends MCPServerConfigBase {
  * @category MCP
  */
 export type MCPServerConfig = StdioMCPServerConfig | HttpMCPServerConfig | SseMCPServerConfig;
+
+/**
+ * Options for {@link Agent.prepareCompaction}.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface PrepareCompactionOptions {
+  /** The thread whose stream is prepared. */
+  threadId: string;
+  /** The stream, as a call names it. Defaults to the main stream. */
+  contextStream?: GenerateOptions["contextStream"];
+  /**
+   * How many user messages the next call is expected to add; the manager
+   * retains them, it never summarises them.
+   * @defaultValue 1
+   */
+  pendingMessages?: number;
+  /** Aborts the summary generation. */
+  signal?: AbortSignal;
+}
+
+/**
+ * The outcome of {@link Agent.prepareCompaction}.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export type PrepareCompactionResult =
+  | {
+      /** The summarizer ran for the stream's next compaction. */
+      prepared: true;
+      /** The head the summary was prepared from. */
+      head: import("./context-log/types.js").ContextHead;
+    }
+  | {
+      prepared: false;
+      /**
+       * - `no_context_manager`: the agent has no context manager.
+       * - `no_head`: the stream has no history yet.
+       * - `transition_pending`: the next call first declares a transition
+       *   (another adapter, capabilities or core version).
+       * - `not_needed`: the policy would not compact, or compaction would
+       *   make no progress.
+       * - `pending_summarised`: the manager would summarise the next call's
+       *   new input itself (for example `keepMessageCount` is lower than
+       *   `pendingMessages`), so no summary could be reused; none is kept.
+       */
+      reason:
+        | "no_context_manager"
+        | "no_head"
+        | "transition_pending"
+        | "not_needed"
+        | "pending_summarised";
+    };

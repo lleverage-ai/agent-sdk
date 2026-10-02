@@ -9,8 +9,10 @@
  * @packageDocumentation
  */
 
+import { createHash } from "node:crypto";
 import type { LanguageModel, ModelMessage } from "ai";
 import type { CompactionTrigger } from "./canonical.js";
+import { canonicalContextJson } from "./context-log/json.js";
 import type { ContextStreamRef } from "./context-log/types.js";
 import type { Agent } from "./types.js";
 
@@ -1264,6 +1266,16 @@ export interface CompactOptions {
    * @experimental
    */
   contextLog?: CompactionContextLog;
+  /**
+   * Generate the summary without applying the compaction (LLE-14017): the
+   * manager's measured usage, usage anchor, `onCompact` callback, failure
+   * circuit and `commitCompaction` are left unchanged. Used by
+   * `Agent.prepareCompaction`.
+   * @experimental
+   */
+  prepare?: boolean;
+  /** Aborts the summary generation; handed to the summarizer. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -1280,6 +1292,11 @@ export interface SummaryRequest {
   trigger: CompactionTrigger;
   /** Compaction strategy producing this request. */
   strategy: CompactionStrategy;
+  /**
+   * Aborts the summary generation, when the compaction was given a signal.
+   * Not part of {@link summaryRequestDigest}.
+   */
+  signal?: AbortSignal;
   /** Summary tier being generated, when the tiered strategy consolidates summaries. */
   tier?: number;
   /**
@@ -1291,6 +1308,49 @@ export interface SummaryRequest {
    * @experimental
    */
   contextLog?: CompactionContextLog;
+}
+
+/**
+ * A digest of what a {@link SummaryRequest} asks to be summarised: its
+ * messages, output limit, strategy and tier, in canonical JSON. The trigger
+ * reason and the context log details (run, streams) are excluded, so two
+ * requests for the same summary match across runs.
+ *
+ * A summarizer may keep summaries by this digest and answer a later request
+ * with the same digest without a model call, for example the request a
+ * log-mode call makes after `Agent.prepareCompaction` generated its summary
+ * ahead of time (LLE-14017).
+ *
+ * @param request - The summary request
+ * @returns Lowercase hexadecimal SHA-256
+ *
+ * @example
+ * ```typescript
+ * const summaries = new Map<string, string>();
+ * const summarizer: SummaryExecutor = async (request) => {
+ *   const digest = summaryRequestDigest(request);
+ *   const known = summaries.get(digest);
+ *   if (known !== undefined) return { text: known };
+ *   const text = await summarise(request);
+ *   summaries.set(digest, text);
+ *   return { text };
+ * };
+ * ```
+ *
+ * @experimental
+ * @category Context
+ */
+export function summaryRequestDigest(request: SummaryRequest): string {
+  return createHash("sha256")
+    .update(
+      canonicalContextJson({
+        messages: request.messages,
+        maxTokens: request.maxTokens,
+        strategy: request.strategy,
+        tier: request.tier ?? null,
+      }),
+    )
+    .digest("hex");
 }
 
 /**
@@ -1357,6 +1417,26 @@ export interface UsageAnchor {
 }
 
 /**
+ * Options for {@link ContextManager.shouldCompact}.
+ *
+ * @experimental
+ * @category Context
+ */
+export interface ShouldCompactOptions {
+  /**
+   * The messages the model is actually sent, when they differ from the
+   * messages being compacted. The token budget is counted on them.
+   */
+  budgetMessages?: ModelMessage[];
+  /**
+   * Budget a hypothetical request (for example a compaction child before it
+   * is applied) on its estimate alone: the last request's measured usage
+   * and usage anchor are ignored, and `onBudgetUpdate` is not called.
+   */
+  estimateOnly?: boolean;
+}
+
+/**
  * Manages conversation context with token tracking and auto-compaction.
  *
  * @category Context
@@ -1390,9 +1470,17 @@ export interface ContextManager {
   /**
    * Check if compaction is needed based on current token usage.
    * @param messages - Current message history
+   * @param options - `budgetMessages`: the messages the model is actually
+   *   sent, when they differ from `messages` (a log-mode agent passes its
+   *   projected request; `messages` is then the compaction view). The token
+   *   budget is counted on them; a custom `policy.shouldCompact` still
+   *   receives `messages`. Managers that ignore it budget `messages`.
    * @returns Object with trigger status and optional reason
    */
-  shouldCompact(messages: ModelMessage[]): {
+  shouldCompact(
+    messages: ModelMessage[],
+    options?: ShouldCompactOptions,
+  ): {
     trigger: boolean;
     reason?: CompactionTrigger;
   };
@@ -1620,8 +1708,18 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     return usageAnchor.inputTokens + Math.max(0, estimatedTokens - prefixTokens);
   };
 
-  const getBudget = (messages: ModelMessage[]): TokenBudget => {
+  const getBudget = (
+    messages: ModelMessage[],
+    budgetOptions: { estimateOnly?: boolean } = {},
+  ): TokenBudget => {
     const estimatedTokens = tokenCounter.countMessages(messages);
+    if (budgetOptions.estimateOnly) {
+      return createTokenBudget(maxTokens, estimatedTokens, false, {
+        outputReserveTokens: policy.outputReserveTokens,
+        warningThreshold: policy.tokenThreshold,
+        blockingThreshold: policy.hardCapThreshold,
+      });
+    }
     const actualTokens = lastActualUsage?.totalTokens;
 
     // Actual usage describes the *last* model input, while the current message
@@ -1671,6 +1769,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
   const shouldCompact = (
     messages: ModelMessage[],
+    options?: ShouldCompactOptions,
   ): { trigger: boolean; reason?: CompactionTrigger } => {
     if (!policy.enabled) {
       return { trigger: false };
@@ -1680,7 +1779,9 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       return { trigger: false };
     }
 
-    const budget = getBudget(messages);
+    const budget = getBudget(options?.budgetMessages ?? messages, {
+      ...(options?.estimateOnly && { estimateOnly: true }),
+    });
 
     // Custom policy override
     if (policy.shouldCompact) {
@@ -1727,9 +1828,14 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     compactOptions?: CompactOptions,
   ): Promise<CompactionResult> => {
     const contextLog = compactOptions?.contextLog;
+    // A prepared summary is not a compaction: nothing below may change the
+    // live manager's state (usage, anchor, callbacks, failure circuit).
+    const prepare = compactOptions?.prepare === true;
+    const signal = compactOptions?.signal;
     if (isCompactionCircuitOpen()) {
       throw new Error("Context compaction circuit is open after repeated failures");
     }
+    signal?.throwIfAborted();
 
     const startedAt = performance.now();
     let summaryUsage: SummaryUsage | undefined;
@@ -1752,6 +1858,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
           strategy,
           ...(tier !== undefined ? { tier } : {}),
           ...(contextLog ? { contextLog } : {}),
+          ...(signal ? { signal } : {}),
         });
         if (typeof response?.text !== "string") {
           throw new Error("Summary executor did not return text");
@@ -1768,6 +1875,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         messages: summaryMessages,
         maxTokens: maxOutputTokens,
         _skipCompaction: true, // Prevent recursive compaction during summary generation
+        ...(signal ? { signal } : {}),
       });
       return getCompletedSummaryText(summaryResult);
     };
@@ -1807,7 +1915,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
           throw new Error("Context compaction could not reduce the transcript");
         }
 
-        recordCompactionSuccess();
+        if (!prepare) recordCompactionSuccess();
         return {
           messagesBefore,
           messagesAfter: messages.length,
@@ -1961,6 +2069,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       // summarisation no longer describes the active context. Clear it so the
       // next budget check falls back to estimating the compacted messages
       // instead of comparing against the pre-compaction total.
+      if (prepare) return result;
       lastActualUsage = null;
       usageAnchor = null;
 
@@ -1986,7 +2095,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
       return result;
     } catch (error) {
-      recordCompactionFailure();
+      if (!prepare) recordCompactionFailure();
       throw error;
     }
   };

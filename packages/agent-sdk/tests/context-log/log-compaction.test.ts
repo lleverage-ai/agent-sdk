@@ -11,7 +11,11 @@ import type {
 import { jsonSchema, type LanguageModel, type ModelMessage, tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
-import { createLogCompactor } from "../../src/agent/log-compaction.js";
+import {
+  createLogCompactor,
+  type LogCompactionInput,
+  type LogCompactor,
+} from "../../src/agent/log-compaction.js";
 import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
 import {
   type Agent,
@@ -28,11 +32,42 @@ import {
   type ContextStreamRef,
   createAgent,
   createContextManager,
+  createMessageProjectionAdapter,
   createSecretsFilterHooks,
   isContextLogError,
   MemoryContextLogStore,
   type SummaryRequest,
+  summaryRequestDigest,
 } from "../../src/index.js";
+
+/**
+ * A compactor for direct tests: projects with the default adapter (the
+ * budget) and never finds a pruned child still over budget, unless told.
+ */
+function testCompactor(
+  compactIfNeeded: Parameters<typeof createLogCompactor>[0],
+  wouldCompact: Parameters<typeof createLogCompactor>[1] = () => false,
+): (
+  input: Omit<LogCompactionInput, "project"> & Partial<Pick<LogCompactionInput, "project">>,
+) => ReturnType<LogCompactor> {
+  const compactor = createLogCompactor(compactIfNeeded, wouldCompact);
+  const adapter = createMessageProjectionAdapter();
+  return (input) =>
+    compactor({
+      ...input,
+      project:
+        input.project ??
+        (async (entries) =>
+          (
+            await adapter.project({
+              core: input.core,
+              contract: input.contract,
+              entries,
+              target: { provider: "p", modelId: "m" },
+            })
+          ).messages),
+    });
+}
 
 const THREAD = "thread-1";
 const STREAM: ContextStreamRef = { threadId: THREAD, branchId: "main", streamId: "main" };
@@ -521,7 +556,9 @@ describe("log-mode compaction", () => {
     // threshold of 11. The active entries alone (ten) would not be.
     await agent.generate({ prompt: "q4", threadId: THREAD });
 
-    expect(views.at(-1)).toBe(13);
+    // The compaction view had 13 messages (the guard then checks the
+    // pruned child's projection too).
+    expect(views).toContain(13);
     expect(manager.requests).toHaveLength(0);
     const head = await store.readHead(STREAM);
     const version = await store.readVersion(head!.versionId);
@@ -868,7 +905,7 @@ describe("log-mode compaction planning", () => {
 
   it("inherits the leading runtime prefix and re-appends the kept tail in path order", async () => {
     const { contextManager, requests } = createCompactingManager(0);
-    const compactor = createLogCompactor(async (messages, _options, _threadId, compactOptions) => {
+    const compactor = testCompactor(async (messages, _options, _threadId, compactOptions) => {
       const result = await contextManager.compact(
         messages,
         {} as Agent,
@@ -926,7 +963,7 @@ describe("log-mode compaction planning", () => {
 
   it("drops a new retraction whose target was summarised", async () => {
     const { contextManager } = createCompactingManager(0, { keepMessageCount: 1 });
-    const compactor = createLogCompactor(async (messages, _options, _threadId, compactOptions) => ({
+    const compactor = testCompactor(async (messages, _options, _threadId, compactOptions) => ({
       compacted: true,
       messages: (
         await contextManager.compact(messages, {} as Agent, "token_threshold", compactOptions)
@@ -966,7 +1003,7 @@ describe("log-mode compaction planning", () => {
 
   it("keeps a summary whose text equals an earlier summary", async () => {
     const { contextManager } = createCompactingManager(0, { keepMessageCount: 1 });
-    const compactor = createLogCompactor(async (messages, _options, _threadId, compactOptions) => ({
+    const compactor = testCompactor(async (messages, _options, _threadId, compactOptions) => ({
       compacted: true,
       messages: (
         await contextManager.compact(messages, {} as Agent, "token_threshold", compactOptions)
@@ -998,7 +1035,7 @@ describe("log-mode compaction planning", () => {
     // new content, so the compaction is refused rather than matched by
     // content, whether it copies the call, the result or both.
     const copying = (copy: (message: ModelMessage) => boolean) =>
-      createLogCompactor(async (messages) => ({
+      testCompactor(async (messages) => ({
         compacted: true,
         messages: messages
           .filter((message) => message.role !== "user")
@@ -1064,7 +1101,7 @@ describe("log-mode compaction planning", () => {
         messages,
       }));
       await expect(
-        createLogCompactor(compactIfNeeded)({
+        testCompactor(compactIfNeeded)({
           stream: STREAM,
           head,
           core: "",
@@ -1105,7 +1142,7 @@ describe("log-mode compaction planning", () => {
         ],
       },
     };
-    const compaction = await createLogCompactor(compactIfNeeded)({
+    const compaction = await testCompactor(compactIfNeeded)({
       stream: STREAM,
       head,
       core: "",
@@ -1170,19 +1207,17 @@ describe("log-mode compaction planning", () => {
       });
     const builtIn = (keepMessageCount: number, keepToolResultCount = 0) => {
       const manager = createCompactingManager(0, { keepMessageCount, keepToolResultCount });
-      const compactor = createLogCompactor(
-        async (messages, _options, _threadId, compactOptions) => ({
-          compacted: true,
-          messages: (
-            await manager.contextManager.compact(
-              messages,
-              {} as Agent,
-              "token_threshold",
-              compactOptions,
-            )
-          ).newMessages,
-        }),
-      );
+      const compactor = testCompactor(async (messages, _options, _threadId, compactOptions) => ({
+        compacted: true,
+        messages: (
+          await manager.contextManager.compact(
+            messages,
+            {} as Agent,
+            "token_threshold",
+            compactOptions,
+          )
+        ).newMessages,
+      }));
       return { compactor, requests: manager.requests };
     };
 
@@ -1235,7 +1270,7 @@ describe("log-mode compaction planning", () => {
     });
 
     it("declares no transition when a manager drops history without a summary", async () => {
-      const compactor = createLogCompactor(async (messages) => ({
+      const compactor = testCompactor(async (messages) => ({
         compacted: true,
         messages: messages.slice(-3),
       }));
@@ -1246,7 +1281,7 @@ describe("log-mode compaction planning", () => {
       // A custom manager that keeps the call and summarises its resolution
       // and result: restoring them would leave every entry plus a summary,
       // which is no compaction.
-      const compactor = createLogCompactor(async (messages) => ({
+      const compactor = testCompactor(async (messages) => ({
         compacted: true,
         messages: [
           ...messages.filter((message) => message.role === "system"),
@@ -1263,7 +1298,7 @@ describe("log-mode compaction planning", () => {
       compacted: false,
       messages,
     }));
-    const compactor = createLogCompactor(compactIfNeeded);
+    const compactor = testCompactor(compactIfNeeded);
     const input = {
       stream: STREAM,
       head,
@@ -1278,5 +1313,336 @@ describe("log-mode compaction planning", () => {
     expect(await compactor(input)).toBeUndefined();
     expect(await compactor({ ...input, options: { _skipCompaction: true } })).toBeUndefined();
     expect(compactIfNeeded).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("log-mode compaction budget (LLE-14056)", () => {
+  const head: ContextHead = {
+    stream: STREAM,
+    versionId: "v1",
+    entryCount: 6,
+    pathDigest: "d",
+    revision: 3,
+    lastManifestId: "m3",
+  };
+  // A slot that changed twice: two superseded values and the current one,
+  // with a short conversation.
+  const path: ContextEntryInput[] = [
+    { kind: "runtime_context", key: "digest:1", producer: "digest", payload: "digest 1" },
+    { kind: "user", key: "u1", message: { role: "user", content: "q1" } },
+    {
+      kind: "runtime_context",
+      key: "digest:2",
+      producer: "digest",
+      payload: "digest 2",
+      supersedes: "digest:1",
+    },
+    { kind: "assistant", key: "a1", message: { role: "assistant", content: "a1" } },
+    {
+      kind: "runtime_context",
+      key: "digest:3",
+      producer: "digest",
+      payload: "digest 3",
+      supersedes: "digest:2",
+    },
+    { kind: "user", key: "u2", message: { role: "user", content: "q2" } },
+  ];
+  const appendOnly = { adapter: "agent-sdk/messages", supersession: "append" };
+  const baseInput = {
+    stream: STREAM,
+    head,
+    core: "core",
+    contract: appendOnly,
+    path,
+    pending: [] as ContextEntryInput[],
+    keyPrefix: "compaction:run:3",
+    options: { _runId: "run-1" },
+    screen: async (entries: ContextEntryInput[]) => entries,
+  };
+
+  it("hands the manager the adapter's projection as the budget, and the view to compact", async () => {
+    const projected: ModelMessage[] = [{ role: "user", content: "the host's rendering" }];
+    const project = vi.fn(async () => projected);
+    const compactIfNeeded = vi.fn(async (messages: ModelMessage[]) => ({
+      compacted: false,
+      messages,
+    }));
+
+    await testCompactor(compactIfNeeded)({ ...baseInput, project });
+
+    expect(project).toHaveBeenCalledWith(path);
+    const [view, , , , budgetMessages] = compactIfNeeded.mock.calls[0]! as unknown as [
+      ModelMessage[],
+      unknown,
+      unknown,
+      unknown,
+      ModelMessage[],
+    ];
+    expect(budgetMessages).toBe(projected);
+    // The view still shows runtime context as system messages it keeps.
+    expect(view.some((message) => message.role === "system")).toBe(true);
+  });
+
+  it("declares a prune-only child only when it brings the request back under budget", async () => {
+    // The manager keeps every message: nothing can be summarised.
+    const keepAll = async (messages: ModelMessage[]) => ({ compacted: true, messages });
+
+    const stillOver = await testCompactor(keepAll, () => true)(baseInput);
+    expect(stillOver).toBeUndefined();
+
+    const pruned = await testCompactor(keepAll, () => false)(baseInput);
+    expect(pruned?.transition.reason).toBe("compaction");
+    expect(pruned!.entries.map((entry) => entry.key)).toEqual(["u1", "a1", "digest:3", "u2"]);
+  });
+
+  it("compacts on a host adapter's rendering that the default rendering stays under", async () => {
+    // Budget: 600 estimated tokens. The host renders each runtime entry with
+    // a long preamble the default adapter does not add.
+    const tokenManager = () => {
+      const requests: SummaryRequest[] = [];
+      const contextManager = createContextManager({
+        maxTokens: 1_000_000,
+        policy: {
+          shouldCompact: (budget) =>
+            budget.currentTokens > 600
+              ? { trigger: true, reason: "token_threshold" }
+              : { trigger: false },
+        },
+        summarization: { keepMessageCount: 2, keepToolResultCount: 0 },
+        summarizer: async (request) => {
+          requests.push(request);
+          return { text: "summary" };
+        },
+      });
+      return { contextManager, requests };
+    };
+    const inner = createMessageProjectionAdapter();
+    const inflating = {
+      id: "host/inflating",
+      version: "1",
+      project: async (input: Parameters<typeof inner.project>[0]) => {
+        const { messages } = await inner.project(input);
+        return {
+          messages: messages.map((message, index) => {
+            const entry = input.entries[input.core === "" ? index : index - 1];
+            return entry?.kind === "runtime_context" && message.role === "user"
+              ? {
+                  role: "user" as const,
+                  content: `${"preamble ".repeat(400)}${JSON.stringify(message.content)}`,
+                }
+              : message;
+          }),
+        };
+      },
+    };
+    const run = async (projection?: typeof inflating) => {
+      const store = new MemoryContextLogStore();
+      const manager = tokenManager();
+      const agent = logAgent(createScriptedModel([text("a")]).model, store, {
+        contextManager: manager.contextManager,
+        contextLog: {
+          mode: "log",
+          store,
+          producers: [settings],
+          ...(projection && { projection }),
+        },
+      });
+      for (const prompt of ["q1", "q2", "q3"]) {
+        await agent.generate({ prompt, threadId: THREAD });
+      }
+      return manager.requests.length;
+    };
+
+    expect(await run()).toBe(0);
+    expect(await run(inflating)).toBeGreaterThan(0);
+  });
+});
+
+describe("log-mode prepared compaction summaries (LLE-14017)", () => {
+  /** A message-count manager whose summarizer keeps summaries by request digest. */
+  function cachingManager(maxMessages: number) {
+    const cache = new Map<string, string>();
+    const generated: string[] = [];
+    const digests: string[] = [];
+    const contextManager = createContextManager({
+      maxTokens: 1_000_000,
+      policy: {
+        shouldCompact: (_budget, messages) =>
+          messages.length > maxMessages
+            ? { trigger: true, reason: "token_threshold" }
+            : { trigger: false },
+      },
+      summarization: { keepMessageCount: 2, keepToolResultCount: 0 },
+      summarizer: async (request) => {
+        const digest = summaryRequestDigest(request);
+        digests.push(digest);
+        const known = cache.get(digest);
+        if (known !== undefined) return { text: known };
+        const text = `summary ${generated.length + 1}`;
+        generated.push(digest);
+        cache.set(digest, text);
+        return { text };
+      },
+    });
+    return { contextManager, generated, digests };
+  }
+
+  async function fourTurns(maxMessages = 10) {
+    const store = new MemoryContextLogStore();
+    const manager = cachingManager(maxMessages);
+    const agent = logAgent(createScriptedModel([text("a")]).model, store, {
+      contextManager: manager.contextManager,
+    });
+    for (const prompt of ["q1", "q2", "q3", "q4"]) {
+      await agent.generate({ prompt, threadId: THREAD });
+    }
+    expect(manager.digests).toHaveLength(0);
+    return { store, manager, agent };
+  }
+
+  it("generates the next call's summary ahead of time, and the call reuses it", async () => {
+    const { store, manager, agent } = await fourTurns();
+    const before = await store.readHead(STREAM);
+
+    const prepared = await agent.prepareCompaction!({ threadId: THREAD });
+
+    expect(prepared).toEqual({ prepared: true, head: before });
+    expect(manager.generated).toHaveLength(1);
+    // Nothing was committed to the compacted stream.
+    expect(await store.readHead(STREAM)).toEqual(before);
+
+    // The next call compacts with the same summary request: no new summary.
+    await agent.generate({ prompt: "q5", threadId: THREAD });
+    expect(manager.digests).toHaveLength(2);
+    expect(manager.digests[1]).toBe(manager.digests[0]);
+    expect(manager.generated).toHaveLength(1);
+    const head = await store.readHead(STREAM);
+    expect((await store.readVersion(head!.versionId)).reason).toBe("compaction");
+    const summary = (await readPath(store)).find((entry) => entry.key.includes(":summary:"));
+    expect(summary?.kind === "assistant" && summary.message.content).toBe(
+      "[Previous conversation summary]\n\nsummary 1",
+    );
+  });
+
+  it("falls back to summarising when the next call's request differs", async () => {
+    const { manager, agent } = await fourTurns();
+
+    // Prepared for two new messages; the call brings one, so the retained
+    // tail differs and so does the summarised history.
+    await agent.prepareCompaction!({ threadId: THREAD, pendingMessages: 2 });
+    await agent.generate({ prompt: "q5", threadId: THREAD });
+
+    expect(manager.digests).toHaveLength(2);
+    expect(manager.digests[1]).not.toBe(manager.digests[0]);
+    expect(manager.generated).toHaveLength(2);
+  });
+
+  it("prepares nothing when the policy would not compact or the stream is empty", async () => {
+    const { manager, agent } = await fourTurns(20);
+    expect(await agent.prepareCompaction!({ threadId: THREAD })).toEqual({
+      prepared: false,
+      reason: "not_needed",
+    });
+    expect(await agent.prepareCompaction!({ threadId: "other-thread" })).toEqual({
+      prepared: false,
+      reason: "no_head",
+    });
+    expect(manager.digests).toHaveLength(0);
+  });
+
+  it("is refused outside log mode", async () => {
+    const agent = createAgent({
+      model: createScriptedModel([text("a")]).model,
+      systemPrompt: "core",
+    });
+    const error = await agent.prepareCompaction!({ threadId: THREAD }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as Error).name).toBe("ConfigurationError");
+  });
+});
+
+describe("log-mode compaction review fixes (LLE-14056, LLE-14017)", () => {
+  it("budgets a hypothetical child on its estimate, ignoring the last request's measured usage", () => {
+    const manager = createContextManager({
+      maxTokens: 1_000,
+      policy: { tokenThreshold: 0.5 },
+    });
+    // The last (unpruned) request measured far over budget.
+    manager.updateUsage?.({ inputTokens: 900, outputTokens: 10, totalTokens: 910 });
+    const small: ModelMessage[] = [{ role: "user", content: "short" }];
+    expect(manager.shouldCompact(small).trigger).toBe(true);
+    expect(
+      manager.shouldCompact(small, { budgetMessages: small, estimateOnly: true }).trigger,
+    ).toBe(false);
+  });
+
+  async function fourTurnsWith(
+    overrides: { keepMessageCount?: number; onCompact?: () => void } = {},
+  ) {
+    const store = new MemoryContextLogStore();
+    const summaries: SummaryRequest[] = [];
+    const contextManager = createContextManager({
+      maxTokens: 1_000_000,
+      policy: {
+        shouldCompact: (_budget, messages) =>
+          messages.length > 10 ? { trigger: true, reason: "token_threshold" } : { trigger: false },
+      },
+      summarization: { keepMessageCount: overrides.keepMessageCount ?? 2, keepToolResultCount: 0 },
+      summarizer: async (request) => {
+        summaries.push(request);
+        return { text: `summary ${summaries.length}` };
+      },
+      ...(overrides.onCompact && { onCompact: overrides.onCompact }),
+    });
+    const agent = logAgent(createScriptedModel([text("a")]).model, store, { contextManager });
+    for (const prompt of ["q1", "q2", "q3", "q4"]) {
+      await agent.generate({ prompt, threadId: THREAD });
+    }
+    return { store, agent, summaries };
+  }
+
+  it("leaves the live manager unchanged while preparing: no onCompact until a real compaction", async () => {
+    const onCompact = vi.fn();
+    const { agent, summaries } = await fourTurnsWith({ onCompact });
+
+    expect((await agent.prepareCompaction!({ threadId: THREAD })).prepared).toBe(true);
+    expect(summaries).toHaveLength(1);
+    expect(onCompact).not.toHaveBeenCalled();
+
+    await agent.generate({ prompt: "q5", threadId: THREAD });
+    expect(onCompact).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to prepare when the manager would summarise the next call's new input", async () => {
+    const { agent, summaries } = await fourTurnsWith({ keepMessageCount: 0 });
+    expect(await agent.prepareCompaction!({ threadId: THREAD })).toEqual({
+      prepared: false,
+      reason: "pending_summarised",
+    });
+    expect(summaries).toHaveLength(0);
+  });
+
+  it("stops before the summarizer runs when its signal is aborted", async () => {
+    const { agent, summaries } = await fourTurnsWith();
+    const controller = new AbortController();
+    controller.abort();
+    const error = await agent.prepareCompaction!({
+      threadId: THREAD,
+      signal: controller.signal,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as Error).name).toBe("AbortError");
+    expect(summaries).toHaveLength(0);
+  });
+
+  it("hands the call's signal to the summarizer", async () => {
+    const { agent, summaries } = await fourTurnsWith();
+    const controller = new AbortController();
+    await agent.prepareCompaction!({ threadId: THREAD, signal: controller.signal });
+    expect(summaries[0]!.signal).toBe(controller.signal);
   });
 });

@@ -121,8 +121,12 @@ as its parent.
 Compaction is the only place superseded entries are dropped: the child
 inherits only active entries. Because the request still carries them, the
 context manager is shown superseded entries and retractions too (as system
-messages it counts but never summarises), and when it keeps every
-conversation message a compaction that only drops them is still declared. `activeContextEntries(path)` returns those
+messages it never summarises). The token budget is counted on the request
+the adapter actually projects, with its update labels, retraction notices
+and any host rendering (`ShouldCompactOptions.budgetMessages`). When the
+manager keeps every conversation message, a compaction that only drops
+superseded entries is declared only if the pruned request is back under
+budget, so it never repeats on every turn. `activeContextEntries(path)` returns those
 (the current value of each slot and every non-runtime entry) for hosts and
 compaction planning; a projection adapter should not use it to drop
 entries.
@@ -788,6 +792,20 @@ compaction.
   re-appended entry whose `supersedes` target is no longer on the child's
   path loses the reference (it is the slot's current value), and a
   retraction of such a target is dropped.
+- **Summaries can be prepared ahead of time** (LLE-14017). After a run, a
+  host can call `agent.prepareCompaction({ threadId, contextStream })`. It
+  plans the compaction the stream's next call would make (with placeholder
+  user messages for that call's new input, `pendingMessages`, default 1)
+  and, when the policy would compact, runs the summarizer on its own
+  summary stream. Nothing is committed and the compacted stream is never
+  written, and the live context manager is left unchanged (no usage
+  reset, no `onCompact`). The next call compacts as usual; when it
+  summarises the same history, its summary request has the same
+  `summaryRequestDigest`, so a summarizer that keeps summaries by that
+  digest reuses the prepared one without a model call. A manager that would
+  summarise the next call's new input itself (`keepMessageCount` below
+  `pendingMessages`) is refused with `pending_summarised`. The host owns the lease: the prepare and a run must not write the
+  same summary stream at once.
 - **Only progress is committed.** When the child would keep every
   conversation entry (for example a single tool block over budget on its
   own), or a context manager drops history without returning a summary, no

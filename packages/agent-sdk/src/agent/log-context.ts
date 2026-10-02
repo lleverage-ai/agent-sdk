@@ -81,7 +81,7 @@ import {
 } from "../context-log/types.js";
 import { ConfigurationError, ValidationError } from "../errors/index.js";
 import { resolveModelIdentity } from "../observability/execution-metadata.js";
-import type { AgentOptions, GenerateOptions } from "../types.js";
+import type { AgentOptions, GenerateOptions, PrepareCompactionResult } from "../types.js";
 import {
   appendScreenedOutputs,
   assertTerminalModel,
@@ -344,6 +344,16 @@ export interface LogContextRuntime {
   ): Promise<LogInterruptSite>;
   /** The cursor of the head the thread's latest plan was built from. */
   cursor(threadId: string): ContextLogCursor | undefined;
+  /**
+   * Generates the summary the next call's compaction would ask for, ahead
+   * of time, without committing anything (LLE-14017). See
+   * `Agent.prepareCompaction`.
+   */
+  prepareCompaction(
+    genOptions: GenerateOptions,
+    model: LanguageModel,
+    pendingMessages: number,
+  ): Promise<PrepareCompactionResult>;
 }
 
 /** Map a model to the reference recorded on versions and manifests. @internal */
@@ -729,6 +739,21 @@ export interface LogContextRuntimeDeps {
    * time, because it is built from the agent's message runtime.
    */
   compactor?: () => LogCompactor | undefined;
+  /**
+   * A compactor that only generates the summary: it emits no compaction
+   * hooks, and its plan is never committed. Reports through `summarised`
+   * whether the summarizer ran.
+   */
+  prepareCompactor?: () =>
+    | {
+        compactor: LogCompactor;
+        summarised: () => boolean;
+        /** Whether the manager kept `message` (by identity) rather than summarising it. */
+        kept: (message: ModelMessage) => boolean;
+        /** Whether the manager's retention keeps this many new messages. */
+        retains: (pendingMessages: number) => boolean;
+      }
+    | undefined;
 }
 
 /**
@@ -1077,6 +1102,7 @@ export function createLogContextRuntime(
           runId: run.id,
           screenOptions: screened.options,
           screen,
+          target,
         })
       : undefined;
     if (compaction) {
@@ -1142,6 +1168,7 @@ export function createLogContextRuntime(
     runId: string;
     screenOptions: GenerateOptions;
     screen: LogInputScreen;
+    target: ContextModelRef;
   }): Promise<LogCompaction | undefined> {
     const compactor = deps.compactor?.();
     if (!compactor) return Promise.resolve(undefined);
@@ -1157,6 +1184,7 @@ export function createLogContextRuntime(
       options: input.options,
       // Only the screened entries are used, as for outputs.
       screen: async (items) => (await input.screen(input.screenOptions, items)).pending,
+      project: (entries) => project(input.core, input.contract, entries, input.target),
     });
   }
 
@@ -1211,6 +1239,7 @@ export function createLogContextRuntime(
           runId: plan.run.id,
           screenOptions: plan.options,
           screen,
+          target: plan.target,
         }),
     });
   }
@@ -1326,7 +1355,81 @@ export function createLogContextRuntime(
     };
   }
 
+  async function prepareCompaction(
+    genOptions: GenerateOptions,
+    model: LanguageModel,
+    pendingMessages: number,
+  ): Promise<PrepareCompactionResult> {
+    const threadId = genOptions.threadId;
+    if (!threadId) {
+      throw new ValidationError("Context log mode needs a threadId to identify the log stream", {
+        fieldErrors: { threadId: ["required in context log mode"] },
+      });
+    }
+    const prepare = deps.prepareCompactor?.();
+    if (!prepare) return { prepared: false, reason: "no_context_manager" };
+    // Placeholders the manager would summarise make a request the next call
+    // can never repeat (it summarises the real input there instead).
+    if (!prepare.retains(pendingMessages)) {
+      return { prepared: false, reason: "pending_summarised" };
+    }
+    const stream: ContextStreamRef = {
+      threadId,
+      branchId: genOptions.contextStream?.branchId ?? DEFAULT_CONTEXT_BRANCH_ID,
+      streamId: genOptions.contextStream?.streamId ?? DEFAULT_CONTEXT_STREAM_ID,
+    };
+    // One head read serves the version and the path.
+    const head = await store.readHead(stream);
+    if (!head) return { prepared: false, reason: "no_head" };
+    const target = toContextModelRef(model);
+    const version = await store.readVersion(head.versionId);
+    // The next call would first declare a transition (another adapter,
+    // capabilities or core version), and compact under its contract: a
+    // summary prepared under this one may not match it.
+    const expectedContract = buildProjectionContract(
+      adapter,
+      resolveModelInputCapabilities(options, model),
+    );
+    if (
+      projectionContractMismatches(version.contract, expectedContract).length > 0 ||
+      (coreVersion !== undefined && version.contract[CORE_VERSION_CONTRACT_KEY] !== coreVersion)
+    ) {
+      return { prepared: false, reason: "transition_pending" };
+    }
+    const path = (await readFullPath(store, head)).map(toEntryInput);
+    // Placeholders for the next call's new input, so the manager's
+    // retention cut-off falls where the next call's will. They are retained,
+    // never summarised, so their content does not reach the summary.
+    const pending: ContextEntryInput[] = Array.from({ length: pendingMessages }, (_, index) => ({
+      kind: "user" as const,
+      key: `prepare-compaction:pending:${index}`,
+      message: { role: "user" as const, content: "" },
+    }));
+    const runId = genOptions._runId ?? `prepare-${randomUUID()}`;
+    genOptions.signal?.throwIfAborted();
+    await prepare.compactor({
+      stream,
+      head,
+      core: version.core,
+      contract: version.contract,
+      path,
+      pending,
+      keyPrefix: `prepare-compaction:${runId}:${head.revision}`,
+      options: { ...genOptions, _runId: runId },
+      // Nothing is committed: the next call screens the summary it commits.
+      screen: async (entries) => entries,
+      project: (entries) => project(version.core, version.contract, entries, target),
+    });
+    if (!prepare.summarised()) return { prepared: false, reason: "not_needed" };
+    // A manager with its own retention may still have summarised them.
+    if (!pending.every((entry) => entry.kind === "user" && prepare.kept(entry.message))) {
+      return { prepared: false, reason: "pending_summarised" };
+    }
+    return { prepared: true, head };
+  }
+
   return {
+    prepareCompaction,
     prepareRunInput,
     acceptRunInput,
     plan,

@@ -174,12 +174,16 @@ export interface MessageRuntime {
   /**
    * Compact `messages` if the context policy requires it, emitting hooks.
    * `compactOptions` is passed to `ContextManager.compact` (log mode sets it).
+   * `budgetMessages`, when set, are what the model is actually sent: the
+   * token budget (and `tokens_before`) is counted on them, while `messages`
+   * are compacted (log mode passes its projected request, LLE-14056).
    */
   compactMessagesIfNeeded(
     messages: ModelMessage[],
     genOptions: GenerateOptions,
     threadId: string | undefined,
     compactOptions?: CompactOptions,
+    budgetMessages?: ModelMessage[],
   ): Promise<CompactionOutcome>;
 
   /**
@@ -219,13 +223,16 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
     genOptions: GenerateOptions,
     threadId: string | undefined,
     compactOptions?: CompactOptions,
+    budgetMessages?: ModelMessage[],
   ): Promise<{ compacted: boolean; messages: ModelMessage[] }> {
     // Skip compaction if _skipCompaction flag is set (used during summary generation)
     if (!contextManager || genOptions._skipCompaction) {
       return { compacted: false, messages };
     }
 
-    const { trigger, reason } = contextManager.shouldCompact(messages);
+    const { trigger, reason } = budgetMessages
+      ? contextManager.shouldCompact(messages, { budgetMessages })
+      : contextManager.shouldCompact(messages);
     if (!trigger || !reason) {
       return { compacted: false, messages };
     }
@@ -236,7 +243,7 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
       requestedModel: model,
     });
     // Calculate token count before compaction
-    const tokensBefore = contextManager.tokenCounter.countMessages(messages);
+    const tokensBefore = contextManager.tokenCounter.countMessages(budgetMessages ?? messages);
     const messagesBefore = messages.length;
 
     // Emit PreCompact hook
