@@ -367,6 +367,15 @@ export function createRecordingAgent(
       return agent.resumeDataResponse(threadId, interruptId, response, genOptions);
     },
 
+    resumeStream(
+      threadId: string,
+      interruptId: string,
+      response: unknown,
+      genOptions?: Partial<GenerateOptions>,
+    ) {
+      return agent.resumeStream(threadId, interruptId, response, genOptions);
+    },
+
     // Delegate to wrapped agent's ready promise
     get ready() {
       return agent.ready;

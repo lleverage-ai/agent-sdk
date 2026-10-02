@@ -353,7 +353,10 @@ exactly what the provider receives:
    `toolSnapshot` and `callOptions` hold their exact bytes, and
    `ordinal` / `attempt` number the run's calls (a retry with the same input
    is the next attempt of the same ordinal). The idempotency key is
-   `call:<run>:<ordinal>:<attempt>`.
+   `call:<run>:<ordinal>:<attempt>`. When the prepare appends the run's new
+   input, `runInput` lists those `user` entries, in order, each with its
+   `index` in the run's input (`GenerateOptions.input`, or `0` for `prompt`);
+   see [Identifying the run's input](#identifying-the-runs-input).
 2. **Dispatch.** It asks `contextLog.admit` again (phase `dispatch`; a
    refusal closes the call as `cancelled`), marks the call dispatched, and only
    then calls the provider.
@@ -560,6 +563,33 @@ await agent.generate({
   before anything is committed. Calls that don't declare a source continue
   the head as usual.
 
+
+### Identifying the run's input
+
+A prepare may append several kinds of `user` entry: the run's new input,
+a compaction's summary and the retained tail it re-appends (earlier runs'
+input, or this run's own once it was committed). A host that records each
+input message as its own product event needs to tell them apart.
+`ContextPrepareRequest.runInput` does that without depending on key
+formats, which are not part of the contract:
+
+```typescript
+type ContextRunInputRef = { key: string; index: number };
+```
+
+- It lists the entries of `append` that are the run's new input, in order,
+  with each message's `index` in `GenerateOptions.input` (`0` for `prompt`).
+  It is absent (never empty) when the prepare appends no new input.
+- A compaction's summary and retained tail are never listed, and neither is
+  input an earlier prepare of the run committed. Of the prepares that list
+  an input entry, exactly one commits (an attempt whose prepare failed may
+  have listed it before a retry did).
+- A retry of the same request carries the same list, so a host that maps
+  entries to events on prepare produces identical bytes on replay.
+- A store need not persist or validate it. `MemoryContextLogStore` includes
+  it in the request's idempotency digest when present. `contextLog.admit`
+  sees it on the prepare request.
+
 ## Compaction
 
 With a `contextManager`, log mode compacts by a declared **`compaction`**
@@ -709,6 +739,16 @@ Rules:
 - **A tool that interrupts again** (for example a multi-step form) keeps its
   call unresolved. The round's resolution stays on the log, the new interrupt
   becomes the pending interrupt, and `resume()` returns it.
+- **Streaming the continuation.** `resumeStream()` resumes exactly like
+  `resume()` (same commits, same crash-safety rules), then runs the
+  continuation through `stream()`, so a host that renders live parts gets
+  the same parts as from any other streamed generation, through the same
+  commit boundary and retry-safety rules. The continuation never takes new
+  input: `prompt` and `input` are ignored, as in `resume()` and
+  `resumeDataResponse()`. Nothing runs until the generator is first
+  iterated, and a refused resume throws from that first iteration. If the
+  tool interrupts again, the generator ends without parts and the new
+  interrupt is the pending interrupt (`getInterrupt()`).
 - **Stream.** `resume()` uses the call's `contextStream`, like `generate()`.
   An interrupt that is not on that stream's path is a
   `ContextLogNotFoundError` (resource `interrupt`). If the stream moved past

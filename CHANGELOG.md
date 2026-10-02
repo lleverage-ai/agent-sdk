@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   call fails with a `branch_source_mismatch` conflict before anything is
   committed (LLE-14001).
 
+- `Agent.resumeStream()` resumes a pending interrupt like `resume()` and
+  streams the continuation as `StreamPart`s through `stream()`. In context log
+  mode it commits the resolution and result exactly as `resume()` does, never
+  takes new input, and follows `stream()`'s commit boundary and retry-safety
+  rules. If the tool interrupts again it ends without parts; read the new
+  interrupt with `getInterrupt()`. `createMockAgent()` and the recorder
+  implement it. Code that implements the `Agent` interface itself needs the
+  new method. (LLE-14004)
+- `ContextPrepareRequest.runInput` (`ContextRunInputRef[]`, experimental)
+  lists the `user` entries of a prepare's `append` that are the run's new
+  input, each with its `index` in `GenerateOptions.input` (`0` for
+  `prompt`), so hosts can map input messages to their own records without
+  parsing SDK key formats. A compaction's summary and retained tail, and
+  input an earlier prepare committed, are never listed; the field is absent
+  when a prepare appends no new input. `MemoryContextLogStore` includes it in
+  the idempotency digest when present; other stores need not persist it.
+  Requests without new input are unchanged. (LLE-14003)
+
 ## [1.0.0-rc.6] - 2026-10-02
 
 Sixth release candidate for 1.0.0. It adds two log-mode changes that hosts
