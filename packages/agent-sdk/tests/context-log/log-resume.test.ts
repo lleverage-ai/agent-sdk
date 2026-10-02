@@ -34,6 +34,7 @@ import {
   type GenerateResult,
   isContextLogError,
   MemoryContextLogStore,
+  type StreamPart,
 } from "../../src/index.js";
 import { AgentSession } from "../../src/session.js";
 import { createBackgroundTask } from "../../src/task-store/types.js";
@@ -781,6 +782,194 @@ describe("log-mode resume", () => {
     expect(path[4]!.message.content).toEqual([
       expect.objectContaining({ output: { type: "text", value: "done: two" } }),
     ]);
+  });
+});
+
+/** Drains a stream of parts. */
+async function drain(parts: AsyncIterable<StreamPart>): Promise<StreamPart[]> {
+  const seen: StreamPart[] = [];
+  for await (const part of parts) seen.push(part);
+  return seen;
+}
+
+describe("log-mode resumeStream", () => {
+  /** Interrupts a deploy on one agent and returns what a fresh agent needs to resume it. */
+  async function interrupted(tools: () => AgentOptions["tools"] = () => approvalTools()) {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["c1", "deploy", { env: "prod" }])]).model, store, {
+        tools: tools(),
+        checkpointer,
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+    return { store, checkpointer, interrupt };
+  }
+
+  it("streams the continuation with the parts and provider input of resume()", async () => {
+    const streamed = await interrupted();
+    const resumed = scriptedModel([text("done")]);
+    const parts = await drain(
+      logAgent(resumed.model, streamed.store, {
+        tools: approvalTools(),
+        checkpointer: streamed.checkpointer,
+      }).resumeStream(THREAD, streamed.interrupt.id, { approved: true }),
+    );
+
+    const generated = await interrupted();
+    const reference = scriptedModel([text("done")]);
+    const result = await logAgent(reference.model, generated.store, {
+      tools: approvalTools(),
+      checkpointer: generated.checkpointer,
+    }).resume(THREAD, generated.interrupt.id, { approved: true });
+    expect(result.status).toBe("complete");
+
+    expect(parts.map((part) => part.type)).toEqual([
+      "turn-start",
+      "text-delta",
+      "turn-end",
+      "finish",
+    ]);
+    expect(parts[1]).toEqual({ type: "text-delta", text: "done" });
+    // The same provider input and the same log as resume().
+    expect(resumed.requests).toHaveLength(1);
+    expect(describeProviderCall(resumed.requests[0]!).inputDigest).toBe(
+      describeProviderCall(reference.requests[0]!).inputDigest,
+    );
+    // Keys carry each run's own id; everything else matches.
+    const strip = (path: ContextEntry[]) =>
+      path.map(({ kind, message }) => ({ kind, message }) as Partial<ContextEntry>);
+    expect(strip(await readPath(streamed.store))).toEqual(strip(await readPath(generated.store)));
+    expect((await streamed.checkpointer.load(THREAD))?.pendingInterrupt).toBeUndefined();
+  });
+
+  it("does nothing until it is iterated", async () => {
+    const { store, checkpointer, interrupt } = await interrupted();
+    const before = await store.readHead(STREAM);
+    const resumed = scriptedModel([text("done")]);
+
+    logAgent(resumed.model, store, { tools: approvalTools(), checkpointer }).resumeStream(
+      THREAD,
+      interrupt.id,
+      { approved: true },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(await store.readHead(STREAM)).toEqual(before);
+    expect((await checkpointer.load(THREAD))?.pendingInterrupt?.id).toBe(interrupt.id);
+    expect(resumed.requests).toHaveLength(0);
+  });
+
+  it("throws a refused resume from its first iteration, before any part", async () => {
+    const { store, checkpointer } = await interrupted();
+    const iterator = logAgent(scriptedModel([text("never")]).model, store, {
+      tools: approvalTools(),
+      checkpointer,
+    }).resumeStream(THREAD, "int_other", { approved: true });
+
+    await expect(iterator.next()).rejects.toThrow(/interrupt ID mismatch/);
+  });
+
+  it("never appends new input to the continuation", async () => {
+    const { store, checkpointer, interrupt } = await interrupted();
+    const resumed = scriptedModel([text("done")]);
+    await drain(
+      logAgent(resumed.model, store, { tools: approvalTools(), checkpointer }).resumeStream(
+        THREAD,
+        interrupt.id,
+        { approved: true },
+        { prompt: "sneaky", input: [{ role: "user", content: "also sneaky" }] },
+      ),
+    );
+
+    const path = await readPath(store);
+    expect(path.map((entry) => entry.kind)).toEqual([
+      "user",
+      "assistant",
+      "tool_result",
+      "tool_result",
+      "assistant",
+    ]);
+    expect(JSON.stringify(resumed.requests[0]!.prompt)).not.toContain("sneaky");
+  });
+
+  it("ends without parts when the tool interrupts again", async () => {
+    let round = 0;
+    const formTools = () => ({
+      deploy: tool({
+        inputSchema: deployInput,
+        execute: async (_input, options) => {
+          const ask = interruptOf(options);
+          round += 1;
+          await ask({ step: 1 });
+          return ask({ step: 2 });
+        },
+      }),
+    });
+    const { store, checkpointer, interrupt } = await interrupted(formTools);
+    const resumed = scriptedModel([text("never")]);
+    const agent = logAgent(resumed.model, store, { tools: formTools(), checkpointer });
+
+    const parts = await drain(agent.resumeStream(THREAD, interrupt.id, "one"));
+
+    expect(parts).toEqual([]);
+    expect(resumed.requests).toHaveLength(0);
+    expect((await agent.getInterrupt(THREAD))?.request).toEqual({ step: 2 });
+    expect(round).toBe(2);
+  });
+
+  it("commits the resumed result once when the continuation fails, and a plain stream() continues", async () => {
+    const { store, checkpointer, interrupt } = await interrupted();
+    const runs: string[] = [];
+    const failing = scriptedModel([new Error("provider down")]);
+    await expect(
+      drain(
+        logAgent(failing.model, store, {
+          tools: approvalTools(runs),
+          checkpointer,
+        }).resumeStream(THREAD, interrupt.id, { approved: true }),
+      ),
+    ).rejects.toThrow();
+    expect(runs).toEqual(["c1:true"]);
+    expect((await checkpointer.load(THREAD))?.pendingInterrupt).toBeUndefined();
+
+    // The resolution and the result stay committed; continuing needs no resume.
+    const recovered = scriptedModel([text("done")]);
+    const parts = await drain(
+      logAgent(recovered.model, store, { tools: approvalTools(runs), checkpointer }).stream({
+        threadId: THREAD,
+      }),
+    );
+    expect(parts.at(-1)?.type).toBe("finish");
+    expect(runs).toEqual(["c1:true"]);
+    const path = await readPath(store);
+    expect(path.map((entry) => entry.kind)).toEqual([
+      "user",
+      "assistant",
+      "tool_result",
+      "tool_result",
+      "assistant",
+    ]);
+  });
+});
+
+describe("legacy resumeStream", () => {
+  it("streams the continuation of a legacy resume", async () => {
+    const checkpointer = new MemorySaver();
+    const agent = createAgent({
+      model: scriptedModel([toolCalls(["c1", "deploy", { env: "prod" }]), text("done")]).model,
+      tools: approvalTools(),
+      checkpointer,
+    });
+    const interrupt = await expectInterrupted(agent.generate({ prompt: "go", threadId: THREAD }));
+
+    const parts = await drain(agent.resumeStream(THREAD, interrupt.id, { approved: true }));
+
+    expect(parts.filter((part) => part.type === "text-delta")).toEqual([
+      { type: "text-delta", text: "done" },
+    ]);
+    expect(parts.at(-1)?.type).toBe("finish");
+    expect(await agent.getInterrupt(THREAD)).toBeUndefined();
   });
 });
 

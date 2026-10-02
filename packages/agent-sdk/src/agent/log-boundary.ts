@@ -69,6 +69,7 @@ import type {
   ContextManifest,
   ContextModelRef,
   ContextPrepareRequest,
+  ContextRunInputRef,
   ContextToolSnapshotChange,
   ToolResultContextEntryInput,
 } from "../context-log/types.js";
@@ -119,6 +120,7 @@ export interface LogBoundaryPlan {
   head: ContextHead | null;
   transition: ContextPrepareRequest["transition"];
   append: ContextEntryInput[];
+  runInput: ContextRunInputRef[];
   messages: ModelMessage[];
   projection: { adapter: string; version: string };
   entries: ContextEntryInput[];
@@ -560,9 +562,14 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   // The head as this boundary last observed it, and what the next prepare
   // still has to commit (the run's new input and any transition).
   let head = plan.head;
-  let pending: { transition: ContextPrepareRequest["transition"]; append: ContextEntryInput[] } = {
+  let pending: {
+    transition: ContextPrepareRequest["transition"];
+    append: ContextEntryInput[];
+    runInput: ContextRunInputRef[];
+  } = {
     transition: plan.transition,
     append: plan.append,
+    runInput: plan.runInput,
   };
   let previous = plan.previousCall;
   // The dispatched call whose outputs are not committed yet.
@@ -713,6 +720,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       idempotencyKey: `call:${run.id}:${run.ordinal}:${run.attempt}`,
       ...(pending.transition && { transition: pending.transition }),
       append: pending.append,
+      ...(pending.runInput.length > 0 && { runInput: pending.runInput }),
       // The call the head points at is superseded by this one. Whatever its
       // state (a crash left it open, or this process could not record its
       // outcome), the store closes it in the same write, so it can never stay
@@ -744,7 +752,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       );
     }
     moveHead(prepared.head);
-    pending = { transition: undefined, append: [] };
+    pending = { transition: undefined, append: [], runInput: [] };
     // The run's input is in the log now (this prepare committed it, or an
     // earlier one did), so no later attempt appends it again.
     run.inputCommitted = true;
@@ -814,7 +822,8 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       const compaction = await recordingFailure(() => compact(entries, at));
       if (compaction) {
         // Committed by the next call's prepare, before anything is sent.
-        pending = { transition: compaction.transition, append: compaction.append };
+        // The run's input was committed by the first prepare: none is new.
+        pending = { transition: compaction.transition, append: compaction.append, runInput: [] };
         baseEntries = compaction.entries;
         committedOutputs = [];
         return { messages: await deps.project(baseEntries) };

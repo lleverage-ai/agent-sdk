@@ -349,6 +349,7 @@ export class MemoryContextLogStore implements ContextLogStore {
         transition: request.transition ?? null,
         manifest: request.manifest,
         ...(request.closeSuperseded !== undefined && { closeSuperseded: request.closeSuperseded }),
+        ...(request.runInput !== undefined && { runInput: request.runInput }),
       },
       request.append,
     );

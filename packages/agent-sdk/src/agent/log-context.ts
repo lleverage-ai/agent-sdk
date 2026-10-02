@@ -59,6 +59,7 @@ import {
   type ContextLogOptions,
   type ContextLogStore,
   type ContextModelRef,
+  type ContextRunInputRef,
   type ContextStreamRef,
   type ContextTransition,
   DEFAULT_CONTEXT_BRANCH_ID,
@@ -192,6 +193,8 @@ export interface LogCallPlan {
    * the PreGenerate hooks left them.
    */
   append: ContextEntryInput[];
+  /** The entries of `append` that are the run's new input (`ContextPrepareRequest.runInput`). */
+  runInput: ContextRunInputRef[];
   /** The projected request messages, including the core system message. */
   messages: ModelMessage[];
   /** The adapter that projected the messages. */
@@ -636,7 +639,7 @@ export function createLogContextRuntime(
             .map((pending) => pending.approvalId)
             .join(
               ", ",
-            )}); resume it with resume() or resumeDataResponse() before generating on this stream`,
+            )}); resume it with resume(), resumeDataResponse() or resumeStream() before generating on this stream`,
         });
       }
       if (declareModelChange) {
@@ -676,15 +679,16 @@ export function createLogContextRuntime(
     // a prepare committed it, it is never appended again: a compaction may
     // have summarised it off the path since.
     const onPath = new Set(path.map((entry) => entry.key));
+    // Each new input entry's position in the run's input, for `runInput`.
+    const inputIndex = new Map<string, number>();
     const userEntries: UserContextEntryInput[] = run.inputCommitted
       ? []
-      : input
-          .map((message, index) => ({
-            kind: "user" as const,
-            key: `user:${run.id}:${index}`,
-            message,
-          }))
-          .filter((entry) => !onPath.has(entry.key));
+      : input.flatMap((message, index) => {
+          const key = `user:${run.id}:${index}`;
+          if (onPath.has(key)) return [];
+          inputIndex.set(key, index);
+          return [{ kind: "user" as const, key, message }];
+        });
     // Producers run against this same head and path; entries already on the
     // path are dropped. Then the new input and producer output pass the
     // PreGenerate hooks (redaction, guardrails) before anything is committed
@@ -725,6 +729,12 @@ export function createLogContextRuntime(
       entries = compaction.entries;
     }
     const messages = await project(core, contract, entries, target);
+    // The new input among the entries this prepare appends, as screened. A
+    // compaction's summary and retained tail are never new input.
+    const runInput: ContextRunInputRef[] = append.flatMap((entry) => {
+      const index = entry.kind === "user" ? inputIndex.get(entry.key) : undefined;
+      return index === undefined ? [] : [{ key: entry.key, index }];
+    });
 
     cursors.set(threadId, toCursor(stream, head));
     return {
@@ -732,6 +742,7 @@ export function createLogContextRuntime(
       head,
       transition,
       append,
+      runInput,
       messages,
       projection: { adapter: adapter.id, version: adapter.version },
       target,
