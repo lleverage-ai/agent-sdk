@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.9] - 2026-10-02
+
+Ninth release candidate for 1.0.0. In log mode, a host can commit history
+written outside the agent with a run: an existing conversation's history,
+imported as a stream's first version, or messages another writer added
+(for example a voice turn), appended before the run's input. Legacy agents
+are unchanged.
+
+### Migration notes
+
+- Legacy mode: no change.
+- Log mode: nothing changes until a host passes `contextHistory`. An `admit`
+  hook that allow-lists transition reasons must admit
+  `legacy_projection_import` to let an import commit. A store that
+  constrains reasons should accept it for a stream's first version, as the
+  conformance suite now checks.
+
 ### Added
 
 - `GenerateOptions.contextHistory` (`ContextHistoryInput`, experimental)
@@ -1413,7 +1430,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.8...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.9...HEAD
+[1.0.0-rc.9]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.8...agent-sdk@1.0.0-rc.9
 [1.0.0-rc.8]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.7...agent-sdk@1.0.0-rc.8
 [1.0.0-rc.7]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.6...agent-sdk@1.0.0-rc.7
 [1.0.0-rc.6]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.5...agent-sdk@1.0.0-rc.6
