@@ -180,11 +180,6 @@ export class AgentSession {
   // Track pending interrupt for resumption
   private pendingInterrupt: Interrupt | null = null;
 
-  // Log mode: background task events that arrived while an interrupt was
-  // pending. The stream cannot take new input until the interrupt is
-  // resumed, so they are held and processed afterwards.
-  private deferredTaskEvents: SessionEvent[] = [];
-
   constructor(options: AgentSessionOptions) {
     if (isLogModeEnabled(options.agent.options)) {
       if (!options.threadId) {
@@ -356,16 +351,6 @@ export class AgentSession {
       }
     }
 
-    const logMode = isLogModeEnabled(this.agent.options);
-    if (
-      logMode &&
-      this.pendingInterrupt &&
-      (event.type === "task_completed" || event.type === "task_failed")
-    ) {
-      this.deferredTaskEvents.push(event);
-      return;
-    }
-
     // Handle interrupt response specially - resume the generation
     if (event.type === "interrupt_response") {
       if (!this.pendingInterrupt) {
@@ -383,8 +368,6 @@ export class AgentSession {
 
     // Convert event to prompt
     let prompt: string;
-    // The task whose result the prompt carries.
-    let taskId: string | undefined;
 
     switch (event.type) {
       case "user_message":
@@ -393,43 +376,26 @@ export class AgentSession {
 
       case "task_completed":
         prompt = this.formatTaskCompletion(event.task);
-        taskId = event.task.id;
+        this.agent.taskManager.removeTask(event.task.id);
         break;
 
       case "task_failed":
         prompt = this.formatTaskFailure(event.task);
-        taskId = event.task.id;
+        this.agent.taskManager.removeTask(event.task.id);
         break;
 
       default:
         return;
     }
 
-    // Log mode: the task is removed only once its result was committed to
-    // the log, so a failed turn leaves it readable through task_output.
-    if (taskId !== undefined && !logMode) {
-      this.agent.taskManager.removeTask(taskId);
-    }
-
     // Generate response
-    const committed = yield* this.generate(prompt);
-    if (taskId !== undefined && logMode && committed) {
-      this.agent.taskManager.removeTask(taskId);
-    }
-  }
-
-  /** Log mode: queue the task events held while an interrupt was pending. */
-  private releaseDeferredTaskEvents(): void {
-    const deferred = this.deferredTaskEvents;
-    this.deferredTaskEvents = [];
-    for (const event of deferred) this.enqueueEvent(event);
+    yield* this.generate(prompt);
   }
 
   /**
-   * Generate a response for a prompt. Returns whether the generation
-   * finished (complete or interrupted) rather than failing.
+   * Generate a response for a prompt.
    */
-  private async *generate(prompt: string): AsyncGenerator<SessionOutput, boolean, unknown> {
+  private async *generate(prompt: string): AsyncGenerator<SessionOutput, void, unknown> {
     try {
       const generateOptions = this.buildGenerateOptions(prompt);
 
@@ -446,7 +412,7 @@ export class AgentSession {
 
         // Yield the interrupt for the caller to handle
         yield { type: "interrupt", interrupt: result.interrupt };
-        return true;
+        return;
       }
 
       // Generation complete
@@ -459,13 +425,11 @@ export class AgentSession {
       // Yield the full text (for non-streaming path)
       yield { type: "text_delta", text: result.text };
       yield { type: "generation_complete", fullText: result.text };
-      return true;
     } catch (error) {
       yield {
         type: "error",
         error: error instanceof Error ? error : new Error(String(error)),
       };
-      return false;
     }
   }
 
@@ -522,10 +486,6 @@ export class AgentSession {
         return;
       }
 
-      // The interrupt is resolved: task events held while it was pending
-      // can be processed now.
-      this.releaseDeferredTaskEvents();
-
       // Generation complete
       this.turnCount++;
 
@@ -539,7 +499,31 @@ export class AgentSession {
         type: "error",
         error: error instanceof Error ? error : new Error(String(error)),
       };
+    } finally {
+      // Log mode: a resume can clear the interrupt and then fail in its
+      // continuation, or fail before clearing it. The checkpoint says which,
+      // and so whether held task events can run.
+      if (isLogModeEnabled(this.agent.options)) {
+        const threadId = this.threadId;
+        this.pendingInterrupt =
+          (await this.agent
+            .getInterrupt(threadId)
+            .catch(() => this.pendingInterrupt ?? undefined)) ?? null;
+      }
     }
+  }
+
+  /**
+   * Whether an event can start a turn now. In context log mode a stream with
+   * a pending interrupt takes no new input until the interrupt is resumed,
+   * so task events stay queued, and their tasks registered, until then.
+   */
+  private isEventReady(event: SessionEvent): boolean {
+    return !(
+      this.pendingInterrupt &&
+      (event.type === "task_completed" || event.type === "task_failed") &&
+      isLogModeEnabled(this.agent.options)
+    );
   }
 
   /**
@@ -559,17 +543,18 @@ export class AgentSession {
    * Wait for the next event.
    */
   private async waitForEvent(): Promise<SessionEvent | undefined> {
-    // Check if there's already an event in the queue
-    if (this.eventQueue.length > 0) {
-      return this.eventQueue.shift();
+    for (;;) {
+      // The first event that can start a turn now; held events keep their order.
+      const index = this.eventQueue.findIndex((event) => this.isEventReady(event));
+      if (index >= 0) {
+        return this.eventQueue.splice(index, 1)[0];
+      }
+
+      // Wait for an event to be enqueued
+      await new Promise<void>((resolve) => {
+        this.eventResolve = resolve;
+      });
     }
-
-    // Wait for an event to be enqueued
-    await new Promise<void>((resolve) => {
-      this.eventResolve = resolve;
-    });
-
-    return this.eventQueue.shift();
   }
 }
 

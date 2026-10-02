@@ -58,11 +58,13 @@ const toolCalls = (...calls: Array<[id: string, name: string, input: object]>): 
   }));
 
 /** A model that answers each call with the next scripted reply and records every request. */
-function scriptedModel(replies: Reply[]) {
+function scriptedModel(replies: Array<Reply | Error>) {
   const requests: LanguageModelV3CallOptions[] = [];
   const respond = (request: LanguageModelV3CallOptions) => {
     requests.push(request);
-    return replies[Math.min(requests.length - 1, replies.length - 1)]!;
+    const reply = replies[Math.min(requests.length - 1, replies.length - 1)]!;
+    if (reply instanceof Error) throw reply;
+    return reply;
   };
   const finishFor = (content: Reply) =>
     content.some((part) => part.type === "tool-call")
@@ -395,7 +397,7 @@ describe("log-mode resume", () => {
       call: ["c1", "ask", { question: "Name?" }] as [string, string, object],
       response: "Alice",
       // The answer is recorded as canonical JSON.
-      resolution: { approved: true, reason: '"Alice"' },
+      resolution: { approved: true, reason: '{"answer":"Alice"}' },
     },
   ];
 
@@ -650,7 +652,7 @@ describe("log-mode resume", () => {
         type: "tool-approval-response",
         approvalId: interrupt.id,
         approved: true,
-        reason: '{"choice":"blue","count":2}',
+        reason: '{"answer":{"choice":"blue","count":2}}',
       },
     ]);
     expect(path[3]!.message.content).toEqual([
@@ -895,6 +897,92 @@ describe("log-mode resume crash safety", () => {
     expect(answers).toEqual(["blue", "blue"]);
   });
 
+  it("runs a screened answer the same way on the first run and on recovery", async () => {
+    const store = new CrashingStore();
+    const checkpointer = new MemorySaver();
+    const [inputFilter] = createSecretsFilterHooks();
+    const hooks = { PreGenerate: [inputFilter] };
+    const answers: unknown[] = [];
+    const ackTools = () => ({
+      ask: tool({
+        description: "Asks the user",
+        inputSchema: askInput,
+        execute: async (input, options) => {
+          answers.push(await interruptOf(options)(input));
+          return "noted";
+        },
+      }),
+    });
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["c1", "ask", { question: "Key?" }])]).model, store, {
+        tools: ackTools(),
+        checkpointer,
+        hooks,
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+    store.crashOnAppend = store.appendCalls + 2;
+    await expect(
+      logAgent(scriptedModel([text("never")]).model, store, {
+        tools: ackTools(),
+        checkpointer,
+        hooks,
+      }).resume(THREAD, interrupt.id, "use AKIAIOSFODNN7EXAMPLE"),
+    ).rejects.toThrow("process crashed");
+
+    await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: ackTools(),
+      checkpointer,
+      hooks,
+      contextLog: { mode: "log", store, inDoubtResume: "reexecute" },
+    }).resume(THREAD, interrupt.id, "use AKIAIOSFODNN7EXAMPLE");
+
+    expect(answers).toHaveLength(2);
+    expect(answers[0]).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(answers[0]).toContain("[REDACTED]");
+    expect(answers[1]).toEqual(answers[0]);
+  });
+
+  it("fails closed when screening leaves an answer that no longer decodes", async () => {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    // Redacts every number, which breaks the JSON of a numeric answer.
+    const [digits] = createSecretsFilterHooks({ patterns: [/\d+/g], redactionText: "#" });
+    const hooks = { PreGenerate: [digits] };
+    const answers: unknown[] = [];
+    const ackTools = () => ({
+      ask: tool({
+        description: "Asks the user",
+        inputSchema: askInput,
+        execute: async (input, options) => {
+          answers.push(await interruptOf(options)(input));
+          return "noted";
+        },
+      }),
+    });
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["c1", "ask", { question: "Pin?" }])]).model, store, {
+        tools: ackTools(),
+        checkpointer,
+        hooks,
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+
+    const error = await logAgent(scriptedModel([text("never")]).model, store, {
+      tools: ackTools(),
+      checkpointer,
+      hooks,
+    })
+      .resume(THREAD, interrupt.id, 1234)
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(isContextLogError(error, "invalid")).toBe(true);
+    expect((error as { reason: string }).reason).toBe("invalid_resolution");
+    expect(answers).toEqual([]);
+  });
+
   it("does not run the tool again when only clearing the interrupt was lost", async () => {
     const { store, checkpointer, interrupt } = await interruptedStore();
     const runs: string[] = [];
@@ -951,27 +1039,26 @@ describe("log-mode resume crash safety", () => {
 });
 
 describe("AgentSession with a pending log-mode interrupt", () => {
-  it("holds background task results until the interrupt is resumed", async () => {
+  /**
+   * Runs a session: the first turn interrupts, a background task completes
+   * while the interrupt is pending, and the interrupt is answered. Stops
+   * once the session is idle after the resume.
+   */
+  async function runSession(replies: Reply[] | Array<Reply | Error>) {
     const store = new MemoryContextLogStore();
-    const { model, requests } = scriptedModel([
-      toolCalls(["c1", "ask", { question: "Name?" }]),
-      text("resumed"),
-      text("task handled"),
-    ]);
-    const agent = logAgent(model, store, {
-      tools: askTools(),
-      checkpointer: new MemorySaver(),
-      waitForBackgroundTasks: false,
-    });
+    const { model, requests } = scriptedModel(replies as Reply[]);
+    const agent = logAgent(model, store, { tools: askTools(), checkpointer: new MemorySaver() });
     const session = new AgentSession({ agent, threadId: THREAD });
-    const replies: string[] = [];
-    let sent = false;
+    const outputs: string[] = [];
+    let waits = 0;
+    let resumed = false;
     for await (const output of session.run()) {
-      if (output.type === "waiting_for_input" && !sent) {
-        sent = true;
-        session.sendMessage("go");
+      if (output.type === "waiting_for_input") {
+        waits += 1;
+        if (waits === 1) session.sendMessage("go");
+        // Idle twice after the resume: every queued event has been handled.
+        if (resumed && waits >= 4) session.stop();
       } else if (output.type === "interrupt") {
-        // A background task finishes while the interrupt is pending.
         agent.taskManager.registerTask(
           createBackgroundTask({
             id: "task-1",
@@ -981,17 +1068,47 @@ describe("AgentSession with a pending log-mode interrupt", () => {
         );
         agent.taskManager.updateTask("task-1", { status: "completed", result: "found it" });
         session.respondToInterrupt(output.interrupt.id, "Alice");
+        resumed = true;
       } else if (output.type === "generation_complete") {
-        replies.push(output.fullText);
-        if (replies.length === 2) session.stop();
+        outputs.push(output.fullText);
       } else if (output.type === "error") {
-        throw output.error;
+        outputs.push(`error:${output.error.message}`);
       }
     }
-
-    expect(replies).toEqual(["resumed", "task handled"]);
-    expect(JSON.stringify(requests[2]!.prompt)).toContain("found it");
-    expect(agent.taskManager.getTask("task-1")).toBeUndefined();
     await agent.dispose();
+    const taskPrompts = requests.filter((request) =>
+      JSON.stringify(request.prompt.at(-1)).includes("found it"),
+    );
+    return { outputs, requests, taskPrompts, agent };
+  }
+
+  it("leaves task results queued until the interrupt is resumed, then sends them once", async () => {
+    const { outputs, requests, taskPrompts, agent } = await runSession([
+      toolCalls(["c1", "ask", { question: "Name?" }]),
+      text("resumed"),
+      text("task handled"),
+      text("duplicate"),
+    ]);
+
+    // Default background draining picks the task up after the continuation;
+    // the queued session event then finds it consumed.
+    expect(requests).toHaveLength(3);
+    expect(taskPrompts).toHaveLength(1);
+    expect(outputs).toEqual(["task handled"]);
+    expect(agent.taskManager.getTask("task-1")).toBeUndefined();
+  });
+
+  it("releases queued task results when the resumed continuation fails", async () => {
+    const { outputs, requests, taskPrompts } = await runSession([
+      toolCalls(["c1", "ask", { question: "Name?" }]),
+      new Error("provider down"),
+      text("task handled"),
+      text("duplicate"),
+    ]);
+
+    expect(outputs[0]).toMatch(/^error:/);
+    expect(outputs.slice(1)).toEqual(["task handled"]);
+    expect(requests).toHaveLength(3);
+    expect(taskPrompts).toHaveLength(1);
   });
 });

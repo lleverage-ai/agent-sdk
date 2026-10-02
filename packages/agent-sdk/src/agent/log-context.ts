@@ -683,8 +683,12 @@ export function createLogContextRuntime(
     });
     cursors.set(site.stream.threadId, toCursor(site.stream, committed.head));
     const keys = new Set(committed.entries.map((entry) => entry.key));
+    const resolution = readResolution(
+      committed.entries.find((entry) => entry.key === site.keys.resolution),
+    );
     return {
       ...site,
+      ...(resolution && { resolution }),
       head: committed.head,
       state: keys.has(site.keys.result)
         ? "resolved"

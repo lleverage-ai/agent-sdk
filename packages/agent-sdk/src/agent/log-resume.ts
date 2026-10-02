@@ -30,7 +30,7 @@ import type { Tool, ToolExecutionOptions } from "ai";
 import type { AgentState } from "../backends/state.js";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
 import { isApprovalInterrupt, updateCheckpoint } from "../checkpointer/types.js";
-import { ContextLogConflictError } from "../context-log/errors.js";
+import { ContextLogConflictError, ContextLogInvalidError } from "../context-log/errors.js";
 import { invokeLogModePreGenerateHooks } from "../context-log/hooks.js";
 import { assertContextJson, canonicalContextJson } from "../context-log/json.js";
 import type { ToolResultContextEntryInput } from "../context-log/types.js";
@@ -118,12 +118,13 @@ function parseApprovalResponse(response: unknown): ApprovalDecision {
 }
 
 /**
- * A custom interrupt's answer as recorded in its resolution: canonical JSON
- * in the approval response's `reason`, so the PreGenerate hooks screen it
- * as text and the AI SDK never sends it to a provider.
+ * A custom interrupt's answer as its resolution records it: canonical JSON
+ * of `{ "answer": <value> }`, or `{}` when there is no answer, in the
+ * approval response's `reason`. The PreGenerate hooks screen it as text and
+ * the AI SDK never sends it to a provider.
  */
-function encodeAnswer(response: unknown): string | undefined {
-  if (response === undefined) return undefined;
+function encodeAnswer(response: unknown): string {
+  if (response === undefined) return "{}";
   try {
     assertContextJson(response, "response");
   } catch (error) {
@@ -134,18 +135,46 @@ function encodeAnswer(response: unknown): string | undefined {
       { fieldErrors: { response: ["must be JSON-serialisable"] } },
     );
   }
-  return canonicalContextJson(response);
+  return canonicalContextJson({ answer: response });
 }
 
-/** The answer a committed resolution recorded, or `undefined` when it recorded none. */
-function decodeAnswer(reason: string | undefined): { answer: unknown } | undefined {
-  if (reason === undefined) return undefined;
-  try {
-    return { answer: JSON.parse(reason) as unknown };
-  } catch {
-    // Screening rewrote it beyond JSON; the caller's response is used.
-    return undefined;
+/**
+ * The decision a committed resolution recorded, after screening. The tool
+ * always runs with this, on the first run and on recovery alike. A
+ * resolution that no longer decodes (screening rewrote it beyond JSON) fails
+ * closed rather than running another decision.
+ */
+function recordedDecision(
+  interrupt: Interrupt,
+  resolution: { approved: boolean; reason?: string } | undefined,
+): { response: unknown; approval: ApprovalDecision | undefined } {
+  const undecodable = (detail: string) =>
+    new ContextLogInvalidError(
+      "invalid_resolution",
+      `The committed resolution of interrupt ${interrupt.id} ${detail}; the tool is not run`,
+    );
+  if (!resolution) throw undecodable("is missing");
+  if (isApprovalInterrupt(interrupt)) {
+    const approval: ApprovalDecision = {
+      approved: resolution.approved,
+      ...(resolution.reason !== undefined && { reason: resolution.reason }),
+    };
+    return { response: { ...approval }, approval };
   }
+  let envelope: unknown;
+  try {
+    envelope = JSON.parse(resolution.reason ?? "");
+  } catch {
+    throw undecodable("does not hold a decodable answer");
+  }
+  const keys =
+    typeof envelope === "object" && envelope !== null && !Array.isArray(envelope)
+      ? Object.keys(envelope)
+      : undefined;
+  if (!keys || keys.some((key) => key !== "answer")) {
+    throw undecodable("does not hold a decodable answer");
+  }
+  return { response: (envelope as { answer?: unknown }).answer, approval: undefined };
 }
 
 /** The AI SDK's text for a tool error (`getErrorMessage`), so results match a normal step. */
@@ -328,27 +357,6 @@ export function createLogResume(
         });
       }
 
-      // An in-doubt resume repeats the decision the log already recorded.
-      let decided = { response, approval };
-      if (site.state === "resolving") {
-        const recorded = site.resolution;
-        if (approval && recorded) {
-          decided = {
-            response: {
-              approved: recorded.approved,
-              ...(recorded.reason !== undefined && { reason: recorded.reason }),
-            },
-            approval: {
-              approved: recorded.approved,
-              ...(recorded.reason !== undefined && { reason: recorded.reason }),
-            },
-          };
-        } else if (!approval) {
-          const recordedAnswer = decodeAnswer(recorded?.reason);
-          if (recordedAnswer) decided = { response: recordedAnswer.answer, approval };
-        }
-      }
-
       if (site.state === "pending") {
         // Never commit a resolution for a resume that was already cancelled.
         genOptions.signal?.throwIfAborted();
@@ -367,7 +375,7 @@ export function createLogResume(
                 // An approval's reason, or a custom interrupt's answer.
                 ...(approval
                   ? approval.reason !== undefined && { reason: approval.reason }
-                  : answer !== undefined && { reason: answer }),
+                  : { reason: answer }),
               },
             ],
           },
@@ -396,6 +404,9 @@ export function createLogResume(
       }
 
       if (site.state === "resolving") {
+        // The committed, screened resolution is authoritative, whether this
+        // resume just committed it or an earlier one did.
+        const decided = recordedDecision(interrupt, site.resolution);
         const executed = await executeCall(
           site,
           tools,

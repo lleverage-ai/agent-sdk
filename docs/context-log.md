@@ -406,10 +406,21 @@ it only appends:
 | `resume()` rejects | The resolution and the denial result, in one write; nothing runs |
 
 The resolution records the decision: `approved` and the approval's
-`reason`, or, for a custom interrupt, `approved: true` with the answer as
-canonical JSON in `reason` (so a custom answer must be JSON-serialisable).
-The `PreGenerate` hooks screen it like any other text, and the AI SDK never
-sends it to a provider.
+`reason`, or, for a custom interrupt, `approved: true` with the answer in
+`reason` as canonical JSON of `{ "answer": <value> }` (`{}` when there is no
+answer), so a custom answer must be JSON-serialisable. The `PreGenerate`
+hooks screen it like any other text. The **committed, screened resolution is
+authoritative**: the tool always runs with the decision it records, on the
+first run and on recovery alike, so a redacted answer reaches the tool
+redacted. If screening leaves an answer that no longer decodes (for example
+a redacted number), the resume fails closed with a `ContextLogInvalidError`
+(reason `invalid_resolution`) and the tool does not run.
+
+The AI SDK's prompt conversion drops approval requests and responses that
+are not provider-executed, so neither ever reaches a provider. A custom
+`ProjectionAdapter` must pass them through as stored (or drop them) and
+must never re-render them as other content, such as text or tool results;
+otherwise the resolution and a custom answer would reach the model.
 
 Both entries are outputs of the interrupted call (`appendOutputs` on its
 manifest, which still owns the head), so they pass the `PreGenerate` hooks
@@ -453,9 +464,11 @@ Rules:
   through the agent's checkpoint runtime, so a fresh agent restores the
   thread's todos and files before the tool runs, and the checkpoint it saves
   keeps any changes the tool made.
-- **`AgentSession`** holds background task results that arrive while an
-  interrupt is pending, and processes them after the interrupt is resumed. A
-  task is removed only once the turn that carries its result has run.
+- **`AgentSession`** leaves background task events queued, and their tasks
+  registered, while an interrupt is pending, so their results are not
+  consumed by a turn that would be refused. After every resume, whether it
+  succeeded or failed, the session reads the pending interrupt back from the
+  checkpoint before taking more events.
 - Workflow-gated agents still cannot use `resume()`.
 
 ### Crash safety
@@ -474,8 +487,8 @@ resume then runs the call again through the pipeline with the same tool call
 id, so a `PreToolUse` hook keyed by it can answer with the recorded result
 (`respondWith`) instead of running the side effect a second time. The
 re-run repeats the decision the log recorded (the approval, or the custom
-answer when it is still valid JSON after screening), not the one passed to
-the new `resume()`; a rejection never re-runs anything.
+answer), not the one passed to the new `resume()`; a rejection never re-runs
+anything.
 
 The host's single-writer requirement (see [the commit
 boundary](#the-commit-boundary)) covers resume too. The SDK does not fence

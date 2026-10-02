@@ -148,8 +148,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     with the tool call's committed input, after the thread's todos and files
     are restored from the checkpoint.
   - The resolution records the decision: the approval and its reason, or a
-    custom interrupt's answer as canonical JSON in `reason` (log-mode custom
-    answers must be JSON-serialisable).
+    custom interrupt's answer as canonical JSON of `{ "answer": <value> }` in
+    `reason` (log-mode custom answers must be JSON-serialisable). The
+    committed, screened resolution is what the tool runs with, on the first
+    run and on recovery; an answer that no longer decodes after screening
+    fails closed with `ContextLogInvalidError` (reason `invalid_resolution`).
+    Custom projection adapters must not re-render approval parts.
   - The resolution is committed before the tool runs. A resume that finds a
     resolution without a result fails with a `ContextLogConflictError`
     (reason `resume_in_doubt`) instead of running the tool again, unless
@@ -161,9 +165,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ContextLogConflictError` (reason `interrupt_pending`) before anything is
     committed.
   - Log-mode screening treats `approvalId` as structure, like `toolCallId`.
-  - A log-mode `AgentSession` holds background task results that arrive
-    while an interrupt is pending until it is resumed, and removes a task
-    only after the turn carrying its result ran.
+  - A log-mode `AgentSession` leaves background task events queued while an
+    interrupt is pending, and reads the pending interrupt back from the
+    checkpoint after every resume, so a failed continuation does not strand
+    them.
 
 ### Changed
 
