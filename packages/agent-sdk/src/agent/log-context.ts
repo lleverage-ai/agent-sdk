@@ -46,6 +46,7 @@ import {
   ContextLogInvalidError,
   ContextLogNotFoundError,
 } from "../context-log/errors.js";
+import { markCallerSupplied } from "../context-log/hooks.js";
 import { assertContextJsonOpaque } from "../context-log/json.js";
 import { resolveContextProducers, runContextProducers } from "../context-log/producers.js";
 import {
@@ -61,6 +62,7 @@ import {
   type ContextEntry,
   type ContextEntryInput,
   type ContextHead,
+  type ContextHistoryInput,
   type ContextLogCursor,
   type ContextLogOptions,
   type ContextLogStore,
@@ -72,6 +74,7 @@ import {
   type ContextTransitionReason,
   DEFAULT_CONTEXT_BRANCH_ID,
   DEFAULT_CONTEXT_STREAM_ID,
+  LEGACY_PROJECTION_IMPORT_REASON,
   type ProjectionAdapter,
   type ToolResultContextEntryInput,
   type UserContextEntryInput,
@@ -460,6 +463,130 @@ function assertUserMessages(messages: readonly ModelMessage[], field: string): v
   });
 }
 
+/**
+ * Checks and copies a run's `contextHistory`: unique non-empty keys, user,
+ * assistant or tool messages of plain JSON, and a root reason that is the
+ * declared {@link LEGACY_PROJECTION_IMPORT_REASON}. Errors never quote an
+ * entry's content, which the hooks have not screened yet.
+ *
+ * @internal
+ */
+export function assertContextHistory(value: unknown): ContextHistoryInput {
+  const fail = (detail: string): never => {
+    throw new ValidationError(`contextHistory ${detail}`, {
+      fieldErrors: { contextHistory: [detail] },
+    });
+  };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return fail("must be an object with entries");
+  }
+  const history = value as Partial<ContextHistoryInput>;
+  if (!Array.isArray(history.entries)) return fail("entries must be an array");
+  if (history.root !== undefined) {
+    if (
+      typeof history.root !== "object" ||
+      history.root === null ||
+      history.root.reason !== LEGACY_PROJECTION_IMPORT_REASON
+    ) {
+      return fail(`root.reason must be "${LEGACY_PROJECTION_IMPORT_REASON}"`);
+    }
+    if (history.root.metadata !== undefined) {
+      assertContextJsonOpaque(history.root.metadata, "contextHistory.root.metadata");
+    }
+  }
+  const keys = new Set<string>();
+  history.entries.forEach((entry: unknown, index) => {
+    if (typeof entry !== "object" || entry === null) {
+      fail(`entries[${index}] must be an object`);
+    }
+    const { key, message, metadata } = entry as Partial<ContextHistoryInput["entries"][number]>;
+    if (typeof key !== "string" || key.length === 0) {
+      fail(`entries[${index}].key must be a non-empty string`);
+    }
+    // Keys are host identifiers, never screened or projected: bounded, and
+    // without control characters a log reader could misread.
+    if ((key as string).length > MAX_HISTORY_KEY_LENGTH) {
+      fail(`entries[${index}].key must be at most ${MAX_HISTORY_KEY_LENGTH} characters`);
+    }
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the check itself
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(key as string)) {
+      fail(`entries[${index}].key must not contain control characters`);
+    }
+    if (keys.has(key as string)) fail(`entries[${index}].key repeats an earlier key`);
+    keys.add(key as string);
+    const role = (message as { role?: unknown } | undefined)?.role;
+    if (role !== "user" && role !== "assistant" && role !== "tool") {
+      fail(`entries[${index}].message must be a user, assistant or tool message`);
+    }
+    assertContextJsonOpaque(message, `contextHistory.entries[${index}].message`);
+    if (metadata !== undefined) {
+      assertContextJsonOpaque(metadata, `contextHistory.entries[${index}].metadata`);
+    }
+  });
+  // A copy, so the caller cannot change what a retry plans.
+  return JSON.parse(JSON.stringify(history)) as ContextHistoryInput;
+}
+
+/**
+ * The tool calls of a history that no tool result answers in time, by the
+ * AI SDK's own rule (`convertToLanguageModelPrompt`): every tool call an
+ * assistant message makes, other than a provider-executed one, needs a
+ * result in a tool message before the next user message and before the
+ * history ends. Results without a call are allowed, as there. An approval
+ * response is not an answer here: an approved call that has no result is a
+ * pending execution, which history can't carry.
+ */
+function unansweredToolCalls(entries: readonly ContextEntryInput[]): string[] {
+  const calls = new Set<string>();
+  const unanswered: string[] = [];
+  const settle = () => {
+    unanswered.push(...calls);
+    calls.clear();
+  };
+  for (const entry of entries) {
+    if (entry.kind === "user") settle();
+    if (entry.kind === "assistant" && Array.isArray(entry.message.content)) {
+      for (const part of entry.message.content) {
+        if (part.type === "tool-call" && part.providerExecuted !== true) {
+          calls.add(part.toolCallId);
+        }
+      }
+    }
+    if (entry.kind === "tool_result") {
+      for (const part of entry.message.content) {
+        if (part.type === "tool-result") calls.delete(part.toolCallId);
+      }
+    }
+  }
+  settle();
+  return unanswered;
+}
+
+/** The longest entry key `contextHistory` accepts. */
+const MAX_HISTORY_KEY_LENGTH = 1024;
+
+/** History entries as context entries, keeping key and metadata. */
+function historyEntries(history: ContextHistoryInput): ContextEntryInput[] {
+  // Host-supplied whatever the role: screening treats their provider options
+  // as input.
+  return markCallerSupplied(
+    history.entries.map((entry): ContextEntryInput => {
+      const base = {
+        key: entry.key,
+        ...(entry.metadata !== undefined ? { metadata: entry.metadata } : {}),
+      };
+      switch (entry.message.role) {
+        case "user":
+          return { kind: "user", ...base, message: entry.message };
+        case "assistant":
+          return { kind: "assistant", ...base, message: entry.message };
+        default:
+          return { kind: "tool_result", ...base, message: entry.message };
+      }
+    }),
+  );
+}
+
 /** The new user input of a run, after PreGenerate. @internal */
 function newUserMessages(genOptions: GenerateOptions): UserModelMessage[] {
   const messages = genOptions.messages ?? [];
@@ -643,6 +770,10 @@ export function createLogContextRuntime(
       );
     }
     if (input) assertUserMessages(input, "input");
+    const contextHistory =
+      genOptions.contextHistory === undefined
+        ? undefined
+        : assertContextHistory(genOptions.contextHistory);
     if (genOptions._historyUnlessCheckpointed && genOptions._historyUnlessCheckpointed.length > 0) {
       throw new ValidationError(
         "Context log mode does not accept caller-supplied history: the log is the history",
@@ -656,8 +787,10 @@ export function createLogContextRuntime(
       _historyUnlessCheckpointed: _history,
       _checkpointSnapshot: _snapshot,
       _logRun: _previousRun,
-      ...rest
+      contextHistory: _contextHistory,
+      ...unchecked
     } = genOptions;
+    const rest: GenerateOptions = contextHistory ? { ...unchecked, contextHistory } : unchecked;
     if (input && input.length > 0) {
       // A copy, so a caller that reuses or changes its array while the run is
       // in flight cannot change what a retry plans. The input is plain JSON,
@@ -705,6 +838,8 @@ export function createLogContextRuntime(
       resolveModelInputCapabilities(options, model),
     );
 
+    // History the run supplies is committed once, with its input.
+    const history = run.inputCommitted ? undefined : genOptions.contextHistory;
     // One head read serves the version, the path and the cursor.
     const branchFrom =
       genOptions.contextStream?.branchFrom === undefined
@@ -847,17 +982,29 @@ export function createLogContextRuntime(
       contract = newVersionContract(expectedContract, coreVersion);
       transition = { reason: "branch", parent, core, contract: { ...contract } };
     } else {
+      // A stream without a head starts as a root version: its imported
+      // history when the run supplies a root history (the declared
+      // legacy_projection_import), otherwise an empty `initial` version.
+      const reason: ContextTransitionReason = history?.root
+        ? LEGACY_PROJECTION_IMPORT_REASON
+        : "initial";
       core = resolveCore
         ? await resolveVersionCore(resolveCore, {
             stream,
-            reason: "initial",
+            reason,
             parent: null,
             target,
             model,
           })
         : (options.systemPrompt ?? "");
       contract = newVersionContract(expectedContract, coreVersion);
-      transition = { reason: "initial", parent: null, core, contract: { ...contract } };
+      transition = {
+        reason,
+        parent: null,
+        core,
+        contract: { ...contract },
+        ...(history?.root?.metadata !== undefined && { metadata: history.root.metadata }),
+      };
     }
 
     // The run's input keeps its keys across retries, so a retry finds the
@@ -875,6 +1022,26 @@ export function createLogContextRuntime(
           inputIndex.set(key, index);
           return [{ kind: "user" as const, key, message }];
         });
+    // The run's history comes before its input. Root history imports a
+    // stream's first version, so it only applies when this plan creates it;
+    // otherwise another run imported first, and its head is the history.
+    // Appended history drops entries already on the path, so a repeated run
+    // never appends one twice.
+    const imported =
+      history && (history.root ? transition?.reason === LEGACY_PROJECTION_IMPORT_REASON : true)
+        ? historyEntries(history).filter((entry) => !onPath.has(entry.key))
+        : [];
+    // Root or appended, history that leaves a tool call unanswered could
+    // never be sent: refused before anything is committed.
+    if (imported.length > 0) {
+      const unanswered = unansweredToolCalls(imported);
+      if (unanswered.length > 0) {
+        throw new ContextLogInvalidError(
+          "history_unanswered_tool_call",
+          `The history leaves ${unanswered.length} tool call(s) without a tool result before the next user message or its end; drop them, or answer them, before supplying it`,
+        );
+      }
+    }
     // Producers run against this same head and path; entries already on the
     // path are dropped. Then the new input and producer output pass the
     // PreGenerate hooks (redaction, guardrails) before anything is committed
@@ -886,7 +1053,7 @@ export function createLogContextRuntime(
       path,
       ...(genOptions.signal ? { signal: genOptions.signal } : {}),
     });
-    const screened = await screen(genOptions, [...userEntries, ...produced]);
+    const screened = await screen(genOptions, [...imported, ...userEntries, ...produced]);
     let append = screened.pending;
 
     const committed = path.map(toEntryInput);

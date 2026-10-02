@@ -24,6 +24,7 @@ import type {
   ToolResultContextEntryInput,
   UserContextEntryInput,
 } from "./types.js";
+import { LEGACY_PROJECTION_IMPORT_REASON } from "./types.js";
 
 /**
  * Options for the context log store conformance suite.
@@ -1096,6 +1097,65 @@ export function createContextLogStoreConformanceCases(
       "every new version changes the path digest, even an identical empty one",
     );
   });
+
+  define(
+    "a stream's first version can import history, and later history appends",
+    async ({ store, stream, key, prepare }) => {
+      const imported: ContextEntryInput[] = [
+        { ...user("import:0", "What is on Monday?"), metadata: { legacyEvent: 1 } },
+        {
+          kind: "assistant",
+          key: "import:1",
+          message: {
+            role: "assistant",
+            content: [
+              {
+                type: "tool-call",
+                toolCallId: "call-1",
+                toolName: "lookup",
+                input: { day: "mon" },
+              },
+            ],
+          },
+          metadata: { legacyEvent: 2 },
+        },
+        { ...toolResult("import:2", "call-1"), metadata: { legacyEvent: 3 } },
+        { ...assistant("import:3", "A stand-up."), metadata: { legacyEvent: 4 } },
+        user("u1"),
+      ];
+      const root = transition({
+        reason: LEGACY_PROJECTION_IMPORT_REASON,
+        metadata: { legacyImport: { sourceEventSequence: 4, digest: "b".repeat(64) } },
+      });
+      const idempotencyKey = key("import");
+      const first = await prepare(stream(), imported, { transition: root, idempotencyKey });
+      const retried = await prepare(stream(), imported, {
+        transition: root,
+        idempotencyKey,
+        expectedRevision: 0,
+      });
+      same(retried.head, first.head, "a retried import returns the same head");
+
+      const version = await store.readVersion(first.head.versionId);
+      check(version.reason === LEGACY_PROJECTION_IMPORT_REASON, "the import reason is stored");
+      check(version.parentVersionId === null, "an import is a root version");
+      same(version.metadata, root.metadata, "import metadata round-trips");
+      same(
+        (await readAll(store, first.head)).map(inputOf),
+        imported,
+        "imported entries and their metadata round-trip byte for byte",
+      );
+
+      // History written outside the agent appends after the path.
+      const outside = { ...user("outside:7", "Move Monday."), metadata: { eventId: "event-7" } };
+      const appended = await prepare(stream(), [outside, user("u2")]);
+      check(appended.head.versionId === first.head.versionId, "appending keeps the version");
+      const entries = await readAll(store, appended.head);
+      same(entries.slice(0, imported.length).map(inputOf), imported, "the earlier path is kept");
+      same(entries.slice(imported.length).map(inputOf), [outside, user("u2")], "appended history");
+      await rejects(() => prepare(stream(), [outside]), "conflict", "key_taken");
+    },
+  );
 
   define(
     "a new branch inherits a prefix and diverges independently",
