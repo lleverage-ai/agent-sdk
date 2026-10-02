@@ -305,7 +305,15 @@ function copyRequestData(value: unknown): unknown {
     const prototype = Object.getPrototypeOf(value);
     if (prototype === Object.prototype || prototype === null) {
       const copy: Record<string, unknown> = {};
-      for (const [key, item] of Object.entries(value)) copy[key] = copyRequestData(item);
+      for (const [key, item] of Object.entries(value)) {
+        // Defined, not assigned, so an own `__proto__` key stays a property.
+        Object.defineProperty(copy, key, {
+          value: copyRequestData(item),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
       return copy;
     }
   }
@@ -572,6 +580,10 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   let finishedMessages: ModelMessage[] = [];
   // Reads the interrupt a tool raised during the attempt, if any.
   let readInterrupt: (() => LogInterruptMark | undefined) | undefined;
+  // Provider responses received through the boundary. Lets the request
+  // middleware guard tell a response the provider gave from one a host
+  // middleware made up without calling it.
+  let providerResponses = 0;
 
   function moveHead(next: ContextHead): void {
     head = next;
@@ -802,6 +814,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       params.abortSignal?.throwIfAborted();
       const result = await doGenerate();
       if (open) open.responded = true;
+      providerResponses += 1;
       return result;
     } catch (error) {
       await closeOpen(params.abortSignal?.aborted ? "cancelled" : "failed");
@@ -815,6 +828,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
     try {
       params.abortSignal?.throwIfAborted();
       result = await doStream();
+      providerResponses += 1;
     } catch (error) {
       await closeOpen(params.abortSignal?.aborted ? "cancelled" : "failed");
       throw error;
@@ -884,15 +898,39 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   // gets its own copy of the request data, so one that rewrites it in place
   // cannot change the AI SDK's request, which a retry or a later step
   // reuses: every attempt applies the middleware once to the projection.
+  // The outermost guard refuses a response a host middleware returned
+  // without the provider answering through the boundary (a cache, or a
+  // swallowed failure), before the AI SDK can run its tool calls: nothing
+  // may generate from output that has no committed call.
   const requestMiddleware = deps.requestMiddleware ?? [];
+  const bypassed = () =>
+    new ContextLogInvalidError(
+      "boundary_bypassed",
+      "A request middleware returned a response the provider did not give through the commit boundary; request middleware must call the wrapped model",
+    );
+  const guardMiddleware: LanguageModelMiddleware = {
+    specificationVersion: "v4",
+    wrapGenerate: async ({ doGenerate }) => {
+      const before = providerResponses;
+      const result = await doGenerate();
+      if (providerResponses === before) throw bypassed();
+      return result;
+    },
+    wrapStream: async ({ doStream }) => {
+      const before = providerResponses;
+      const result = await doStream();
+      if (providerResponses === before) throw bypassed();
+      return result;
+    },
+  };
   const model =
     requestMiddleware.length > 0
       ? wrapLanguageModel({
           model: boundaryModel,
-          middleware: requestMiddleware.flatMap((middleware) => [
-            isolateRequestMiddleware,
-            middleware,
-          ]),
+          middleware: [
+            guardMiddleware,
+            ...requestMiddleware.flatMap((middleware) => [isolateRequestMiddleware, middleware]),
+          ],
         })
       : boundaryModel;
   boundaryModels.add(model);

@@ -417,6 +417,13 @@ The boundary must be the last thing before the provider:
 
   The SDK does not check these rules; a middleware that breaks them sends
   requests the log can no longer reproduce.
+- A request middleware's `wrapGenerate` or `wrapStream` must call the
+  wrapped model. A response returned without the provider answering through
+  the boundary (a response cache, or a substitute for a failed call) fails
+  the run with a `ContextLogInvalidError` (reason `boundary_bypassed`)
+  before the AI SDK can act on it, so no tool runs from output without a
+  committed call. A middleware may still reshape the provider's response;
+  the outputs are committed as the agent receives them.
 - Wrappers that do not change the request (usage accounting, telemetry,
   retries) can stay outside, around the agent, as before.
 - A model id string is rejected in log mode, because the AI SDK would resolve

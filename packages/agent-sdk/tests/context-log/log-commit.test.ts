@@ -24,7 +24,11 @@ import {
 import { convertToLanguageModelPrompt } from "ai/internal";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
-import { describeProviderCall, sha256Hex } from "../../src/agent/log-boundary.js";
+import {
+  describeProviderCall,
+  isolateCallOptions,
+  sha256Hex,
+} from "../../src/agent/log-boundary.js";
 import { InterruptSignal } from "../../src/agent/tool-pipeline.js";
 import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
 import { createInterrupt } from "../../src/checkpointer/types.js";
@@ -1132,6 +1136,59 @@ describe("log-mode request middleware", () => {
       });
       expect(describeProviderCall(replayed).inputDigest).toBe(manifest.inputDigest);
     }
+  });
+
+  it("fails the run without running tools when a middleware answers without the provider", async () => {
+    const store = new MemoryContextLogStore();
+    let executions = 0;
+    const tools = {
+      echo: tool({
+        ...echoTools.echo,
+        execute: async ({ value }: { value: string }) => {
+          executions++;
+          return `echo:${value}`;
+        },
+      }),
+    };
+    const { model, requests } = createScriptedModel([text("unused")]);
+    // A cache that answers with a tool call instead of calling the model.
+    const cache: LanguageModelMiddleware = {
+      specificationVersion: "v4",
+      wrapGenerate: async () => ({
+        content: toolCalls(["c1", "echo", { value: "a" }]),
+        finishReason: { unified: "tool-calls", raw: "tool_calls" },
+        usage,
+        warnings: [],
+      }),
+    };
+
+    const error = await logAgent(model, store, {
+      tools,
+      contextLog: { mode: "log", store, requestMiddleware: [cache] },
+    })
+      .generate({ prompt: "go", threadId: THREAD })
+      .catch((e) => e);
+
+    expect(isContextLogError(error, "invalid")).toBe(true);
+    expect(requests).toHaveLength(0);
+    expect(executions).toBe(0);
+    expect(await store.readHead(STREAM)).toBeNull();
+  });
+
+  it("copies an own __proto__ key of the request data", () => {
+    const schema = JSON.parse(
+      '{"type":"object","properties":{"__proto__":{"type":"string"}},"required":["__proto__"]}',
+    );
+    const copy = isolateCallOptions({
+      prompt: [],
+      tools: [{ type: "function", name: "t", inputSchema: schema }],
+    });
+    const tools = copy.tools as Array<{ inputSchema: Record<string, Record<string, unknown>> }>;
+    expect(Object.keys(tools[0]!.inputSchema.properties!)).toEqual(["__proto__"]);
+    expect(JSON.stringify(copy.tools![0])).toBe(
+      JSON.stringify({ type: "function", name: "t", inputSchema: schema }),
+    );
+    expect(copy.tools![0]).not.toBe(schema);
   });
 
   it("rejects request middleware that is not an array", () => {
