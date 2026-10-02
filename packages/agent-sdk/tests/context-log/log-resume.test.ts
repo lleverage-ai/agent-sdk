@@ -18,7 +18,7 @@ import {
   tool,
 } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { describeProviderCall } from "../../src/agent/log-boundary.js";
 import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
 import {
@@ -530,6 +530,38 @@ describe("log-mode resume", () => {
     expect(JSON.stringify(resumed.requests[0]!.prompt)).toContain("[REDACTED]");
   });
 
+  it("commits a tool error during resume as a normal step would", async () => {
+    const failing = () => ({
+      ask: tool({
+        description: "Asks the user",
+        inputSchema: askInput,
+        execute: async (input, options) => {
+          await interruptOf(options)(input);
+          throw new Error("boom");
+        },
+      }),
+    });
+    const { continuation, referenceStep, path } = await resumeAndCompare({
+      tools: failing,
+      referenceTools: {
+        ask: tool({
+          description: "Asks the user",
+          inputSchema: askInput,
+          execute: async () => {
+            throw new Error("boom");
+          },
+        }),
+      },
+      call: ["c1", "ask", { question: "Name?" }],
+      response: "Alice",
+    });
+
+    expect(continuation[0]!.prompt).toEqual(referenceStep.prompt);
+    expect(path[3]!.message.content).toEqual([
+      expect.objectContaining({ output: { type: "error-text", value: "Error: boom" } }),
+    ]);
+  });
+
   it("continues through resumeDataResponse() as an ordinary streamed generation", async () => {
     const store = new MemoryContextLogStore();
     const checkpointer = new MemorySaver();
@@ -559,7 +591,12 @@ describe("log-mode resume", () => {
     expect(path[4]!.message.content).toEqual([{ type: "text", text: "streamed" }]);
   });
 
-  it("records each round of a tool that interrupts again", async () => {
+  it("records each round of a tool that interrupts again, even within one millisecond", async () => {
+    // Every interrupt is created at the same instant.
+    vi.useFakeTimers({ toFake: ["Date"], now: new Date("2026-10-02T00:00:00.000Z") });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
     const store = new MemoryContextLogStore();
     const checkpointer = new MemorySaver();
     let round = 0;
@@ -586,7 +623,6 @@ describe("log-mode resume", () => {
       }).generate({ prompt: "go", threadId: THREAD }),
     );
     // The second round interrupts again, with the same id but a new request.
-    await new Promise((resolve) => setTimeout(resolve, 2));
     const second = await expectInterrupted(
       logAgent(scriptedModel([text("never")]).model, store, {
         tools: formTools(),

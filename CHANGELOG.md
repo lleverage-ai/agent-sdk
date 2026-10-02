@@ -54,8 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `PreGenerate` hooks as a user message in `options.messages`, so the
     secrets filter and guardrails see it before it is sent.
   - `promptBuilder` is rejected in log mode (the core is frozen per
-    version). `contextManager`, `resume()` and `resumeDataResponse()` are
-    rejected until their log-mode support lands.
+    version). `contextManager` is rejected until its log-mode support
+    lands.
   - Checkpoints hold control state and a `ContextLogCursor` under
     `metadata.contextLog`, never messages.
   - Every provider step of a tool loop is projected through the adapter, and

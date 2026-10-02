@@ -341,7 +341,15 @@ export function createLogResume(
         if (signalState.interrupt) {
           // The tool asked again (for example a multi-step form). This
           // round's resolution stays on the log; the call stays unresolved.
-          const next = signalState.interrupt.interrupt;
+          // Each round keys its resume entries by its interrupt's creation
+          // time, so a round raised within the same millisecond as the last
+          // one is moved after it.
+          const raised = signalState.interrupt.interrupt;
+          const previous = Date.parse(interrupt.createdAt);
+          const next =
+            Date.parse(raised.createdAt) > previous
+              ? raised
+              : { ...raised, createdAt: new Date(previous + 1).toISOString() };
           const marked = await checkpoints.markPendingInterrupt(
             threadId,
             next,
