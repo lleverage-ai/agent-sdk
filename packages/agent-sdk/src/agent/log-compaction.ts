@@ -373,6 +373,64 @@ function mapKept(
 }
 
 /**
+ * The compaction view of a path and the call's new input, and where each
+ * message came from: the core and runtime context as system messages, a
+ * resolution and the result after it as one tool message, and, under
+ * append-only supersession, superseded entries and retractions as system
+ * messages the manager counts but never keeps. The same view is built for
+ * a hypothetical child, so a policy sees it exactly as the next call would.
+ */
+function compactionView(
+  core: string,
+  path: readonly ContextEntryInput[],
+  pending: readonly ContextEntryInput[],
+  active: ReadonlySet<ContextEntryInput>,
+  appendOnly: boolean,
+): { view: ModelMessage[]; sources: ViewSource[] } {
+  const pairs = pairResolutions(path, active);
+  const resolutionOf = new Map([...pairs].map(([resolution, result]) => [result, resolution]));
+  const view: ModelMessage[] = [];
+  const sources: ViewSource[] = [];
+  if (core !== "") {
+    view.push({ role: "system", content: core });
+    sources.push({ kind: "core" });
+  }
+  const rendered = appendOnly ? appendOnlyRuntimeTexts([...path, ...pending]) : [];
+  const pushSuperseded = (index: number) => {
+    view.push({ role: "system", content: rendered[index]! });
+    sources.push({ kind: "superseded" });
+  };
+  path.forEach((entry, index) => {
+    if (!active.has(entry)) {
+      if (appendOnly) pushSuperseded(index);
+      return;
+    }
+    if (pairs.has(index)) return;
+    const resolution = resolutionOf.get(index);
+    if (resolution !== undefined && entry.kind === "tool_result") {
+      const paired = path[resolution] as Extract<ContextEntryInput, { kind: "tool_result" }>;
+      view.push({
+        role: "tool",
+        content: [...paired.message.content, ...entry.message.content],
+      });
+      sources.push({ kind: "path", index, resolution });
+      return;
+    }
+    view.push(viewMessage(entry));
+    sources.push({ kind: entry.kind === "runtime_context" ? "runtime" : "path", index });
+  });
+  pending.forEach((entry, index) => {
+    if (active.has(entry)) {
+      view.push(viewMessage(entry));
+      sources.push({ kind: "pending", index });
+    } else if (appendOnly) {
+      pushSuperseded(path.length + index);
+    }
+  });
+  return { view, sources };
+}
+
+/**
  * Creates the log-mode compactor for an agent with a context manager.
  *
  * @internal
@@ -414,50 +472,11 @@ export function createLogCompactor(
       inheritedCount += 1;
     }
 
-    const pairs = pairResolutions(path, active);
-    const resolutionOf = new Map([...pairs].map(([resolution, result]) => [result, resolution]));
-    const view: ModelMessage[] = [];
-    const sources: ViewSource[] = [];
-    if (core !== "") {
-      view.push({ role: "system", content: core });
-      sources.push({ kind: "core" });
-    }
     // Under append-only supersession the request also carries every
     // superseded entry and retraction, so the manager counts them (as
     // system messages, never summarised); the child drops them.
     const appendOnly = input.contract[SUPERSESSION_CONTRACT_KEY] === "append";
-    const rendered = appendOnly ? appendOnlyRuntimeTexts([...path, ...pending]) : [];
-    const pushSuperseded = (index: number) => {
-      view.push({ role: "system", content: rendered[index]! });
-      sources.push({ kind: "superseded" });
-    };
-    path.forEach((entry, index) => {
-      if (!active.has(entry)) {
-        if (appendOnly) pushSuperseded(index);
-        return;
-      }
-      if (pairs.has(index)) return;
-      const resolution = resolutionOf.get(index);
-      if (resolution !== undefined && entry.kind === "tool_result") {
-        const paired = path[resolution] as Extract<ContextEntryInput, { kind: "tool_result" }>;
-        view.push({
-          role: "tool",
-          content: [...paired.message.content, ...entry.message.content],
-        });
-        sources.push({ kind: "path", index, resolution });
-        return;
-      }
-      view.push(viewMessage(entry));
-      sources.push({ kind: entry.kind === "runtime_context" ? "runtime" : "path", index });
-    });
-    pending.forEach((entry, index) => {
-      if (active.has(entry)) {
-        view.push(viewMessage(entry));
-        sources.push({ kind: "pending", index });
-      } else if (appendOnly) {
-        pushSuperseded(path.length + index);
-      }
-    });
+    const { view, sources } = compactionView(core, path, pending, active, appendOnly);
 
     const runId = options._runId ?? "run";
     // The head's path is immutable, so its reference and the new input
@@ -600,10 +619,15 @@ export function createLogCompactor(
     // for it again, and a compaction (a cache break) would follow every
     // turn while the conversation stays inside the keep window.
     if (kept.length === 0) {
-      const childView: ModelMessage[] = [
-        ...(core === "" ? [] : [{ role: "system" as const, content: core }]),
-        ...entries.map(viewMessage),
-      ];
+      // The child's own view, as its next call would build it (it has no
+      // superseded entries left), and its projected request.
+      const childView = compactionView(
+        core,
+        entries,
+        [],
+        new Set(activeContextEntries(entries)),
+        false,
+      ).view;
       if (wouldCompact(childView, await input.project(entries))) return undefined;
     }
 

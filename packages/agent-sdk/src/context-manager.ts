@@ -1875,6 +1875,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         messages: summaryMessages,
         maxTokens: maxOutputTokens,
         _skipCompaction: true, // Prevent recursive compaction during summary generation
+        ...(signal ? { signal } : {}),
       });
       return getCompletedSummaryText(summaryResult);
     };
