@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.4] - 2026-10-02
+
+Fourth release candidate for 1.0.0. It ships experimental context log mode,
+in which an append-only log is the source of truth for an agent's history and
+every model request is a projection of it, together with a fix that stops
+`AgentSession` resending history the checkpointer already holds and a new
+`search_tools` ranking. Log mode is opt-in: agents without
+`contextLog: { mode: "log" }` keep their legacy behaviour.
+
+### Migration notes
+
+- **Legacy mode.** No code change is needed. Two behaviours differ from
+  rc.3: an `AgentSession` with a checkpointer and a `threadId` no longer
+  sends earlier turns twice (see Fixed), and `search_tools` returns the tools
+  a query names first (see Changed). Hosts that assert either exact message
+  history or exact search order may need to update those expectations.
+- **Log mode is experimental.** Its exports are marked `@experimental` and
+  may change before 1.0.0. Enable it per agent with
+  `contextLog: { mode: "log", store, ... }`; read
+  [docs/context-log.md](./docs/context-log.md) first. An agent in log mode
+  rejects caller-supplied `messages`, `promptBuilder`, non-empty
+  `AgentSession` `initialMessages` and a session without a `threadId`, and
+  never reads or writes `Checkpoint.messages`. The SDK does not import a
+  legacy thread's checkpoint history into the log.
+- **Host obligations in log mode.** The SDK does not enforce these:
+  - One writer per stream across the whole generation, tool and output
+    lifecycle, with distributed fencing (for example a run lease checked by
+    `contextLog.admit` and the store). The boundary treats any call it
+    supersedes as crashed, and resume is not fenced either.
+  - Pass the innermost provider model (after any media or transport
+    middleware) as `model` and `fallbackModel`, or move those transforms
+    into the `ProjectionAdapter`. Model id strings and models that already
+    have a boundary are rejected.
+  - A store other than `MemoryContextLogStore` must pass
+    `defineContextLogStoreConformanceSuite()` from
+    `@lleverage-ai/agent-sdk/testing`, including the `closeSuperseded`
+    cases added in this release.
+  - Subagent factories under a log-mode parent must return a log-mode agent
+    on the store and stream in `SubagentCreateContext.contextLog`, without
+    the parent's checkpointer.
+  - Log-mode compaction needs `ContextManagerOptions.summarizer`, and custom
+    interrupt answers must be JSON-serialisable.
+
 ### Added
 
 - Experimental context log contracts for the upcoming log mode, in which
@@ -1027,7 +1070,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.4...HEAD
+[1.0.0-rc.4]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...agent-sdk@1.0.0-rc.4
 [1.0.0-rc.3]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.2...agent-sdk@1.0.0-rc.3
 [1.0.0-rc.2]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.1...agent-sdk@1.0.0-rc.2
 [1.0.0-rc.1]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@0.1.0-alpha.9...agent-sdk@1.0.0-rc.1
