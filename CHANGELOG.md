@@ -171,7 +171,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     holds the summary, then the retained tail re-appended unchanged in path
     order (reasoning, tool calls with their approval requests, resolutions
     and results kept together), then the call's new
-    input. Runtime context is never summarised. Later calls append to the
+    input. A compaction that would keep every conversation entry declares no
+    transition. Runtime context is never summarised. Later calls append to the
     child and reuse its summary until the context policy asks for another
     compaction.
   - Compaction runs at the start of an attempt and between tool-loop steps,

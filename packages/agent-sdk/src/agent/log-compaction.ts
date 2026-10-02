@@ -124,16 +124,79 @@ function runtimeText(entry: RuntimeContextEntryInput): string {
   return typeof entry.payload === "string" ? entry.payload : canonicalContextJson(entry.payload);
 }
 
-/** An entry as the context manager sees it: runtime context as a system message. */
-function viewMessage(entry: ContextEntryInput): ModelMessage {
+/** The tool calls on a path, for showing approval resolutions to the manager. */
+interface ToolCallIndex {
+  /** The tool call each approval request names, by approval id. */
+  approvals: Map<string, string>;
+  /** The tool name of each call, by tool call id. */
+  names: Map<string, string>;
+}
+
+function indexToolCalls(entries: readonly ContextEntryInput[]): ToolCallIndex {
+  const approvals = new Map<string, string>();
+  const names = new Map<string, string>();
+  for (const entry of entries) {
+    for (const part of partsOf(entry)) {
+      if (
+        part.type === "tool-approval-request" &&
+        typeof part.approvalId === "string" &&
+        typeof part.toolCallId === "string"
+      ) {
+        approvals.set(part.approvalId, part.toolCallId);
+      } else if (
+        part.type === "tool-call" &&
+        typeof part.toolCallId === "string" &&
+        typeof part.toolName === "string"
+      ) {
+        names.set(part.toolCallId, part.toolName);
+      }
+    }
+  }
+  return { approvals, names };
+}
+
+/**
+ * An entry as the context manager sees it: runtime context as a system
+ * message, and an approval resolution as a result of the call it resolves.
+ * The built-in retention treats a call and the results that follow it as one
+ * block; shown as a result, a resolution between a call and its result stays
+ * in that block, so the manager keeps or summarises the three together
+ * instead of cutting between them before the summary is generated.
+ */
+function viewMessage(entry: ContextEntryInput, calls: ToolCallIndex): ModelMessage {
   if (entry.kind === "runtime_context") {
     return { role: "system", content: runtimeText(entry) };
   }
-  return entry.message;
+  if (entry.kind !== "tool_result") {
+    return entry.message;
+  }
+  const parts = entry.message.content as ReadonlyArray<ToolPart & Record<string, unknown>>;
+  if (!parts.some((part) => part.type === "tool-approval-response")) {
+    return entry.message;
+  }
+  return {
+    role: "tool",
+    content: parts.map((part) => {
+      const toolCallId =
+        part.type === "tool-approval-response" && typeof part.approvalId === "string"
+          ? calls.approvals.get(part.approvalId)
+          : undefined;
+      if (toolCallId === undefined) return part;
+      return {
+        type: "tool-result",
+        toolCallId,
+        toolName: calls.names.get(toolCallId) ?? "unknown",
+        output: {
+          type: "text",
+          value: `[Approval ${part.approved === true ? "granted" : "denied"}]`,
+        },
+      };
+    }),
+  } as ModelMessage;
 }
 
 /** A message part as far as tool grouping needs it. */
-type ToolPart = { type: string; toolCallId?: unknown; approvalId?: unknown };
+type ToolPart = { type: string; toolCallId?: unknown; approvalId?: unknown; toolName?: unknown };
 
 /** The parts of an entry's message, or none for runtime context and text. */
 function partsOf(entry: ContextEntryInput): readonly ToolPart[] {
@@ -332,6 +395,7 @@ export function createLogCompactor(
       inheritedCount += 1;
     }
 
+    const calls = indexToolCalls([...path, ...pending]);
     const view: ModelMessage[] = [];
     const sources: ViewSource[] = [];
     if (core !== "") {
@@ -340,13 +404,13 @@ export function createLogCompactor(
     }
     path.forEach((entry, index) => {
       if (active.has(entry)) {
-        view.push(viewMessage(entry));
+        view.push(viewMessage(entry, calls));
         sources.push({ kind: entry.kind === "runtime_context" ? "runtime" : "path", index });
       }
     });
     pending.forEach((entry, index) => {
       if (active.has(entry)) {
-        view.push(viewMessage(entry));
+        view.push(viewMessage(entry, calls));
         sources.push({ kind: "pending", index });
       }
     });
@@ -414,9 +478,28 @@ export function createLogCompactor(
       }
     });
 
-    const compactable = sources.filter((source) => source.kind === "path").length;
-    if (summary.length === 0 && retained.size === compactable) {
-      // Nothing was summarised: the head's version stays current.
+    // A tool group is kept whole when the manager kept any of it (or it
+    // reaches the new input). The view already lets the built-in retention
+    // see a resolution as part of its call's block; this also covers other
+    // managers.
+    const groups = toolGroups([...path, ...pending]);
+    const keptGroups = new Set<number>();
+    groups.forEach((group, index) => {
+      if (group !== undefined && (index >= path.length || retained.has(index))) {
+        keptGroups.add(group);
+      }
+    });
+    path.forEach((_entry, index) => {
+      const group = groups[index];
+      if (group !== undefined && keptGroups.has(group)) retained.add(index);
+    });
+
+    // Progress: if every conversation entry is still kept (nothing was
+    // summarised, or the groups brought back all that was), a child would
+    // only add a summary to the same entries. The head's version stays
+    // current, and no transition is declared.
+    const compactable = sources.filter((source) => source.kind === "path");
+    if (compactable.every((source) => retained.has(source.index))) {
       return undefined;
     }
 
@@ -431,20 +514,6 @@ export function createLogCompactor(
         "Screening the compaction summary must keep its entries",
       );
     }
-    // A tool group is kept whole when the manager kept any of it (or it
-    // reaches the new input): the built-in retention does not know that an
-    // approval resolution sits between a call and its result.
-    const groups = toolGroups([...path, ...pending]);
-    const keptGroups = new Set<number>();
-    groups.forEach((group, index) => {
-      if (group !== undefined && (index >= path.length || retained.has(index))) {
-        keptGroups.add(group);
-      }
-    });
-    path.forEach((_entry, index) => {
-      const group = groups[index];
-      if (group !== undefined && keptGroups.has(group)) retained.add(index);
-    });
     const tail = path.filter(
       (entry, index) =>
         index >= inheritedCount &&

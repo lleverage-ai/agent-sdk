@@ -427,11 +427,17 @@ compaction.
   and content, so assistant reasoning and provider options replay byte for
   byte, and a store that keeps content by digest stores no second copy. A
   tool call, its approval request, its resolution and its result are kept
-  or summarised together: when the context manager keeps any of them, all
-  of them are kept (a child that would still split them is refused with
-  `ContextLogInvalidError`, reason `compaction_split_tool_call`). A re-appended entry whose `supersedes`
-  target is no longer on the child's path loses the reference (it is the
-  slot's current value), and a retraction of such a target is dropped.
+  or summarised together. The context manager is shown a resolution as a
+  result of its call, so its retention keeps or summarises the whole block
+  before it generates a summary; with another manager, keeping any of them
+  keeps all of them (a child that would still split them is refused with
+  `ContextLogInvalidError`, reason `compaction_split_tool_call`). A
+  re-appended entry whose `supersedes` target is no longer on the child's
+  path loses the reference (it is the slot's current value), and a
+  retraction of such a target is dropped.
+- **Only progress is committed.** When the child would keep every
+  conversation entry (for example a single tool block over budget on its
+  own), no transition is declared and the head's version stays current.
 - **The summary is new content.** It is an `assistant` entry (or a `user`
   entry, if a custom context manager returns one) and passes the
   `PreGenerate` hooks before it is committed, so the secrets filter redacts
