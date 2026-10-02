@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.11] - 2026-10-02
+
+Eleventh release candidate for 1.0.0. In log mode, compaction now budgets
+the request the model is actually sent, and a host can prepare the next
+compaction's summary ahead of time. Legacy agents are unchanged.
+
+### Migration notes
+
+- Legacy mode: no change. `ShouldCompactOptions`, `CompactOptions.prepare`
+  and `CompactOptions.signal` are optional; without them the context
+  manager budgets, compacts and reports exactly as before.
+- Log mode: the context policy's token budget is counted on the projected
+  request (with update labels, retraction notices and host rendering), so
+  compaction can trigger slightly earlier than before for streams with
+  superseded runtime context or a host adapter that adds text. A
+  prune-only compaction is declared only when it brings the request back
+  under budget.
+- `Agent.prepareCompaction()` is optional on the `Agent` interface; code
+  that implements `Agent` itself does not need to add it.
+
 ### Added
 
 - **Log mode: prepare a compaction summary ahead of time** (LLE-14017).
@@ -1511,7 +1531,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.10...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.11...HEAD
+[1.0.0-rc.11]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.10...agent-sdk@1.0.0-rc.11
 [1.0.0-rc.10]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.9...agent-sdk@1.0.0-rc.10
 [1.0.0-rc.9]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.8...agent-sdk@1.0.0-rc.9
 [1.0.0-rc.8]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.7...agent-sdk@1.0.0-rc.8
