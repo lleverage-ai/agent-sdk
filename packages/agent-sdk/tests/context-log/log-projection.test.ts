@@ -875,6 +875,32 @@ describe("log-mode retries", () => {
     expect(requests).toHaveLength(1);
   });
 
+  it("refuses a retry hook that changes the input in place", async () => {
+    const { model, requests } = createToolLoopModel({ failFirst: true });
+    const agent = logAgent(model, new MemoryContextLogStore(), {
+      hooks: {
+        PostGenerateFailure: [
+          async (input) => {
+            const options = (input as { options: { messages: ModelMessage[] } }).options;
+            options.messages[0] = { role: "user", content: "mutated in place" };
+            return {
+              hookSpecificOutput: {
+                hookEventName: "PostGenerateFailure",
+                retry: true,
+                retryDelayMs: 0,
+              },
+            };
+          },
+        ],
+      },
+    });
+
+    await expect(agent.generate({ prompt: "draw", threadId: THREAD })).rejects.toThrow(
+      ValidationError,
+    );
+    expect(requests).toHaveLength(1);
+  });
+
   it("accepts a retry hook that passes the options through unchanged", async () => {
     const { model, requests } = createToolLoopModel({ failFirst: true });
     const agent = logAgent(model, new MemoryContextLogStore(), {

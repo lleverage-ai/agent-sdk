@@ -1141,11 +1141,12 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
    * never passed PreGenerate (redaction, guardrails), so refuse it rather
    * than send it or silently drop it.
    */
-  function assertUnchangedLogModeInput(previous: GenerateOptions, next: GenerateOptions): void {
-    const changed =
-      (next.prompt !== undefined && next.prompt !== "") ||
-      JSON.stringify(next.messages ?? []) !== JSON.stringify(previous.messages ?? []);
-    if (changed) {
+  function logModeInputSnapshot(genOptions: GenerateOptions): string {
+    return JSON.stringify([genOptions.prompt ?? "", genOptions.messages ?? []]);
+  }
+
+  function assertUnchangedLogModeInput(snapshot: string, next: GenerateOptions): void {
+    if (logModeInputSnapshot(next) !== snapshot) {
       throw new ValidationError(
         "Retry hooks cannot change the prompt or messages in context log mode: new input must pass PreGenerate before it is sent",
         { fieldErrors: { prompt: ["cannot be changed on retry in context log mode"] } },
@@ -1161,6 +1162,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     // Handle error with PostGenerateFailure hooks and fallback logic
     const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
     const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
+    // Taken before the hooks run: they receive the live options object and
+    // could change its input in place.
+    const inputSnapshot = logContext ? logModeInputSnapshot(effectiveGenOptions) : undefined;
     const errorDecision = await handleGenerationError({
       error: normalizedError,
       failureHooks: postGenerateFailureHooks,
@@ -1174,8 +1178,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     if (errorDecision.shouldRetry) {
       let nextOptions = effectiveGenOptions;
-      if (errorDecision.updatedOptions && logContext) {
-        assertUnchangedLogModeInput(effectiveGenOptions, errorDecision.updatedOptions);
+      if (inputSnapshot !== undefined) {
+        assertUnchangedLogModeInput(
+          inputSnapshot,
+          errorDecision.updatedOptions ?? effectiveGenOptions,
+        );
       }
       if (errorDecision.updatedOptions) {
         nextOptions = {
