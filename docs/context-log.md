@@ -249,8 +249,8 @@ through the configured `ProjectionAdapter`
    frozen per version**: the stored bytes are projected unchanged, and the
    resolver is never consulted for an existing version. The resolver is
    consulted again only when the call creates a `model_change` version (see
-   [Model changes](#model-changes)). Adopting a new core for any other reason
-   needs a `core_policy_change` transition.
+   [Model changes](#model-changes)) or a `core_policy_change` version (see
+   [Adapter and core changes](#adapter-and-core-changes)).
 3. The adapter projects the core, the path and the run's new user input
    for the target model. The result is sent as the request's messages, with
    no separate `system` parameter, alongside the agent's tools.
@@ -322,10 +322,16 @@ Rules in log mode:
   `image/*` media type counts as an image). Versions created before that key
   existed don't have it and project user parts as stored, so a version's
   projection never changes. The key is not compared, so its absence never
-  requires a transition. A version whose recorded
-  values differ from the current adapter and model's capabilities is not
-  projected: the call fails with a `ContextLogConflictError` (reason
-  `transition_required`) before anything is sent.
+  requires a transition. With `contextLog.coreVersion` set, versions also
+  record `coreVersion` (`CORE_VERSION_CONTRACT_KEY`). A version whose
+  recorded values differ from the current adapter, model and core version
+  is never projected as it is: the call declares the transition by its
+  cause (`adapter_change` for a new `adapterVersion`, `model_change` for
+  other capabilities, `core_policy_change` for another core version; see
+  [Adapter and core changes](#adapter-and-core-changes)). A version created
+  under another adapter `id` has no declared cause: the call fails with a
+  `ContextLogConflictError` (reason `transition_required`) before anything
+  is sent.
 - **Checkpoints are control state.** A log-mode checkpoint holds the step,
   todos, files and any pending interrupt, plus a `ContextLogCursor` under
   `metadata.contextLog`. Its `messages` are always empty, and messages in a
@@ -486,9 +492,10 @@ A call to another model than the stream's previous call (a fallback, or a
 host switching models) is a declared **`model_change`**, whether or not the
 model's input capabilities differ, and so is a call to a model whose input
 capabilities differ from the version's contract. The first prepare creates
-a version that inherits the whole path, with the contract for the new model.
-A different adapter id or version still fails with `transition_required`
-until an `adapter_change` is declared.
+a version that inherits the whole path, with the contract for the new model
+and the current adapter. A different adapter version alone is an
+`adapter_change`, not a model change, and a different adapter id fails with
+`transition_required` (see [Adapter and core changes](#adapter-and-core-changes)).
 
 The new version's core:
 
@@ -511,7 +518,7 @@ const agent = createAgent({
   contextLog: {
     mode: "log",
     store,
-    // Called for `initial`, `model_change` and `branch` versions only.
+    // Called for `initial`, `model_change`, `core_policy_change` and `branch` versions only.
     resolveCore: ({ target }) => corePromptFor(familyOf(target.modelId)),
   },
 });
@@ -519,6 +526,55 @@ const agent = createAgent({
 
 A compaction planned by the same call replaces the `model_change`, as
 before, and its child records the resolved core.
+
+### Adapter and core changes
+
+Two more transitions are declared by their cause, never by comparing
+request content:
+
+- **`adapter_change`.** When the head's version was projected under another
+  `version` of the same adapter (`ProjectionAdapter.id` unchanged), the
+  call declares an `adapter_change`: the new version inherits the whole
+  path, keeps the version's frozen core (the resolver is not called), and
+  records the contract for the current adapter and model. Bump the
+  adapter's `version` whenever its output for an existing path changes, for
+  example when a host pins its dependency versions in it. A different
+  adapter `id` is not a declared cause and still fails with
+  `transition_required`.
+- **`core_policy_change`.** `contextLog.coreVersion` (experimental) names
+  the host's core version, for example a prompt version it bumps whenever
+  the core's text changes. When it is set, every version the runtime
+  creates records it in its contract under `coreVersion`
+  (`CORE_VERSION_CONTRACT_KEY`). A call whose head version recorded another
+  value, or none, declares a `core_policy_change`: the new version inherits
+  the whole path with the current core, from `contextLog.resolveCore`
+  (called with `reason: "core_policy_change"`, the inherited `parent`, the
+  `target` and the terminal `model`) or the static `systemPrompt`. Without
+  `coreVersion`, nothing is recorded and an existing version keeps its core.
+
+```typescript
+const agent = createAgent({
+  model,
+  contextLog: {
+    mode: "log",
+    store,
+    projection: { id: "host/adapter", version: ADAPTER_VERSION, project },
+    coreVersion: CORE_PROMPT_VERSION,
+    resolveCore: ({ target }) => corePromptFor(target.modelId),
+  },
+});
+```
+
+One prepare declares one transition. When several causes hold on one call
+the precedence is `core_policy_change`, then `model_change`, then
+`adapter_change`; whichever is declared records the current contract (and
+`coreVersion`), so it resolves every cause at once, and the next call
+declares nothing. A `model_change` keeps its own core behaviour above. A
+retry after the transition was committed plans on the new head, whose
+contract matches, and declares nothing again. The admit hook sees the
+declared reason on `request.transition.reason`. A compaction planned by the
+same call replaces the transition: its child is created under the call's
+core and contract.
 
 ### Branches
 
@@ -545,9 +601,12 @@ await agent.generate({
   that inherits exactly that path. The source branch is never written.
 - The version keeps the source version's core. With `contextLog.resolveCore`,
   the runtime calls the resolver with `reason: "branch"` and the inherited
-  `parent`, as for a `model_change`. The version records the call's
-  capability contract; a different adapter id or version still fails with
-  `transition_required`.
+  `parent`, as for a `model_change`; without one, a source whose recorded
+  `coreVersion` differs from `contextLog.coreVersion` adopts the current
+  `systemPrompt`, as a `core_policy_change` would. Like every transition,
+  the version records the call's contract and `coreVersion`, so it also
+  resolves a different adapter version or capability. A different adapter
+  id fails with `transition_required`.
 - The inherited path is projected as it was committed, followed by the call's
   new input. A regenerated reply needs no new input: run the branch without
   a prompt and the model answers the inherited path again.
@@ -562,7 +621,6 @@ await agent.generate({
   fails with a `ContextLogConflictError` (reason `branch_source_mismatch`)
   before anything is committed. Calls that don't declare a source continue
   the head as usual.
-
 
 ### Identifying the run's input
 
@@ -673,8 +731,10 @@ compaction.
   context manager is shown (the core, then the active entries), which
   change between calls; prefer runtime context for content that must stay.
 
-A compaction on a call that also changes model creates one `compaction`
-version under the new model's contract.
+A compaction on a call that also declares a `model_change`,
+`adapter_change` or `core_policy_change` creates one `compaction` version
+under that call's core and contract (the new model's, adapter's and core
+version's).
 
 ## Interrupts and resume
 
@@ -955,7 +1015,7 @@ run, gives them an isolated copy, and resends the attempt's own input.
 | --- | --- |
 | `PreGenerate` redacts or blocks `options.messages` (secrets filter, guardrails, PII transforms) | Unchanged: the hook sees and transforms only new input, before commit |
 | `PreGenerate` injects context or rewrites history in `options.messages` | A `ContextProducer` that appends (and supersedes or retracts) `runtime_context` |
-| `PreGenerate` changes `instructionLayers`, `memory` or the prompt | A producer for dynamic context; changing the frozen core is a `core_policy_change` transition |
+| `PreGenerate` changes `instructionLayers`, `memory` or the prompt | A producer for dynamic context; changing the frozen core is a `core_policy_change` transition, declared by bumping `contextLog.coreVersion` |
 | `PreGenerate` changes limits, sampling, headers or the signal | Unchanged |
 | `PreGenerate` changes `providerOptions` | Not supported; set them on the call |
 | `PreGenerate` `respondWith` (response cache) | Not supported |
@@ -970,7 +1030,7 @@ run, gives them an isolated copy, and resends the attempt's own input.
 | --- | --- |
 | `Checkpoint.messages`, overwritten per thread | The path at the stream's head, read with `readPath` |
 | `threadId` | `ContextStreamRef.threadId`; branches and streams are explicit |
-| System prompt rebuilt every generation | Frozen core bytes on the version; changing it is a `core_policy_change` transition |
+| System prompt rebuilt every generation | Frozen core bytes on the version; changing it is a `core_policy_change` transition, declared by bumping `contextLog.coreVersion` |
 | Prompt builder context (dates, memory, files) | `ContextProducer`s appending `runtime_context` entries, deduplicated by key and superseded rather than rewritten |
 | Compaction replaces the messages array | A `compaction` transition: a child version that inherits the leading runtime context, then holds the summary and the re-appended retained tail (see [Compaction](#compaction)) |
 | Forking or editing a message | A `branch` transition on a new branch, inheriting the unedited prefix |

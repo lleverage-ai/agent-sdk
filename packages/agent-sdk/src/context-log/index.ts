@@ -29,7 +29,7 @@ export {
 } from "./errors.js";
 export { assertContextJson, canonicalContextJson } from "./json.js";
 export { MemoryContextLogStore } from "./memory-store.js";
-export { createMessageProjectionAdapter } from "./projection.js";
+export { CORE_VERSION_CONTRACT_KEY, createMessageProjectionAdapter } from "./projection.js";
 export {
   CONTEXT_UNAVAILABLE,
   type ContextSlotValue,

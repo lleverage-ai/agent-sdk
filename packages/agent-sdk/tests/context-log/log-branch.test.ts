@@ -11,6 +11,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import {
   type AgentOptions,
+  CORE_VERSION_CONTRACT_KEY,
   type ContextAdmitInput,
   type ContextLogStore,
   type ContextPathRef,
@@ -276,6 +277,25 @@ describe("log-mode branch transitions", () => {
       parent,
       core: "Branch core",
     });
+  });
+
+  it("records the host's core version and adopts the current core when it changed", async () => {
+    const { store, model, head } = await seedMain();
+
+    await createAgent({
+      model,
+      systemPrompt: "You are the new core.",
+      contextLog: { mode: "log", store, coreVersion: "core-2" },
+    }).generate({
+      prompt: "edited",
+      threadId: THREAD,
+      contextStream: { branchId: "edit", branchFrom: refAt(head, 2) },
+    });
+
+    const version = await store.readVersion((await store.readHead(EDIT))!.versionId);
+    expect(version.reason).toBe("branch");
+    expect(version.core).toBe("You are the new core.");
+    expect(version.contract[CORE_VERSION_CONTRACT_KEY]).toBe("core-2");
   });
 
   it("refuses a branch whose head does not continue the declared source", async () => {

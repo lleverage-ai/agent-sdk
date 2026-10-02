@@ -54,15 +54,36 @@ export function buildProjectionContract(
 export const USER_MEDIA_CONTRACT_KEY = "userMedia";
 
 /**
+ * Contract key recording the host's core version
+ * (`ContextLogOptions.coreVersion`) on every version the log-mode
+ * runtime creates while the option is set.
+ *
+ * It is not a `ContextProjectionContractKey`: a version whose recorded
+ * core version differs from the configured one is still projected, but the
+ * next call declares a `core_policy_change` transition that adopts the
+ * current core. Without `coreVersion` the key is never recorded or compared.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export const CORE_VERSION_CONTRACT_KEY = "coreVersion";
+
+/**
  * The contract a new version records: the expected contract plus the
- * projection behaviours this runtime version applies.
+ * projection behaviours this runtime version applies, and the host's core
+ * version when it declares one.
  *
  * @internal
  */
 export function newVersionContract(
   expected: Record<ContextProjectionContractKey, string>,
+  coreVersion?: string,
 ): Record<string, string> {
-  return { ...expected, [USER_MEDIA_CONTRACT_KEY]: "placeholder" };
+  return {
+    ...expected,
+    [USER_MEDIA_CONTRACT_KEY]: "placeholder",
+    ...(coreVersion !== undefined && { [CORE_VERSION_CONTRACT_KEY]: coreVersion }),
+  };
 }
 
 /**
