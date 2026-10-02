@@ -382,7 +382,18 @@ describe("log-mode input validation", () => {
         },
       ],
     });
-    expect(isContextLogError(bytes, "invalid") && bytes.reason).toBe("not_json");
+    expect(bytes).toBeInstanceOf(ValidationError);
+    // Media data that is JSON but not a string would skip screening.
+    for (const part of [
+      { type: "file", data: { secret: "x" }, mediaType: "application/pdf" },
+      { type: "file", data: "AAAA" },
+      { type: "image", image: ["x"] },
+      { type: "text", text: 1 },
+    ]) {
+      expect(await generate({ input: [{ role: "user", content: [part] }] })).toBeInstanceOf(
+        ValidationError,
+      );
+    }
     // The error never names a key inside unscreened input.
     const secretKey = await generate({
       input: [{ role: "user", content: "hi", providerOptions: { p: { [AWS_KEY]: new Date(0) } } }],
@@ -444,6 +455,7 @@ describe("user media projection", () => {
     adapterVersion: "1",
     imageInput: "true",
     fileInput: "true",
+    userMedia: "placeholder",
   };
   const message: UserModelMessage = {
     role: "user",
@@ -481,6 +493,52 @@ describe("user media projection", () => {
       { type: "text", text: "[Image omitted: active model does not support image input.]" },
       { type: "file", data: PDF, mediaType: "application/pdf" },
     ]);
+  });
+
+  it("projects user media as stored on a version created before the userMedia contract key", async () => {
+    const { userMedia: _userMedia, ...older } = contract;
+    const result = await adapter.project({
+      core: "",
+      contract: { ...older, fileInput: "false", imageInput: "false" },
+      entries,
+      target,
+    });
+    expect(result.messages).toEqual([message]);
+  });
+
+  it("keeps projecting an older version's committed user media unchanged, without a transition", async () => {
+    const store = new MemoryContextLogStore();
+    const older = {
+      adapter: "agent-sdk/messages",
+      adapterVersion: "1",
+      imageInput: "true",
+      fileInput: "false",
+    };
+    const prepared = await store.prepare({
+      stream: STREAM,
+      expectedRevision: 0,
+      idempotencyKey: "seed",
+      transition: { reason: "initial", parent: null, core: "You are the core.", contract: older },
+      append: entries,
+      manifest: {
+        projection: { adapter: "agent-sdk/messages", version: "1" },
+        model: { provider: "mock-provider", modelId: "mock-model-id" },
+        inputDigest: "0".repeat(64),
+      },
+    });
+    await store.markDispatched(prepared.manifest.id);
+    await store.recordOutcome(prepared.manifest.id, { status: "completed" });
+    const { model, inputs } = createScriptedModel([text("ok")]);
+
+    await logAgent(model, store, { modelCapabilities: { fileInput: false } }).generate({
+      prompt: "next",
+      threadId: THREAD,
+    });
+
+    expect(inputs()[0]).toContain(PDF);
+    expect(inputs()[0]).not.toContain("[File omitted");
+    const head = await store.readHead(STREAM);
+    expect(head?.versionId).toBe(prepared.head.versionId);
   });
 
   it("leaves legacy capability projection of user parts unchanged", () => {

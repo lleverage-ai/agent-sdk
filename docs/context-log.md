@@ -315,10 +315,14 @@ Rules in log mode:
 - **The contract decides capability projection.** The runtime records
   `adapter`, `adapterVersion`, `imageInput` and `fileInput`
   (`ContextProjectionContractKey`) on the versions it creates. The default
-  adapter replaces tool-result media, and user image and file parts, with
-  the legacy text placeholders when the contract says the model cannot
-  accept them (a file part with an `image/*` media type counts as an
-  image). A version whose recorded
+  adapter replaces tool-result media with the legacy text placeholders when
+  the contract says the model cannot accept it. Versions the runtime
+  creates also record `userMedia: "placeholder"`, and on those the adapter
+  replaces user image and file parts the same way (a file part with an
+  `image/*` media type counts as an image). Versions created before that key
+  existed don't have it and project user parts as stored, so a version's
+  projection never changes. The key is not compared, so its absence never
+  requires a transition. A version whose recorded
   values differ from the current adapter and model's capabilities is not
   projected: the call fails with a `ContextLogConflictError` (reason
   `transition_required`) before anything is sent.

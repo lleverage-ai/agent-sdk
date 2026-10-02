@@ -46,6 +46,7 @@ import { resolveContextProducers, runContextProducers } from "../context-log/pro
 import {
   buildProjectionContract,
   createMessageProjectionAdapter,
+  newVersionContract,
   projectionContractMismatches,
 } from "../context-log/projection.js";
 import {
@@ -372,8 +373,31 @@ async function readPreviousCall(
   };
 }
 
-/** Part types a user message of new input may contain. @internal */
-const USER_PART_TYPES: ReadonlySet<string> = new Set(["text", "image", "file"]);
+/**
+ * Whether `part` is a text, image or file part whose content fields are
+ * strings: media data is base64, a data URL or a URL, never bytes or JSON
+ * that screening would skip. @internal
+ */
+function isUserPart(part: unknown): boolean {
+  if (typeof part !== "object" || part === null) return false;
+  const record = part as Record<string, unknown>;
+  const optionalString = (key: string) =>
+    record[key] === undefined || typeof record[key] === "string";
+  switch (record.type) {
+    case "text":
+      return typeof record.text === "string";
+    case "image":
+      return typeof record.image === "string" && optionalString("mediaType");
+    case "file":
+      return (
+        typeof record.data === "string" &&
+        typeof record.mediaType === "string" &&
+        optionalString("filename")
+      );
+    default:
+      return false;
+  }
+}
 
 /**
  * Checks new user input: user messages only, each plain JSON with string
@@ -401,11 +425,9 @@ function assertUserMessages(messages: readonly ModelMessage[], field: string): v
         );
       }
       content.forEach((part: unknown, partIndex) => {
-        const type =
-          typeof part === "object" && part !== null ? (part as { type?: unknown }).type : undefined;
-        if (typeof type !== "string" || !USER_PART_TYPES.has(type)) {
+        if (!isUserPart(part)) {
           throw new ValidationError(
-            `${field}[${index}].content[${partIndex}] must be a text, image or file part`,
+            `${field}[${index}].content[${partIndex}] must be a text part with string text, an image part with string image data, or a file part with string data and media type`,
             { fieldErrors: { [field]: ["user parts must be text, image or file parts"] } },
           );
         }
@@ -632,8 +654,8 @@ export function createLogContextRuntime(
             model,
           });
         }
-        contract = { ...expectedContract };
-        transition = { reason: "model_change", parent, core, contract: { ...expectedContract } };
+        contract = newVersionContract(expectedContract);
+        transition = { reason: "model_change", parent, core, contract: { ...contract } };
       }
     } else {
       core = resolveCore
@@ -645,8 +667,8 @@ export function createLogContextRuntime(
             model,
           })
         : (options.systemPrompt ?? "");
-      contract = expectedContract;
-      transition = { reason: "initial", parent: null, core, contract: { ...expectedContract } };
+      contract = newVersionContract(expectedContract);
+      transition = { reason: "initial", parent: null, core, contract: { ...contract } };
     }
 
     // The run's input keeps its keys across retries, so a retry finds the

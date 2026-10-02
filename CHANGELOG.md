@@ -15,9 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   committed as its own `user` entry, in order, under the call's one head
   snapshot; a retry never appends any of it again. It is rejected together
   with `prompt` and outside log mode. A new user message's `providerOptions`
-  (message and part level) are screened like caller data, and the default
-  projection adapter replaces user image and file parts the version's
-  capability contract excludes with the legacy text placeholders
+  (message and part level) are screened like caller data. New versions
+  record `userMedia: "placeholder"` in their contract, and on those the
+  default projection adapter replaces user image and file parts the
+  version's capability contract excludes with the legacy text placeholders.
+  Existing versions, without the key, keep projecting user parts as stored
   (LLE-13995).
 
 ### Changed
