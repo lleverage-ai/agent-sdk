@@ -1,9 +1,9 @@
 # Context log mode (experimental)
 
 > **Status:** experimental. This release ships the contracts, an in-memory
-> store and a store conformance suite. The log-mode runtime (projection,
-> commit before dispatch, append-only hooks, compaction, resume and subagent
-> streams) lands in later releases. Until then `createAgent` rejects
+> store, a store conformance suite, slot producers and the log-mode hook
+> rules. The rest of the log-mode runtime (projection, commit before
+> dispatch, compaction, resume and subagent streams) lands in later releases. Until then `createAgent` rejects
 > `contextLog: { mode: "log" }`, and every agent keeps its legacy behaviour.
 > The exports may change before they are marked stable.
 
@@ -95,6 +95,49 @@ Superseded entries and retractions stay in the log. `activeContextEntries(path)`
 returns the entries a projection should emit: it drops superseded entries
 and retractions and keeps everything else in order.
 
+### Producers
+
+Producers run before each call, against the call's single head snapshot,
+and return `runtime_context` entries to append. The agent's own
+`contextLog.producers` run first, then each plugin's `contextProducers` in
+plugin order; producer names must be unique. The runtime drops any entry
+whose key is already on the path, and rejects entries that are not the
+producer's own `runtime_context`. A producer's error stops the call.
+
+`createSlotContextProducer` handles the bookkeeping for the common case, a
+producer that keeps one current value per named slot:
+
+```typescript
+import { createSlotContextProducer, definePlugin } from "@lleverage-ai/agent-sdk";
+
+const settings = createSlotContextProducer({
+  name: "project-settings",
+  optional: true,
+  load: async () => {
+    const settings = await loadSettings();
+    return settings ? [{ slot: "settings", payload: settings }] : [];
+  },
+});
+
+const plugin = definePlugin({ name: "settings", contextProducers: [settings] });
+```
+
+It reads its own earlier entries from the path and appends only changes:
+
+| Situation | What is appended |
+| --- | --- |
+| A slot appears for the first time | An entry with key `ctx:<producer>:slot:<slot>:1` |
+| A slot's payload and metadata are unchanged | Nothing |
+| A slot's value changes | A new entry that `supersedes` the slot's latest entry |
+| A slot that was active is no longer returned | A retraction, unless `retractAbsent` is `false` (use that for retrieved data, which stays part of the history) |
+| An `optional` loader throws | One `context_unavailable` marker (`{ type, producer, reason }`); earlier slots stay active |
+| The loader recovers | A retraction of the marker, then any changed slots |
+| A required loader throws, or the call was aborted | The error propagates and nothing is committed |
+
+The marker's `reason` comes from `describeFailure` and never copies the
+error message by default. Keys are deterministic, so a retry from the same
+head re-derives byte-identical entries.
+
 ### Errors
 
 Stores and the runtime reject with a `ContextLogError`. Use
@@ -159,6 +202,51 @@ These constrain the runtime that later releases add on top of the contracts:
   or writes `Checkpoint.messages` history, and the legacy checkpoint fallback
   paths do not apply to it.
 
+## Hooks in log mode
+
+Hooks never rewrite the log. In log mode they may only:
+
+- **append context**, through producers;
+- **transform new input** before it is committed. `PreGenerate` hooks see
+  `options.messages` set to the call's new input only (the user's message,
+  producer output and any imported history), never committed entries. A
+  `runtime_context` entry is shown as a user message with one text part per
+  string in its payload, so text filters can scan and redact it; the
+  transformed text is written back into the payload. The secrets filter and
+  guardrails therefore keep redacting and blocking new input, and the
+  redacted content is what gets committed;
+- **change operational options**: `maxTokens`, `temperature`,
+  `stopSequences`, `signal`, `shouldStopAfterStep`, `providerOptions`,
+  `headers`, `telemetry`, `experimental_telemetry`, `requestClass` and
+  `onStreamWriterReady`;
+- **gate execution**: deny a generation (`permissionDecision: "deny"`, which
+  throws `GeneratePermissionDeniedError` before anything is committed) or a
+  tool call;
+- **shape a new tool result** in `PostToolUse` (caps, notices, sanitisation).
+  The tool's returned value is what the runtime commits, so the transform is
+  in the committed `tool_result` entry and is never applied again later.
+
+Anything else throws a `ContextLogInvalidError` with reason
+`log_mode_hook_violation` and a message naming the hook and the change:
+adding or removing messages, changing a message's role or a
+runtime context entry's shape, setting `prompt`, changing `instructionLayers`,
+`memory`, `output`, `threadId` or any other non-operational option, and
+`respondWith` (its response would never be committed). Options a
+`PostGenerateFailure` hook returns for a retry follow the same rule, and
+their messages cannot change at all because the input is already committed.
+
+| Legacy hook use | Log-mode equivalent |
+| --- | --- |
+| `PreGenerate` redacts or blocks `options.messages` (secrets filter, guardrails, PII transforms) | Unchanged: the hook sees and transforms only new input, before commit |
+| `PreGenerate` injects context or rewrites history in `options.messages` | A `ContextProducer` that appends (and supersedes or retracts) `runtime_context` |
+| `PreGenerate` changes `instructionLayers`, `memory` or the prompt | A producer for dynamic context; changing the frozen core is a `core_policy_change` transition |
+| `PreGenerate` changes limits, sampling, headers or the signal | Unchanged |
+| `PreGenerate` `respondWith` (response cache) | Not supported |
+| `PostGenerateFailure` retries with different messages | Not supported; retry with operational changes only |
+| `PreToolUse` deny, `updatedInput` or `respondWith` | Unchanged; a synthetic result is a new tool result |
+| `PostToolUse` `updatedResult` | Unchanged; the shaped result is what is committed |
+| `PostGenerate` `updatedResult` | Unchanged: it shapes the result returned to the caller, not the committed output |
+
 ## How log mode maps to legacy concepts
 
 | Legacy mode | Log mode |
@@ -169,7 +257,7 @@ These constrain the runtime that later releases add on top of the contracts:
 | Prompt builder context (dates, memory, files) | `ContextProducer`s appending `runtime_context` entries, deduplicated by key and superseded rather than rewritten |
 | Compaction replaces the messages array | A `compaction` transition: a child version that inherits a prefix and appends the summary |
 | Forking or editing a message | A `branch` transition on a new branch, inheriting the unedited prefix |
-| `PreGenerate.updatedInput` | No equivalent: hooks may only append context, shape a new tool result before commit or gate execution |
+| `PreGenerate.updatedInput` | Only operational options and transforms of new input; see [Hooks in log mode](#hooks-in-log-mode) |
 | Checkpoint save after a generation | `appendOutputs` for each output and tool result, then `recordOutcome` |
 | Resume from a checkpoint | Read the head and project its path |
 

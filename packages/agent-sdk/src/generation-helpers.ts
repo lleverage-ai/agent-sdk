@@ -29,6 +29,7 @@ import type {
   GenerationRetryDecisionInput,
   GenerationRetryPolicy,
   HookCallback,
+  HookOutput,
   PostGenerateFailureInput,
   PreGenerateInput,
 } from "./types.js";
@@ -167,35 +168,15 @@ export async function invokePreGenerateHooks<T = GenerateResult>(
     return { effectiveOptions: genOptions };
   }
 
-  const preGenerateInput: PreGenerateInput = {
-    hook_event_name: "PreGenerate",
-    session_id: genOptions.threadId ?? "default",
-    cwd: process.cwd(),
-    telemetry: buildExecutionTelemetryFromIds({
-      runId: genOptions._runId ?? "run_unknown",
-      threadId: genOptions.threadId,
-      requestedModel: agent.options.model,
-    }),
-    options: genOptions,
-  };
-
-  const hookOutputs = await invokeHooksWithTimeout(hooks, preGenerateInput, null, agent);
+  const hookOutputs = await invokeHooksWithTimeout(
+    hooks,
+    buildPreGenerateInput(genOptions, agent),
+    null,
+    agent,
+  );
 
   // Check for permission denial (e.g., guardrails blocking input)
-  const permissionDecision = aggregatePermissionDecisions(hookOutputs);
-  if (permissionDecision === "deny") {
-    const denyingOutput = hookOutputs.find(
-      (o) => o.hookSpecificOutput?.permissionDecision === "deny",
-    )?.hookSpecificOutput;
-
-    const reason = denyingOutput?.permissionDecisionReason;
-    const blockedMessageIds = denyingOutput?.blockedMessageIds;
-
-    throw new GeneratePermissionDeniedError("Generation denied by hook", {
-      reason,
-      blockedMessageIds,
-    });
-  }
+  throwIfGenerationDenied(hookOutputs);
 
   const cachedResult = extractRespondWith<T>(hookOutputs);
   if (cachedResult !== undefined) {
@@ -206,6 +187,43 @@ export async function invokePreGenerateHooks<T = GenerateResult>(
   const effectiveOptions = updatedOptions !== undefined ? updatedOptions : genOptions;
 
   return { effectiveOptions };
+}
+
+/**
+ * Builds the input PreGenerate hooks receive for a set of generation options.
+ *
+ * @internal
+ */
+export function buildPreGenerateInput(genOptions: GenerateOptions, agent: Agent): PreGenerateInput {
+  return {
+    hook_event_name: "PreGenerate",
+    session_id: genOptions.threadId ?? "default",
+    cwd: process.cwd(),
+    telemetry: buildExecutionTelemetryFromIds({
+      runId: genOptions._runId ?? "run_unknown",
+      threadId: genOptions.threadId,
+      requestedModel: agent.options.model,
+    }),
+    options: genOptions,
+  };
+}
+
+/**
+ * Throws {@link GeneratePermissionDeniedError} when a PreGenerate hook denied
+ * the generation (for example a guardrail blocking input).
+ *
+ * @internal
+ */
+export function throwIfGenerationDenied(hookOutputs: HookOutput[]): void {
+  if (aggregatePermissionDecisions(hookOutputs) !== "deny") return;
+  const denyingOutput = hookOutputs.find(
+    (o) => o.hookSpecificOutput?.permissionDecision === "deny",
+  )?.hookSpecificOutput;
+
+  throw new GeneratePermissionDeniedError("Generation denied by hook", {
+    reason: denyingOutput?.permissionDecisionReason,
+    blockedMessageIds: denyingOutput?.blockedMessageIds,
+  });
 }
 
 /**

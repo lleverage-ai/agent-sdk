@@ -25,7 +25,7 @@ import type {
 import type { BackendProtocol } from "./backend.js";
 import type { AgentState } from "./backends/state.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
-import type { ContextLogOptions } from "./context-log/types.js";
+import type { ContextLogOptions, ContextProducer } from "./context-log/types.js";
 
 // =============================================================================
 // Re-export AI SDK Types
@@ -2843,6 +2843,17 @@ export interface AgentPlugin {
   hooks?: HookRegistration;
 
   /**
+   * Context producers provided by this plugin. In context log mode they run
+   * before each call, after the agent's own `contextLog.producers`, and
+   * append `runtime_context` entries. Producer names must be unique across
+   * the agent and its plugins. Ignored when log mode is off.
+   *
+   * @experimental
+   * @see {@link ContextProducer}
+   */
+  contextProducers?: readonly ContextProducer[];
+
+  /**
    * When true, this plugin's tools are accessible only via `call_tool` proxy.
    *
    * In `pluginLoading: "proxy"` mode, all plugins are deferred by default.
@@ -2922,6 +2933,14 @@ export interface PluginOptions {
 
   /** Hooks provided by this plugin. Merged into the agent's hook registration during initialization. */
   hooks?: HookRegistration;
+
+  /**
+   * Context producers provided by this plugin (log mode only).
+   *
+   * @experimental
+   * @see {@link AgentPlugin.contextProducers}
+   */
+  contextProducers?: readonly ContextProducer[];
 
   /**
    * When true, this plugin's tools are accessible only via `call_tool` proxy.
