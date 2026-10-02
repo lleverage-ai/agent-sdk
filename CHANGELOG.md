@@ -19,8 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(removes earlier context: the following no longer applies)` followed by
   the retracted entry's text. Keys and producer names are never rendered.
   The runtime records `supersession: "append"` in the contract of every
-  version it creates; versions without it (created before this release)
-  keep projecting as before. Compaction is the only place superseded entries
+  version it creates for a new contract (initial, branch, and adapter, model
+  or core transitions; a compaction child keeps its parent's contract);
+  versions without it keep projecting as before. Compaction is the only place superseded entries
   are dropped: the child inherits only active entries
   (`activeContextEntries()`). On an append-only version the context manager
   also counts superseded entries and retractions (as system messages it

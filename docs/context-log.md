@@ -115,6 +115,8 @@ names. Versions created before the runtime recorded `supersession: "append"`
 in their contract (before 1.0.0-rc.8) keep dropping superseded entries and
 retractions, so their projection never changes; the default adapter's
 version `2` moves such a stream to a new version with an `adapter_change`.
+A compaction child keeps its parent's contract, so it projects the same way
+as its parent.
 
 Compaction is the only place superseded entries are dropped: the child
 inherits only active entries. Because the request still carries them, the

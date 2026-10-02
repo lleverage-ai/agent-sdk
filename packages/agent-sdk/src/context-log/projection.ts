@@ -211,8 +211,8 @@ function renderAppendOnly(entries: readonly ContextEntryInput[]): ModelMessage[]
  * - A `runtime_context` entry becomes a `user` message with one text part: a
  *   string payload as is, any other payload as canonical JSON (sorted keys).
  * - Supersession is append-only on a version whose contract records
- *   `supersession: "append"` (every version the runtime creates from
- *   1.0.0-rc.8): a superseded entry stays where it is, an entry that
+ *   `supersession: "append"` (from 1.0.0-rc.8, every version the runtime
+ *   creates for a new contract; a compaction child keeps its parent's): a superseded entry stays where it is, an entry that
  *   supersedes it is rendered where it was committed with the text
  *   `(updates earlier context)` on a line before its payload, and a
  *   retraction is rendered as
