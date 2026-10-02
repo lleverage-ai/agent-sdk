@@ -1,5 +1,6 @@
 /**
- * Experimental context log mode: contracts, errors and the in-memory store.
+ * Experimental context log mode: contracts, errors, the in-memory store and
+ * the default projection adapter.
  *
  * The conformance suite is exported from `@lleverage-ai/agent-sdk/testing`.
  *
@@ -20,6 +21,7 @@ export {
 } from "./errors.js";
 export { assertContextJson, canonicalContextJson } from "./json.js";
 export { MemoryContextLogStore } from "./memory-store.js";
+export { createMessageProjectionAdapter } from "./projection.js";
 export {
   CONTEXT_UNAVAILABLE,
   type ContextSlotValue,

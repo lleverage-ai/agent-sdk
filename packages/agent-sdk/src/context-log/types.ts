@@ -724,17 +724,56 @@ export interface ContextProducer {
 /**
  * Input to a {@link ProjectionAdapter}.
  *
+ * The input carries only content: the version's frozen core and contract,
+ * and the content fields of each entry. Store-assigned fields (positions,
+ * ids, timestamps) are deliberately absent, because the runtime projects a
+ * call's input before it is committed (the manifest records a digest of it)
+ * and must reproduce the same bytes from the committed path afterwards.
+ *
  * @experimental
  * @category Context Log
  */
 export interface ProjectionInput {
-  /** The version being projected; provides the frozen core and contract. */
-  version: ContextVersion;
-  /** The full path, in position order, including superseded entries. */
-  entries: readonly ContextEntry[];
+  /** Exact bytes of the version's frozen core system. */
+  core: string;
+  /**
+   * The version's serialisation contract. The runtime records the adapter
+   * and the target model's media capabilities here (see
+   * {@link ContextProjectionContractKey}); an adapter keys any
+   * capability-dependent output on these values, never on live settings.
+   */
+  contract: Readonly<Record<string, string>>;
+  /**
+   * The full path in position order, including superseded entries, followed
+   * by the entries the call is about to append. Pass them through
+   * `activeContextEntries` to drop superseded entries and retractions.
+   */
+  entries: readonly ContextEntryInput[];
   /** The model the request will be sent to. */
   target: ContextModelRef;
 }
+
+/**
+ * Contract keys the log-mode runtime records on every version it creates and
+ * checks before projecting a version.
+ *
+ * - `adapter` - {@link ProjectionAdapter.id}
+ * - `adapterVersion` - {@link ProjectionAdapter.version}
+ * - `imageInput` - `"false"` when the model cannot accept image input, otherwise `"true"`
+ * - `fileInput` - `"false"` when the model cannot accept file input, otherwise `"true"`
+ *
+ * A version whose values differ from the ones the runtime would record for
+ * the current adapter and model is not projected: changing them needs a
+ * declared transition (`adapter_change` or `model_change`).
+ *
+ * @experimental
+ * @category Context Log
+ */
+export type ContextProjectionContractKey =
+  | "adapter"
+  | "adapterVersion"
+  | "imageInput"
+  | "fileInput";
 
 /**
  * The model input a projection produces.
@@ -750,8 +789,8 @@ export interface ProjectedModelInput {
 /**
  * Turns a path into model messages.
  *
- * Projection must be deterministic for the same version, entries and target,
- * and versioned: a change to its output for an existing path needs a new
+ * Projection must be deterministic for the same core, contract, entries and
+ * target, and versioned: a change to its output for an existing path needs a new
  * {@link ProjectionAdapter.version} and an `adapter_change` transition.
  * Cross-provider conversion (for example dropping another provider's
  * reasoning signatures) happens here, never to stored entries.
@@ -830,11 +869,71 @@ export type ContextAdmitHook = (
 export type ContextLogMode = "off" | "log";
 
 /**
+ * Input to a {@link ContextCoreResolver}.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextCoreInput {
+  /** The stream the new version is created on. */
+  stream: ContextStreamRef;
+  /** Why the version is created. */
+  reason: ContextTransitionReason;
+  /** The version and prefix the new version inherits, or `null` for a root version. */
+  parent: ContextVersionParent | null;
+}
+
+/**
+ * Resolves the frozen core system for a new version.
+ *
+ * The runtime calls it only when it creates a version. The returned bytes
+ * are stored on the version, and every call on that version projects them
+ * unchanged, so a resolver never re-renders the core of an existing version.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export type ContextCoreResolver = (input: ContextCoreInput) => string | Promise<string>;
+
+/**
+ * Where a log-mode agent's checkpoint points into the log.
+ *
+ * In log mode a checkpoint holds only control state (step, todos, files and a
+ * pending interrupt) plus this cursor, stored as `metadata.contextLog`. Its
+ * `messages` are always empty. The cursor records the head the agent last
+ * projected from. It is informational: every call reads the stream's head
+ * from the store, never from the checkpoint.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextLogCursor {
+  /** The branch of the stream. */
+  branchId: string;
+  /** The stream within the branch. */
+  streamId: string;
+  /** The head's version, or `null` before the stream has a head. */
+  versionId: string | null;
+  /** The head's entry count; `0` before the stream has a head. */
+  entryCount: number;
+  /** The head's revision; `0` before the stream has a head. */
+  revision: number;
+  /** The head's path digest, or `null` before the stream has a head. */
+  pathDigest: string | null;
+}
+
+/**
  * Configuration for the experimental context log mode.
  *
  * Log mode is off by default, and an agent without this option behaves
- * exactly as before. The log-mode runtime is still being built: in this
- * release `createAgent` rejects `mode: "log"`.
+ * exactly as before. In log mode the store is the agent's history: each
+ * request is a projection of the stream's head path through the projection
+ * adapter, under the frozen core of the head's version. The log-mode runtime
+ * is still being built: in this release it projects requests from the log,
+ * but does not yet commit inputs or outputs (see `docs/context-log.md`).
+ *
+ * In log mode `createAgent` rejects `promptBuilder` and `contextManager`, and
+ * requires a core: a static `systemPrompt` or {@link ContextLogOptions.resolveCore}.
  *
  * @experimental
  * @category Context Log
@@ -847,8 +946,16 @@ export interface ContextLogOptions {
   mode?: ContextLogMode;
   /** Where the log is persisted. */
   store: ContextLogStore;
-  /** Turns a path into model messages. */
+  /**
+   * Turns a path into model messages.
+   * @defaultValue `createMessageProjectionAdapter()`
+   */
   projection?: ProjectionAdapter;
+  /**
+   * Resolves the frozen core system for a new version. Mutually exclusive
+   * with a static `systemPrompt`, which is the core of every new version.
+   */
+  resolveCore?: ContextCoreResolver;
   /** Producers that append runtime context before each call. */
   producers?: readonly ContextProducer[];
   /** Authorises every prepare and dispatch. */

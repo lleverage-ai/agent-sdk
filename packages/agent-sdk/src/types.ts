@@ -1611,6 +1611,11 @@ export interface Agent {
    * Synchronous and cheap; the load happens on the next call. A no-op when the
    * agent has no checkpointer.
    *
+   * In context log mode the checkpoint holds only control state, so this only
+   * reloads that state. History is never substituted from a checkpoint: every
+   * call reads the stream's head from the log store, so writes behind the
+   * agent are always picked up.
+   *
    * @param threadId - The thread whose cached checkpoint should be dropped
    *
    * @example

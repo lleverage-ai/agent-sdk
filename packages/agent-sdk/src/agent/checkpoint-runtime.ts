@@ -22,6 +22,11 @@
  * - `resolveRunId`: continue the run id of a pending interrupt when a
  *   generation resumes a thread, otherwise mint a new one.
  *
+ * In context log mode (`logCursor` set) a checkpoint is control state only:
+ * `save` and `commit` persist empty `messages` plus the log cursor under
+ * `metadata.contextLog`, and `load` drops any messages a stored checkpoint
+ * holds, so nothing restores history from a checkpoint.
+ *
  * Everything here is a no-op returning `undefined` when no checkpointer is
  * configured, so call sites do not need their own guards for the
  * runtime's own methods.
@@ -34,9 +39,11 @@ import type { ModelMessage } from "ai";
 import type { AgentState } from "../backends/state.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "../checkpointer/types.js";
 import { createCheckpoint, updateCheckpoint } from "../checkpointer/types.js";
+import type { ContextLogCursor } from "../context-log/types.js";
 import { CheckpointError } from "../errors/index.js";
 import { createRunId } from "../observability/execution-metadata.js";
 import type { GenerateOptions } from "../types.js";
+import { CONTEXT_LOG_CURSOR_METADATA_KEY } from "./log-context.js";
 
 /** @internal */
 export function getCheckpointRunId(checkpoint: Checkpoint | undefined): string | undefined {
@@ -76,6 +83,11 @@ export interface CheckpointRuntimeDeps {
    * does not contain listener failures.
    */
   onLoaded?: (checkpoint: Checkpoint, threadId: string) => Promise<void>;
+  /**
+   * Set in context log mode: returns the thread's log cursor. Checkpoints
+   * then hold control state and this cursor, never messages.
+   */
+  logCursor?: (threadId: string) => ContextLogCursor | undefined;
 }
 
 /**
@@ -155,7 +167,27 @@ export interface CheckpointRuntime {
  * @internal
  */
 export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): CheckpointRuntime {
-  const { checkpointer, state, onLoaded } = deps;
+  const { checkpointer, state, onLoaded, logCursor } = deps;
+
+  /**
+   * In log mode, reduce a checkpoint to control state: no messages, and the
+   * thread's current log cursor when there is one.
+   */
+  function toLogModeCheckpoint(threadId: string, checkpoint: Checkpoint): Checkpoint {
+    if (!logCursor) {
+      return checkpoint;
+    }
+    const cursor = logCursor(threadId);
+    return {
+      ...checkpoint,
+      messages: [],
+      ...(cursor
+        ? {
+            metadata: { ...(checkpoint.metadata ?? {}), [CONTEXT_LOG_CURSOR_METADATA_KEY]: cursor },
+          }
+        : {}),
+    };
+  }
 
   // Track current checkpoint state per thread
   const threadCheckpoints = new Map<string, Checkpoint>();
@@ -189,6 +221,10 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
     try {
       // Load from checkpointer
       checkpoint = await checkpointer.load(threadId);
+      if (checkpoint && logCursor) {
+        // Log mode never restores history from a checkpoint.
+        checkpoint = { ...checkpoint, messages: [] };
+      }
       if ((invalidationEpochs.get(threadId) ?? 0) === epoch) {
         staleThreads.delete(threadId);
         if (checkpoint) {
@@ -281,6 +317,8 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
       });
     }
 
+    checkpoint = toLogModeCheckpoint(threadId, checkpoint);
+
     try {
       // Save to checkpointer
       await checkpointer.save(checkpoint);
@@ -302,8 +340,9 @@ export function createCheckpointRuntime(deps: CheckpointRuntimeDeps): Checkpoint
     if (!checkpointer) {
       return;
     }
-    await checkpointer.save(checkpoint);
-    threadCheckpoints.set(threadId, checkpoint);
+    const persisted = toLogModeCheckpoint(threadId, checkpoint);
+    await checkpointer.save(persisted);
+    threadCheckpoints.set(threadId, persisted);
   }
 
   async function markPendingInterrupt(

@@ -20,13 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ContextLogStore` with `readHead`, `readPath`, `readVersion`,
     `readManifest`, `prepare`, `markDispatched`, `appendOutputs` and
     `recordOutcome`.
-  - `ContextProducer`, `ProjectionAdapter` and `ContextAdmitHook`.
+  - `ContextProducer`, `ProjectionAdapter` and `ContextAdmitHook`. A
+    projection's input (`ProjectionInput`) is content only: the version's
+    core and contract, the entries' content and the target model, so a call
+    can be projected before it is committed and reproduced byte for byte
+    afterwards.
   - `ContextLogError` and its `ContextLogConflictError`,
     `ContextLogNotFoundError`, `ContextLogRefusedError`,
     `ContextLogUnavailableError` and `ContextLogInvalidError` subclasses, plus
     `isContextLogError()`.
   - `activeContextEntries()`, which applies supersession and retraction to a
-    path for projection. `RuntimeContextEntryInput.retraction` marks an entry
+    path (committed entries or entry inputs) for projection. `RuntimeContextEntryInput.retraction` marks an entry
     that retires its target and is never emitted.
   - `MemoryContextLogStore`, the in-memory reference store.
   - `defineContextLogStoreConformanceSuite()` and
@@ -35,10 +39,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     implementation can run. A `completeManifest` hook supplies call fields
     that a store requires.
 - `AgentOptions.contextLog` (experimental). Log mode is off by default and an
-  agent without the option is unchanged. The log-mode runtime is not available
-  yet, so `createAgent` throws a `ConfigurationError` for `mode: "log"`.
+  agent without the option is unchanged.
+- Log-mode request projection (experimental). With `contextLog.mode: "log"`
+  each request is a projection of the stream's head path through the
+  projection adapter, under the frozen core stored on the head's version. The
+  runtime does not commit inputs or outputs yet, so log mode is not usable on
+  its own in this release. See [docs/context-log.md](./docs/context-log.md):
+  - `createMessageProjectionAdapter()`, the default adapter. Capability
+    projection of tool-result media happens inside it, keyed by the version's
+    contract (`ContextProjectionContractKey`).
+  - `ContextLogOptions.resolveCore` (`ContextCoreResolver`) supplies the core
+    of a new version; a static `systemPrompt` is the alternative. An existing
+    version always projects its stored core.
+  - Caller-supplied history (`messages`) is rejected; the prompt reaches
+    `PreGenerate` hooks as a user message in `options.messages`, so the
+    secrets filter and guardrails see it before it is sent.
+  - `promptBuilder`, `contextManager`, `contextLog.producers`,
+    `contextLog.admit`, `resume()`, `resumeDataResponse()` and
+    `streamDataResponse()` background follow-ups are rejected in log mode
+    until their log-mode support lands.
+  - Checkpoints hold control state and a `ContextLogCursor` under
+    `metadata.contextLog`, never messages.
+  - Every provider step of a tool loop is projected through the adapter, and
+    retry hooks cannot change a log-mode call's input.
 - Append-only context producers and hook rules for log mode (experimental;
-  dormant until the log-mode runtime lands):
+  dormant until the log-mode runtime wires them in):
   - `createSlotContextProducer()` builds a `ContextProducer` that keeps one
     value per slot: unchanged values are deduplicated, a changed value
     supersedes the slot's latest entry, removed configuration is retracted,

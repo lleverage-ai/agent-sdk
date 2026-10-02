@@ -61,11 +61,31 @@ describe("createAgent contextLog option", () => {
     ).not.toThrow();
   });
 
-  it("rejects log mode until the runtime is available", () => {
+  it("enables log mode with a frozen core", () => {
+    expect(() =>
+      createAgent({
+        model: createMockModel(),
+        systemPrompt: "core",
+        contextLog: { mode: "log", store: new MemoryContextLogStore() },
+      }),
+    ).not.toThrow();
+  });
+
+  it("rejects log mode without a frozen core and unknown modes", () => {
     expect(() =>
       createAgent({
         model: createMockModel(),
         contextLog: { mode: "log", store: new MemoryContextLogStore() },
+      }),
+    ).toThrow(ConfigurationError);
+    expect(() =>
+      createAgent({
+        model: createMockModel(),
+        systemPrompt: "core",
+        contextLog: {
+          mode: "journal" as "log",
+          store: new MemoryContextLogStore(),
+        },
       }),
     ).toThrow(ConfigurationError);
   });
