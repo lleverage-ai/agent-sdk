@@ -9,6 +9,7 @@ import type {
   LanguageModelV3CallOptions,
   LanguageModelV3Content,
   LanguageModelV3Prompt,
+  LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
 import { jsonSchema, type LanguageModel, tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
@@ -17,10 +18,15 @@ import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
 import {
   type Agent,
   type AgentOptions,
+  type ContextAppendOutputsRequest,
   type ContextEntry,
+  ContextLogRefusedError,
   type ContextLogStore,
+  type ContextPrepareRequest,
   type ContextStreamRef,
   createAgent,
+  createSecretsFilterHooks,
+  createTaskTool,
   DelegationRecoveryRequiredError,
   deriveSubagentContextStream,
   isContextLogError,
@@ -68,8 +74,67 @@ function scriptedModel(replies: Reply[], modelId = "mock-model") {
         warnings: [],
       };
     },
+    doStream: async (request) => {
+      const index = requests.length;
+      requests.push(request);
+      const reply = replies[Math.min(index, replies.length - 1)]!;
+      if (typeof reply === "function") reply();
+      const content = reply as LanguageModelV3Content[];
+      const parts: LanguageModelV3StreamPart[] = [{ type: "stream-start", warnings: [] }];
+      for (const part of content) {
+        if (part.type === "text") {
+          parts.push(
+            { type: "text-start", id: "t" },
+            { type: "text-delta", id: "t", delta: part.text },
+            { type: "text-end", id: "t" },
+          );
+        } else {
+          parts.push(part as LanguageModelV3StreamPart);
+        }
+      }
+      parts.push({
+        type: "finish",
+        finishReason: content.some((part) => part.type === "tool-call")
+          ? { unified: "tool-calls", raw: "tool_calls" }
+          : { unified: "stop", raw: "stop" },
+        usage,
+      });
+      return {
+        stream: new ReadableStream({
+          start(controller) {
+            for (const part of parts) controller.enqueue(part);
+            controller.close();
+          },
+        }),
+      };
+    },
   });
   return { model: model as LanguageModel, requests };
+}
+
+/** The in-memory store, refusing the output commits of subagent streams. */
+class FailingChildOutputsStore extends MemoryContextLogStore {
+  private readonly childManifests = new Set<string>();
+  override async prepare(request: ContextPrepareRequest) {
+    const result = await super.prepare(request);
+    if (request.stream.streamId.includes("/subagent/")) this.childManifests.add(result.manifest.id);
+    return result;
+  }
+  override async appendOutputs(request: ContextAppendOutputsRequest) {
+    if (this.childManifests.has(request.manifestId)) {
+      throw new ContextLogRefusedError("injected_output_failure");
+    }
+    return super.appendOutputs(request);
+  }
+}
+
+/** A promise with its resolver. */
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 const echo = tool({
@@ -535,6 +600,194 @@ describe("log-mode subagent streams", () => {
     expect(await toolResultFor(store, "call-1")).toContain("General result");
   });
 
+  it("fails a first run that stops on a tool call instead of returning its text", async () => {
+    const store = new MemoryContextLogStore();
+    const child = scriptedModel([[...text("Partial"), ...call("echo-1", "echo", { value: "a" })]]);
+    const { definition } = researcher(child.model, { tools: { echo }, maxSteps: 1 });
+    const toolErrors: unknown[] = [];
+    await parentAgent(
+      scriptedModel([delegate("call-1"), text("Reported")]).model,
+      store,
+      [definition],
+      {
+        transformToolError: (error) => {
+          toolErrors.push(error);
+          return error;
+        },
+      },
+    ).generate({ prompt: "Delegate it", threadId: THREAD });
+
+    expect(child.requests).toHaveLength(1);
+    expect(toolErrors).toHaveLength(1);
+    expect(toolErrors[0]).toBeInstanceOf(DelegationRecoveryRequiredError);
+    expect(await toolResultFor(store, "call-1")).not.toContain("Partial");
+  });
+
+  it("returns the committed, screened reply rather than the live or reshaped text", async () => {
+    const store = new MemoryContextLogStore();
+    const child = scriptedModel([text("The key is AKIAIOSFODNN7EXAMPLE")]);
+    const [inputFilter] = createSecretsFilterHooks();
+    const { definition } = researcher(child.model, {
+      hooks: {
+        PreGenerate: [inputFilter!],
+        PostGenerate: [
+          async (input) =>
+            input.hook_event_name === "PostGenerate"
+              ? {
+                  hookSpecificOutput: {
+                    hookEventName: "PostGenerate" as const,
+                    updatedResult: { ...input.result, text: "Reshaped" },
+                  },
+                }
+              : {},
+        ],
+      },
+    });
+    await parentAgent(scriptedModel([delegate("call-1"), text("Done")]).model, store, [
+      definition,
+    ]).generate({ prompt: "Delegate it", threadId: THREAD });
+
+    const committed = await readSubagentDelegation(store, childStreamFor("call-1"));
+    expect(committed.status).toBe("completed");
+    const reply = (committed as { text: string }).text;
+    expect(reply).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    const result = await toolResultFor(store, "call-1");
+    expect(result).toContain(JSON.stringify(reply).slice(1, -1));
+    expect(result).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    expect(result).not.toContain("Reshaped");
+  });
+
+  it("returns a streaming child's committed reply once its stream has settled", async () => {
+    const store = new MemoryContextLogStore();
+    const chunks: Array<{ type: string; data?: { event?: string; text?: string } }> = [];
+    const child = scriptedModel([text("Streamed result")]);
+    const { definition } = researcher(child.model);
+    definition.streaming = true;
+    await parentAgent(scriptedModel([delegate("call-1"), text("Done")]).model, store, [
+      definition,
+    ]).generate({
+      prompt: "Delegate it",
+      threadId: THREAD,
+      streamingContext: { writer: { write: (chunk: never) => chunks.push(chunk) } as never },
+    });
+
+    expect(await toolResultFor(store, "call-1")).toContain("Streamed result");
+    const complete = chunks.find((chunk) => chunk.data?.event === "complete");
+    expect(complete?.data?.text).toBe("Streamed result");
+  });
+
+  it("fails a streaming child whose final output commit failed", async () => {
+    const store = new FailingChildOutputsStore();
+    const chunks: Array<{ type: string; data?: { event?: string } }> = [];
+    const child = scriptedModel([text("Streamed but lost")]);
+    const { definition } = researcher(child.model);
+    definition.streaming = true;
+    const toolErrors: unknown[] = [];
+    await parentAgent(
+      scriptedModel([delegate("call-1"), text("Reported")]).model,
+      store,
+      [definition],
+      {
+        transformToolError: (error) => {
+          toolErrors.push(error);
+          return error;
+        },
+      },
+    ).generate({
+      prompt: "Delegate it",
+      threadId: THREAD,
+      streamingContext: { writer: { write: (chunk: never) => chunks.push(chunk) } as never },
+    });
+
+    expect(chunks.some((chunk) => chunk.data?.event === "chunk")).toBe(true);
+    expect(chunks.some((chunk) => chunk.data?.event === "complete")).toBe(false);
+    expect(toolErrors).toHaveLength(1);
+    expect(toolErrors[0]).toBeInstanceOf(DelegationRecoveryRequiredError);
+    const head = await store.readHead(childStreamFor("call-1"));
+    expect((await store.readManifest(head!.lastManifestId)).outcome?.status).toBe("unknown");
+  });
+
+  describe("concurrent deliveries of one delegation", () => {
+    /**
+     * Two deliveries of the same tool call both find no head; their factories
+     * are held until both have, then the second runs only after the first
+     * settled.
+     */
+    async function deliverTwice(childReplies: Reply[], childOptions: Partial<AgentOptions> = {}) {
+      const store = new MemoryContextLogStore();
+      const child = scriptedModel(childReplies);
+      const bothOpened = deferred();
+      const firstSettled = deferred();
+      let created = 0;
+      const definition: SubagentDefinition = {
+        type: "researcher",
+        description: "Researches topics",
+        create: async (ctx) => {
+          created += 1;
+          if (created === 2) bothOpened.resolve();
+          await (created === 1 ? bothOpened.promise : firstSettled.promise);
+          return createAgent({
+            model: child.model,
+            systemPrompt: "You are the researcher.",
+            contextLog: { mode: "log", store: ctx.contextLog!.store },
+            ...childOptions,
+          });
+        },
+      };
+      const parent = parentAgent(scriptedModel([text("unused")]).model, store, [definition]);
+      const task = createTaskTool({
+        subagents: [definition],
+        defaultModel: child.model,
+        parentAgent: parent,
+        includeGeneralPurpose: false,
+      });
+      const deliver = () =>
+        task.execute!(
+          { description: "Research the topic", subagent_type: "researcher" },
+          {
+            toolCallId: "call-1",
+            messages: [],
+            experimental_context: { agentSdk: { contextLog: { store, stream: MAIN } } },
+          },
+        );
+      const first = deliver();
+      const second = deliver();
+      const firstResult = await first
+        .catch((error: unknown) => error)
+        .finally(() => firstSettled.resolve());
+      const secondResult = await second.catch((error: unknown) => error);
+      return { store, child, firstResult, secondResult, created };
+    }
+
+    it("reads the first delivery's reply back instead of appending the task again", async () => {
+      const { store, child, firstResult, secondResult, created } = await deliverTwice([
+        text("Child result"),
+      ]);
+
+      expect(created).toBe(2);
+      expect(child.requests).toHaveLength(1);
+      expect(firstResult).toMatchObject({ success: true, text: "Child result" });
+      expect(secondResult).toMatchObject({ success: true, text: "Child result" });
+      expect((await readPath(store, childStreamFor("call-1"))).map((e) => e.kind)).toEqual([
+        "user",
+        "assistant",
+      ]);
+    });
+
+    it("fails the second delivery with the typed error when the first did not finish", async () => {
+      const { store, child, firstResult, secondResult } = await deliverTwice(
+        [call("echo-1", "echo", { value: "a" })],
+        { tools: { echo }, maxSteps: 1 },
+      );
+
+      expect(child.requests).toHaveLength(1);
+      expect(firstResult).toBeInstanceOf(DelegationRecoveryRequiredError);
+      expect(secondResult).toBeInstanceOf(DelegationRecoveryRequiredError);
+      const path = await readPath(store, childStreamFor("call-1"));
+      expect(path.filter((entry) => entry.kind === "user")).toHaveLength(1);
+    });
+  });
+
   it("leaves legacy delegation unchanged", async () => {
     const child = scriptedModel([text("Child result")]);
     const { definition, contexts } = researcher(child.model);
@@ -644,5 +897,33 @@ describe("readSubagentDelegation", () => {
     });
     await store.recordOutcome(manifest.id, { status: "failed" });
     expect((await readSubagentDelegation(store, stream)).status).toBe("unfinished");
+  });
+});
+
+describe("deriveSubagentContextStream", () => {
+  it("keeps delegations with special characters in their type apart", () => {
+    const a = deriveSubagentContextStream({
+      parent: MAIN,
+      toolCallId: "call-1",
+      subagentType: "a/subagent/b",
+    });
+    const b = deriveSubagentContextStream({
+      parent: { ...MAIN, streamId: "main/subagent/a" },
+      toolCallId: "call-1",
+      subagentType: "b",
+    });
+    expect(a.streamId).not.toBe(b.streamId);
+    expect(a.streamId).toMatch(/^main\/subagent\/a%2Fsubagent%2Fb-[0-9a-f]{32}$/);
+    const percent = deriveSubagentContextStream({
+      parent: MAIN,
+      toolCallId: "call-1",
+      subagentType: "a%2Fb",
+    });
+    const slash = deriveSubagentContextStream({
+      parent: MAIN,
+      toolCallId: "call-1",
+      subagentType: "a/b",
+    });
+    expect(percent.streamId).not.toBe(slash.streamId);
   });
 });

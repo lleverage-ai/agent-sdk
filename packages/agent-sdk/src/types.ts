@@ -25,6 +25,7 @@ import type {
 import type { BackendProtocol } from "./backend.js";
 import type { AgentState } from "./backends/state.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
+import type { DelegationStreamClaim } from "./context-log/delegation.js";
 import type {
   ContextLogOptions,
   ContextLogStore,
@@ -2383,6 +2384,16 @@ export interface GenerateOptions {
    * @internal
    */
   _logRun?: { id: string; ordinal: number; attempt: number; lastInputDigest?: string };
+
+  /**
+   * Internal, context log mode only: a delegation's claim on its child
+   * stream. Every call refuses to plan unless the stream's head is still at
+   * the revision this delegation last left it, so a second delivery of the
+   * same delegation can never append to it. Continuations that spread the
+   * options keep the same claim.
+   * @internal
+   */
+  _contextClaim?: DelegationStreamClaim;
 }
 
 /**

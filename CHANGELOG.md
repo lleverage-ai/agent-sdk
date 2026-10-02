@@ -136,9 +136,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     must return an agent in log mode on that store, without the parent's
     checkpointer; the task tool runs it on the child stream.
   - The child stream defaults to
-    `<parent stream>/subagent/<type>-<digest of the toolCallId>` on the
-    parent's branch (`deriveSubagentContextStream()`); hosts can choose it
-    with `contextLog.subagentStream`.
+    `<parent stream>/subagent/<percent-encoded type>-<digest of the toolCallId>`
+    on the parent's branch (`deriveSubagentContextStream()`); hosts can
+    choose it with `contextLog.subagentStream`.
+  - The delegation's result is the child's committed final reply, read from
+    its stream after the run settles, so a first run and a later read-back
+    agree. A run that ends without a committed final reply (stopped on a tool
+    call, interrupted, or a failed final output commit) fails with
+    `DelegationRecoveryRequiredError`.
+  - Each delegation claims its child stream: its calls only plan on the head
+    it last left, so a concurrent second delivery of the same tool call never
+    appends the task again; it reads the reply back or fails with the typed
+    error.
   - Recreating a delegation whose stream holds a committed final reply
     returns that reply without running anything. A stream with any other
     head fails with `DelegationRecoveryRequiredError` (a

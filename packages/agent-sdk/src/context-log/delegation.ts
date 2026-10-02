@@ -52,8 +52,9 @@ export type SubagentStreamResolver = (input: SubagentStreamInput) => {
 
 /**
  * The default child stream of a delegation: the parent's branch, and the
- * stream `<parent stream>/subagent/<type>-<digest>`, where the digest is the
- * first 32 hex characters of the SHA-256 of the tool call id.
+ * stream `<parent stream>/subagent/<type>-<digest>`, where the type is
+ * percent-encoded (`encodeURIComponent`) and the digest is the first 32 hex
+ * characters of the SHA-256 of the tool call id.
  *
  * @param input - The parent stream, tool call and subagent type
  * @returns The child stream
@@ -73,10 +74,13 @@ export type SubagentStreamResolver = (input: SubagentStreamInput) => {
  */
 export function deriveSubagentContextStream(input: SubagentStreamInput): ContextStreamRef {
   const digest = createHash("sha256").update(input.toolCallId, "utf8").digest("hex").slice(0, 32);
+  // The type is percent-encoded, so the last segment never contains "/" and
+  // the parent stream, type and digest are recoverable from the id: distinct
+  // delegations never share a stream.
   return {
     threadId: input.parent.threadId,
     branchId: input.parent.branchId,
-    streamId: `${input.parent.streamId}/subagent/${input.subagentType}-${digest}`,
+    streamId: `${input.parent.streamId}/subagent/${encodeURIComponent(input.subagentType)}-${digest}`,
   };
 }
 
@@ -218,4 +222,18 @@ export function readDelegationScope(toolOptions: unknown): DelegationScope | und
     ?.experimental_context as { agentSdk?: { contextLog?: DelegationScope } } | undefined;
   const scope = context?.agentSdk?.contextLog;
   return scope && typeof scope === "object" && scope.store && scope.stream ? scope : undefined;
+}
+
+/**
+ * A delegation's claim on its child stream: the head revision the delegation
+ * last left the stream at, `0` before its first write. Every log-mode call
+ * that carries the claim refuses to plan on any other head (a conflict with
+ * reason `delegation_claim_lost`), and each of its own commits moves the
+ * claim forward. A second delivery of the same delegation therefore cannot
+ * append the task again after the first one started.
+ *
+ * @internal
+ */
+export class DelegationStreamClaim {
+  revision = 0;
 }

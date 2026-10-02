@@ -31,6 +31,7 @@ export type ContextLogErrorKind = "conflict" | "not_found" | "refused" | "unavai
  * - `dispatch_already_started` - The call was already dispatched or closed
  * - `invalid_lifecycle` - The call is not in a state that allows the operation
  * - `invalid_supersession` - A `supersedes` target is not an active runtime context entry earlier on the path
+ * - `delegation_claim_lost` - A delegated subagent's stream moved outside the delegation (another delivery wrote to it)
  *
  * Stores may report additional, store-specific reasons.
  *
@@ -45,6 +46,7 @@ export type ContextLogConflictReason =
   | "dispatch_already_started"
   | "invalid_lifecycle"
   | "invalid_supersession"
+  | "delegation_claim_lost"
   | (string & {});
 
 /**

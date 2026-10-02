@@ -13,6 +13,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import {
   type DelegationScope,
+  DelegationStreamClaim,
   readDelegationScope,
   readSubagentDelegation,
   resolveSubagentContextStream,
@@ -495,6 +496,51 @@ function assertLogModeSubagent(
   }
 }
 
+/**
+ * Whether a child call refused to run because its stream moved outside the
+ * delegation: its claim was lost, or its first prepare lost the race.
+ *
+ * @internal
+ */
+function isDelegationClaimConflict(error: unknown): boolean {
+  for (let current = error, depth = 0; current && depth < 5; depth++) {
+    if (
+      isContextLogError(current, "conflict") &&
+      (current.reason === "delegation_claim_lost" || current.reason === "head_moved")
+    ) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * The delegation's result: the final reply committed on its stream. Any
+ * other state needs host recovery.
+ *
+ * @internal
+ */
+async function committedDelegationReply(
+  contextLog: SubagentContextLog,
+  cause?: unknown,
+): Promise<string> {
+  const state = await readSubagentDelegation(contextLog.store, contextLog.stream);
+  if (state.status === "completed") {
+    return state.text;
+  }
+  if (state.status === "unfinished") {
+    throw new DelegationRecoveryRequiredError(contextLog.stream, state.head);
+  }
+  throw (
+    cause ??
+    new ContextLogInvalidError(
+      "delegation_not_committed",
+      `Subagent stream "${contextLog.stream.streamId}" has no committed history after the subagent ran`,
+    )
+  );
+}
+
 /** Whether a delegation failed because its child stream needs host recovery. @internal */
 function isDelegationRecoveryRequired(error: unknown): boolean {
   return isContextLogError(error, "refused") && error.reason === "delegation_recovery_required";
@@ -667,6 +713,8 @@ ${subagentDescriptions}`;
           : Promise.resolve(undefined);
       // Set when the stream was opened before execution started.
       let preOpened: Awaited<ReturnType<typeof openStream>>;
+      // Whether the factory created the subagent (it then started work).
+      let childCreated = false;
 
       // Execute task function
       const executeTask = async (signal?: AbortSignal): Promise<string> => {
@@ -697,6 +745,9 @@ ${subagentDescriptions}`;
         if (opened) {
           childContextLog = opened.contextLog;
         }
+        // The delegation claims its stream: every child call (including a
+        // host's continuations, which spread these options) plans only on
+        // the head the delegation itself last left.
         const childStreamOptions = childContextLog
           ? {
               threadId: childContextLog.stream.threadId,
@@ -704,6 +755,7 @@ ${subagentDescriptions}`;
                 branchId: childContextLog.stream.branchId,
                 streamId: childContextLog.stream.streamId,
               },
+              _contextClaim: new DelegationStreamClaim(),
             }
           : {};
 
@@ -742,6 +794,7 @@ ${subagentDescriptions}`;
 
         // Create the subagent with resolved context
         const subagent = await subagentDef.create(createContext);
+        childCreated = true;
         if (childContextLog) {
           assertLogModeSubagent(subagent, childContextLog, parentAgent);
         }
@@ -768,9 +821,7 @@ ${subagentDescriptions}`;
         await subagent.ready;
         signal?.throwIfAborted();
 
-        let resultText: string;
-
-        if (isStreamingSubagent) {
+        const runStreaming = async (): Promise<string> => {
           // Streaming execution - send subagent output as data chunks
           // This keeps the output separate from the assistant message content
           // Signal subagent start to client
@@ -809,8 +860,45 @@ ${subagentDescriptions}`;
           }
 
           signal?.throwIfAborted();
-          resultText = fullText;
+          return fullText;
+        };
 
+        const runGenerate = async (): Promise<string> => {
+          // Non-streaming execution - use generate() as before
+          const result = await subagent.generate({
+            ...childStreamOptions,
+            signal,
+            prompt: description,
+            maxTokens: (max_turns ?? defaultMaxTurns) * 4096,
+          });
+          if (result.status === "complete") {
+            return result.text;
+          }
+          return `Interrupted: ${result.interrupt.type}`;
+        };
+
+        let resultText: string;
+        if (!childContextLog) {
+          resultText = isStreamingSubagent ? await runStreaming() : await runGenerate();
+        } else {
+          // Log mode: the result is the child's committed final reply, read
+          // from its stream once the run (and any stream) has fully settled,
+          // so a first run returns exactly what recovery would. A run that
+          // did not commit a final reply needs host recovery. A delegation
+          // whose stream another delivery moved is re-evaluated the same way.
+          let claimConflict: unknown;
+          try {
+            await (isStreamingSubagent ? runStreaming() : runGenerate());
+          } catch (error) {
+            if (!isDelegationClaimConflict(error)) throw error;
+            claimConflict = error;
+          }
+          signal?.throwIfAborted();
+          resultText = await committedDelegationReply(childContextLog, claimConflict);
+        }
+        signal?.throwIfAborted();
+
+        if (isStreamingSubagent) {
           // Signal subagent completion to client
           streamingContext!.writer!.write({
             type: "data-subagent-stream",
@@ -821,21 +909,7 @@ ${subagentDescriptions}`;
               duration: Date.now() - startTime,
             },
           });
-        } else {
-          // Non-streaming execution - use generate() as before
-          const result = await subagent.generate({
-            ...childStreamOptions,
-            signal,
-            prompt: description,
-            maxTokens: (max_turns ?? defaultMaxTurns) * 4096,
-          });
-          if (result.status === "complete") {
-            resultText = result.text;
-          } else {
-            resultText = `Interrupted: ${result.interrupt.type}`;
-          }
         }
-        signal?.throwIfAborted();
 
         const subagentStopHooks = parentAgent.options.hooks?.SubagentStop ?? [];
         if (subagentStopHooks.length > 0) {
@@ -978,11 +1052,10 @@ ${subagentDescriptions}`;
           text: resultText,
         };
       } catch (error) {
-        // A delegation that needs host recovery never started: no SubagentStop
-        // and no failed task. It rejects with its typed error, so the host's
-        // tool error handling (or a direct caller) can tell it apart from an
-        // ordinary failed task.
-        if (isDelegationRecoveryRequired(error)) {
+        // A delegation that needs host recovery before its subagent was
+        // created never started: no SubagentStop and no failed task.
+        const recoveryRequired = isDelegationRecoveryRequired(error);
+        if (recoveryRequired && !childCreated) {
           throw error;
         }
 
@@ -1011,6 +1084,12 @@ ${subagentDescriptions}`;
         // Optional persistence for foreground tasks
         if (taskStore) {
           await taskStore.save(failedTask);
+        }
+
+        // It rejects with its typed error, so the host's tool error handling
+        // (or a direct caller) can tell it apart from an ordinary failed task.
+        if (recoveryRequired) {
+          throw error;
         }
 
         return {

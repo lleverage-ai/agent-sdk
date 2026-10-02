@@ -722,6 +722,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       ? {
           ...logPlan.options,
           ...(effectiveGenOptions._logRun && { _logRun: effectiveGenOptions._logRun }),
+          ...(effectiveGenOptions._contextClaim && {
+            _contextClaim: effectiveGenOptions._contextClaim,
+          }),
         }
       : effectiveGenOptions;
     const executionBaseTelemetry = buildExecutionTelemetryFromIds({
@@ -1391,6 +1394,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
           // Log mode: the run's input keys and call numbering are the run's,
           // never a hook's (the retry guard hands hooks a copy).
           ...(effectiveGenOptions._logRun && { _logRun: effectiveGenOptions._logRun }),
+          ...(effectiveGenOptions._contextClaim && {
+            _contextClaim: effectiveGenOptions._contextClaim,
+          }),
         };
       }
       // Update retry state
