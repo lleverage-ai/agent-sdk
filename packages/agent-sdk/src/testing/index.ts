@@ -397,3 +397,12 @@ export {
   type RecordingAgent,
   type RecordingAgentOptions,
 } from "./recorder.js";
+// Context log store conformance suite (experimental)
+export {
+  type ConformanceManifestContext,
+  type ConformanceTestApi,
+  type ContextLogConformanceCase,
+  type ContextLogStoreConformanceOptions,
+  createContextLogStoreConformanceCases,
+  defineContextLogStoreConformanceSuite,
+} from "../context-log/conformance.js";

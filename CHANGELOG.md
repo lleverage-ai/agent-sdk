@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental context log contracts for the upcoming log mode, in which
+  persisted entries are the source of truth for an agent's history and every
+  model request is a projection of them. See
+  [docs/context-log.md](./docs/context-log.md). All are marked `@experimental`:
+  - Entry, version, transition, head, path and manifest types
+    (`ContextEntryInput`, `ContextVersion`, `ContextTransition`, `ContextHead`,
+    `ContextPathRef`, `ContextManifest` and related types). Every entry has a
+    generic `metadata` bag.
+  - `ContextLogStore` with `readHead`, `readPath`, `readVersion`,
+    `readManifest`, `prepare`, `markDispatched`, `appendOutputs` and
+    `recordOutcome`.
+  - `ContextProducer`, `ProjectionAdapter` and `ContextAdmitHook`.
+  - `ContextLogError` and its `ContextLogConflictError`,
+    `ContextLogNotFoundError`, `ContextLogRefusedError`,
+    `ContextLogUnavailableError` and `ContextLogInvalidError` subclasses, plus
+    `isContextLogError()`.
+  - `activeContextEntries()`, which applies supersession and retraction to a
+    path for projection. `RuntimeContextEntryInput.retraction` marks an entry
+    that retires its target and is never emitted.
+  - `MemoryContextLogStore`, the in-memory reference store.
+  - `defineContextLogStoreConformanceSuite()` and
+    `createContextLogStoreConformanceCases()` in
+    `@lleverage-ai/agent-sdk/testing`, a framework-agnostic suite any store
+    implementation can run. A `completeManifest` hook supplies call fields
+    that a store requires.
+- `AgentOptions.contextLog` (experimental). Log mode is off by default and an
+  agent without the option is unchanged. The log-mode runtime is not available
+  yet, so `createAgent` throws a `ConfigurationError` for `mode: "log"`.
+
 ### Changed
 
 - `MCPManager.searchTools()`, and so `search_tools`, now ranks the tools a

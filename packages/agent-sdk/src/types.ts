@@ -25,6 +25,7 @@ import type {
 import type { BackendProtocol } from "./backend.js";
 import type { AgentState } from "./backends/state.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
+import type { ContextLogOptions } from "./context-log/types.js";
 
 // =============================================================================
 // Re-export AI SDK Types
@@ -1015,6 +1016,22 @@ export interface AgentOptions {
    * ```
    */
   checkpointer?: BaseCheckpointSaver;
+
+  /**
+   * Experimental context log mode.
+   *
+   * In log mode, persisted context log entries are the source of truth for
+   * the agent's history and every model request is a projection of them.
+   * Log mode is off by default: without this option, or with `mode: "off"`,
+   * the agent behaves exactly as before. The log-mode runtime is not
+   * available yet, so `createAgent` rejects `mode: "log"` with a
+   * {@link ConfigurationError}.
+   *
+   * @experimental
+   * @defaultValue undefined
+   * @see {@link ContextLogOptions}
+   */
+  contextLog?: ContextLogOptions;
 
   /**
    * Plugin loading mode for tool registration.
