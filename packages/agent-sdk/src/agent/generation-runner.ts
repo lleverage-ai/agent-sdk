@@ -1055,7 +1055,14 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
       let requestOptions = run.effectiveGenOptions;
       const retryState = createRetryState();
-      let started: { attempt: PreparedAttempt; result: ReturnType<typeof streamText> } | undefined;
+      let started:
+        | {
+            attempt: PreparedAttempt;
+            result: ReturnType<typeof streamText>;
+            /** Settles when the stream's onFinish (checkpoint save, PostGenerate) is done. */
+            finished: Promise<void>;
+          }
+        | undefined;
       while (!started) {
         let logCall: LogCallBoundary | undefined;
         try {
@@ -1070,12 +1077,24 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
             requestOptions,
             requestOptions.threadId,
           );
+          const lifecycle = createStreamLifecycleCallbacks(attempt, streamingCompaction);
+          let settleFinished = () => {};
+          const finished = new Promise<void>((resolve) => {
+            settleFinished = resolve;
+          });
           const result = streamText({
             ...buildModelCallParams(attempt),
             prepareStep: prepareStepFor(attempt, streamingCompaction.prepareStep),
-            ...createStreamLifecycleCallbacks(attempt, streamingCompaction),
+            onStepFinish: lifecycle.onStepFinish,
+            onFinish: async (finishResult) => {
+              try {
+                await lifecycle.onFinish(finishResult);
+              } finally {
+                settleFinished();
+              }
+            },
           });
-          started = { attempt, result };
+          started = { attempt, result, finished };
         } catch (error) {
           await logCall?.abandon(requestOptions.signal?.aborted);
           requestOptions = await retryOrThrow(
@@ -1086,7 +1105,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         }
       }
 
-      const { attempt, result } = started;
+      const { attempt, result, finished } = started;
       try {
         writer.merge(result.toUIMessageStream());
         await result.text;
@@ -1101,6 +1120,10 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       // initial turn's: persist and announce it, and run no further turns.
       const { signalState } = attempt;
       if (signalState.interrupt) {
+        // The stream's onFinish saves the checkpoint after the result
+        // resolves; stamp the interrupt only once that save is done, so it
+        // cannot overwrite the pending interrupt.
+        await finished;
         const threadId = attempt.effectiveGenOptions.threadId;
         const interrupt = signalState.interrupt.interrupt;
         if (threadId && options.checkpointer) {

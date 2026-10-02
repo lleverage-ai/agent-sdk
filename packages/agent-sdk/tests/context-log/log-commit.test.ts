@@ -1126,9 +1126,46 @@ describe("log-mode commit edge cases", () => {
     expect((await store.inner.readManifest(stale!.id)).outcome?.status).toBe("unknown");
   });
 
+  it("honours a signal a PreGenerate hook supplied when the provider ignores it", async () => {
+    const store = new MemoryContextLogStore();
+    const controller = new AbortController();
+    const { model } = createScriptedModel([text("late")], {
+      // The provider ignores cancellation and answers anyway.
+      onCall: () => controller.abort(),
+    });
+    const agent = logAgent(model, store, {
+      hooks: {
+        PreGenerate: [
+          async (input) => ({
+            hookSpecificOutput: {
+              hookEventName: "PreGenerate" as const,
+              updatedInput: {
+                ...(input as { options: object }).options,
+                signal: controller.signal,
+              },
+            },
+          }),
+        ],
+      },
+    });
+
+    await expect(agent.generate({ prompt: "go", threadId: THREAD })).rejects.toThrow();
+
+    expect((await readPath(store)).map((entry) => entry.kind)).toEqual(["user"]);
+    const [manifest] = await readManifests(store);
+    expect(manifest!.outcome?.status).toBe("cancelled");
+  });
+
   it("stops background follow-ups at an interrupt and records it", async () => {
     const store = new MemoryContextLogStore();
-    const checkpointer = new MemorySaver();
+    // A checkpointer whose saves complete later, as a remote one would.
+    class SlowSaver extends MemorySaver {
+      override async save(...args: Parameters<MemorySaver["save"]>) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return super.save(...args);
+      }
+    }
+    const checkpointer = new SlowSaver();
     const tools = {
       ask: tool({
         inputSchema: jsonSchema<Record<string, never>>({ type: "object", properties: {} }),

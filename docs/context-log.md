@@ -328,7 +328,10 @@ exactly what the provider receives:
    and records the call `completed`. The outputs first pass the `PreGenerate`
    hooks as new input, so the secrets filter redacts them and guardrails can
    stop the run before they are committed; the committed, screened entries
-   are what later steps see. The next step is projected from the
+   are what later steps see. The generation's options are fixed once it has
+   started, so operational options a hook changes while screening outputs
+   are ignored. A denial, hook violation or admit refusal is never retried,
+   so a blocked step never runs its tools again. The next step is projected from the
    committed entries. The generation's last step is committed the same way
    before the run returns, so a run that ends with a plain reply leaves it as
    the last entry.

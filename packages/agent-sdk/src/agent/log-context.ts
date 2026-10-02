@@ -520,6 +520,8 @@ export function createLogContextRuntime(
       model,
       project: (entries) => project(plan.core, plan.contract, entries, plan.target),
       onHead: (head) => cursors.set(plan.stream.threadId, toCursor(plan.stream, head)),
+      // Only the screened entries are used: the generation's options are
+      // fixed once it started, so operational changes here are ignored.
       screenOutputs: async (items) => (await screen(plan.options, [...items])).pending,
     });
   }
