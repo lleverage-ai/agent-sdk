@@ -321,6 +321,78 @@ describe("log-mode branch transitions", () => {
     expect(requests.length).toBe(calls);
   });
 
+  it("refuses a branch that inherits the source through another cause", async () => {
+    const { store, model, requests, head } = await seedMain();
+    // Another writer started the branch from the same path, but declared it
+    // as something other than a branch.
+    await store.prepare({
+      stream: EDIT,
+      expectedRevision: 0,
+      idempotencyKey: "other-writer",
+      transition: {
+        reason: "legacy_import",
+        parent: { versionId: head.versionId, inheritedCount: 2 },
+        core: "You are the core.",
+        contract: (await store.readVersion(head.versionId)).contract,
+      },
+      append: [],
+      manifest: {
+        projection: { adapter: "agent-sdk/messages", version: "1" },
+        model: { provider: "mock-provider", modelId: "mock-model-id" },
+        inputDigest: "0".repeat(64),
+      },
+    });
+    const before = await store.readHead(EDIT);
+    const calls = requests.length;
+
+    const error = await logAgent(model, store)
+      .generate({
+        prompt: "edited",
+        threadId: THREAD,
+        contextStream: { branchId: "edit", branchFrom: refAt(head, 2) },
+      })
+      .catch((caught: unknown) => caught);
+
+    expect(isContextLogError(error) && error.reason).toBe("branch_source_mismatch");
+    expect(requests.length).toBe(calls);
+    expect(await store.readHead(EDIT)).toEqual(before);
+  });
+
+  it("follows the branch's own compaction and model changes back to the branch transition", async () => {
+    const { store, head } = await seedMain();
+    const first = createRecordingModel();
+    await logAgent(first.model, store).generate({
+      prompt: "edited",
+      threadId: THREAD,
+      contextStream: { branchId: "edit", branchFrom: refAt(head, 2) },
+    });
+    // Another model on the branch: a model_change child of the branch version.
+    const other = new MockLanguageModelV3({
+      modelId: "other-model",
+      doGenerate: async () => ({
+        content: [{ type: "text", text: "from other" }],
+        finishReason: { unified: "stop", raw: "stop" },
+        usage,
+        warnings: [],
+      }),
+    });
+    await logAgent(other as LanguageModel, store).generate({
+      prompt: "switch",
+      threadId: THREAD,
+      contextStream: { branchId: "edit", branchFrom: refAt(head, 2) },
+    });
+    const switched = (await store.readHead(EDIT))!;
+    expect((await store.readVersion(switched.versionId)).reason).toBe("model_change");
+
+    // A later call that still declares the source walks back past it.
+    const result = await logAgent(other as LanguageModel, store).generate({
+      prompt: "more",
+      threadId: THREAD,
+      contextStream: { branchId: "edit", branchFrom: refAt(head, 2) },
+    });
+    expect(result.text).toBe("from other");
+  });
+
   it.each([
     ["the same branch", (head: ContextPathRef) => ({ branchId: "main", branchFrom: head })],
     [

@@ -458,16 +458,23 @@ function readResolution(
   return { approved: part.approved, ...(part.reason !== undefined && { reason: part.reason }) };
 }
 
-/** Versions whose branch lineage a run has checked. @internal */
+/**
+ * Head versions whose lineage a run has checked, per declared source (a
+ * caller that changes its declaration mid-run is checked again). @internal
+ */
 const checkedLineage = new WeakMap<object, Set<string>>();
 
-function lineageChecked(run: object, versionId: string): boolean {
-  return checkedLineage.get(run)?.has(versionId) ?? false;
+function lineageKey(versionId: string, from: ContextPathRef): string {
+  return JSON.stringify([versionId, from.stream.branchId, from.versionId, from.entryCount]);
 }
 
-function markLineageChecked(run: object, versionId: string): void {
+function lineageChecked(run: object, versionId: string, from: ContextPathRef): boolean {
+  return checkedLineage.get(run)?.has(lineageKey(versionId, from)) ?? false;
+}
+
+function markLineageChecked(run: object, versionId: string, from: ContextPathRef): void {
   const checked = checkedLineage.get(run) ?? new Set<string>();
-  checked.add(versionId);
+  checked.add(lineageKey(versionId, from));
   checkedLineage.set(run, checked);
 }
 
@@ -534,6 +541,7 @@ async function assertBranchLineage(
     const parent = await store.readVersion(version.parentVersionId);
     if (parent.stream.branchId !== stream.branchId) {
       if (
+        version.reason === "branch" &&
         version.parentVersionId === from.versionId &&
         parent.stream.branchId === from.stream.branchId &&
         version.inheritedCount === from.entryCount
@@ -703,9 +711,9 @@ export function createLogContextRuntime(
       // A run that declared its branch source keeps declaring it on every
       // call; once the branch transition is committed, the head must still
       // continue it (checked once per run and version).
-      if (branchFrom && !lineageChecked(run, head.versionId)) {
+      if (branchFrom && !lineageChecked(run, head.versionId, branchFrom)) {
         await assertBranchLineage(store, stream, head, branchFrom);
-        markLineageChecked(run, head.versionId);
+        markLineageChecked(run, head.versionId, branchFrom);
       }
       const version = await store.readVersion(head.versionId);
       const mismatched = projectionContractMismatches(version.contract, expectedContract);
