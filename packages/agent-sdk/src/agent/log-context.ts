@@ -744,7 +744,16 @@ export interface LogContextRuntimeDeps {
    * hooks, and its plan is never committed. Reports through `summarised`
    * whether the summarizer ran.
    */
-  prepareCompactor?: () => { compactor: LogCompactor; summarised: () => boolean } | undefined;
+  prepareCompactor?: () =>
+    | {
+        compactor: LogCompactor;
+        summarised: () => boolean;
+        /** Whether the manager kept `message` (by identity) rather than summarising it. */
+        kept: (message: ModelMessage) => boolean;
+        /** Whether the manager's retention keeps this many new messages. */
+        retains: (pendingMessages: number) => boolean;
+      }
+    | undefined;
 }
 
 /**
@@ -1359,6 +1368,11 @@ export function createLogContextRuntime(
     }
     const prepare = deps.prepareCompactor?.();
     if (!prepare) return { prepared: false, reason: "no_context_manager" };
+    // Placeholders the manager would summarise make a request the next call
+    // can never repeat (it summarises the real input there instead).
+    if (!prepare.retains(pendingMessages)) {
+      return { prepared: false, reason: "pending_summarised" };
+    }
     const stream: ContextStreamRef = {
       threadId,
       branchId: genOptions.contextStream?.branchId ?? DEFAULT_CONTEXT_BRANCH_ID,
@@ -1392,6 +1406,7 @@ export function createLogContextRuntime(
       message: { role: "user" as const, content: "" },
     }));
     const runId = genOptions._runId ?? `prepare-${randomUUID()}`;
+    genOptions.signal?.throwIfAborted();
     await prepare.compactor({
       stream,
       head,
@@ -1405,9 +1420,12 @@ export function createLogContextRuntime(
       screen: async (entries) => entries,
       project: (entries) => project(version.core, version.contract, entries, target),
     });
-    return prepare.summarised()
-      ? { prepared: true, head }
-      : { prepared: false, reason: "not_needed" };
+    if (!prepare.summarised()) return { prepared: false, reason: "not_needed" };
+    // A manager with its own retention may still have summarised them.
+    if (!pending.every((entry) => entry.kind === "user" && prepare.kept(entry.message))) {
+      return { prepared: false, reason: "pending_summarised" };
+    }
+    return { prepared: true, head };
   }
 
   return {

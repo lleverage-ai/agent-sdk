@@ -1562,3 +1562,87 @@ describe("log-mode prepared compaction summaries (LLE-14017)", () => {
     expect((error as Error).name).toBe("ConfigurationError");
   });
 });
+
+describe("log-mode compaction review fixes (LLE-14056, LLE-14017)", () => {
+  it("budgets a hypothetical child on its estimate, ignoring the last request's measured usage", () => {
+    const manager = createContextManager({
+      maxTokens: 1_000,
+      policy: { tokenThreshold: 0.5 },
+    });
+    // The last (unpruned) request measured far over budget.
+    manager.updateUsage?.({ inputTokens: 900, outputTokens: 10, totalTokens: 910 });
+    const small: ModelMessage[] = [{ role: "user", content: "short" }];
+    expect(manager.shouldCompact(small).trigger).toBe(true);
+    expect(
+      manager.shouldCompact(small, { budgetMessages: small, estimateOnly: true }).trigger,
+    ).toBe(false);
+  });
+
+  async function fourTurnsWith(
+    overrides: { keepMessageCount?: number; onCompact?: () => void } = {},
+  ) {
+    const store = new MemoryContextLogStore();
+    const summaries: SummaryRequest[] = [];
+    const contextManager = createContextManager({
+      maxTokens: 1_000_000,
+      policy: {
+        shouldCompact: (_budget, messages) =>
+          messages.length > 10 ? { trigger: true, reason: "token_threshold" } : { trigger: false },
+      },
+      summarization: { keepMessageCount: overrides.keepMessageCount ?? 2, keepToolResultCount: 0 },
+      summarizer: async (request) => {
+        summaries.push(request);
+        return { text: `summary ${summaries.length}` };
+      },
+      ...(overrides.onCompact && { onCompact: overrides.onCompact }),
+    });
+    const agent = logAgent(createScriptedModel([text("a")]).model, store, { contextManager });
+    for (const prompt of ["q1", "q2", "q3", "q4"]) {
+      await agent.generate({ prompt, threadId: THREAD });
+    }
+    return { store, agent, summaries };
+  }
+
+  it("leaves the live manager unchanged while preparing: no onCompact until a real compaction", async () => {
+    const onCompact = vi.fn();
+    const { agent, summaries } = await fourTurnsWith({ onCompact });
+
+    expect((await agent.prepareCompaction!({ threadId: THREAD })).prepared).toBe(true);
+    expect(summaries).toHaveLength(1);
+    expect(onCompact).not.toHaveBeenCalled();
+
+    await agent.generate({ prompt: "q5", threadId: THREAD });
+    expect(onCompact).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses to prepare when the manager would summarise the next call's new input", async () => {
+    const { agent, summaries } = await fourTurnsWith({ keepMessageCount: 0 });
+    expect(await agent.prepareCompaction!({ threadId: THREAD })).toEqual({
+      prepared: false,
+      reason: "pending_summarised",
+    });
+    expect(summaries).toHaveLength(0);
+  });
+
+  it("stops before the summarizer runs when its signal is aborted", async () => {
+    const { agent, summaries } = await fourTurnsWith();
+    const controller = new AbortController();
+    controller.abort();
+    const error = await agent.prepareCompaction!({
+      threadId: THREAD,
+      signal: controller.signal,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect((error as Error).name).toBe("AbortError");
+    expect(summaries).toHaveLength(0);
+  });
+
+  it("hands the call's signal to the summarizer", async () => {
+    const { agent, summaries } = await fourTurnsWith();
+    const controller = new AbortController();
+    await agent.prepareCompaction!({ threadId: THREAD, signal: controller.signal });
+    expect(summaries[0]!.signal).toBe(controller.signal);
+  });
+});

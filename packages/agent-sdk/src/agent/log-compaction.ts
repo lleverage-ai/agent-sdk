@@ -380,11 +380,13 @@ function mapKept(
 export function createLogCompactor(
   compactIfNeeded: MessageRuntime["compactMessagesIfNeeded"],
   /**
-   * Whether `messages`, as the model would be sent them, would still ask
-   * for compaction. A prune-only child (no summary) is declared only when
-   * it would not, so it is not declared again on every turn.
+   * Whether a hypothetical child would still ask for compaction: `view` is
+   * its compaction view (what a policy sees), `budgetMessages` its projected
+   * request, budgeted on its estimate alone (the last request's measured
+   * usage describes the unpruned request). A prune-only child (no summary)
+   * is declared only when it would not, so it is not declared on every turn.
    */
-  wouldCompact: (messages: ModelMessage[]) => boolean,
+  wouldCompact: (view: ModelMessage[], budgetMessages: ModelMessage[]) => boolean,
 ): LogCompactor {
   return async (input) => {
     const { stream, head, core, path, pending, options } = input;
@@ -477,7 +479,10 @@ export function createLogCompactor(
         streamId: `${runId}/summary/${sourceDigest}`,
       },
     };
-    const compactOptions: CompactOptions = { contextLog };
+    const compactOptions: CompactOptions = {
+      contextLog,
+      ...(options.signal && { signal: options.signal }),
+    };
     // The budget is the request the model would be sent (LLE-14056); the
     // view is what the manager keeps or summarises.
     const budgetMessages = await input.project([...path, ...pending]);
@@ -594,8 +599,12 @@ export function createLogCompactor(
     // under budget. Otherwise the next turn's superseded entry would ask
     // for it again, and a compaction (a cache break) would follow every
     // turn while the conversation stays inside the keep window.
-    if (kept.length === 0 && wouldCompact(await input.project(entries))) {
-      return undefined;
+    if (kept.length === 0) {
+      const childView: ModelMessage[] = [
+        ...(core === "" ? [] : [{ role: "system" as const, content: core }]),
+        ...entries.map(viewMessage),
+      ];
+      if (wouldCompact(childView, await input.project(entries))) return undefined;
     }
 
     return {

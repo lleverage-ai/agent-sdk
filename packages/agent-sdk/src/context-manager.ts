@@ -1266,6 +1266,16 @@ export interface CompactOptions {
    * @experimental
    */
   contextLog?: CompactionContextLog;
+  /**
+   * Generate the summary without applying the compaction (LLE-14017): the
+   * manager's measured usage, usage anchor, `onCompact` callback, failure
+   * circuit and `commitCompaction` are left unchanged. Used by
+   * `Agent.prepareCompaction`.
+   * @experimental
+   */
+  prepare?: boolean;
+  /** Aborts the summary generation; handed to the summarizer. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -1282,6 +1292,11 @@ export interface SummaryRequest {
   trigger: CompactionTrigger;
   /** Compaction strategy producing this request. */
   strategy: CompactionStrategy;
+  /**
+   * Aborts the summary generation, when the compaction was given a signal.
+   * Not part of {@link summaryRequestDigest}.
+   */
+  signal?: AbortSignal;
   /** Summary tier being generated, when the tiered strategy consolidates summaries. */
   tier?: number;
   /**
@@ -1413,6 +1428,12 @@ export interface ShouldCompactOptions {
    * messages being compacted. The token budget is counted on them.
    */
   budgetMessages?: ModelMessage[];
+  /**
+   * Budget a hypothetical request (for example a compaction child before it
+   * is applied) on its estimate alone: the last request's measured usage
+   * and usage anchor are ignored, and `onBudgetUpdate` is not called.
+   */
+  estimateOnly?: boolean;
 }
 
 /**
@@ -1687,8 +1708,18 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     return usageAnchor.inputTokens + Math.max(0, estimatedTokens - prefixTokens);
   };
 
-  const getBudget = (messages: ModelMessage[]): TokenBudget => {
+  const getBudget = (
+    messages: ModelMessage[],
+    budgetOptions: { estimateOnly?: boolean } = {},
+  ): TokenBudget => {
     const estimatedTokens = tokenCounter.countMessages(messages);
+    if (budgetOptions.estimateOnly) {
+      return createTokenBudget(maxTokens, estimatedTokens, false, {
+        outputReserveTokens: policy.outputReserveTokens,
+        warningThreshold: policy.tokenThreshold,
+        blockingThreshold: policy.hardCapThreshold,
+      });
+    }
     const actualTokens = lastActualUsage?.totalTokens;
 
     // Actual usage describes the *last* model input, while the current message
@@ -1748,7 +1779,9 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       return { trigger: false };
     }
 
-    const budget = getBudget(options?.budgetMessages ?? messages);
+    const budget = getBudget(options?.budgetMessages ?? messages, {
+      ...(options?.estimateOnly && { estimateOnly: true }),
+    });
 
     // Custom policy override
     if (policy.shouldCompact) {
@@ -1795,9 +1828,14 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
     compactOptions?: CompactOptions,
   ): Promise<CompactionResult> => {
     const contextLog = compactOptions?.contextLog;
+    // A prepared summary is not a compaction: nothing below may change the
+    // live manager's state (usage, anchor, callbacks, failure circuit).
+    const prepare = compactOptions?.prepare === true;
+    const signal = compactOptions?.signal;
     if (isCompactionCircuitOpen()) {
       throw new Error("Context compaction circuit is open after repeated failures");
     }
+    signal?.throwIfAborted();
 
     const startedAt = performance.now();
     let summaryUsage: SummaryUsage | undefined;
@@ -1820,6 +1858,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
           strategy,
           ...(tier !== undefined ? { tier } : {}),
           ...(contextLog ? { contextLog } : {}),
+          ...(signal ? { signal } : {}),
         });
         if (typeof response?.text !== "string") {
           throw new Error("Summary executor did not return text");
@@ -1875,7 +1914,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
           throw new Error("Context compaction could not reduce the transcript");
         }
 
-        recordCompactionSuccess();
+        if (!prepare) recordCompactionSuccess();
         return {
           messagesBefore,
           messagesAfter: messages.length,
@@ -2029,6 +2068,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       // summarisation no longer describes the active context. Clear it so the
       // next budget check falls back to estimating the compacted messages
       // instead of comparing against the pre-compaction total.
+      if (prepare) return result;
       lastActualUsage = null;
       usageAnchor = null;
 
@@ -2054,7 +2094,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
 
       return result;
     } catch (error) {
-      recordCompactionFailure();
+      if (!prepare) recordCompactionFailure();
       throw error;
     }
   };

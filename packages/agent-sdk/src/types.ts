@@ -1779,11 +1779,12 @@ export interface Agent {
    * Nothing is committed and the compacted stream is never written; no
    * compaction hooks run.
    *
-   * The next call compacts as usual and asks for a summary with the same
-   * `summaryRequestDigest` when its head, new input count and history
-   * match, so a summarizer that keeps summaries by that digest answers it
-   * without a model call. When the head moved, the digest differs and the
-   * summary is generated again.
+   * The next call compacts as usual. When it summarises the same history
+   * (its new input count and the summarised messages match), its summary
+   * request has the same `summaryRequestDigest`, so a summarizer that keeps
+   * summaries by that digest answers it without a model call. A changed
+   * request has a different digest, and the summary is generated again.
+   * `signal` reaches the summarizer as `SummaryRequest.signal`.
    *
    * @experimental
    */
@@ -4470,6 +4471,14 @@ export type PrepareCompactionResult =
        *   (another adapter, capabilities or core version).
        * - `not_needed`: the policy would not compact, or compaction would
        *   make no progress.
+       * - `pending_summarised`: the manager would summarise the next call's
+       *   new input itself (for example `keepMessageCount` is lower than
+       *   `pendingMessages`), so no summary could be reused; none is kept.
        */
-      reason: "no_context_manager" | "no_head" | "transition_pending" | "not_needed";
+      reason:
+        | "no_context_manager"
+        | "no_head"
+        | "transition_pending"
+        | "not_needed"
+        | "pending_summarised";
     };

@@ -18,20 +18,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   summary stream, as in a call. Nothing is committed, the compacted stream
   is never written, and no compaction hooks run. It returns
   `{ prepared: true, head }` or `{ prepared: false, reason }`
-  (`no_context_manager`, `no_head`, `transition_pending`, `not_needed`).
-  The new `summaryRequestDigest(request)` identifies what a `SummaryRequest`
-  summarises (messages, output limit, strategy and tier, not the trigger or
-  the run): when the next call's head, new input count and history match,
-  its summary request has the same digest, so a summarizer that keeps
-  summaries by digest answers it without a model call. When the head
-  moved, the digest differs and the summary is generated again.
+  (`no_context_manager`, `no_head`, `transition_pending`, `not_needed`,
+  or `pending_summarised` when the manager would summarise the next call's
+  new input itself, for example `keepMessageCount` below `pendingMessages`).
+  The live context manager is left unchanged: the summary is generated with
+  the new `CompactOptions.prepare`, which keeps the manager's measured usage,
+  usage anchor, `onCompact` callback and failure circuit as they were.
+  `signal` reaches the summarizer as the new `SummaryRequest.signal` (log-mode
+  calls hand theirs over too). The new `summaryRequestDigest(request)`
+  identifies what a `SummaryRequest` summarises (messages, output limit,
+  strategy and tier, not the trigger, the run or the signal): when the next
+  call summarises the same history, its request has the same digest, so a
+  summarizer that keeps summaries by digest answers it without a model call.
+  A changed request has a different digest, and the summary is generated
+  again.
 
 - `ContextManager.shouldCompact(messages, options?)` accepts
   `ShouldCompactOptions.budgetMessages` (experimental): the messages the
   model is actually sent, when they differ from the messages being
   compacted. The built-in manager counts its token budget on them; a
   custom `policy.shouldCompact` still receives `messages`. Managers that
-  ignore the option keep budgeting `messages`. (LLE-14056)
+  ignore the option keep budgeting `messages`. With `estimateOnly`, a
+  hypothetical request (a compaction child before it is applied) is budgeted
+  on its estimate alone, without the last request's measured usage, and
+  `onBudgetUpdate` is not called. (LLE-14056)
 
 ### Changed
 
@@ -42,8 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   what is kept or summarised. `PreCompact`'s `tokens_before` is counted on
   the same request. A prune-only compaction (a child that only drops
   superseded entries and retractions, with no summary) is declared only
-  when the pruned request is back under budget, so it is not declared again
-  on every turn while the conversation stays inside the keep window.
+  when the pruned request is back under budget (its own view and projected
+  request, budgeted on its estimate), so it is not declared again on every
+  turn while the conversation stays inside the keep window.
 
 ## [1.0.0-rc.10] - 2026-10-02
 

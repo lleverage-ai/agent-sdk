@@ -827,19 +827,25 @@ export function createAgent(options: AgentOptions): Agent {
     logContext && compactionManager
       ? createLogCompactor(
           messageRuntime.compactMessagesIfNeeded,
-          (messages) =>
-            compactionManager.shouldCompact(messages, { budgetMessages: messages }).trigger,
+          (view, budgetMessages) =>
+            compactionManager.shouldCompact(view, { budgetMessages, estimateOnly: true }).trigger,
         )
       : undefined;
   // LLE-14017: plans the next compaction to generate its summary ahead of
   // time. It calls the context manager directly: no compaction hooks run,
   // because nothing is compacted, and the plan is never committed.
   const createPrepareCompactor:
-    | (() => { compactor: LogCompactor; summarised: () => boolean })
+    | (() => {
+        compactor: LogCompactor;
+        summarised: () => boolean;
+        kept: (message: ModelMessage) => boolean;
+        retains: (pendingMessages: number) => boolean;
+      })
     | undefined =
     logContext && compactionManager
       ? () => {
           let summarised = false;
+          let kept = new Set<ModelMessage>();
           const compactor = createLogCompactor(
             async (messages, _genOptions, _threadId, compactOptions, budgetMessages) => {
               const { trigger, reason } = compactionManager.shouldCompact(
@@ -847,19 +853,31 @@ export function createAgent(options: AgentOptions): Agent {
                 budgetMessages ? { budgetMessages } : undefined,
               );
               if (!trigger || !reason) return { compacted: false, messages };
-              const result = await compactionManager.compact(
-                messages,
-                agent,
-                reason,
-                compactOptions,
-              );
+              // `prepare`: the summary is generated, nothing is applied to
+              // the live manager (usage, callbacks, failure circuit).
+              const result = await compactionManager.compact(messages, agent, reason, {
+                ...compactOptions,
+                prepare: true,
+              });
               summarised = result.summary !== "";
+              kept = new Set(result.newMessages);
               return { compacted: true, messages: result.newMessages };
             },
-            (messages) =>
-              compactionManager.shouldCompact(messages, { budgetMessages: messages }).trigger,
+            (view, budgetMessages) =>
+              compactionManager.shouldCompact(view, { budgetMessages, estimateOnly: true }).trigger,
           );
-          return { compactor, summarised: () => summarised };
+          return {
+            compactor,
+            summarised: () => summarised,
+            kept: (message) => kept.has(message),
+            // The built-in retention keeps the last `keepMessageCount`
+            // conversation messages; placeholders beyond it would be
+            // summarised, so the next call's request could never match.
+            retains: (pendingMessages) => {
+              const keep = compactionManager.summarizationConfig.keepMessageCount;
+              return typeof keep !== "number" || pendingMessages <= keep;
+            },
+          };
         }
       : undefined;
 

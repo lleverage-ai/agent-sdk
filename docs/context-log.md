@@ -798,10 +798,13 @@ compaction.
   user messages for that call's new input, `pendingMessages`, default 1)
   and, when the policy would compact, runs the summarizer on its own
   summary stream. Nothing is committed and the compacted stream is never
-  written. The next call compacts as usual; when nothing changed, its
-  summary request has the same `summaryRequestDigest`, so a summarizer that
-  keeps summaries by that digest reuses the prepared one without a model
-  call. The host owns the lease: the prepare and a run must not write the
+  written, and the live context manager is left unchanged (no usage
+  reset, no `onCompact`). The next call compacts as usual; when it
+  summarises the same history, its summary request has the same
+  `summaryRequestDigest`, so a summarizer that keeps summaries by that
+  digest reuses the prepared one without a model call. A manager that would
+  summarise the next call's new input itself (`keepMessageCount` below
+  `pendingMessages`) is refused with `pending_summarised`. The host owns the lease: the prepare and a run must not write the
   same summary stream at once.
 - **Only progress is committed.** When the child would keep every
   conversation entry (for example a single tool block over budget on its
