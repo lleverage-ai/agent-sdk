@@ -184,6 +184,11 @@ through the configured `ProjectionAdapter`
 3. The adapter projects the core, the path and the run's new user input
    for the target model. The result is sent as the request's messages, with
    no separate `system` parameter, alongside the agent's tools.
+4. Every later provider step of the tool loop is projected the same way,
+   from those entries followed by the assistant and tool messages the
+   generation's earlier steps produced. No provider request bypasses the
+   adapter, so its shaping and the contract's capability projection apply to
+   tool results too, and each step's input starts with the previous step's.
 
 Configuration:
 
@@ -208,7 +213,9 @@ Rules in log mode:
   `threadId`. The prompt reaches `PreGenerate` hooks as a user message in
   `options.messages`, so the secrets filter and guardrails redact or deny it
   before it is sent. After the hooks the new input must still be user
-  messages only.
+  messages only. A retry resends the same input: a `PostGenerateFailure`
+  hook that changes the prompt or messages fails the call with a
+  `ValidationError`, because that input never passed `PreGenerate`.
 - **Frozen core.** `promptBuilder` is rejected: set a static `systemPrompt`
   (it may be empty) or `contextLog.resolveCore`, not both. Context that
   changes between calls belongs in runtime context entries.

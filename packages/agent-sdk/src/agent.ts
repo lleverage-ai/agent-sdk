@@ -1664,7 +1664,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Execute stream
           const response = streamText({
             ...runner.buildModelCallParams(attempt),
-            prepareStep: streamingCompaction.prepareStep,
+            prepareStep: runner.prepareStepFor(attempt, streamingCompaction.prepareStep),
             onStepFinish: (stepResult) => {
               streamingCompaction.appendStep(stepResult);
             },
@@ -2051,7 +2051,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Execute stream
           const result = streamText({
             ...runner.buildModelCallParams(attempt),
-            prepareStep: streamingCompaction.prepareStep,
+            prepareStep: runner.prepareStepFor(attempt, streamingCompaction.prepareStep),
             ...runner.createStreamLifecycleCallbacks(attempt, streamingCompaction),
           });
 
@@ -2137,7 +2137,7 @@ export function createAgent(options: AgentOptions): Agent {
               // Execute stream
               const result = streamText({
                 ...runner.buildModelCallParams(attempt),
-                prepareStep: streamingCompaction.prepareStep,
+                prepareStep: runner.prepareStepFor(attempt, streamingCompaction.prepareStep),
                 ...runner.createStreamLifecycleCallbacks(attempt, streamingCompaction),
               });
 

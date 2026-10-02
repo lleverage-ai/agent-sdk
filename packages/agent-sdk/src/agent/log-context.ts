@@ -13,6 +13,11 @@
  *   user input, which reaches PreGenerate hooks as `options.messages` so the
  *   input-security hooks (secret redaction, guardrails) see it before it can
  *   be committed or sent.
+ * - Every provider step goes through the adapter: tool-loop continuations
+ *   are projected from the same entries plus the assistant and tool messages
+ *   earlier steps of the generation produced (`projectStep`).
+ * - The adapter sees entry content only, never store-assigned fields, so a
+ *   path projects to the same bytes before and after commit.
  * - Media capability projection happens inside the adapter, keyed by the
  *   version's contract. A version whose contract does not match the current
  *   adapter and model is never projected; that needs a declared transition.
@@ -32,7 +37,9 @@ import {
   projectionContractMismatches,
 } from "../context-log/projection.js";
 import {
+  type AssistantContextEntryInput,
   type ContextEntry,
+  type ContextEntryInput,
   type ContextHead,
   type ContextLogCursor,
   type ContextLogOptions,
@@ -43,6 +50,7 @@ import {
   DEFAULT_CONTEXT_BRANCH_ID,
   DEFAULT_CONTEXT_STREAM_ID,
   type ProjectionAdapter,
+  type ToolResultContextEntryInput,
   type UserContextEntryInput,
 } from "../context-log/types.js";
 import { ConfigurationError, ValidationError } from "../errors/index.js";
@@ -145,6 +153,14 @@ export interface LogCallPlan {
   projection: { adapter: string; version: string };
   /** The model the messages were projected for. */
   target: ContextModelRef;
+  /** The version's frozen core, as projected. */
+  core: string;
+  /** The version's contract, as projected. */
+  contract: Readonly<Record<string, string>>;
+  /** Content of the head's path followed by `append`: what the adapter projected. */
+  entries: ContextEntryInput[];
+  /** Prefix for the keys of this call's output entries. */
+  outputKeyPrefix: string;
 }
 
 /**
@@ -166,6 +182,15 @@ export interface LogContextRuntime {
   acceptRunInput(effectiveOptions: GenerateOptions): GenerateOptions;
   /** Read the head once and project the call's request. */
   plan(genOptions: GenerateOptions, model: LanguageModel): Promise<LogCallPlan>;
+  /**
+   * Project a later provider step of the same generation: the plan's entries
+   * followed by the assistant and tool messages earlier steps produced, so
+   * tool-loop continuations go through the adapter too.
+   */
+  projectStep(
+    plan: LogCallPlan,
+    responseMessages: readonly ModelMessage[],
+  ): Promise<ModelMessage[]>;
   /** The cursor of the head the thread's latest plan was built from. */
   cursor(threadId: string): ContextLogCursor | undefined;
 }
@@ -201,6 +226,37 @@ async function readFullPath(store: ContextLogStore, head: ContextHead): Promise<
     );
   }
   return path;
+}
+
+/**
+ * The content of a committed entry, without store-assigned fields, so a
+ * projection reads the same input before and after commit.
+ *
+ * @internal
+ */
+function toEntryInput(entry: ContextEntry): ContextEntryInput {
+  const { position: _p, versionId: _v, manifestId: _m, createdAt: _c, ...input } = entry;
+  return input as ContextEntryInput;
+}
+
+/** Map a generation's response messages to output entries. @internal */
+function toOutputEntries(
+  responseMessages: readonly ModelMessage[],
+  keyPrefix: string,
+): Array<AssistantContextEntryInput | ToolResultContextEntryInput> {
+  return responseMessages.map((message, index) => {
+    const key = `${keyPrefix}:${index}`;
+    if (message.role === "assistant") {
+      return { kind: "assistant", key, message };
+    }
+    if (message.role === "tool") {
+      return { kind: "tool_result", key, message };
+    }
+    throw new ContextLogInvalidError(
+      "invalid_output",
+      `A model step produced a "${message.role}" message; only assistant and tool messages are outputs`,
+    );
+  });
 }
 
 /** The new user input of a run, after PreGenerate. @internal */
@@ -339,18 +395,8 @@ export function createLogContextRuntime(
       message,
     }));
 
-    const projected = await adapter.project({
-      core,
-      contract,
-      entries: [...path, ...append],
-      target,
-    });
-    if (!Array.isArray(projected?.messages)) {
-      throw new ContextLogInvalidError(
-        "invalid_projection",
-        `Projection adapter "${adapter.id}" did not return a messages array`,
-      );
-    }
+    const entries: ContextEntryInput[] = [...path.map(toEntryInput), ...append];
+    const messages = await project(core, contract, entries, target);
 
     cursors.set(threadId, toCursor(stream, head));
     return {
@@ -358,16 +404,49 @@ export function createLogContextRuntime(
       head,
       transition,
       append,
-      messages: projected.messages,
+      messages,
       projection: { adapter: adapter.id, version: adapter.version },
       target,
+      core,
+      contract,
+      entries,
+      outputKeyPrefix: `output:${runId}:${revision}`,
     };
+  }
+
+  async function project(
+    core: string,
+    contract: Readonly<Record<string, string>>,
+    entries: readonly ContextEntryInput[],
+    target: ContextModelRef,
+  ): Promise<ModelMessage[]> {
+    const projected = await adapter.project({ core, contract, entries, target });
+    if (!Array.isArray(projected?.messages)) {
+      throw new ContextLogInvalidError(
+        "invalid_projection",
+        `Projection adapter "${adapter.id}" did not return a messages array`,
+      );
+    }
+    return projected.messages;
+  }
+
+  function projectStep(
+    plan: LogCallPlan,
+    responseMessages: readonly ModelMessage[],
+  ): Promise<ModelMessage[]> {
+    return project(
+      plan.core,
+      plan.contract,
+      [...plan.entries, ...toOutputEntries(responseMessages, plan.outputKeyPrefix)],
+      plan.target,
+    );
   }
 
   return {
     prepareRunInput,
     acceptRunInput,
     plan,
+    projectStep,
     cursor: (threadId) => cursors.get(threadId),
   };
 }

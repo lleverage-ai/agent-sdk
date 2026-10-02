@@ -49,7 +49,7 @@ import type {
 } from "ai";
 import { streamText } from "ai";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
-import { type AgentError, ConfigurationError } from "../errors/index.js";
+import { type AgentError, ConfigurationError, ValidationError } from "../errors/index.js";
 import {
   createRetryLoopState,
   invokePreGenerateHooks,
@@ -373,6 +373,14 @@ export interface GenerationRunner {
    * spread this and add mode-specific callbacks.
    */
   buildModelCallParams(attempt: PreparedAttempt): ModelCallParams;
+  /**
+   * The `prepareStep` for a streaming attempt: the log-mode step projection
+   * in log mode, otherwise the streaming compaction's own `prepareStep`.
+   */
+  prepareStepFor(
+    attempt: PreparedAttempt,
+    compactionPrepareStep: StreamingCompactionState["prepareStep"],
+  ): StreamingCompactionState["prepareStep"] | LogModePrepareStep;
   /** Forward per-request usage, excluding isolated summarisation calls. */
   updateContextUsage(
     usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number } | undefined,
@@ -416,6 +424,17 @@ export interface GenerationRunner {
 }
 
 /**
+ * Log-mode `prepareStep`: projects every provider step after the first
+ * through the projection adapter.
+ *
+ * @internal
+ */
+export type LogModePrepareStep = (step: {
+  stepNumber: number;
+  responseMessages: ModelMessage[];
+}) => Promise<{ messages: ModelMessage[] } | undefined>;
+
+/**
  * AI SDK call options shared by `generateText()` and `streamText()`.
  *
  * @internal
@@ -436,6 +455,8 @@ export interface ModelCallParams extends RepairToolCallOptions {
   headers: GenerateOptions["headers"];
   telemetry: GenerateOptions["telemetry"];
   allowSystemInMessages: true;
+  /** Log mode only: projects tool-loop continuations through the adapter. */
+  prepareStep?: LogModePrepareStep;
 }
 
 /** @internal */
@@ -709,6 +730,30 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     return { ...attempt, ...prepareRequest(attempt) };
   }
 
+  /**
+   * Log mode: the first step sends the planned projection; every later step
+   * of the tool loop is projected again from the plan's entries plus the
+   * assistant and tool messages earlier steps produced, so no provider
+   * request bypasses the adapter or the version's contract.
+   */
+  function createLogModePrepareStep(plan: LogCallPlan, log: LogContextRuntime): LogModePrepareStep {
+    return async ({ stepNumber, responseMessages }) => {
+      if (stepNumber === 0) {
+        return undefined;
+      }
+      return { messages: await log.projectStep(plan, responseMessages) };
+    };
+  }
+
+  function prepareStepFor(
+    attempt: PreparedAttempt,
+    compactionPrepareStep: StreamingCompactionState["prepareStep"],
+  ): StreamingCompactionState["prepareStep"] | LogModePrepareStep {
+    return attempt.logPlan && logContext
+      ? createLogModePrepareStep(attempt.logPlan, logContext)
+      : compactionPrepareStep;
+  }
+
   function buildModelCallParams(attempt: PreparedAttempt): ModelCallParams {
     const { effectiveGenOptions, currentModel, maxSteps, signalState, initialParams } = attempt;
     const { toolExecutionContext } = attempt;
@@ -740,6 +785,8 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       // Preserve AI SDK 6 behavior: allow system-role messages within the
       // message history (AI SDK 7 rejects them by default).
       allowSystemInMessages: true,
+      ...(attempt.logPlan &&
+        logContext && { prepareStep: createLogModePrepareStep(attempt.logPlan, logContext) }),
     };
   }
 
@@ -1089,6 +1136,23 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     }
   }
 
+  /**
+   * Log mode: a retry resends the run's input. Input a retry hook changes
+   * never passed PreGenerate (redaction, guardrails), so refuse it rather
+   * than send it or silently drop it.
+   */
+  function assertUnchangedLogModeInput(previous: GenerateOptions, next: GenerateOptions): void {
+    const changed =
+      (next.prompt !== undefined && next.prompt !== "") ||
+      JSON.stringify(next.messages ?? []) !== JSON.stringify(previous.messages ?? []);
+    if (changed) {
+      throw new ValidationError(
+        "Retry hooks cannot change the prompt or messages in context log mode: new input must pass PreGenerate before it is sent",
+        { fieldErrors: { prompt: ["cannot be changed on retry in context log mode"] } },
+      );
+    }
+  }
+
   async function retryOrThrow(
     normalizedError: AgentError,
     effectiveGenOptions: GenerateOptions,
@@ -1110,6 +1174,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     if (errorDecision.shouldRetry) {
       let nextOptions = effectiveGenOptions;
+      if (errorDecision.updatedOptions && logContext) {
+        assertUnchangedLogModeInput(effectiveGenOptions, errorDecision.updatedOptions);
+      }
       if (errorDecision.updatedOptions) {
         nextOptions = {
           ...errorDecision.updatedOptions,
@@ -1139,6 +1206,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     prepareRequest,
     prepareAttempt,
     buildModelCallParams,
+    prepareStepFor,
     updateContextUsage,
     emitInterruptRequested,
     invokePostGenerate,

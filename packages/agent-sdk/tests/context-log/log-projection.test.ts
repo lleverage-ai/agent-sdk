@@ -9,7 +9,7 @@
  */
 
 import type { LanguageModelV3CallOptions, LanguageModelV3StreamPart } from "@ai-sdk/provider";
-import type { LanguageModel, ModelMessage } from "ai";
+import { jsonSchema, type LanguageModel, type ModelMessage, tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
@@ -26,6 +26,7 @@ import {
   createCheckpoint,
   createGuardrailsHooks,
   createMessageProjectionAdapter,
+  createRetryHooks,
   createSecretsFilterHooks,
   GeneratePermissionDeniedError,
   isContextLogError,
@@ -643,5 +644,257 @@ describe("createMessageProjectionAdapter", () => {
 
     expect(JSON.stringify(keep.messages)).toContain("application/pdf");
     expect(JSON.stringify(omit.messages)).toContain("[File omitted");
+  });
+});
+
+/**
+ * A model that calls `pic` on its first request and answers on the next, and
+ * records every request.
+ */
+function createToolLoopModel(options: { failFirst?: boolean } = {}) {
+  const requests: LanguageModelV3CallOptions[] = [];
+  let failNext = options.failFirst ?? false;
+  const firstStep = () => requests.length === 1;
+  const model = new MockLanguageModelV3({
+    doGenerate: async (call) => {
+      requests.push(call);
+      if (failNext) {
+        failNext = false;
+        throw new Error("rate limit exceeded");
+      }
+      return {
+        content: firstStep()
+          ? [{ type: "tool-call", toolCallId: "c1", toolName: "pic", input: "{}" }]
+          : [{ type: "text", text: "done" }],
+        finishReason: firstStep()
+          ? { unified: "tool-calls", raw: "tool_calls" }
+          : { unified: "stop", raw: "stop" },
+        usage,
+        warnings: [],
+      };
+    },
+    doStream: async (call) => {
+      requests.push(call);
+      const first = firstStep();
+      const parts: LanguageModelV3StreamPart[] = [
+        { type: "stream-start", warnings: [] },
+        ...(first
+          ? [
+              {
+                type: "tool-call" as const,
+                toolCallId: "c1",
+                toolName: "pic",
+                input: "{}",
+              },
+            ]
+          : [
+              { type: "text-start" as const, id: "t" },
+              { type: "text-delta" as const, id: "t", delta: "done" },
+              { type: "text-end" as const, id: "t" },
+            ]),
+        {
+          type: "finish",
+          finishReason: first
+            ? { unified: "tool-calls", raw: "tool_calls" }
+            : { unified: "stop", raw: "stop" },
+          usage,
+        },
+      ];
+      return {
+        stream: new ReadableStream({
+          start(controller) {
+            for (const part of parts) controller.enqueue(part);
+            controller.close();
+          },
+        }),
+      };
+    },
+  });
+  return { model: model as LanguageModel, requests };
+}
+
+/** A tool whose model output is an image. */
+const picTools = {
+  pic: tool({
+    description: "Returns a picture",
+    inputSchema: jsonSchema<Record<string, never>>({ type: "object", properties: {} }),
+    execute: async () => "raw-tool-output",
+    toModelOutput: () => ({
+      type: "content" as const,
+      value: [{ type: "image-data" as const, data: "AAAA", mediaType: "image/png" }],
+    }),
+  }),
+};
+
+describe("log-mode tool loops", () => {
+  const runModes = {
+    generate: (agent: ReturnType<typeof createAgent>) =>
+      agent.generate({ prompt: "draw", threadId: THREAD }),
+    stream: async (agent: ReturnType<typeof createAgent>) => {
+      for await (const _part of agent.stream({ prompt: "draw", threadId: THREAD })) {
+        // drain
+      }
+    },
+    streamRaw: async (agent: ReturnType<typeof createAgent>) => {
+      const result = await agent.streamRaw({ prompt: "draw", threadId: THREAD });
+      await result.consumeStream();
+      await result.text;
+    },
+  };
+
+  it.each(Object.keys(runModes) as Array<keyof typeof runModes>)(
+    "projects tool-loop continuations under the contract in %s()",
+    async (mode) => {
+      const { model, requests } = createToolLoopModel();
+      const agent = logAgent(model, new MemoryContextLogStore(), {
+        tools: picTools,
+        modelCapabilities: { imageInput: false },
+      });
+
+      await runModes[mode](agent);
+
+      expect(requests).toHaveLength(2);
+      const [first, second] = requests.map((request) => request.prompt);
+      expect(second!.slice(0, first!.length)).toEqual(first);
+      const continuation = JSON.stringify(second);
+      expect(continuation).toContain("[Image omitted: active model does not support image input.]");
+      expect(continuation).not.toContain("AAAA");
+    },
+  );
+
+  it.each(Object.keys(runModes) as Array<keyof typeof runModes>)(
+    "sends tool results shaped only by the adapter in %s()",
+    async (mode) => {
+      const base = createMessageProjectionAdapter();
+      const adapter = {
+        id: "host/shaping",
+        version: "1",
+        project: async (input: Parameters<typeof base.project>[0]) => {
+          const { messages } = await base.project(input);
+          return {
+            messages: messages.map((message) =>
+              message.role === "tool"
+                ? {
+                    ...message,
+                    content: message.content.map((part) =>
+                      part.type === "tool-result"
+                        ? { ...part, output: { type: "text" as const, value: "shaped by adapter" } }
+                        : part,
+                    ),
+                  }
+                : message,
+            ),
+          };
+        },
+      };
+      const store = new MemoryContextLogStore();
+      const { model, requests } = createToolLoopModel();
+      const agent = logAgent(model, store, {
+        tools: picTools,
+        contextLog: { mode: "log", store, projection: adapter },
+      });
+
+      await runModes[mode](agent);
+
+      const continuation = JSON.stringify(requests[1]!.prompt);
+      expect(continuation).toContain("shaped by adapter");
+      expect(continuation).not.toContain("AAAA");
+    },
+  );
+});
+
+describe("log-mode projection input", () => {
+  it("gives an adapter the same entry bytes before and after commit", async () => {
+    const seen: string[] = [];
+    const adapter = {
+      id: "host/enumerating",
+      version: "1",
+      project: ({ entries }: { entries: readonly ContextEntryInput[] }) => {
+        seen.push(JSON.stringify(entries));
+        return { messages: [{ role: "user", content: "x" }] as ModelMessage[] };
+      },
+    };
+    const store = new MemoryContextLogStore();
+    const { model } = createRecordingModel();
+    const agent = logAgent(model, store, {
+      contextLog: { mode: "log", store, projection: adapter },
+    });
+
+    await agent.generate({ prompt: "first", threadId: THREAD });
+    const pending = JSON.parse(seen[0]!) as ContextEntryInput[];
+    await commitTurn(
+      store,
+      "turn-1",
+      pending,
+      [],
+      initialTransition("You are the core.", {
+        ...DEFAULT_CONTRACT,
+        adapter: "host/enumerating",
+      }),
+    );
+    await agent.generate({ threadId: THREAD });
+
+    expect(seen[1]).toBe(seen[0]);
+  });
+});
+
+describe("log-mode retries", () => {
+  it("resends the same projected input after a retried failure", async () => {
+    const { model, requests } = createToolLoopModel({ failFirst: true });
+    const agent = logAgent(model, new MemoryContextLogStore(), {
+      hooks: {
+        PostGenerateFailure: [createRetryHooks({ maxRetries: 2, baseDelay: 1, jitter: false })],
+      },
+    });
+
+    await agent.generate({ prompt: "draw", threadId: THREAD });
+
+    expect(JSON.stringify(requests[1]!.prompt)).toBe(JSON.stringify(requests[0]!.prompt));
+  });
+
+  it("refuses a retry hook that changes the input instead of dropping it", async () => {
+    const { model, requests } = createToolLoopModel({ failFirst: true });
+    const agent = logAgent(model, new MemoryContextLogStore(), {
+      hooks: {
+        PostGenerateFailure: [
+          async (input) => ({
+            hookSpecificOutput: {
+              hookEventName: "PostGenerateFailure",
+              retry: true,
+              retryDelayMs: 0,
+              updatedInput: { ...(input as { options: object }).options, prompt: "changed" },
+            },
+          }),
+        ],
+      },
+    });
+
+    await expect(agent.generate({ prompt: "draw", threadId: THREAD })).rejects.toThrow(
+      ValidationError,
+    );
+    expect(requests).toHaveLength(1);
+  });
+
+  it("accepts a retry hook that passes the options through unchanged", async () => {
+    const { model, requests } = createToolLoopModel({ failFirst: true });
+    const agent = logAgent(model, new MemoryContextLogStore(), {
+      hooks: {
+        PostGenerateFailure: [
+          async (input) => ({
+            hookSpecificOutput: {
+              hookEventName: "PostGenerateFailure",
+              retry: true,
+              retryDelayMs: 0,
+              updatedInput: { ...(input as { options: object }).options, maxTokens: 50 },
+            },
+          }),
+        ],
+      },
+    });
+
+    await agent.generate({ prompt: "draw", threadId: THREAD });
+
+    expect(requests).toHaveLength(2);
+    expect(JSON.stringify(requests[1]!.prompt)).toBe(JSON.stringify(requests[0]!.prompt));
   });
 });

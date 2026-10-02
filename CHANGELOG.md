@@ -60,6 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     until their log-mode support lands.
   - Checkpoints hold control state and a `ContextLogCursor` under
     `metadata.contextLog`, never messages.
+  - Every provider step of a tool loop is projected through the adapter, and
+    retry hooks cannot change a log-mode call's input.
 
 ### Changed
 
