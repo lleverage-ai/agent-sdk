@@ -283,9 +283,11 @@ function writeTexts(
     const parentPath = location.path.slice(0, -1);
     const parent = readAt(result, parentPath) as Record<string, unknown>;
     if (Object.hasOwn(parent, text)) {
+      // Report positions only: either key may be the secret being redacted.
+      const keys = Object.keys(parent);
       throw violation(
         event,
-        `renamed key "${before}" onto existing key "${text}", which would merge two fields of new input`,
+        `renamed the key at position ${keys.indexOf(before) + 1} onto the existing key at position ${keys.indexOf(text) + 1} of an object at depth ${parentPath.length}, which would merge two fields of new input`,
       );
     }
     const renamed: Record<string, unknown> = {};

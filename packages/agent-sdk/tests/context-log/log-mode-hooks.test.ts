@@ -762,9 +762,39 @@ describe("log-mode PreGenerate: object keys and numbers in data are screened", (
 
   it("rejects a redaction that would merge two fields", async () => {
     const [secrets] = createSecretsFilterHooks();
-    expect(
-      await violation(screen([secrets], [runtime({ [AWS_KEY]: 1, "[REDACTED]": 2 })])),
-    ).toMatch(/would merge two fields/);
+    const message = await violation(
+      screen([secrets], [runtime({ [AWS_KEY]: 1, "[REDACTED]": 2 })]),
+    );
+    expect(message).toMatch(/key at position 1 onto the existing key at position 2/);
+    expect(message).toMatch(/would merge two fields/);
+    // Neither key's text reaches the error, so the secret never lands in logs.
+    expect(message).not.toContain(AWS_KEY);
+    expect(message).not.toContain("[REDACTED]");
+  });
+
+  it("redacts a numeric tool input value to a string on purpose", async () => {
+    // Redaction wins over the tool's input schema: a redacted number becomes
+    // a string, so a numeric schema may no longer validate the committed call.
+    const [secrets] = createSecretsFilterHooks({ patterns: [/\b4111\d{12}\b/g] });
+    const call: ContextEntryInput = {
+      kind: "assistant",
+      key: "a",
+      message: {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "c1",
+            toolName: "pay",
+            input: { card: 4111111111111111, amount: 5 },
+          },
+        ],
+      },
+    };
+    const { pending } = await screen([secrets], [call]);
+    expect(pending[0]).toMatchObject({
+      message: { content: [{ toolCallId: "c1", input: { card: "[REDACTED]", amount: 5 } }] },
+    });
   });
 
   it("screens numbers as their decimal text and writes a changed number back as a string", async () => {

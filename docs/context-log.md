@@ -310,7 +310,8 @@ Hooks never rewrite the log. In log mode they may only:
   Inside caller data (a tool call's input, a JSON tool result's value, a
   runtime context payload) object keys and finite numbers are shown too: a
   number as its decimal text, a key as its name. A redacted number is
-  written back as a string, and a key renamed onto a key the object already
+  written back as a string (deliberately: redaction wins, so a tool call's
+  input may no longer match a numeric schema), and a key renamed onto a key the object already
   has (which would merge two fields) is a violation. Booleans and `null` are
   not screened. Ids, part types, binary data and provider options are not
   shown. Text
