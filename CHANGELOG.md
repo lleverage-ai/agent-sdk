@@ -54,8 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `PreGenerate` hooks as a user message in `options.messages`, so the
     secrets filter and guardrails see it before it is sent.
   - `promptBuilder` is rejected in log mode (the core is frozen per
-    version). `contextManager`, `resume()` and `resumeDataResponse()` are
-    rejected until their log-mode support lands.
+    version). `contextManager` is rejected until its log-mode support
+    lands.
   - Checkpoints hold control state and a `ContextLogCursor` under
     `metadata.contextLog`, never messages.
   - Every provider step of a tool loop is projected through the adapter, and
@@ -162,6 +162,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a display copy. A log-mode session needs a `threadId` and does not accept
   non-empty `initialMessages` (both are a `ConfigurationError`). Sessions
   without log mode are unchanged.
+- `resume()` and `resumeDataResponse()` support log mode (experimental).
+  Legacy resume is unchanged.
+  - An interrupt leaves the model's tool call on the log without the
+    `[Interrupt requested]` placeholder result. The assistant entry records it
+    as an AI SDK `tool-approval-request` part, and the pending interrupt stays
+    in the checkpoint as control state.
+  - Resuming commits a resolution (a `tool-approval-response` part) and the
+    call's result as outputs of the interrupted call, screened by the
+    `PreGenerate` hooks, then continues with an ordinary log-mode generation.
+    The provider receives the same input as a run that was never interrupted.
+  - Approved and answered calls run again through the normal tool pipeline
+    (permission mode, `PreToolUse` / `PostToolUse` hooks, signal catching),
+    with the tool call's committed input, after the thread's todos and files
+    are restored from the checkpoint.
+  - The resolution records the decision: the approval and its reason, or a
+    custom interrupt's answer as canonical JSON of `{ "answer": <value> }` in
+    `reason` (log-mode custom answers must be JSON-serialisable). The
+    committed, screened resolution is what the tool runs with, on the first
+    run and on recovery; an answer that no longer decodes after screening
+    fails closed with `ContextLogInvalidError` (reason `invalid_resolution`).
+    Custom projection adapters must not re-render approval parts.
+  - The resolution is committed before the tool runs. A resume that finds a
+    resolution without a result fails with a `ContextLogConflictError`
+    (reason `resume_in_doubt`) instead of running the tool again, unless
+    `contextLog.inDoubtResume` is `"reexecute"`, which a host sets when its
+    tool ledger makes repeating a tool call id safe. The re-run repeats the
+    recorded decision. Resume is covered by the host's single-writer
+    requirement: the SDK does not fence concurrent resumes.
+  - A generation on a stream with an unresolved interrupt fails with a
+    `ContextLogConflictError` (reason `interrupt_pending`) before anything is
+    committed.
+  - Log-mode screening treats `approvalId` as structure, like `toolCallId`.
+  - A log-mode `AgentSession` leaves background task events queued while an
+    interrupt is pending, and reads the pending interrupt back from the
+    checkpoint after every resume, so a failed continuation does not strand
+    them.
 
 ### Changed
 

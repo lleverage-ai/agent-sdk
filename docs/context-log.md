@@ -5,9 +5,10 @@
 > [request projection](#request-projection), [producers](#producers), the
 > [hook rules](#hooks-in-log-mode) and the
 > [commit boundary](#the-commit-boundary), which commits every call's input
-> before dispatch and every model output before anything uses it.
-> It also runs delegated [subagents on their own streams](#subagent-streams).
-> Compaction and resume land in later releases. Agents
+> before dispatch and every model output before anything uses it,
+> [interrupts and resume](#interrupts-and-resume), and delegated
+> [subagents on their own streams](#subagent-streams).
+> Compaction lands in a later release. Agents
 > without `contextLog: { mode: "log" }` keep their legacy behaviour. The
 > exports may change before they are marked stable.
 
@@ -304,8 +305,8 @@ Rules in log mode:
   Both ids default to `"main"`; set `contextStream: { branchId, streamId }` on
   the call to choose others (for example the host's session branch, or a
   delegated child's own stream). `contextStream` is rejected outside log mode.
-- **Not yet supported.** `contextManager` (compaction) and `resume()` /
-  `resumeDataResponse()` throw until their log-mode support lands.
+- **Not yet supported.** `contextManager` (compaction) throws until its
+  log-mode support lands.
 
 ## The commit boundary
 
@@ -392,6 +393,118 @@ run records the pending interrupt and ends the follow-ups.
 In `streamRaw()`, the last step is committed by the stream's `onFinish`; the
 AI SDK cannot fail an already-returned stream, so a failed final commit closes
 the call as `unknown` instead, and the log stays consistent.
+
+## Interrupts and resume
+
+A pending interrupt is control state: the checkpoint's `pendingInterrupt`,
+as in legacy mode. The interrupted call itself is on the log, and resuming
+it only appends:
+
+| Step | What is committed |
+| --- | --- |
+| A tool calls `interrupt()` | The step's outputs, except the interrupted call's `[Interrupt requested]` placeholder result. The assistant entry that made the call also carries an AI SDK `tool-approval-request` part whose `approvalId` is the interrupt's id. Other results of the step are committed as usual. |
+| `resume()` approves or answers | A `tool_result` entry with a `tool-approval-response` part (the **resolution**), then the tool runs, then a `tool_result` entry with its result |
+| `resume()` rejects | The resolution and the denial result, in one write; nothing runs |
+
+The resolution records the decision: `approved` and the approval's
+`reason`, or, for a custom interrupt, `approved: true` with the answer in
+`reason` as canonical JSON of `{ "answer": <value> }` (`{}` when there is no
+answer), so a custom answer must be JSON-serialisable. The `PreGenerate`
+hooks screen it like any other text. The **committed, screened resolution is
+authoritative**: the tool always runs with the decision it records, on the
+first run and on recovery alike, so a redacted answer reaches the tool
+redacted. If screening leaves an answer that no longer decodes (for example
+a redacted number), the resume fails closed with a `ContextLogInvalidError`
+(reason `invalid_resolution`) and the tool does not run.
+
+The AI SDK's prompt conversion drops approval requests and responses that
+are not provider-executed, so neither ever reaches a provider. A custom
+`ProjectionAdapter` must pass them through as stored (or drop them) and
+must never re-render them as other content, such as text or tool results;
+otherwise the resolution and a custom answer would reach the model.
+
+Both entries are outputs of the interrupted call (`appendOutputs` on its
+manifest, which still owns the head), so they pass the `PreGenerate` hooks
+before commit like any other output. Their keys are
+`interrupt:<id>:<createdAt>:resolution` and `interrupt:<id>:<createdAt>:result`.
+After the commit, the pending interrupt is cleared and an ordinary log-mode
+generation continues from the path, with no separate prompt derivation.
+Producers run as they do before any generation, so a slot whose value is
+unchanged appends nothing.
+
+The AI SDK drops approval parts that are not provider-executed before a
+request reaches the provider, and merges adjacent tool messages. The
+continuation therefore sends the provider the same input as a run that was
+never interrupted, and the log holds that run's entries plus the interrupt
+and its resolution. (If the interrupted step also called other tools,
+their results were committed when the interrupt was raised, so the resumed
+result follows them.)
+
+Rules:
+
+- **The tool runs through the normal pipeline.** An approved or answered
+  call runs again with the input the log committed for it and its own tool
+  call id, through permission mode, the `PreToolUse` and `PostToolUse` hooks
+  and signal catching. The resume's response answers the tool's
+  `interrupt()`; for an approval, the permission layer also sees the
+  decision. A thrown error becomes an `error-text` result, as in a normal
+  step. A rejection does not run the tool: its result is
+  `Tool "<name>" was denied by user[: <reason>]`, as in legacy mode.
+- **An unresolved interrupt blocks the stream.** A call whose approval
+  request has no result cannot be projected, so `generate()` and the other
+  modes fail with a `ContextLogConflictError` (reason `interrupt_pending`)
+  before anything is committed. Resume it first.
+- **A tool that interrupts again** (for example a multi-step form) keeps its
+  call unresolved. The round's resolution stays on the log, the new interrupt
+  becomes the pending interrupt, and `resume()` returns it.
+- **Stream.** `resume()` uses the call's `contextStream`, like `generate()`.
+  An interrupt that is not on that stream's path is a
+  `ContextLogNotFoundError` (resource `interrupt`). If the stream moved past
+  the interrupted call, it cannot be resumed (`head_moved`).
+- **Control state is restored first.** `resume()` loads the checkpoint
+  through the agent's checkpoint runtime, so a fresh agent restores the
+  thread's todos and files before the tool runs, and the checkpoint it saves
+  keeps any changes the tool made.
+- **`AgentSession`** leaves background task events queued, and their tasks
+  registered, while an interrupt is pending, so their results are not
+  consumed by a turn that would be refused. After every resume, whether it
+  succeeded or failed, the session reads the pending interrupt back from the
+  checkpoint before taking more events.
+- Workflow-gated agents still cannot use `resume()`.
+
+### Crash safety
+
+The resolution is committed **before** the tool runs. A resume that finds
+the resolution of the pending interrupt but no result knows that an earlier
+attempt may have started the tool and stopped (for example a crash) before
+its result was committed. The tool may have had its side effects, so by
+default the resume fails with a `ContextLogConflictError` (reason
+`resume_in_doubt`) and never runs the tool again. The stream stays blocked.
+
+Recovering is the host's job, because only the host's **tool ledger** knows
+whether the call ran. A host whose ledger makes a repeated execution of the
+same tool call id safe sets `contextLog.inDoubtResume: "reexecute"`. The
+resume then runs the call again through the pipeline with the same tool call
+id, so a `PreToolUse` hook keyed by it can answer with the recorded result
+(`respondWith`) instead of running the side effect a second time. The
+re-run repeats the decision the log recorded (the approval, or the custom
+answer), not the one passed to the new `resume()`; a rejection never re-runs
+anything.
+
+The host's single-writer requirement (see [the commit
+boundary](#the-commit-boundary)) covers resume too. The SDK does not fence
+two concurrent resumes of the same interrupt: the resolution is an
+idempotent output commit, so both could commit it and both could run the
+tool. Hold the stream's run lease across `resume()` as across a generation.
+
+Other failure points recover without that:
+
+| Crash or failure | Next `resume()` |
+| --- | --- |
+| Before the resolution is committed | Resumes normally; nothing ran |
+| After the result is committed, before the pending interrupt is cleared | Does not run the tool; clears the interrupt and continues |
+| After the interrupt is cleared, before the continuation finishes | There is nothing to resume. Continue with an ordinary generation without a prompt. |
+| The `PreGenerate` hooks deny the result | The result is not committed, so the resume is in doubt as above |
 
 ## Subagent streams
 
@@ -569,6 +682,7 @@ run, gives them an isolated copy, and resends the attempt's own input.
 | `PreGenerate.updatedInput` | Only operational options and transforms of new input; see [Hooks in log mode](#hooks-in-log-mode) |
 | Checkpoint save after a generation | `appendOutputs` for each step's output and tool results, then `recordOutcome` |
 | Resume from a checkpoint | Read the head and project its path |
+| `resume()` appends a constructed tool call and result to the checkpoint and regenerates | `resume()` appends the resolution and the tool's result as outputs of the interrupted call, then runs an ordinary generation |
 
 Run control state that is not history (pending interrupts, todos, files) stays
 in the checkpoint.

@@ -174,6 +174,7 @@ const STRUCTURAL_KEYS = new Set([
   "type",
   "toolCallId",
   "toolName",
+  "approvalId",
   "mediaType",
   "providerOptions",
   "providerMetadata",
