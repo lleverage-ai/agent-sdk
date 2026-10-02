@@ -20,9 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the retracted entry's text. Keys and producer names are never rendered.
   The runtime records `supersession: "append"` in the contract of every
   version it creates; versions without it (created before this release)
-  keep projecting as before. Compaction is unchanged: the child still
-  inherits only active entries (`activeContextEntries()`), so it is the only
-  place superseded entries are dropped.
+  keep projecting as before. Compaction is the only place superseded entries
+  are dropped: the child inherits only active entries
+  (`activeContextEntries()`). On an append-only version the context manager
+  also counts superseded entries and retractions (as system messages it
+  never summarises), and a compaction that keeps every conversation message
+  and only drops them is declared without a summary. A compaction child
+  keeps its parent's contract, as it does for `userMedia`.
 
 ### Migration notes
 

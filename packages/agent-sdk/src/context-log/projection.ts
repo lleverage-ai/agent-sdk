@@ -64,9 +64,11 @@ export const USER_MEDIA_CONTRACT_KEY = "userMedia";
  * retraction is rendered as a notice. The projected prefix therefore never
  * changes when a slot changes, so the provider's prompt cache keeps it.
  *
- * The runtime records it on every version it creates; versions created
- * before it existed lack it and keep dropping superseded entries and
- * retractions, so a version always projects to the same bytes. Like
+ * The runtime records it on every version it creates for a new contract
+ * (initial, branch and every adapter, model or core transition); a
+ * compaction child keeps its parent's contract, as it does `userMedia`.
+ * Versions created before it existed lack it and keep dropping superseded
+ * entries and retractions, so a version always projects to the same bytes. Like
  * {@link USER_MEDIA_CONTRACT_KEY} it is not compared with the expected
  * contract; the default adapter's version change is what moves an existing
  * stream to a new version that records it (an `adapter_change`).
@@ -159,32 +161,42 @@ function renderEntry(entry: ContextEntryInput): ModelMessage {
 }
 
 /**
- * Renders a path append-only: every entry stays where it was committed. An
- * entry that supersedes another opens with {@link UPDATE_LABEL}; a
- * retraction renders {@link RETRACTION_LABEL} followed by the text of the
- * entry it retracts (when that entry is in the input and is not itself a
- * retraction), so the model knows
- * which context no longer applies. Every rendered string is fixed SDK text
- * or a screened payload; keys and producer names are never rendered.
+ * The text each runtime context entry of a path renders as under append-only
+ * supersession, by index (`undefined` for other entries). An entry that
+ * supersedes another opens with {@link UPDATE_LABEL}; a retraction renders
+ * {@link RETRACTION_LABEL} followed by the text of the entry it retracts
+ * (when that entry is earlier in the input and is not itself a retraction),
+ * so the model knows which context no longer applies. Every rendered string
+ * is fixed SDK text or a screened payload; keys and producer names are never
+ * rendered. Log-mode compaction budgets superseded entries with it.
  *
  * @internal
  */
-function renderAppendOnly(entries: readonly ContextEntryInput[]): ModelMessage[] {
+export function appendOnlyRuntimeTexts(
+  entries: readonly ContextEntryInput[],
+): Array<string | undefined> {
   const runtime = new Map<string, RuntimeContextEntryInput>();
   return entries.map((entry) => {
-    if (entry.kind !== "runtime_context") return renderEntry(entry);
+    if (entry.kind !== "runtime_context") return undefined;
     runtime.set(entry.key, entry);
-    if (entry.supersedes === undefined) return renderEntry(entry);
+    if (entry.supersedes === undefined) return payloadText(entry);
     if (entry.retraction === true) {
       const target = runtime.get(entry.supersedes);
       // A retraction has no content to quote (a host may retract one).
-      return textMessage(
-        target === undefined || target.retraction === true
-          ? RETRACTION_LABEL
-          : `${RETRACTION_LABEL}\n${payloadText(target)}`,
-      );
+      return target === undefined || target.retraction === true
+        ? RETRACTION_LABEL
+        : `${RETRACTION_LABEL}\n${payloadText(target)}`;
     }
-    return textMessage(`${UPDATE_LABEL}\n${payloadText(entry)}`);
+    return `${UPDATE_LABEL}\n${payloadText(entry)}`;
+  });
+}
+
+/** Renders a path append-only: every entry stays where it was committed. @internal */
+function renderAppendOnly(entries: readonly ContextEntryInput[]): ModelMessage[] {
+  const texts = appendOnlyRuntimeTexts(entries);
+  return entries.map((entry, index) => {
+    const text = texts[index];
+    return text === undefined ? renderEntry(entry) : textMessage(text);
   });
 }
 
