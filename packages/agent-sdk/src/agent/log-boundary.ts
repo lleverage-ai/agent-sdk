@@ -293,6 +293,49 @@ export function describeProviderCall(params: ProviderCallOptions): {
   };
 }
 
+/**
+ * A deep copy of request data: arrays, plain objects, byte arrays and URLs
+ * are copied; anything else (functions, class instances) is kept as is.
+ */
+function copyRequestData(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(copyRequestData);
+  if (value instanceof Uint8Array) return value.slice();
+  if (value instanceof URL) return new URL(value.href);
+  if (value !== null && typeof value === "object") {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype === Object.prototype || prototype === null) {
+      const copy: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value)) copy[key] = copyRequestData(item);
+      return copy;
+    }
+  }
+  return value;
+}
+
+/**
+ * Provider call options whose request data (prompt, tools, settings and
+ * provider options) is a private copy, so a middleware that changes it in
+ * place cannot change the AI SDK's own objects, which the AI SDK reuses for
+ * its retries and later steps. The abort signal and transport headers are
+ * passed through unchanged.
+ *
+ * @internal
+ */
+export function isolateCallOptions(params: ProviderCallOptions): ProviderCallOptions {
+  const { abortSignal, headers, ...data } = params;
+  return {
+    ...(copyRequestData(data) as typeof data),
+    ...("abortSignal" in params && { abortSignal }),
+    ...("headers" in params && { headers }),
+  };
+}
+
+/** Gives the next middleware its own copy of the request data. */
+const isolateRequestMiddleware: LanguageModelMiddleware = {
+  specificationVersion: "v4",
+  transformParams: async ({ params }) => isolateCallOptions(params),
+};
+
 /** Whether a model is already a log-mode boundary. @internal */
 export function isLogBoundaryModel(model: LanguageModel | undefined): boolean {
   return typeof model === "object" && model !== null && boundaryModels.has(model);
@@ -837,11 +880,20 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   boundaryModels.add(boundaryModel);
   // Host request middleware run after the projection and before the
   // boundary: the first one transforms the projected request first, and the
-  // boundary commits and digests the request the last one produces.
+  // boundary commits and digests the request the last one produces. Each
+  // gets its own copy of the request data, so one that rewrites it in place
+  // cannot change the AI SDK's request, which a retry or a later step
+  // reuses: every attempt applies the middleware once to the projection.
   const requestMiddleware = deps.requestMiddleware ?? [];
   const model =
     requestMiddleware.length > 0
-      ? wrapLanguageModel({ model: boundaryModel, middleware: [...requestMiddleware] })
+      ? wrapLanguageModel({
+          model: boundaryModel,
+          middleware: requestMiddleware.flatMap((middleware) => [
+            isolateRequestMiddleware,
+            middleware,
+          ]),
+        })
       : boundaryModel;
   boundaryModels.add(model);
 

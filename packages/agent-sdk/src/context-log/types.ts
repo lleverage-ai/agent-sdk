@@ -1036,12 +1036,20 @@ export interface ContextLogOptions {
    * provider call of a log-mode agent: each tool-loop step, each retry and
    * each fallback attempt.
    *
-   * Request middleware are part of the serialisation contract: they must be
-   * deterministic (the same projected request always becomes the same
-   * provider request) and pinned with the projection adapter's `id` and
-   * `version`, so a log can be reconstructed offline. Middleware that do not
-   * change the request (usage, telemetry, retries) can stay outside, around
-   * the agent.
+   * Each middleware receives its own copy of the request data, so every
+   * attempt applies them exactly once to its projection. The abort signal
+   * and transport headers are passed through and are not part of the
+   * committed digest.
+   *
+   * Request middleware are part of the serialisation contract, so a log can
+   * be reconstructed offline by applying them to the projection with the
+   * recorded tools and settings. They must be deterministic, derive changes
+   * only from the request and their pinned configuration, leave the tools
+   * and settings they produce unchanged when applied again, never remove or
+   * overwrite a setting they read to shape the prompt, and be pinned with
+   * the projection adapter's `id` and `version`. The SDK does not check
+   * this. Middleware that do not change the request (usage, telemetry,
+   * retries) can stay outside, around the agent.
    */
   requestMiddleware?: readonly LanguageModelMiddleware[];
   /**

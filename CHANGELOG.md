@@ -16,8 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `callOptions` describe the request as the provider receives it. They apply
   to every provider call of a log-mode agent, including tool-loop steps,
   retries and fallback attempts, and SDK-built subagents inherit them with
-  the projection adapter. They must be deterministic and pinned with the
-  adapter's `id` and `version`. Ignored outside log mode.
+  the projection adapter. Each middleware gets its own copy of the request
+  data, so an in-place rewrite is applied once per attempt. They must be
+  deterministic, must not remove or overwrite a setting they read to shape
+  the prompt, and must be pinned with the adapter's `id` and `version` (see
+  docs/context-log.md). Transport headers stay outside the digest. Ignored
+  outside log mode.
 - `ContextCoreInput.target` and `ContextCoreInput.model`: the target
   `{ provider, modelId }` and terminal model of the version being created.
 

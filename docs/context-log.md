@@ -383,20 +383,40 @@ The boundary must be the last thing before the provider:
   agent → projection → requestMiddleware[0] → … → requestMiddleware[n] → commit boundary → provider
   ```
 
-  so the boundary digests and commits the request exactly as the provider
-  receives it. The first middleware sees the projected request first. The
-  middleware run on every provider call of the agent: each tool-loop step,
-  each AI SDK retry and each fallback attempt, and SDK-built subagents
-  inherit them with the projection adapter. The log keeps the entries, not
-  the transformed request: the manifest's `inputDigest`, `toolSnapshot` and
-  `callOptions` describe the request after the middleware.
-- Request middleware are part of the **serialisation contract**. They must
-  be deterministic (the same projected request always becomes the same
-  provider request), and a change to what they produce must be pinned like
-  an adapter change, by the projection adapter's `id` and `version` (for
-  example `{ ...createMessageProjectionAdapter(), version: "1+host.3" }`),
-  which every version records. Otherwise a log can no longer be reconstructed
-  offline: replaying a path would no longer reproduce the committed digests.
+  so the boundary digests and commits the request as the provider receives
+  it: the prompt, tool definitions and settings, after the middleware. The
+  digest never covers the abort signal, transport headers or
+  `includeRawChunks`, so headers a middleware adds are not committed. The
+  first middleware sees the projected request first. The middleware run on
+  every provider call of the agent: each tool-loop step, each AI SDK retry
+  and each fallback attempt, and SDK-built subagents inherit them with the
+  projection adapter. Each middleware receives its own copy of the request
+  data, so one that rewrites it in place cannot leak the change into the
+  AI SDK's request, which a retry or later step reuses: every attempt
+  applies the middleware exactly once to its projection. The log keeps the
+  entries, not the transformed request: the manifest's `inputDigest`,
+  `toolSnapshot` and `callOptions` describe the request after the
+  middleware.
+- Request middleware are part of the **serialisation contract**. A call is
+  reconstructed offline by projecting the version's core and the path
+  before the call, converting it to the provider prompt, adding the
+  manifest's recorded `toolSnapshot` and `callOptions`, applying the pinned
+  middleware once, and comparing the digest with `inputDigest`. For that to
+  hold, request middleware must:
+  - be deterministic, deriving changes only from the request they receive
+    and their pinned configuration (no clocks, random values or external
+    lookups);
+  - leave the tool definitions and settings they produce unchanged when
+    applied to them again, and never remove or overwrite a setting they read
+    to shape the prompt (keep it, or record what they used in a setting
+    they keep), because only the settings after the middleware are recorded;
+  - be pinned like an adapter change: a change to what they produce needs a
+    new projection adapter `id` or `version` (for example
+    `{ ...createMessageProjectionAdapter(), version: "1+host.3" }`), which
+    every version records.
+
+  The SDK does not check these rules; a middleware that breaks them sends
+  requests the log can no longer reproduce.
 - Wrappers that do not change the request (usage accounting, telemetry,
   retries) can stay outside, around the agent, as before.
 - A model id string is rejected in log mode, because the AI SDK would resolve
@@ -407,6 +427,13 @@ same stream: each follow-up prompt passes the `PreGenerate` hooks as new user
 input, then is planned and committed through a boundary like any other call.
 In `streamDataResponse()`, a follow-up that raises an interrupt or stops the
 run records the pending interrupt and ends the follow-ups.
+Streaming fallbacks follow the legacy rules. `streamRaw()` and
+`streamDataResponse()` retry or fall back only when starting the stream
+throws synchronously. `stream()` retries within its own loop, but a provider
+error raised inside the stream reaches it as the AI SDK's
+`NoOutputGeneratedError`, which the default policy does not retry or fall
+back on. A fallback that does happen is planned and committed like any
+other attempt.
 In `streamRaw()`, the last step is committed by the stream's `onFinish`; the
 AI SDK cannot fail an already-returned stream, so a failed final commit closes
 the call as `unknown` instead, and the log stays consistent.

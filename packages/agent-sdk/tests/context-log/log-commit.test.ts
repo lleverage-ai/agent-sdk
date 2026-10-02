@@ -21,6 +21,7 @@ import {
   Output,
   tool,
 } from "ai";
+import { convertToLanguageModelPrompt } from "ai/internal";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import { describeProviderCall, sha256Hex } from "../../src/agent/log-boundary.js";
@@ -49,6 +50,7 @@ import {
   type ContextVersion,
   createAgent,
   createGuardrailsHooks,
+  createMessageProjectionAdapter,
   createRetryHooks,
   createSecretsFilterHooks,
   createSlotContextProducer,
@@ -1007,6 +1009,128 @@ describe("log-mode request middleware", () => {
     for (const [index, request] of requests.entries()) {
       expect(request.prompt[0]).toEqual({ role: "system", content: "You are the core. [host]" });
       expect(manifests[index]!.inputDigest).toBe(describeProviderCall(request).inputDigest);
+    }
+  });
+
+  it("applies a middleware that rewrites the request in place once per attempt", async () => {
+    const store = new MemoryContextLogStore();
+    let failed = false;
+    const { model, requests } = createScriptedModel(
+      [failingReply, toolCalls(["c1", "echo", { value: "a" }]), text("done")],
+      {
+        onCall: () => {
+          if (failed) return;
+          failed = true;
+          throw new APICallError({
+            message: "overloaded",
+            url: "https://provider.test",
+            requestBodyValues: {},
+            statusCode: 529,
+            isRetryable: true,
+          });
+        },
+      },
+    );
+    // Rewrites the AI SDK's request objects in place instead of copying them.
+    const inPlace: LanguageModelMiddleware = {
+      specificationVersion: "v4",
+      transformParams: async ({ params }) => {
+        const system = params.prompt[0];
+        if (system?.role === "system") system.content += " [host]";
+        params.providerOptions ??= {};
+        params.providerOptions.host = { ...params.providerOptions.host, seen: true };
+        return params;
+      },
+    };
+    const agent = logAgent(model, store, {
+      tools: echoTools,
+      contextLog: { mode: "log", store, requestMiddleware: [inPlace] },
+    });
+
+    await agent.generate({ prompt: "go", threadId: THREAD });
+
+    // The AI SDK retry, then the second tool-loop step: each request has
+    // the middleware applied once to its projection.
+    expect(requests).toHaveLength(3);
+    for (const request of requests) {
+      expect(request.prompt[0]).toEqual({ role: "system", content: "You are the core. [host]" });
+    }
+    expect(requests[1]!.prompt).toEqual(requests[0]!.prompt);
+  });
+
+  it("reproduces each committed digest from the store, the projection and the pinned middleware", async () => {
+    const store = new MemoryContextLogStore();
+    const { model, requests } = createScriptedModel([
+      toolCalls(["c1", "echo", { value: "a" }]),
+      text("done"),
+    ]);
+    // Shapes the prompt from a request option it keeps, so a replay sees it.
+    const pinned: LanguageModelMiddleware = {
+      specificationVersion: "v4",
+      transformParams: async ({ params }) => {
+        const label = String(params.providerOptions?.host?.label ?? "none");
+        return {
+          ...params,
+          prompt: params.prompt.map((message) =>
+            message.role === "system"
+              ? { ...message, content: `${message.content} <${label}>` }
+              : message,
+          ),
+          maxOutputTokens: 512,
+        };
+      },
+    };
+
+    await logAgent(model, store, {
+      tools: echoTools,
+      contextLog: { mode: "log", store, requestMiddleware: [pinned] },
+    }).generate({
+      prompt: "go",
+      threadId: THREAD,
+      providerOptions: { host: { label: "pinned" } },
+    });
+
+    expect(requests[0]!.prompt[0]).toEqual({
+      role: "system",
+      content: "You are the core. <pinned>",
+    });
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    const path = await readPath(store);
+    const manifests = await readManifests(store);
+    expect(manifests).toHaveLength(2);
+    const adapter = createMessageProjectionAdapter();
+    for (const manifest of manifests) {
+      // The call's input: the path before the call's own outputs.
+      const end = path.findIndex(
+        (entry) =>
+          entry.manifestId === manifest.id &&
+          (entry.kind === "assistant" || entry.kind === "tool_result"),
+      );
+      const { messages } = await adapter.project({
+        core: version.core,
+        contract: version.contract,
+        entries: path.slice(0, end),
+        target: manifest.model,
+      });
+      const prompt = await convertToLanguageModelPrompt({
+        prompt: { instructions: undefined, messages },
+        supportedUrls: {},
+        download: undefined,
+        provider: manifest.model.provider,
+      });
+      const replayed = await pinned.transformParams!({
+        type: "generate",
+        model: model as Parameters<
+          NonNullable<LanguageModelMiddleware["transformParams"]>
+        >[0]["model"],
+        params: {
+          prompt,
+          tools: JSON.parse(manifest.toolSnapshot!),
+          ...JSON.parse(manifest.callOptions!),
+        },
+      });
+      expect(describeProviderCall(replayed).inputDigest).toBe(manifest.inputDigest);
     }
   });
 
