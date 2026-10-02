@@ -19,6 +19,7 @@ import {
   createAgent,
   createContextManager,
   createRetryHooks,
+  createSecretsFilterHooks,
   MemoryContextLogStore,
 } from "../../src/index.js";
 
@@ -148,6 +149,28 @@ describe("ContextPrepareRequest.runInput", () => {
 
     expect(store.prepares[0]!.runInput).toEqual([
       { key: userAppends(store.prepares[0]!)[0], index: 0 },
+    ]);
+  });
+
+  it("lists input the secrets filter redacted, by its key", async () => {
+    const store = new RecordingStore();
+    const { model } = createScriptedModel([text("done")]);
+    const [inputFilter] = createSecretsFilterHooks();
+
+    await logAgent(model, store, { hooks: { PreGenerate: [inputFilter] } }).generate({
+      threadId: THREAD,
+      input: [
+        { role: "user", content: "plain" },
+        { role: "user", content: "key AKIAIOSFODNN7EXAMPLE" },
+      ],
+    });
+
+    const [prepare] = store.prepares;
+    expect(JSON.stringify(prepare!.append)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    const keys = userAppends(prepare!);
+    expect(prepare!.runInput).toEqual([
+      { key: keys[0], index: 0 },
+      { key: keys[1], index: 1 },
     ]);
   });
 
