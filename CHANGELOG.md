@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interrupt with `getInterrupt()`. `createMockAgent()` and the recorder
   implement it. Code that implements the `Agent` interface itself needs the
   new method. (LLE-14004)
+- `ContextPrepareRequest.runInput` (`ContextRunInputRef[]`, experimental)
+  lists the `user` entries of a prepare's `append` that are the run's new
+  input, each with its `index` in `GenerateOptions.input` (`0` for
+  `prompt`), so hosts can map input messages to their own records without
+  parsing SDK key formats. A compaction's summary and retained tail, and
+  input an earlier prepare committed, are never listed; the field is absent
+  when a prepare appends no new input. `MemoryContextLogStore` includes it in
+  the idempotency digest when present; other stores need not persist it.
+  Requests without new input are unchanged. (LLE-14003)
 
 ## [1.0.0-rc.6] - 2026-10-02
 

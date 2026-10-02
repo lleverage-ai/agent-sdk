@@ -574,6 +574,40 @@ export interface ContextPrepareRequest {
    * Optional and additive: a request without it behaves as before.
    */
   closeSuperseded?: string;
+  /**
+   * The entries of `append` that are the run's new input, in order, each
+   * with its position in that input. Set by the SDK runtime; absent (never
+   * an empty array) when the prepare appends no new input.
+   *
+   * This is how a host tells the run's new input apart from every other
+   * `user` entry a prepare may append, without depending on key formats:
+   * the summary and the retained tail a compaction re-appends are never
+   * listed, and neither is input an earlier prepare of the run already
+   * committed (it is never appended again). Retries of the same request
+   * carry the same list.
+   *
+   * Informational for stores and for {@link ContextAdmitHook}s: a store
+   * need not persist or validate it. `MemoryContextLogStore` includes
+   * it in the request's idempotency digest when it is present.
+   */
+  runInput?: ContextRunInputRef[];
+}
+
+/**
+ * Identifies one message of a run's new input among the entries a prepare
+ * appends (see {@link ContextPrepareRequest.runInput}).
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextRunInputRef {
+  /** Key of the `user` entry in the prepare's `append`. */
+  key: string;
+  /**
+   * Zero-based position of the message in the run's input: its index in
+   * `GenerateOptions.input`, or `0` for a `prompt`.
+   */
+  index: number;
 }
 
 /**
