@@ -440,7 +440,12 @@ describe("log-mode request projection", () => {
 
     expect(project).toHaveBeenCalledWith({
       core: "You are the core.",
-      contract: { ...DEFAULT_CONTRACT, adapter: "host/adapter", adapterVersion: "7" },
+      contract: {
+        ...DEFAULT_CONTRACT,
+        adapter: "host/adapter",
+        adapterVersion: "7",
+        userMedia: "placeholder",
+      },
       entries: [
         {
           kind: "user",

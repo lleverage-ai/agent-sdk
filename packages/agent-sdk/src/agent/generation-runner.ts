@@ -600,6 +600,12 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         { configKey: "contextStream" },
       );
     }
+    if (requestedOptions.input !== undefined) {
+      throw new ConfigurationError(
+        'input only applies in context log mode; set contextLog: { mode: "log" } on the agent, or pass prompt or messages',
+        { configKey: "input" },
+      );
+    }
     // A snapshot belongs to one run. Follow-up generations spread the previous
     // run's options after its checkpoint was saved, so never reuse one.
     const { _checkpointSnapshot: _previousRunSnapshot, ...freshOptions } = requestedOptions;

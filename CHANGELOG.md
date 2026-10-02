@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Log mode:** `GenerateOptions.input` takes a run's new input as an array
+  of user messages (several queued messages, or text with image and file
+  parts). Each message passes the `PreGenerate` input-security hooks and is
+  committed as its own `user` entry, in order, under the call's one head
+  snapshot; a retry never appends any of it again. It is rejected together
+  with `prompt` and outside log mode. A new user message's `providerOptions`
+  (message and part level) are screened like caller data. New versions
+  record `userMedia: "placeholder"` in their contract, and on those the
+  default projection adapter replaces user image and file parts the
+  version's capability contract excludes with the legacy text placeholders.
+  Existing versions, without the key, keep projecting user parts as stored
+  (LLE-13995).
+
 ### Changed
 
 - **Log mode:** a model step with parallel tool calls commits one

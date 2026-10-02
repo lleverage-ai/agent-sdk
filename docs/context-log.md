@@ -279,14 +279,36 @@ await agent.generate({ prompt: "Hello", threadId: "thread-1" });
 
 Rules in log mode:
 
-- **Only new user input.** Pass it as `prompt`. Caller-supplied `messages`
+- **Only new user input.** Pass it as `prompt`, or as `input`: an array of
+  user messages, for several queued messages or for text with image and
+  file parts. Each message of `input` is committed as its own `user` entry,
+  in order, in the call's prepare (`prompt` is one message). Setting both, or
+  setting `input` outside log mode, is rejected. Messages must be plain
+  JSON: image and file data is a string (base64, a data URL or a URL), and
+  parts are text, image or file parts only. Caller-supplied `messages`
   are rejected with a `ValidationError`, and so is a call without a
-  `threadId`. Each attempt shows the prompt, with the producers' output, to
-  the `PreGenerate` hooks as new input (see
-  [Hooks in log mode](#hooks-in-log-mode)), so the secrets filter and
-  guardrails redact or deny it before it is committed or sent. A retry
-  resends the same, already committed input: retry hooks may only change
-  operational options.
+  `threadId`. Each attempt shows the new input, with the producers' output,
+  to the `PreGenerate` hooks (see [Hooks in log mode](#hooks-in-log-mode)),
+  so the secrets filter and guardrails redact or deny it before it is
+  committed or sent. A retry resends the same, already committed input and
+  never appends any of it again: retry hooks may only change operational
+  options.
+
+  ```typescript
+  await agent.generate({
+    threadId: "thread-1",
+    input: [
+      { role: "user", content: "First queued message" },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Second, with a report" },
+          { type: "file", data: pdfBase64, mediaType: "application/pdf", filename: "q3.pdf" },
+        ],
+      },
+    ],
+  });
+  ```
 - **Frozen core.** `promptBuilder` is rejected: set a static `systemPrompt`
   (it may be empty) or `contextLog.resolveCore`, not both. Context that
   changes between calls belongs in runtime context entries.
@@ -294,7 +316,13 @@ Rules in log mode:
   `adapter`, `adapterVersion`, `imageInput` and `fileInput`
   (`ContextProjectionContractKey`) on the versions it creates. The default
   adapter replaces tool-result media with the legacy text placeholders when
-  the contract says the model cannot accept it. A version whose recorded
+  the contract says the model cannot accept it. Versions the runtime
+  creates also record `userMedia: "placeholder"`, and on those the adapter
+  replaces user image and file parts the same way (a file part with an
+  `image/*` media type counts as an image). Versions created before that key
+  existed don't have it and project user parts as stored, so a version's
+  projection never changes. The key is not compared, so its absence never
+  requires a transition. A version whose recorded
   values differ from the current adapter and model's capabilities is not
   projected: the call fails with a `ContextLogConflictError` (reason
   `transition_required`) before anything is sent.
@@ -797,8 +825,11 @@ Hooks never rewrite the log. In log mode they may only:
   written back as a string (deliberately: redaction wins, so a tool call's
   input may no longer match a numeric schema), and a key renamed onto a key the object already
   has (which would merge two fields) is a violation. Booleans and `null` are
-  not screened. Ids, part types, binary data and provider options are not
-  shown. Text
+  not screened. Ids, part types, media types, binary data (including image
+  and file data, even when it is a URL) and provider options are not shown,
+  except on new user input: a user message's provider options, at message
+  and part level, are screened like caller data, because some providers
+  read model input from them. A file part's file name is screened. Text
   filters can therefore scan and redact all of it, and the transformed text
   is written back without changing the entry's structure. The secrets filter
   and guardrails keep redacting and blocking new input, and the redacted

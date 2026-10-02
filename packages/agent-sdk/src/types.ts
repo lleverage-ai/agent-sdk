@@ -20,6 +20,7 @@ import type {
   UIDataTypes,
   UIMessage,
   UIMessageStreamWriter,
+  UserModelMessage,
 } from "ai";
 
 import type { BackendProtocol } from "./backend.js";
@@ -2097,6 +2098,43 @@ export interface GenerationRetryPolicy {
 export interface GenerateOptions {
   /** The user message/prompt */
   prompt?: string;
+
+  /**
+   * Context log mode only: the run's new input as one or more user
+   * messages, for example several queued drafts, or text with image and
+   * file parts. Use it instead of `prompt`; setting both is rejected, and
+   * so is setting it outside log mode.
+   *
+   * Each message passes the PreGenerate input-security hooks (secret
+   * redaction, guardrails) and is committed as its own `user` entry, in
+   * order, before anything is sent. A retry never appends the input again.
+   *
+   * Messages must be plain JSON: file and image data is a string (base64, a
+   * data URL or a URL), never bytes or a `URL` object. Text, file names,
+   * and every key and value under `providerOptions` are screened; file and
+   * image data is not. A file or image part the version's capability
+   * contract excludes is projected as a text placeholder.
+   *
+   * @example
+   * ```typescript
+   * await agent.generate({
+   *   threadId,
+   *   input: [
+   *     { role: "user", content: "First draft" },
+   *     {
+   *       role: "user",
+   *       content: [
+   *         { type: "text", text: "And this report" },
+   *         { type: "file", data: reportBase64, mediaType: "application/pdf", filename: "q3.pdf" },
+   *       ],
+   *     },
+   *   ],
+   * });
+   * ```
+   *
+   * @experimental
+   */
+  input?: UserModelMessage[];
 
   /** Conversation history - accepts AI SDK message types */
   messages?: ModelMessage[];

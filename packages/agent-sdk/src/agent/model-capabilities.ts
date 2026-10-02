@@ -166,3 +166,46 @@ export function projectMessagesForModel(
     };
   }) as ModelMessage[];
 }
+
+/** Placeholder for an image the active model cannot accept. @internal */
+const IMAGE_OMITTED = "[Image omitted: active model does not support image input.]";
+/** Placeholder for a file the active model cannot accept. @internal */
+const FILE_OMITTED = "[File omitted: active model does not support file input.]";
+
+/**
+ * Replace user image and file parts the capabilities exclude with text
+ * placeholders. A file part whose media type is an image counts as image
+ * input. Only log mode applies this, keyed by a version's contract; legacy
+ * mode sends user parts as given. Returns the input array untouched when
+ * nothing needs downgrading.
+ *
+ * @internal
+ */
+export function projectUserMediaForModel(
+  messages: ModelMessage[],
+  capabilities: ModelInputCapabilities | undefined,
+): ModelMessage[] {
+  if (capabilities?.imageInput !== false && capabilities?.fileInput !== false) {
+    return messages;
+  }
+
+  return messages.map((message) => {
+    if (message.role !== "user" || !Array.isArray(message.content)) {
+      return message;
+    }
+    let changed = false;
+    const content = message.content.map((part) => {
+      if (part.type !== "image" && part.type !== "file") return part;
+      const image =
+        part.type === "image" ||
+        (typeof part.mediaType === "string" && part.mediaType.toLowerCase().startsWith("image/"));
+      const omitted = image
+        ? capabilities?.imageInput === false
+        : capabilities?.fileInput === false;
+      if (!omitted) return part;
+      changed = true;
+      return { type: "text" as const, text: image ? IMAGE_OMITTED : FILE_OMITTED };
+    });
+    return changed ? { ...message, content } : message;
+  });
+}
