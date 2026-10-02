@@ -12,11 +12,13 @@
  */
 
 import type { ModelMessage } from "ai";
+import { isLogModeEnabled } from "./agent/log-context.js";
 import {
   formatDefaultTaskCompletionPrompt,
   formatDefaultTaskFailurePrompt,
 } from "./background-task-formatting.js";
 import type { Interrupt } from "./checkpointer/types.js";
+import { ConfigurationError } from "./errors/index.js";
 import type { BackgroundTask } from "./task-store/types.js";
 import type { Agent, GenerateOptions } from "./types.js";
 
@@ -59,6 +61,11 @@ export interface AgentSessionOptions {
    * conversation history: each turn passes only the new prompt, the session's
    * own messages are used only when the generation loads no checkpoint for the
    * thread, and {@link AgentSession.getMessages} is a display copy.
+   *
+   * In context log mode (`contextLog: { mode: "log" }` on the agent) a
+   * threadId is required and the thread's log is the model's history: each
+   * turn passes only the new prompt and {@link AgentSession.getMessages} is a
+   * display copy.
    */
   threadId?: string;
 
@@ -88,6 +95,7 @@ export interface AgentSessionOptions {
    * If threadId is provided and checkpointing is enabled, these reach the
    * model only while the generation loads no checkpoint for the thread; an
    * existing checkpoint's history takes their place.
+   * Not accepted in context log mode, where the log holds the history.
    */
   initialMessages?: ModelMessage[];
 
@@ -172,6 +180,20 @@ export class AgentSession {
   private pendingInterrupt: Interrupt | null = null;
 
   constructor(options: AgentSessionOptions) {
+    if (isLogModeEnabled(options.agent.options)) {
+      if (!options.threadId) {
+        throw new ConfigurationError(
+          "AgentSession needs a threadId in context log mode: it identifies the log stream that holds the history",
+          { configKey: "threadId" },
+        );
+      }
+      if (options.initialMessages && options.initialMessages.length > 0) {
+        throw new ConfigurationError(
+          "AgentSession does not accept initialMessages in context log mode: the log is the history",
+          { configKey: "initialMessages" },
+        );
+      }
+    }
     this.agent = options.agent;
     this.threadId = options.threadId;
     this.autoProcessTaskCompletions = options.autoProcessTaskCompletions ?? true;
@@ -227,8 +249,9 @@ export class AgentSession {
   /**
    * Get the current conversation messages.
    *
-   * With a checkpointer and threadId, this is a display copy of the turns
-   * handled by this session; the model's history comes from the checkpoint.
+   * With a checkpointer and threadId, or in context log mode, this is a
+   * display copy of the turns handled by this session; the model's history
+   * comes from the checkpoint or the log.
    */
   getMessages(): ModelMessage[] {
     return [...this.messages];
@@ -373,15 +396,7 @@ export class AgentSession {
    */
   private async *generate(prompt: string): AsyncGenerator<SessionOutput, void, unknown> {
     try {
-      const history = this.messages.length > 0 ? [...this.messages] : undefined;
-      // With a checkpointer the agent prepends the thread's checkpoint, so the
-      // local history is passed as a fallback. The agent drops it when it has
-      // a checkpoint and otherwise turns it into `messages` before PreGenerate
-      // hooks run.
-      const checkpointed = Boolean(this.threadId && this.agent.options.checkpointer);
-      const generateOptions: GenerateOptions = checkpointed
-        ? { prompt, threadId: this.threadId, _historyUnlessCheckpointed: history }
-        : { prompt, messages: history, threadId: this.threadId };
+      const generateOptions = this.buildGenerateOptions(prompt);
 
       const result = await this.agent.generate(generateOptions);
 
@@ -415,6 +430,27 @@ export class AgentSession {
         error: error instanceof Error ? error : new Error(String(error)),
       };
     }
+  }
+
+  /**
+   * The options for one turn's generation.
+   *
+   * In context log mode the log is the model's history, so only the new
+   * prompt is sent and the local messages are a display copy. With a
+   * checkpointer the agent prepends the thread's checkpoint, so the local
+   * history is passed as a fallback: the agent drops it when it has a
+   * checkpoint and otherwise turns it into `messages` before PreGenerate hooks
+   * run. Otherwise the local history is sent as `messages`.
+   */
+  private buildGenerateOptions(prompt: string): GenerateOptions {
+    if (isLogModeEnabled(this.agent.options)) {
+      return { prompt, threadId: this.threadId };
+    }
+    const history = this.messages.length > 0 ? [...this.messages] : undefined;
+    if (this.threadId && this.agent.options.checkpointer) {
+      return { prompt, threadId: this.threadId, _historyUnlessCheckpointed: history };
+    }
+    return { prompt, messages: history, threadId: this.threadId };
   }
 
   /**
