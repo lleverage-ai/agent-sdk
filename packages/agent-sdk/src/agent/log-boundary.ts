@@ -460,14 +460,16 @@ function toOutputEntries(
         // A step with parallel tool calls answers them in one tool message. Each
         // result is its own entry (a host records one result per entry), keyed
         // by its part index. Projection is unchanged: the AI SDK merges adjacent
-        // tool messages into one, keeping the first one's provider options.
-        if (message.content.length <= 1) {
+        // tool messages into one. How it merges message-level provider options
+        // differs between AI SDK versions, so a message that carries them (the
+        // AI SDK's own response messages never do) stays one entry.
+        if (message.content.length <= 1 || message.providerOptions !== undefined) {
           return [{ kind: "tool_result", key, message }];
         }
         return message.content.map((part, partIndex) => ({
           kind: "tool_result",
           key: `${key}:${partIndex}`,
-          message: { ...message, content: [part] },
+          message: { role: "tool", content: [part] },
         }));
       }
       throw new ContextLogInvalidError(
