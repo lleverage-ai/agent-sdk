@@ -636,7 +636,7 @@ export function createLogContextRuntime(
             .map((pending) => pending.approvalId)
             .join(
               ", ",
-            )}); resume it with resume() or resumeDataResponse() before generating on this stream`,
+            )}); resume it with resume(), resumeDataResponse() or resumeStream() before generating on this stream`,
         });
       }
       if (declareModelChange) {

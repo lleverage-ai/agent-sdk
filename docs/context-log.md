@@ -665,6 +665,16 @@ Rules:
 - **A tool that interrupts again** (for example a multi-step form) keeps its
   call unresolved. The round's resolution stays on the log, the new interrupt
   becomes the pending interrupt, and `resume()` returns it.
+- **Streaming the continuation.** `resumeStream()` resumes exactly like
+  `resume()` (same commits, same crash-safety rules), then runs the
+  continuation through `stream()`, so a host that renders live parts gets
+  the same parts as from any other streamed generation, through the same
+  commit boundary and retry-safety rules. The continuation never takes new
+  input: `prompt` and `input` are ignored, as in `resume()` and
+  `resumeDataResponse()`. Nothing runs until the generator is first
+  iterated, and a refused resume throws from that first iteration. If the
+  tool interrupts again, the generator ends without parts and the new
+  interrupt is the pending interrupt (`getInterrupt()`).
 - **Stream.** `resume()` uses the call's `contextStream`, like `generate()`.
   An interrupt that is not on that stream's path is a
   `ContextLogNotFoundError` (resource `interrupt`). If the stream moved past

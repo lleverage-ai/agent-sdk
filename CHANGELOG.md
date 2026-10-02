@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Agent.resumeStream()` resumes a pending interrupt like `resume()` and
+  streams the continuation as `StreamPart`s through `stream()`. In context log
+  mode it commits the resolution and result exactly as `resume()` does, never
+  takes new input, and follows `stream()`'s commit boundary and retry-safety
+  rules. If the tool interrupts again it ends without parts; read the new
+  interrupt with `getInterrupt()`. `createMockAgent()` and the recorder
+  implement it. Code that implements the `Agent` interface itself needs the
+  new method. (LLE-14004)
+
 ## [1.0.0-rc.6] - 2026-10-02
 
 Sixth release candidate for 1.0.0. It adds two log-mode changes that hosts

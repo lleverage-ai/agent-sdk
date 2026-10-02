@@ -843,7 +843,7 @@ describe("workflow execution gate (LLE-12792)", () => {
     expect(childIo).not.toHaveBeenCalled();
   });
 
-  it.each(["resume", "resumeDataResponse"] as const)(
+  it.each(["resume", "resumeDataResponse", "resumeStream"] as const)(
     "rejects gated %s before loading or running raw tools/resolution hooks",
     async (mode) => {
       const load = vi.fn();
@@ -860,9 +860,11 @@ describe("workflow execution gate (LLE-12792)", () => {
         },
         hooks: { InterruptResolved: [resolved] },
       });
-      await expect(agent[mode]("thread", "interrupt", { approved: true })).rejects.toMatchObject({
-        name: "ConfigurationError",
-      });
+      const run =
+        mode === "resumeStream"
+          ? agent.resumeStream("thread", "interrupt", { approved: true }).next()
+          : agent[mode]("thread", "interrupt", { approved: true });
+      await expect(run).rejects.toMatchObject({ name: "ConfigurationError" });
       expect(load).not.toHaveBeenCalled();
       expect(resolved).not.toHaveBeenCalled();
     },

@@ -1725,6 +1725,48 @@ export interface Agent {
   ): Promise<Response>;
 
   /**
+   * Resume execution after responding to an interrupt, streaming the
+   * continuation as {@link StreamPart}s.
+   *
+   * Works like `resume()`, but the continuation runs through `stream()`, so
+   * it yields the same parts a `stream()` call yields and follows the same
+   * rules: in context log mode the resolution and the tool's result are
+   * committed first (see `resume()`), then the continuation is an ordinary
+   * log-mode generation through the same commit boundary. It never takes new
+   * input (`prompt` and `input` are ignored), and retries and fallbacks
+   * follow `stream()`'s retry-safety rules.
+   *
+   * Nothing runs until the generator is first iterated. Errors from the
+   * resume itself (an unknown interrupt, a refused resume, an in-doubt
+   * resolution) are thrown from that first iteration, before any part.
+   *
+   * If the tool interrupts again (for example a multi-step form), the
+   * generator ends without yielding any part, as `stream()` does when a tool
+   * interrupts: the new interrupt is the thread's pending interrupt, read it
+   * with `getInterrupt()`.
+   *
+   * @param threadId - The thread ID to resume
+   * @param interruptId - The ID of the interrupt being responded to
+   * @param response - The response to the interrupt
+   * @param options - Optional generation options to override defaults
+   * @yields Stream parts of the continuation
+   *
+   * @example
+   * ```typescript
+   * for await (const part of agent.resumeStream(threadId, interrupt.id, { approved: true })) {
+   *   render(part);
+   * }
+   * const next = await agent.getInterrupt(threadId);
+   * ```
+   */
+  resumeStream(
+    threadId: string,
+    interruptId: string,
+    response: unknown,
+    options?: Partial<GenerateOptions>,
+  ): AsyncGenerator<StreamPart>;
+
+  /**
    * The task manager for background task tracking.
    *
    * Provides access to background tasks (bash commands and subagents).

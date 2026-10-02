@@ -928,7 +928,7 @@ export function createAgent(options: AgentOptions): Agent {
     // outside a generation. Never imply the workflow gate protects it.
     if (options.workflowExecutionGate) {
       throw new ConfigurationError(
-        "Workflow-gated agents cannot use resume() or resumeDataResponse(); supply resolved tool results through generate() or stream() instead",
+        "Workflow-gated agents cannot use resume(), resumeDataResponse() or resumeStream(); supply resolved tool results through generate() or stream() instead",
         { configKey: "workflowExecutionGate" },
       );
     }
@@ -2365,6 +2365,27 @@ export function createAgent(options: AgentOptions): Agent {
       // A resume continues the interrupted run: it never takes new input.
       const { input: _input, ...resumeOptions } = outcome.genOptions ?? {};
       return agent.streamDataResponse({
+        threadId: outcome.threadId,
+        ...resumeOptions,
+        prompt: undefined,
+      });
+    },
+
+    async *resumeStream(
+      threadId: string,
+      interruptId: string,
+      response: unknown,
+      genOptions?: Partial<GenerateOptions>,
+    ): AsyncGenerator<StreamPart> {
+      const outcome = await executeResumeCore(threadId, interruptId, response, genOptions);
+
+      // The tool interrupted again: like stream() after an interrupt, the
+      // generator ends and the new interrupt is the pending interrupt.
+      if (outcome.type === "re-interrupted") return;
+
+      // A resume continues the interrupted run: it never takes new input.
+      const { input: _input, ...resumeOptions } = outcome.genOptions ?? {};
+      yield* agent.stream({
         threadId: outcome.threadId,
         ...resumeOptions,
         prompt: undefined,
