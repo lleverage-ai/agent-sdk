@@ -605,15 +605,6 @@ describe("log-mode checkpoints", () => {
       { role: "user", content: [{ type: "text", text: "second" }] },
     ]);
   });
-
-  it("rejects resume(), which rebuilds history in the checkpoint", async () => {
-    const { model } = createRecordingModel();
-    const agent = logAgent(model, new MemoryContextLogStore(), { checkpointer: new MemorySaver() });
-
-    await expect(agent.resume(THREAD, "interrupt-1", { approved: true })).rejects.toThrow(
-      ConfigurationError,
-    );
-  });
 });
 
 describe("createMessageProjectionAdapter", () => {

@@ -31,6 +31,8 @@ export type ContextLogErrorKind = "conflict" | "not_found" | "refused" | "unavai
  * - `dispatch_already_started` - The call was already dispatched or closed
  * - `invalid_lifecycle` - The call is not in a state that allows the operation
  * - `invalid_supersession` - A `supersedes` target is not an active runtime context entry earlier on the path
+ * - `interrupt_pending` - The log-mode runtime refused to plan a call on a stream with an unresolved interrupt; resume it first
+ * - `resume_in_doubt` - A log-mode resume found the interrupt's resolution but not its result, so the tool may already have run
  *
  * Stores may report additional, store-specific reasons.
  *

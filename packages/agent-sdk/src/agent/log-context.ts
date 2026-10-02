@@ -32,8 +32,13 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { LanguageModel, ModelMessage, UserModelMessage } from "ai";
-import { ContextLogConflictError, ContextLogInvalidError } from "../context-log/errors.js";
+import type { LanguageModel, ModelMessage, ToolCallPart, UserModelMessage } from "ai";
+import type { Interrupt } from "../checkpointer/types.js";
+import {
+  ContextLogConflictError,
+  ContextLogInvalidError,
+  ContextLogNotFoundError,
+} from "../context-log/errors.js";
 import { assertContextJson } from "../context-log/json.js";
 import { resolveContextProducers, runContextProducers } from "../context-log/producers.js";
 import {
@@ -54,12 +59,14 @@ import {
   DEFAULT_CONTEXT_BRANCH_ID,
   DEFAULT_CONTEXT_STREAM_ID,
   type ProjectionAdapter,
+  type ToolResultContextEntryInput,
   type UserContextEntryInput,
 } from "../context-log/types.js";
 import { ConfigurationError, ValidationError } from "../errors/index.js";
 import { resolveModelIdentity } from "../observability/execution-metadata.js";
 import type { AgentOptions, GenerateOptions } from "../types.js";
 import {
+  appendScreenedOutputs,
   assertTerminalModel,
   createLogCallBoundary,
   type LogCallBoundary,
@@ -68,6 +75,12 @@ import {
   sha256Hex,
   toEntryInput,
 } from "./log-boundary.js";
+import {
+  findUnresolvedInterrupts,
+  INTERRUPT_PENDING_REASON,
+  interruptEntryKeys,
+  locateInterruptedCall,
+} from "./log-interrupts.js";
 import { resolveModelInputCapabilities } from "./model-capabilities.js";
 
 /** Page size for reading a head's path. @internal */
@@ -201,6 +214,33 @@ export type LogInputScreen = (
 ) => Promise<{ options: GenerateOptions; pending: ContextEntryInput[] }>;
 
 /**
+ * Where a pending interrupt was recorded on a stream, read from one head
+ * snapshot.
+ *
+ * @internal
+ */
+export interface LogInterruptSite {
+  stream: ContextStreamRef;
+  /** The head the site was read from, or last moved to by a resume commit. */
+  head: ContextHead;
+  /** The interrupted call, whose outputs the resume entries are committed as. */
+  manifestId: string;
+  /** The interrupted tool call, exactly as committed. */
+  call: ToolCallPart;
+  /** Keys of this round's resume entries. */
+  keys: { resolution: string; result: string };
+  /**
+   * - `pending` - Nothing of the resume is committed yet
+   * - `resolving` - The resolution is committed, the result is not: a resume
+   *   may have started the tool
+   * - `resolved` - The call's result is committed
+   */
+  state: "pending" | "resolving" | "resolved";
+  /** The projected input of the step that made the call, as tools receive it. */
+  messages: ModelMessage[];
+}
+
+/**
  * Log-mode runtime for one agent.
  *
  * @internal
@@ -233,6 +273,26 @@ export interface LogContextRuntime {
    * outputs before they are committed.
    */
   createCall(plan: LogCallPlan, model: LanguageModel, screen: LogInputScreen): LogCallBoundary;
+  /**
+   * Read the stream's head once and find where `interrupt` was recorded on
+   * its path. Fails when it is not on the path, or when the stream has moved
+   * past the interrupted call while it is still unresolved.
+   */
+  readInterrupt(
+    genOptions: GenerateOptions,
+    interrupt: Interrupt,
+    model: LanguageModel,
+  ): Promise<LogInterruptSite>;
+  /**
+   * Commit resume entries as outputs of the interrupted call, after the
+   * PreGenerate hooks screened them. Returns the site at the new head.
+   */
+  commitInterruptOutputs(
+    site: LogInterruptSite,
+    items: ToolResultContextEntryInput[],
+    options: GenerateOptions,
+    screen: LogInputScreen,
+  ): Promise<LogInterruptSite>;
   /** The cursor of the head the thread's latest plan was built from. */
   cursor(threadId: string): ContextLogCursor | undefined;
 }
@@ -437,6 +497,19 @@ export function createLogContextRuntime(
         };
       }
       path = await readFullPath(store, head);
+      // A tool call waiting on an interrupt has no result yet, so no request
+      // can be projected from this path until the interrupt is resumed.
+      const unresolved = findUnresolvedInterrupts(path);
+      if (unresolved.length > 0) {
+        throw new ContextLogConflictError(INTERRUPT_PENDING_REASON, {
+          head,
+          message: `The stream has an unresolved interrupt (${unresolved
+            .map((pending) => pending.approvalId)
+            .join(
+              ", ",
+            )}); resume it with resume() or resumeDataResponse() before generating on this stream`,
+        });
+      }
     } else {
       core = resolveCore
         ? await resolveCore({ stream, reason: "initial", parent: null })
@@ -523,11 +596,89 @@ export function createLogContextRuntime(
     });
   }
 
+  async function readInterrupt(
+    genOptions: GenerateOptions,
+    interrupt: Interrupt,
+    model: LanguageModel,
+  ): Promise<LogInterruptSite> {
+    const threadId = genOptions.threadId;
+    if (!threadId) {
+      throw new ValidationError("Context log mode needs a threadId to identify the log stream", {
+        fieldErrors: { threadId: ["required in context log mode"] },
+      });
+    }
+    const stream: ContextStreamRef = {
+      threadId,
+      branchId: genOptions.contextStream?.branchId ?? DEFAULT_CONTEXT_BRANCH_ID,
+      streamId: genOptions.contextStream?.streamId ?? DEFAULT_CONTEXT_STREAM_ID,
+    };
+    // One head read serves the location, the resume state and the tool's input.
+    const head = await store.readHead(stream);
+    const path = head ? await readFullPath(store, head) : [];
+    const location = interrupt.toolCallId
+      ? locateInterruptedCall(path, { id: interrupt.id, toolCallId: interrupt.toolCallId })
+      : undefined;
+    if (!head || !location) {
+      throw new ContextLogNotFoundError("interrupt", interrupt.id);
+    }
+    const keys = interruptEntryKeys(interrupt);
+    const onPath = new Set(path.map((entry) => entry.key));
+    const state = location.resolved
+      ? "resolved"
+      : onPath.has(keys.resolution)
+        ? "resolving"
+        : "pending";
+    const manifestId = path[location.index]!.manifestId;
+    if (state !== "resolved" && head.lastManifestId !== manifestId) {
+      throw new ContextLogConflictError("head_moved", {
+        head,
+        message: `The stream moved past the call that raised interrupt ${interrupt.id}; it can no longer be resumed`,
+      });
+    }
+    const version = await store.readVersion(head.versionId);
+    const messages = await project(
+      version.core,
+      version.contract,
+      path.slice(0, location.index).map(toEntryInput),
+      toContextModelRef(model),
+    );
+    cursors.set(threadId, toCursor(stream, head));
+    return { stream, head, manifestId, call: location.call, keys, state, messages };
+  }
+
+  async function commitInterruptOutputs(
+    site: LogInterruptSite,
+    items: ToolResultContextEntryInput[],
+    screenOptions: GenerateOptions,
+    screen: LogInputScreen,
+  ): Promise<LogInterruptSite> {
+    const committed = await appendScreenedOutputs({
+      store,
+      manifestId: site.manifestId,
+      head: site.head,
+      items,
+      screenOutputs: async (outputs) => (await screen(screenOptions, [...outputs])).pending,
+    });
+    cursors.set(site.stream.threadId, toCursor(site.stream, committed.head));
+    const keys = new Set(committed.entries.map((entry) => entry.key));
+    return {
+      ...site,
+      head: committed.head,
+      state: keys.has(site.keys.result)
+        ? "resolved"
+        : keys.has(site.keys.resolution)
+          ? "resolving"
+          : site.state,
+    };
+  }
+
   return {
     prepareRunInput,
     acceptRunInput,
     plan,
     createCall,
+    readInterrupt,
+    commitInterruptOutputs,
     cursor: (threadId) => cursors.get(threadId),
   };
 }

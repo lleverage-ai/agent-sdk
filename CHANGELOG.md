@@ -133,6 +133,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a display copy. A log-mode session needs a `threadId` and does not accept
   non-empty `initialMessages` (both are a `ConfigurationError`). Sessions
   without log mode are unchanged.
+- `resume()` and `resumeDataResponse()` support log mode (experimental).
+  Legacy resume is unchanged.
+  - An interrupt leaves the model's tool call on the log without the
+    `[Interrupt requested]` placeholder result. The assistant entry records it
+    as an AI SDK `tool-approval-request` part, and the pending interrupt stays
+    in the checkpoint as control state.
+  - Resuming commits a resolution (a `tool-approval-response` part) and the
+    call's result as outputs of the interrupted call, screened by the
+    `PreGenerate` hooks, then continues with an ordinary log-mode generation.
+    The provider receives the same input as a run that was never interrupted.
+  - Approved and answered calls run again through the normal tool pipeline
+    (permission mode, `PreToolUse` / `PostToolUse` hooks, signal catching),
+    with the tool call's committed input.
+  - The resolution is committed before the tool runs. A resume that finds a
+    resolution without a result fails with a `ContextLogConflictError`
+    (reason `resume_in_doubt`) instead of running the tool again, unless
+    `contextLog.inDoubtResume` is `"reexecute"`, which a host sets when its
+    tool ledger makes repeating a tool call id safe.
+  - A generation on a stream with an unresolved interrupt fails with a
+    `ContextLogConflictError` (reason `interrupt_pending`) before anything is
+    committed.
+  - Log-mode screening treats `approvalId` as structure, like `toolCallId`.
 
 ### Changed
 
