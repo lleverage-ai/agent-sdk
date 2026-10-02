@@ -331,7 +331,10 @@ exactly what the provider receives:
 3. **Outputs.** Before the next step is projected, it commits the previous
    step's outputs with `appendOutputs`: the assistant message (with the model
    that produced it), then the tool results as the tool pipeline shaped them,
-   and records the call `completed`. The outputs first pass the `PreGenerate`
+   and records the call `completed`. Each tool result is its own `tool_result`
+   entry, so a step with parallel tool calls commits one entry per result, in
+   call order (keys `<step key>:<part index>`); the AI SDK merges adjacent
+   tool messages, so the provider still receives one tool message. The outputs first pass the `PreGenerate`
    hooks as new input, so the secrets filter redacts them and guardrails can
    stop the run before they are committed; the committed, screened entries
    are what later steps see. The generation's options are fixed once it has

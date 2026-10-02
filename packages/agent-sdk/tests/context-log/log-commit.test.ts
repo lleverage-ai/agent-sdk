@@ -329,6 +329,59 @@ describe("log-mode commit before dispatch", () => {
     expect(seen[1]!.path.map((entry) => entry.kind)).toEqual(["user", "assistant", "tool_result"]);
   });
 
+  it.each(modes)(
+    "commits parallel tool results as one entry per result in %s() without changing the provider input (LLE-13965)",
+    async (mode) => {
+      const script = () =>
+        createScriptedModel([
+          toolCalls(["c1", "echo", { value: "a" }], ["c2", "echo", { value: "b" }]),
+          text("done"),
+        ]);
+      const store = new MemoryContextLogStore();
+      const log = script();
+      await runModes[mode](logAgent(log.model, store, { tools: echoTools }));
+
+      const path = await readPath(store);
+      expect(path.map((entry) => entry.kind)).toEqual([
+        "user",
+        "assistant",
+        "tool_result",
+        "tool_result",
+        "assistant",
+      ]);
+      // One result per entry, in the step's order, keyed by part index.
+      const results = path.filter((entry) => entry.kind === "tool_result");
+      expect(
+        results.map((entry) =>
+          entry.kind === "tool_result"
+            ? entry.message.content.map((part) =>
+                part.type === "tool-result" ? part.toolCallId : part.type,
+              )
+            : [],
+        ),
+      ).toEqual([["c1"], ["c2"]]);
+      expect(results.map((entry) => entry.key.split(":").slice(-2).join(":"))).toEqual([
+        "1:0",
+        "1:1",
+      ]);
+
+      // The next call sends one tool message holding both results, exactly
+      // as a legacy agent sends the same step.
+      const legacy = script();
+      await runModes[mode](
+        createAgent({
+          model: legacy.model,
+          systemPrompt: "You are the core.",
+          tools: echoTools,
+        }),
+      );
+      const toolMessages = (request: LanguageModelV3CallOptions) =>
+        request.prompt.filter((message) => message.role === "tool");
+      expect(toolMessages(log.requests[1]!)).toHaveLength(1);
+      expect(toolMessages(log.requests[1]!)).toEqual(toolMessages(legacy.requests[1]!));
+    },
+  );
+
   it.each(modes)("records every output of a three-step tool loop in %s()", async (mode) => {
     const store = new MemoryContextLogStore();
     const { model, requests } = createScriptedModel([
@@ -695,14 +748,16 @@ describe("log-mode failure injection", () => {
 
     expect(order).toEqual(["fast", "slow"]);
     const path = await readPath(store);
+    // One entry per result (LLE-13965), in call order, not completion order.
     expect(path.map((entry) => entry.kind)).toEqual([
       "user",
       "assistant",
       "tool_result",
+      "tool_result",
       "assistant",
     ]);
-    const results = JSON.stringify(path[2]);
-    expect(results.indexOf("slow-result")).toBeLessThan(results.indexOf("fast-result"));
+    expect(JSON.stringify(path[2])).toContain("slow-result");
+    expect(JSON.stringify(path[3])).toContain("fast-result");
 
     // Now another writer moves the head while the tools run.
     const racing = new MemoryContextLogStore();
