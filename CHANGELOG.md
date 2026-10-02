@@ -26,6 +26,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a prepare appends no new input. `MemoryContextLogStore` includes it in
   the idempotency digest when present; other stores need not persist it.
   Requests without new input are unchanged. (LLE-14003)
+- `ContextLogOptions.coreVersion` (experimental) and the exported
+  `CORE_VERSION_CONTRACT_KEY` (`"coreVersion"`). When set, every version the
+  log-mode runtime creates records the host's core version in its contract,
+  and a call whose head version recorded another value (or none) declares a
+  `core_policy_change` that inherits the whole path with the current core:
+  `contextLog.resolveCore` is called with `reason: "core_policy_change"`, or
+  the static `systemPrompt` is used. Without the option nothing is recorded
+  and nothing changes. (LLE-13914)
+
+### Changed
+
+- Log mode declares an `adapter_change` when the head's version was
+  projected under another `version` of the same projection adapter, instead
+  of failing with `transition_required`: the new version inherits the whole
+  path, keeps the frozen core (the resolver is not called) and records the
+  current contract. A different adapter `id` still fails with
+  `transition_required`. An adapter version change alone is no longer
+  treated as a `model_change`. When several causes hold on one call, one
+  transition is declared, in the precedence `core_policy_change`,
+  `model_change`, `adapter_change`, and it records the current contract;
+  a compaction planned by the same call still replaces it. (LLE-13914)
 
 ## [1.0.0-rc.6] - 2026-10-02
 

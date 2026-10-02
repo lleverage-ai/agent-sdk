@@ -382,7 +382,7 @@ describe("log-mode request projection", () => {
       "turn-1",
       [user("u1", "hi")],
       [],
-      initialTransition("core", { ...DEFAULT_CONTRACT, adapterVersion: "0" }),
+      initialTransition("core", { ...DEFAULT_CONTRACT, adapter: "host/other" }),
     );
     const { model, requests } = createRecordingModel();
     const agent = logAgent(model, store);
