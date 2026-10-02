@@ -116,7 +116,7 @@ export type LogCompactor = (input: LogCompactionInput) => Promise<LogCompaction 
 type ViewSource =
   | { kind: "core" }
   | { kind: "runtime"; index: number }
-  | { kind: "path"; index: number }
+  | { kind: "path"; index: number; resolution?: number }
   | { kind: "pending"; index: number };
 
 /** Text a runtime context entry is shown to the context manager as. */
@@ -132,8 +132,59 @@ function viewMessage(entry: ContextEntryInput): ModelMessage {
   return entry.message;
 }
 
+/** The approval ids a resolution-only `tool_result` entry answers, or none. */
+function resolutionApprovals(entry: ContextEntryInput): string[] {
+  if (entry.kind !== "tool_result") return [];
+  const parts = partsOf(entry);
+  if (parts.length === 0 || parts.some((part) => part.type !== "tool-approval-response")) {
+    return [];
+  }
+  return parts.flatMap((part) => (typeof part.approvalId === "string" ? [part.approvalId] : []));
+}
+
+/**
+ * Pairs each approval resolution with the result that directly follows it
+ * for the same call, by path index (resolution to result).
+ *
+ * The manager is shown such a pair as one tool message, the resolution's
+ * parts then the result's. The built-in retention treats a call and the
+ * result messages after it as one block, and a resolution alone carries no
+ * result, so it would cut the block between them; shown with its result,
+ * the call, the resolution and the result are kept or summarised together,
+ * and the pair counts once, as the real result it is, against the manager's
+ * tool-result quota.
+ */
+function pairResolutions(
+  path: readonly ContextEntryInput[],
+  active: ReadonlySet<ContextEntryInput>,
+): Map<number, number> {
+  const approvals = new Map<string, string>();
+  for (const entry of path) {
+    for (const part of partsOf(entry)) {
+      if (
+        part.type === "tool-approval-request" &&
+        typeof part.approvalId === "string" &&
+        typeof part.toolCallId === "string"
+      ) {
+        approvals.set(part.approvalId, part.toolCallId);
+      }
+    }
+  }
+  const pairs = new Map<number, number>();
+  path.forEach((entry, index) => {
+    const next = path[index + 1];
+    if (!active.has(entry) || next === undefined || next.kind !== "tool_result") return;
+    const calls = new Set(resolutionApprovals(entry).map((id) => approvals.get(id)));
+    const answers = partsOf(next).some(
+      (part) => part.type === "tool-result" && calls.has(part.toolCallId as string),
+    );
+    if (answers) pairs.set(index, index + 1);
+  });
+  return pairs;
+}
+
 /** A message part as far as tool grouping needs it. */
-type ToolPart = { type: string; toolCallId?: unknown; approvalId?: unknown };
+type ToolPart = { type: string; toolCallId?: unknown; approvalId?: unknown; toolName?: unknown };
 
 /** The parts of an entry's message, or none for runtime context and text. */
 function partsOf(entry: ContextEntryInput): readonly ToolPart[] {
@@ -332,6 +383,8 @@ export function createLogCompactor(
       inheritedCount += 1;
     }
 
+    const pairs = pairResolutions(path, active);
+    const resolutionOf = new Map([...pairs].map(([resolution, result]) => [result, resolution]));
     const view: ModelMessage[] = [];
     const sources: ViewSource[] = [];
     if (core !== "") {
@@ -339,10 +392,19 @@ export function createLogCompactor(
       sources.push({ kind: "core" });
     }
     path.forEach((entry, index) => {
-      if (active.has(entry)) {
-        view.push(viewMessage(entry));
-        sources.push({ kind: entry.kind === "runtime_context" ? "runtime" : "path", index });
+      if (!active.has(entry) || pairs.has(index)) return;
+      const resolution = resolutionOf.get(index);
+      if (resolution !== undefined && entry.kind === "tool_result") {
+        const paired = path[resolution] as Extract<ContextEntryInput, { kind: "tool_result" }>;
+        view.push({
+          role: "tool",
+          content: [...paired.message.content, ...entry.message.content],
+        });
+        sources.push({ kind: "path", index, resolution });
+        return;
       }
+      view.push(viewMessage(entry));
+      sources.push({ kind: entry.kind === "runtime_context" ? "runtime" : "path", index });
     });
     pending.forEach((entry, index) => {
       if (active.has(entry)) {
@@ -386,7 +448,10 @@ export function createLogCompactor(
     mapKept(view, outcome.messages).forEach((viewIndex, at) => {
       if (viewIndex !== undefined) {
         const source = sources[viewIndex]!;
-        if (source.kind === "path") retained.add(source.index);
+        if (source.kind === "path") {
+          retained.add(source.index);
+          if (source.resolution !== undefined) retained.add(source.resolution);
+        }
         return;
       }
       const message = outcome.messages[at]!;
@@ -414,9 +479,36 @@ export function createLogCompactor(
       }
     });
 
-    const compactable = sources.filter((source) => source.kind === "path").length;
-    if (summary.length === 0 && retained.size === compactable) {
-      // Nothing was summarised: the head's version stays current.
+    // A tool group is kept whole when the manager kept any of it (or it
+    // reaches the new input). The view already lets the built-in retention
+    // keep a resolution with its call's block; this also covers other
+    // managers and a resolution without a result yet.
+    const groups = toolGroups([...path, ...pending]);
+    const keptGroups = new Set<number>();
+    groups.forEach((group, index) => {
+      if (group !== undefined && (index >= path.length || retained.has(index))) {
+        keptGroups.add(group);
+      }
+    });
+    path.forEach((_entry, index) => {
+      const group = groups[index];
+      if (group !== undefined && keptGroups.has(group)) retained.add(index);
+    });
+
+    // Progress: if every conversation entry is still kept (nothing was
+    // summarised, or the groups brought back all that was), a child would
+    // only add a summary to the same entries. Without a summary, a child
+    // would drop history that nothing summarises. Either way the head's
+    // version stays current, and no transition is declared.
+    const compactable = sources.filter((source) => source.kind === "path");
+    if (
+      summary.length === 0 ||
+      compactable.every(
+        (source) =>
+          retained.has(source.index) &&
+          (source.resolution === undefined || retained.has(source.resolution)),
+      )
+    ) {
       return undefined;
     }
 
@@ -431,20 +523,6 @@ export function createLogCompactor(
         "Screening the compaction summary must keep its entries",
       );
     }
-    // A tool group is kept whole when the manager kept any of it (or it
-    // reaches the new input): the built-in retention does not know that an
-    // approval resolution sits between a call and its result.
-    const groups = toolGroups([...path, ...pending]);
-    const keptGroups = new Set<number>();
-    groups.forEach((group, index) => {
-      if (group !== undefined && (index >= path.length || retained.has(index))) {
-        keptGroups.add(group);
-      }
-    });
-    path.forEach((_entry, index) => {
-      const group = groups[index];
-      if (group !== undefined && keptGroups.has(group)) retained.add(index);
-    });
     const tail = path.filter(
       (entry, index) =>
         index >= inheritedCount &&
