@@ -445,9 +445,16 @@ compaction.
   the summary there, for example on a log-mode summary agent with
   `contextStream: { branchId, streamId }`. Without a summarizer the
   compaction fails.
-- **A failed commit fails the step.** If the `prepare` that carries the
-  transition fails, nothing compacted is sent and the step fails, like any
-  other failed prepare. `commitCompaction` is not called for a log-mode
+- **A failed commit fails the run.** If the `prepare` that carries the
+  transition fails after its identical-request retries, nothing compacted is
+  sent and the step fails. The run is not retried and does not fall back,
+  so a retry hook cannot summarise and compact again.
+- **Input is committed once.** A run's input is never appended again once a
+  prepare committed it, even after a compaction summarised it off the path,
+  so a retry after a later failure resends the same compacted context.
+- **Supersession is checked first.** New runtime context that supersedes a
+  missing entry, a non-runtime entry or an entry that is already superseded
+  fails with `invalid_supersession`, as it would at commit. `commitCompaction` is not called for a log-mode
   compaction (the transition is the commit), and `onCompact` still reports
   the generated result. The legacy error-fallback compaction, which rewrites
   checkpoint messages after a context-length error, does not run in log

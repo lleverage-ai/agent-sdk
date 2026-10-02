@@ -165,7 +165,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Log-mode compaction (experimental). `contextManager` is accepted in log
   mode, and compaction is a declared `compaction` transition the call's
   prepare commits before the compacted context is first sent. A failed
-  commit fails the step; nothing is sent from an uncommitted compaction:
+  commit fails the run without a retry or fallback; nothing is sent from an
+  uncommitted compaction, and a run's input is never appended twice, even
+  after a compaction summarised it:
   - The child version inherits the leading run of runtime context, then
     holds the summary, then the retained tail re-appended unchanged in path
     order (reasoning and tool call/result pairs intact), then the call's new
