@@ -218,8 +218,12 @@ function rebaseSupersession(
 
 /**
  * Maps each message the context manager returned to the view message it
- * keeps, or `undefined` for a new message. Matches by identity, then by
- * content, for managers that copy the messages they keep.
+ * keeps, or `undefined` for a new message (the summary).
+ *
+ * Kept messages are matched by identity, as the built-in manager returns
+ * them. Only a manager that kept none by identity (one that copies what it
+ * keeps) is matched by content; otherwise a summary whose text equals an
+ * earlier message, such as a previous summary, would be taken as kept.
  */
 function mapKept(
   view: readonly ModelMessage[],
@@ -229,18 +233,18 @@ function mapKept(
   view.forEach((message, index) => {
     byIdentity.set(message, index);
   });
+  const identical = kept.map((message) => byIdentity.get(message));
+  if (identical.some((index) => index !== undefined)) {
+    return identical;
+  }
+  const canonicalView = view.map((viewed) => canonicalContextJson(viewed));
   const used = new Set<number>();
-  let canonicalView: string[] | undefined;
   return kept.map((message) => {
-    let index = byIdentity.get(message);
-    if (index === undefined || used.has(index)) {
-      canonicalView ??= view.map((viewed) => canonicalContextJson(viewed));
-      const canonical = canonicalContextJson(message);
-      const found = canonicalView.findIndex((viewed, at) => !used.has(at) && viewed === canonical);
-      index = found === -1 ? undefined : found;
-    }
-    if (index !== undefined) used.add(index);
-    return index;
+    const canonical = canonicalContextJson(message);
+    const found = canonicalView.findIndex((viewed, at) => !used.has(at) && viewed === canonical);
+    if (found === -1) return undefined;
+    used.add(found);
+    return found;
   });
 }
 

@@ -627,6 +627,35 @@ describe("log-mode compaction planning", () => {
     expect(compaction!.entries.map((entry) => entry.key)).toEqual(["k:summary:0", "u3"]);
   });
 
+  it("keeps a summary whose text equals an earlier summary", async () => {
+    const { contextManager } = createCompactingManager(0, { keepMessageCount: 1 });
+    const compactor = createLogCompactor(async (messages, _options, _threadId, compactOptions) => ({
+      compacted: true,
+      messages: (
+        await contextManager.compact(messages, {} as Agent, "token_threshold", compactOptions)
+      ).newMessages,
+    }));
+    const earlier: ContextEntryInput = {
+      kind: "assistant",
+      key: "earlier-summary",
+      message: { role: "assistant", content: "[Previous conversation summary]\n\nsummary 1" },
+    };
+
+    const compaction = await compactor({
+      stream: STREAM,
+      head,
+      core: "",
+      contract: {},
+      path: [earlier, path[2]!, path[3]!],
+      pending,
+      keyPrefix: "k",
+      options: {},
+      screen: async (entries) => entries,
+    });
+
+    expect(compaction!.entries.map((entry) => entry.key)).toEqual(["k:summary:0", "u3"]);
+  });
+
   it("does nothing when the policy does not ask for compaction", async () => {
     const compactIfNeeded = vi.fn(async (messages: ModelMessage[]) => ({
       compacted: false,
