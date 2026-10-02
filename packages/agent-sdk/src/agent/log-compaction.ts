@@ -220,10 +220,10 @@ function rebaseSupersession(
  * Maps each message the context manager returned to the view message it
  * keeps, or `undefined` for a new message (the summary).
  *
- * Kept messages are matched by identity, as the built-in manager returns
- * them. Only a manager that kept none by identity (one that copies what it
- * keeps) is matched by content; otherwise a summary whose text equals an
- * earlier message, such as a previous summary, would be taken as kept.
+ * Kept messages are recognised by identity only: a manager returns the
+ * messages it keeps unchanged, as the built-in one does. Matching by content
+ * could take a summary whose text equals an earlier message (such as a
+ * previous summary) for a kept message and drop it.
  */
 function mapKept(
   view: readonly ModelMessage[],
@@ -233,19 +233,7 @@ function mapKept(
   view.forEach((message, index) => {
     byIdentity.set(message, index);
   });
-  const identical = kept.map((message) => byIdentity.get(message));
-  if (identical.some((index) => index !== undefined)) {
-    return identical;
-  }
-  const canonicalView = view.map((viewed) => canonicalContextJson(viewed));
-  const used = new Set<number>();
-  return kept.map((message) => {
-    const canonical = canonicalContextJson(message);
-    const found = canonicalView.findIndex((viewed, at) => !used.has(at) && viewed === canonical);
-    if (found === -1) return undefined;
-    used.add(found);
-    return found;
-  });
+  return kept.map((message) => byIdentity.get(message));
 }
 
 /**

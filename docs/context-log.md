@@ -431,7 +431,9 @@ child, so they reuse the summary instead of summarising again.
 - **The summary is new content.** It is an `assistant` entry (or a `user`
   entry, if a custom context manager returns one) and passes the
   `PreGenerate` hooks before it is committed, so the secrets filter redacts
-  it.
+  it. Kept messages are recognised by identity: a custom `ContextManager`
+  must return the messages it keeps as the same objects it was given, and
+  every other message it returns is treated as new content.
 - **Summaries run on their own stream.** A log-mode agent only accepts new
   user input, so it cannot generate a summary itself: configure
   `ContextManagerOptions.summarizer`. Each `SummaryRequest` carries

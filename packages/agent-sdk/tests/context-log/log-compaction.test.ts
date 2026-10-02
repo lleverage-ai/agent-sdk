@@ -656,6 +656,55 @@ describe("log-mode compaction planning", () => {
     expect(compaction!.entries.map((entry) => entry.key)).toEqual(["k:summary:0", "u3"]);
   });
 
+  it("treats copies of kept messages as new content, never guessing their source", async () => {
+    // A manager that returns copies: the copied tool result cannot be new
+    // content, so the compaction is refused rather than matched by content.
+    const compactor = createLogCompactor(async (messages) => ({
+      compacted: true,
+      messages: structuredClone(messages.filter((message) => message.role !== "user")),
+    }));
+    const toolPath: ContextEntryInput[] = [
+      path[2]!,
+      {
+        kind: "assistant",
+        key: "call",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "t1", toolName: "echo", input: {} }],
+        },
+      },
+      {
+        kind: "tool_result",
+        key: "result",
+        message: {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "t1",
+              toolName: "echo",
+              output: { type: "text", value: "ok" },
+            },
+          ],
+        },
+      },
+    ];
+
+    await expect(
+      compactor({
+        stream: STREAM,
+        head,
+        core: "",
+        contract: {},
+        path: toolPath,
+        pending,
+        keyPrefix: "k",
+        options: {},
+        screen: async (entries) => entries,
+      }),
+    ).rejects.toMatchObject({ reason: "compaction_invalid_summary" });
+  });
+
   it("does nothing when the policy does not ask for compaction", async () => {
     const compactIfNeeded = vi.fn(async (messages: ModelMessage[]) => ({
       compacted: false,

@@ -1256,6 +1256,11 @@ export interface CompactOptions {
    * {@link ContextManagerOptions.commitCompaction} is not called: the
    * agent commits the compaction to the log itself.
    *
+   * The agent recognises the messages a compaction keeps by identity, so a
+   * custom {@link ContextManager} must return kept messages as the same
+   * objects it was given. Every other returned message is new content (the
+   * summary), and must be a user or assistant message.
+   *
    * @experimental
    */
   contextLog?: CompactionContextLog;
