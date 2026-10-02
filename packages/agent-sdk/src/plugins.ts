@@ -62,6 +62,7 @@ export function definePlugin(options: PluginOptions): AgentPlugin {
     mcpServer: options.mcpServer,
     skills: options.skills,
     hooks: options.hooks,
+    contextProducers: options.contextProducers,
     deferred: options.deferred,
     subagent: options.subagent,
   };

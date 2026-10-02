@@ -22,5 +22,12 @@ export {
 export { assertContextJson, canonicalContextJson } from "./json.js";
 export { MemoryContextLogStore } from "./memory-store.js";
 export { createMessageProjectionAdapter } from "./projection.js";
+export {
+  CONTEXT_UNAVAILABLE,
+  type ContextSlotValue,
+  type ContextUnavailablePayload,
+  createSlotContextProducer,
+  type SlotContextProducerOptions,
+} from "./producers.js";
 export { activeContextEntries } from "./supersession.js";
 export * from "./types.js";

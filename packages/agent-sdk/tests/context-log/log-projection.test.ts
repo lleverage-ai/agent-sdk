@@ -28,6 +28,7 @@ import {
   createMessageProjectionAdapter,
   createRetryHooks,
   createSecretsFilterHooks,
+  definePlugin,
   GeneratePermissionDeniedError,
   isContextLogError,
   MemoryContextLogStore,
@@ -183,6 +184,14 @@ describe("createAgent in context log mode", () => {
           store,
           producers: [{ name: "p", produce: () => [] }],
         },
+      },
+    ],
+    [
+      "plugin producers",
+      {
+        plugins: [
+          definePlugin({ name: "plug", contextProducers: [{ name: "p", produce: () => [] }] }),
+        ],
       },
     ],
     [
@@ -869,9 +878,10 @@ describe("log-mode retries", () => {
       },
     });
 
-    await expect(agent.generate({ prompt: "draw", threadId: THREAD })).rejects.toThrow(
-      ValidationError,
-    );
+    await expect(agent.generate({ prompt: "draw", threadId: THREAD })).rejects.toMatchObject({
+      kind: "invalid",
+      reason: "log_mode_hook_violation",
+    });
     expect(requests).toHaveLength(1);
   });
 
@@ -895,10 +905,41 @@ describe("log-mode retries", () => {
       },
     });
 
-    await expect(agent.generate({ prompt: "draw", threadId: THREAD })).rejects.toThrow(
-      ValidationError,
-    );
+    await expect(agent.generate({ prompt: "draw", threadId: THREAD })).rejects.toMatchObject({
+      kind: "invalid",
+      reason: "log_mode_hook_violation",
+    });
     expect(requests).toHaveLength(1);
+  });
+
+  it("refuses a retry hook that changes provider options in place", async () => {
+    const { model, requests } = createToolLoopModel({ failFirst: true });
+    const providerOptions = { openai: { instructions: "original" } };
+    const agent = logAgent(model, new MemoryContextLogStore(), {
+      hooks: {
+        PostGenerateFailure: [
+          async (input) => {
+            const options = (input as { options: { providerOptions: typeof providerOptions } })
+              .options;
+            options.providerOptions.openai.instructions = "injected";
+            return {
+              hookSpecificOutput: {
+                hookEventName: "PostGenerateFailure",
+                retry: true,
+                retryDelayMs: 0,
+                updatedInput: { ...options },
+              },
+            };
+          },
+        ],
+      },
+    });
+
+    await expect(
+      agent.generate({ prompt: "draw", threadId: THREAD, providerOptions }),
+    ).rejects.toMatchObject({ kind: "invalid", reason: "log_mode_hook_violation" });
+    expect(requests).toHaveLength(1);
+    expect(providerOptions.openai.instructions).toBe("original");
   });
 
   it("accepts a retry hook that passes the options through unchanged", async () => {
