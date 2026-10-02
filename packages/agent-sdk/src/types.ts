@@ -12,6 +12,7 @@ import type {
   LanguageModelUsage,
   ModelMessage,
   Output,
+  ProviderMetadata,
   streamText,
   TelemetryOptions,
   Tool,
@@ -2871,7 +2872,15 @@ export type StreamPart =
   | { type: "tool-error"; toolCallId: string; toolName: string; input?: unknown; error: unknown }
   // Emitted when a tool call that required approval was denied.
   | { type: "tool-output-denied"; toolCallId: string; toolName: string }
-  | { type: "finish"; finishReason: FinishReason; usage?: LanguageModelUsage }
+  // `providerMetadata` is the final model call's provider metadata (AI SDK only
+  // carries it per step, on `finish-step`), for example Anthropic's
+  // `stopDetails` on a refusal. Absent when the provider sent none.
+  | {
+      type: "finish";
+      finishReason: FinishReason;
+      usage?: LanguageModelUsage;
+      providerMetadata?: ProviderMetadata;
+    }
   | { type: "error"; error: Error }
   // Lifecycle events. A "turn" is one round-trip to the model (one assistant
   // message). A `generate()`/`stream()` invocation produces one or more turns
@@ -2890,6 +2899,8 @@ export type StreamPart =
       messageId?: string;
       finishReason?: FinishReason;
       usage?: LanguageModelUsage;
+      /** This model call's provider metadata, when the provider sent any. */
+      providerMetadata?: ProviderMetadata;
     }
   // Agent-specific events
   | { type: "subagent-spawn"; data: AgentDataTypes["subagent-spawn"] }

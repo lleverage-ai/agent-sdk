@@ -4,7 +4,13 @@
  * @packageDocumentation
  */
 
-import type { ModelMessage, ToolCallRepairFunction, ToolExecutionOptions, ToolSet } from "ai";
+import type {
+  ModelMessage,
+  ProviderMetadata,
+  ToolCallRepairFunction,
+  ToolExecutionOptions,
+  ToolSet,
+} from "ai";
 import {
   createUIMessageStream,
   createUIMessageStreamResponse,
@@ -1796,6 +1802,10 @@ export function createAgent(options: AgentOptions): Agent {
           let pendingInvalidToolCall:
             | { toolCallId: string; toolName: string; input: unknown; error: unknown }
             | undefined;
+          // AI SDK carries provider metadata only on `finish-step`; the last
+          // step's is forwarded on `finish` too, so a consumer reading only the
+          // terminal part still sees, for example, a refusal's stop details.
+          let lastStepProviderMetadata: ProviderMetadata | undefined;
           for await (const part of response.fullStream) {
             const precedingInvalidToolCall = pendingInvalidToolCall;
             pendingInvalidToolCall = undefined;
@@ -1809,6 +1819,7 @@ export function createAgent(options: AgentOptions): Agent {
               // telemetry without polling the awaited promises.
               const stepResponse = part.response as { id?: unknown } | undefined;
               const messageId = typeof stepResponse?.id === "string" ? stepResponse.id : undefined;
+              lastStepProviderMetadata = part.providerMetadata ?? undefined;
               yield {
                 type: "turn-end",
                 messageId,
@@ -1818,6 +1829,7 @@ export function createAgent(options: AgentOptions): Agent {
                   ? StreamPart["finishReason"]
                   : never,
                 usage: part.usage,
+                ...(lastStepProviderMetadata ? { providerMetadata: lastStepProviderMetadata } : {}),
               };
             } else if (part.type === "text-delta") {
               firstTextDeltaAt ??= Date.now();
@@ -1991,6 +2003,7 @@ export function createAgent(options: AgentOptions): Agent {
                   ? StreamPart["finishReason"]
                   : never,
                 usage: part.totalUsage,
+                ...(lastStepProviderMetadata ? { providerMetadata: lastStepProviderMetadata } : {}),
               };
             } else if (part.type === "error") {
               yield { type: "error", error: part.error as Error };
