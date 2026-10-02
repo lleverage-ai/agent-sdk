@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.12] - 2026-10-03
+
+Twelfth release candidate for 1.0.0. `turn-end` and `finish` stream parts
+now carry provider metadata.
+
+### Migration notes
+
+- No change needed. `providerMetadata` is optional on `turn-end` and
+  `finish`, and omitted when the provider sent none.
+
 ### Added
 
 - **Provider metadata on `turn-end` and `finish` stream parts** (LLE-14109).
@@ -1540,7 +1550,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.11...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.12...HEAD
+[1.0.0-rc.12]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.11...agent-sdk@1.0.0-rc.12
 [1.0.0-rc.11]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.10...agent-sdk@1.0.0-rc.11
 [1.0.0-rc.10]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.9...agent-sdk@1.0.0-rc.10
 [1.0.0-rc.9]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.8...agent-sdk@1.0.0-rc.9
