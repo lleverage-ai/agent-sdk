@@ -2381,9 +2381,18 @@ export interface GenerateOptions {
    * `id` is fixed when the run starts and keys the run's new input entries, so
    * a retry finds the input it already committed instead of appending it
    * again. `ordinal` and `attempt` number the run's model calls.
+   * `inputCommitted` is set once a prepare committed the run's input, so a
+   * retry never appends it again, even after a compaction summarised it off
+   * the path.
    * @internal
    */
-  _logRun?: { id: string; ordinal: number; attempt: number; lastInputDigest?: string };
+  _logRun?: {
+    id: string;
+    ordinal: number;
+    attempt: number;
+    lastInputDigest?: string;
+    inputCommitted?: boolean;
+  };
 
   /**
    * Internal, context log mode only: a delegation's claim on its child

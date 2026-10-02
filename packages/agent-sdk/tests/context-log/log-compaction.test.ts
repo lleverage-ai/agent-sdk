@@ -55,11 +55,16 @@ const thinkThenEcho = (id: string): LanguageModelV3Content[] => [
 ];
 
 /** A model that answers each call with the next scripted reply, recording every request. */
-function createScriptedModel(replies: LanguageModelV3Content[][]) {
+/** A scripted reply, or a function that throws to fail the provider call. */
+type Reply = LanguageModelV3Content[] | (() => never);
+
+function createScriptedModel(replies: Reply[]) {
   const requests: LanguageModelV3CallOptions[] = [];
   const respond = (request: LanguageModelV3CallOptions) => {
     requests.push(request);
-    return replies[Math.min(requests.length - 1, replies.length - 1)]!;
+    const reply = replies[Math.min(requests.length - 1, replies.length - 1)]!;
+    if (typeof reply === "function") reply();
+    return reply as LanguageModelV3Content[];
   };
   const finishFor = (content: LanguageModelV3Content[]) =>
     content.some((part) => part.type === "tool-call")
@@ -179,16 +184,33 @@ const content = (entries: readonly ContextEntry[]): ContextEntryInput[] =>
   entries.map(({ position: _p, versionId: _v, manifestId: _m, createdAt: _c, ...entry }) => entry);
 
 /** A store whose prepare fails, uncertainly, for every compaction transition. */
+/**
+ * A store whose prepare fails, uncertainly, for compaction transitions:
+ * `failures` times, then it recovers.
+ */
 class CompactionFailingStore extends MemoryContextLogStore {
   attempts = 0;
+  constructor(private failures = Number.POSITIVE_INFINITY) {
+    super();
+  }
   override async prepare(request: ContextPrepareRequest): Promise<ContextPrepareResult> {
-    if (request.transition?.reason === "compaction") {
+    if (request.transition?.reason === "compaction" && this.attempts < this.failures) {
       this.attempts += 1;
       throw new ContextLogUnavailableError("injected");
     }
     return super.prepare(request);
   }
 }
+
+/** A PostGenerateFailure hook that asks to retry every failure. */
+const retryEverything = () =>
+  vi.fn(async () => ({
+    hookSpecificOutput: {
+      hookEventName: "PostGenerateFailure" as const,
+      retry: true,
+      retryDelayMs: 0,
+    },
+  }));
 
 describe("log-mode compaction", () => {
   it("commits a compaction child before sending it, and later calls reuse it", async () => {
@@ -398,6 +420,87 @@ describe("log-mode compaction", () => {
       expect(JSON.stringify(lastRequest.prompt)).not.toContain("q1");
     },
   );
+
+  it("never retries or falls back after a compaction commit failed, even if the store recovers", async () => {
+    // Three uncertain failures exhaust the identical-request retries; the
+    // store would accept a fresh compaction afterwards.
+    const store = new CompactionFailingStore(3);
+    const { model, requests } = createScriptedModel([text("a1"), text("a2"), text("a3")]);
+    const fallback = createScriptedModel([text("fallback")]);
+    const manager = createCompactingManager(4);
+    const retry = retryEverything();
+    const agent = logAgent(model, store, {
+      contextManager: manager.contextManager,
+      fallbackModel: fallback.model,
+      hooks: { PostGenerateFailure: [retry] },
+    });
+
+    await agent.generate({ prompt: "q1", threadId: THREAD });
+    const before = await store.readHead(STREAM);
+
+    await expect(agent.generate({ prompt: "q2", threadId: THREAD })).rejects.toThrow();
+
+    expect(store.attempts).toBe(3);
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(manager.requests).toHaveLength(1);
+    expect(requests).toHaveLength(1);
+    expect(fallback.requests).toHaveLength(0);
+    expect(await store.readHead(STREAM)).toEqual(before);
+  });
+
+  it("does not append the run's prompt again when a retry follows a compaction that summarised it", async () => {
+    const store = new MemoryContextLogStore();
+    let executions = 0;
+    const tools = {
+      echo: tool({
+        inputSchema: jsonSchema<{ value: string }>({
+          type: "object",
+          properties: { value: { type: "string" } },
+          required: ["value"],
+        }),
+        execute: async ({ value }) => {
+          executions += 1;
+          return `echo:${value}`;
+        },
+      }),
+    };
+    const { model, requests } = createScriptedModel([
+      thinkThenEcho("c1"),
+      thinkThenEcho("c2"),
+      () => {
+        throw new Error("provider down");
+      },
+      text("done"),
+    ]);
+    // Before step 3 the view (core, the prompt, settings, two calls and two
+    // results) has seven messages: the compaction keeps the last call block
+    // and summarises the prompt and the first call.
+    const manager = createCompactingManager(6);
+    const retry = retryEverything();
+    const agent = logAgent(model, store, {
+      contextManager: manager.contextManager,
+      tools,
+      hooks: { PostGenerateFailure: [retry] },
+    });
+
+    const result = await agent.generate({ prompt: "go", threadId: THREAD });
+
+    expect(result.status).toBe("complete");
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(manager.requests).toHaveLength(1);
+    expect(requests).toHaveLength(4);
+    expect(executions).toBe(2);
+    const path = await readPath(store);
+    expect(path.map((entry) => entry.kind)).toEqual([
+      "assistant",
+      "runtime_context",
+      "assistant",
+      "tool_result",
+      "assistant",
+    ]);
+    // The retry was sent the same compacted context as the failed call.
+    expect(requests[3]!.prompt).toEqual(requests[2]!.prompt);
+  });
 
   it("screens the summary before it is committed", async () => {
     const store = new MemoryContextLogStore();
@@ -714,6 +817,43 @@ describe("log-mode compaction planning", () => {
       ).rejects.toMatchObject({ reason: "compaction_invalid_summary" });
     }
   });
+
+  it.each([
+    ["a missing entry", "nothing"],
+    ["a user entry", "u1"],
+    ["an already superseded entry", "notes:1"],
+  ])(
+    "refuses new runtime context that supersedes %s, as the store would",
+    async (_name, target) => {
+      const compactIfNeeded = vi.fn(async (messages: ModelMessage[]) => ({
+        compacted: true,
+        messages,
+      }));
+      await expect(
+        createLogCompactor(compactIfNeeded)({
+          stream: STREAM,
+          head,
+          core: "",
+          contract: {},
+          path,
+          pending: [
+            {
+              kind: "runtime_context",
+              key: "bad",
+              producer: "notes",
+              payload: "x",
+              supersedes: target,
+            },
+            ...pending,
+          ],
+          keyPrefix: "k",
+          options: {},
+          screen: async (entries) => entries,
+        }),
+      ).rejects.toMatchObject({ kind: "conflict", reason: "invalid_supersession" });
+      expect(compactIfNeeded).not.toHaveBeenCalled();
+    },
+  );
 
   it("does nothing when the policy does not ask for compaction", async () => {
     const compactIfNeeded = vi.fn(async (messages: ModelMessage[]) => ({

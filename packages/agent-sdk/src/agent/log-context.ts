@@ -475,11 +475,19 @@ export function createLogContextRuntime(
     }
 
     // The run's input keeps its keys across retries, so a retry finds the
-    // input an earlier attempt committed instead of appending it again.
+    // input an earlier attempt committed instead of appending it again. Once
+    // a prepare committed it, it is never appended again: a compaction may
+    // have summarised it off the path since.
     const onPath = new Set(path.map((entry) => entry.key));
-    const userEntries: UserContextEntryInput[] = input
-      .map((message, index) => ({ kind: "user" as const, key: `user:${run.id}:${index}`, message }))
-      .filter((entry) => !onPath.has(entry.key));
+    const userEntries: UserContextEntryInput[] = run.inputCommitted
+      ? []
+      : input
+          .map((message, index) => ({
+            kind: "user" as const,
+            key: `user:${run.id}:${index}`,
+            message,
+          }))
+          .filter((entry) => !onPath.has(entry.key));
     // Producers run against this same head and path; entries already on the
     // path are dropped. Then the new input and producer output pass the
     // PreGenerate hooks (redaction, guardrails) before anything is committed

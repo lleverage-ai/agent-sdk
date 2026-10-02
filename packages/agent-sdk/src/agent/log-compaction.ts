@@ -39,7 +39,7 @@
  */
 
 import type { ModelMessage } from "ai";
-import { ContextLogInvalidError } from "../context-log/errors.js";
+import { ContextLogConflictError, ContextLogInvalidError } from "../context-log/errors.js";
 import { canonicalContextJson } from "../context-log/json.js";
 import { activeContextEntries } from "../context-log/supersession.js";
 import type {
@@ -190,8 +190,45 @@ function assertToolPairsKept(
 }
 
 /**
+ * Applies the store's supersession rules to the new entries before the
+ * compaction plans around them, so a malformed reference fails as it would
+ * at commit instead of being rebased away: the target must be an earlier
+ * `runtime_context` entry on the path (or earlier in the new entries) that
+ * is not superseded yet. The committed path already satisfies the rules.
+ */
+function assertPendingSupersession(
+  head: ContextHead,
+  path: readonly ContextEntryInput[],
+  pending: readonly ContextEntryInput[],
+): void {
+  const kinds = new Map<string, ContextEntryInput["kind"]>();
+  const superseded = new Set<string>();
+  for (const entry of path) {
+    kinds.set(entry.key, entry.kind);
+    if (entry.kind === "runtime_context" && entry.supersedes !== undefined) {
+      superseded.add(entry.supersedes);
+    }
+  }
+  for (const entry of pending) {
+    if (entry.kind === "runtime_context" && entry.supersedes !== undefined) {
+      const target = entry.supersedes;
+      if (kinds.get(target) !== "runtime_context" || superseded.has(target)) {
+        throw new ContextLogConflictError("invalid_supersession", {
+          head,
+          message: `Entry "${entry.key}" supersedes "${target}", which is not an active runtime context entry earlier on the path`,
+        });
+      }
+      superseded.add(target);
+    }
+    kinds.set(entry.key, entry.kind);
+  }
+}
+
+/**
  * Re-appended entries in order, with every `supersedes` that no longer has
  * a target on the child's path dropped (and any retraction of one removed).
+ * Every reference was validated first, so a missing target is always one
+ * the compaction left out.
  */
 function rebaseSupersession(
   inherited: readonly ContextEntryInput[],
@@ -249,6 +286,8 @@ export function createLogCompactor(
     if (path.length === 0 || options._skipCompaction) {
       return undefined;
     }
+
+    assertPendingSupersession(head, path, pending);
 
     // The leading run of active runtime context is the unchanged prefix the
     // child inherits. The manager sees it (and the core) as system
