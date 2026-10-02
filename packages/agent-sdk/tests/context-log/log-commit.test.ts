@@ -165,6 +165,7 @@ function createScriptedModel(
   replies: Reply[],
   options: {
     modelId?: string;
+    provider?: string;
     onCall?: (request: LanguageModelV3CallOptions, index: number) => Promise<void> | void;
   } = {},
 ) {
@@ -183,6 +184,7 @@ function createScriptedModel(
       : { unified: "stop" as const, raw: "stop" };
   const model = new MockLanguageModelV3({
     modelId: options.modelId ?? "mock-model-id",
+    provider: options.provider ?? "mock-provider",
     doGenerate: async (request) => {
       const content = await respond(request);
       return { content, finishReason: finishFor(content), usage, warnings: [] };
@@ -1308,6 +1310,7 @@ describe("log-mode retry safety and supersession", () => {
       },
     ]);
     const fallback = createScriptedModel([text("from fallback")], {
+      provider: "other-provider",
       modelId: "other-provider-model",
     });
 
@@ -1319,6 +1322,10 @@ describe("log-mode retry safety and supersession", () => {
     const head = await store.readHead(STREAM);
     const version = await store.readVersion(head!.versionId);
     expect(version).toMatchObject({ reason: "model_change", inheritedCount: 1 });
+    const [failed, sent] = await readManifests(store);
+    expect(failed!.model).toEqual({ provider: "mock-provider", modelId: "mock-model-id" });
+    expect(sent!.model).toEqual({ provider: "other-provider", modelId: "other-provider-model" });
+    expect(sent!.model.provider).not.toBe(failed!.model.provider);
     expect(version.contract).toEqual((await store.readVersion(version.parentVersionId!)).contract);
     expect((await readPath(store)).map((entry) => entry.kind)).toEqual(["user", "assistant"]);
   });
