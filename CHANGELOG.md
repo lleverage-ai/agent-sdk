@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.6] - 2026-10-02
+
+Sixth release candidate for 1.0.0. In log mode, a model step with parallel
+tool calls now commits one `tool_result` entry per result, so a host that
+records one product event per tool result can commit the step. Provider
+input is unchanged. Legacy agents are unchanged.
+
+### Migration notes
+
+- **Legacy mode.** No code change and no behaviour change from rc.5.
+- **Log mode, parallel tool results.** A step whose tool message holds more
+  than one result now commits one entry per result, in call order, keyed
+  `<step key>:<part index>` (the step's entry key in rc.5 was
+  `<step key>`). A step with a single result, or a tool message with
+  message-level provider options, keeps one entry and its rc.5 key. Hosts
+  whose `ContextLogStore` mapped one `tool_result` entry to several product
+  events can now map each entry to one event; hosts that matched on entry
+  keys must accept the `:<part index>` suffix. Logs written by rc.5 stay
+  readable and need no rewrite: a multi-result entry and its split form
+  give the provider the same input, because the AI SDK merges adjacent
+  tool messages.
+
 ### Changed
 
 - **Log mode:** a model step with parallel tool calls commits one
@@ -1149,7 +1171,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.5...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.6...HEAD
+[1.0.0-rc.6]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.5...agent-sdk@1.0.0-rc.6
 [1.0.0-rc.5]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.4...agent-sdk@1.0.0-rc.5
 [1.0.0-rc.4]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...agent-sdk@1.0.0-rc.4
 [1.0.0-rc.3]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.2...agent-sdk@1.0.0-rc.3
