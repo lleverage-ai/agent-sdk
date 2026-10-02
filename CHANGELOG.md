@@ -7,18 +7,87 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [1.0.0-rc.7] - 2026-10-02
 
-- **Log mode:** `contextStream.branchFrom` (a `ContextPathRef` on the call's
-  thread and stream id, on another branch) declares that a new branch
-  continues another branch's path, for a fork, an edited message or a
-  regenerated reply. On a stream without a head, the call's prepare commits
-  a `branch` transition whose version inherits exactly that path, keeps the
-  source version's core (or the core `contextLog.resolveCore` returns for
-  `reason: "branch"`) and records the call's contract. Later calls may keep
-  declaring it: the head must still descend from that transition, or the
-  call fails with a `branch_source_mismatch` conflict before anything is
-  committed (LLE-14001).
+Seventh release candidate for 1.0.0. It adds four log-mode changes that
+hosts need to run log mode on existing sessions: `Agent.resumeStream()`
+streams the continuation of a resumed interrupt, a prepare names which of
+its `user` entries are the run's new input, log mode declares an
+`adapter_change` or `core_policy_change` instead of failing when the host's
+projection adapter version or core version changes, and
+`contextStream.branchFrom` starts a branch that continues another branch's
+path. Legacy agents are unchanged.
+
+### Migration notes
+
+- **Legacy mode.** No behaviour change from rc.6. `resumeStream()` also
+  works in legacy mode, with `resume()` semantics, and `resume()` and
+  `resumeDataResponse()` are unchanged. Code that implements the `Agent`
+  interface itself (rather than using `createAgent()`, `createMockAgent()`
+  or the recorder) must add `resumeStream()`; it is a type error until it
+  does.
+- **Resuming with a stream.** Hosts that resumed with `resume()` and then
+  called `stream()` for the continuation can call `resumeStream()` instead:
+  it commits the resolution and the tool result exactly as `resume()` does,
+  then yields `stream()`'s parts. It is lazy, so a refused resume throws from
+  the first `next()`. `prompt` and `input` are ignored. If the tool interrupts
+  again, the generator ends without parts; read the new interrupt with
+  `getInterrupt()`. If the continuation fails after the result is committed,
+  continue with plain `stream({ threadId })`.
+- **Run input on prepares.** `ContextPrepareRequest.runInput` lists the
+  run's new `user` entries with their index in `input` (`0` for `prompt`).
+  Hosts that parsed SDK entry keys to find the run's input can read it
+  instead. It is absent when a prepare appends no new input, so those
+  requests are unchanged. A `ContextLogStore` need not persist it. A custom
+  store that digests the whole request for idempotency gets a different
+  digest for a prepare with new input than rc.6 did; an uncertain prepare
+  written by rc.6 and retried by rc.7 then conflicts instead of replaying.
+  `MemoryContextLogStore` digests it only when present.
+- **Adapter version changes.** A head version projected under another
+  `version` of the same adapter `id` used to fail every later call with
+  `transition_required`. rc.7 declares an `adapter_change`: the new version
+  inherits the whole path, keeps the frozen core without calling
+  `resolveCore`, and records the current contract. Hosts that bump their
+  adapter version (for example because it pins dependency versions) no
+  longer have to rewrite or abandon existing log streams. An `admit` hook
+  that allow-lists transition reasons must admit `adapter_change`, or those
+  calls are refused. A different adapter `id` still fails with
+  `transition_required`, and an adapter version change alone is no longer a
+  `model_change`. Known limitation: reading a pending interrupt for
+  `resume()` or `resumeStream()` projects the head's version with the
+  current adapter and does not check its contract, as in rc.6.
+- **Core versions (opt-in).** Set `contextLog.coreVersion` to record the
+  host's core version on every new version (contract key
+  `CORE_VERSION_CONTRACT_KEY`, `"coreVersion"`). A call whose head recorded
+  another value, or none, declares a `core_policy_change` that inherits the
+  whole path with the current core, from `resolveCore({ reason:
+  "core_policy_change", ... })` or the static `systemPrompt`. Turning the
+  option on therefore declares one `core_policy_change` on each existing
+  stream's next call; an `admit` hook must allow it. Without the option
+  nothing is recorded or declared. When several causes hold, one transition
+  is declared, in the precedence `core_policy_change`, `model_change`,
+  `adapter_change`, and it records the current contract; a compaction
+  planned by the same call still replaces it.
+- **Branches (log mode).** A fork, an edited message or a regenerated reply
+  can pass `contextStream.branchFrom` (a `ContextPathRef` on the same thread
+  and stream id, on another branch) on a stream with no head. The first
+  prepare commits a `branch` transition that inherits exactly that path and
+  records the call's contract, including `coreVersion` when it is set. Its
+  core is the one `resolveCore` returns for `reason: "branch"`; without a
+  resolver it is the source version's core, or the static `systemPrompt`
+  when the source recorded another `coreVersion` (the branch adopts the
+  current core). Because the branch records the current contract, a source
+  projected under another `version` of the same adapter is continued
+  without a separate `adapter_change`; a source under another adapter `id`
+  still fails with `transition_required`. A source with an unresolved
+  interrupt is refused with the interrupt conflict. An `admit` hook must
+  allow `branch` for these calls. Later calls may keep passing the same
+  `branchFrom`; if the branch's head no longer descends from that
+  transition they fail with `branch_source_mismatch` before committing
+  anything. Calls without `branchFrom` plan exactly as in rc.6, and
+  `ContextLogStore` implementations need no change.
+
+### Added
 
 - `Agent.resumeStream()` resumes a pending interrupt like `resume()` and
   streams the continuation as `StreamPart`s through `stream()`. In context log
@@ -45,6 +114,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `contextLog.resolveCore` is called with `reason: "core_policy_change"`, or
   the static `systemPrompt` is used. Without the option nothing is recorded
   and nothing changes. (LLE-13914)
+- `contextStream.branchFrom` (a `ContextPathRef` on the call's
+  thread and stream id, on another branch) declares that a new branch
+  continues another branch's path, for a fork, an edited message or a
+  regenerated reply. On a stream without a head, the call's prepare commits
+  a `branch` transition whose version inherits exactly that path, keeps the
+  source version's core (or the core `contextLog.resolveCore` returns for
+  `reason: "branch"`, or the static `systemPrompt` when the source recorded
+  another `coreVersion`) and records the call's contract and `coreVersion`,
+  so it also resolves an adapter version that differs from the source's. A
+  source under another adapter `id` fails with `transition_required`. Later
+  calls may keep declaring it: the head must still descend from that
+  transition, or the call fails with a `branch_source_mismatch` conflict
+  before anything is committed (LLE-14001).
 
 ### Changed
 
@@ -1259,7 +1341,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.6...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.7...HEAD
+[1.0.0-rc.7]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.6...agent-sdk@1.0.0-rc.7
 [1.0.0-rc.6]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.5...agent-sdk@1.0.0-rc.6
 [1.0.0-rc.5]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.4...agent-sdk@1.0.0-rc.5
 [1.0.0-rc.4]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...agent-sdk@1.0.0-rc.4
