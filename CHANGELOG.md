@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.8] - 2026-10-02
+
+Eighth release candidate for 1.0.0. In log mode, supersession is
+append-only in the projection: a superseded `runtime_context` entry or a
+retraction stays where it was committed, so a changing slot such as the
+date or a memory digest only extends the projected prefix and the
+provider prompt cache survives it. The default projection adapter moves
+to version `2`, so existing default-adapter log streams declare one
+`adapter_change` (rc.7) on their next call. Legacy agents are unchanged.
+
+### Migration notes
+
+- **Legacy mode.** No code change and no behaviour change from rc.7. The
+  projection adapter only runs in log mode.
+- **Default adapter.** Existing log-mode streams on the default adapter
+  declare one `adapter_change` on their next call (version `1` to `2`); the
+  new version projects append-only, which re-sends superseded entries once.
+  An `admit` hook that allow-lists transition reasons must admit
+  `adapter_change` (see rc.7).
+- **Host adapters** that wrap `createMessageProjectionAdapter()` get the new
+  behaviour on versions that record `supersession: "append"`. Bump your
+  adapter's version so existing streams move to such a version with an
+  `adapter_change`; without a bump, existing versions keep dropping
+  superseded entries and new streams project append-only. Hosts that persist
+  contracts must keep the `supersession` key.
+
 ### Changed
 
 - **Log mode: supersession is append-only in the projection** (LLE-14025).
@@ -21,25 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The runtime records `supersession: "append"` in the contract of every
   version it creates for a new contract (initial, branch, and adapter, model
   or core transitions; a compaction child keeps its parent's contract);
-  versions without it keep projecting as before. Compaction is the only place superseded entries
-  are dropped: the child inherits only active entries
+  versions without it keep projecting as before. Compaction is the only
+  place superseded entries are dropped: the child inherits only active entries
   (`activeContextEntries()`). On an append-only version the context manager
   also counts superseded entries and retractions (as system messages it
   never summarises), and a compaction that keeps every conversation message
   and only drops them is declared without a summary. A compaction child
   keeps its parent's contract, as it does for `userMedia`.
-
-### Migration notes
-
-- **Default adapter.** Existing log-mode streams on the default adapter
-  declare one `adapter_change` on their next call (version `1` to `2`); the
-  new version projects append-only, which re-sends superseded entries once.
-- **Host adapters** that wrap `createMessageProjectionAdapter()` get the new
-  behaviour on versions that record `supersession: "append"`. Bump your
-  adapter's version so existing streams move to such a version with an
-  `adapter_change`; without a bump, existing versions keep dropping
-  superseded entries and new streams project append-only. Hosts that persist
-  contracts must keep the `supersession` key.
 
 ## [1.0.0-rc.7] - 2026-10-02
 
@@ -1375,7 +1389,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.7...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.8...HEAD
+[1.0.0-rc.8]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.7...agent-sdk@1.0.0-rc.8
 [1.0.0-rc.7]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.6...agent-sdk@1.0.0-rc.7
 [1.0.0-rc.6]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.5...agent-sdk@1.0.0-rc.6
 [1.0.0-rc.5]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.4...agent-sdk@1.0.0-rc.5
