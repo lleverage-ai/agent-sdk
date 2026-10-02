@@ -971,8 +971,10 @@ export interface ContextLogCursor {
  * (see `docs/context-log.md`). Pass the innermost provider model: the
  * commit boundary must be the last thing before the provider.
  *
- * In log mode `createAgent` rejects `promptBuilder` and `contextManager`, and
- * requires a core: a static `systemPrompt` or {@link ContextLogOptions.resolveCore}.
+ * In log mode `createAgent` rejects `promptBuilder` and requires a core: a
+ * static `systemPrompt` or {@link ContextLogOptions.resolveCore}. A
+ * `contextManager` compacts by a declared `compaction` transition and needs
+ * a `summarizer`.
  *
  * @experimental
  * @category Context Log

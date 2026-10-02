@@ -8,6 +8,7 @@
  *
  * ```
  *   prepareStep (step > 0)   appendOutputs(previous step) → recordOutcome(completed)
+ *                            → compact (when the context policy asks)
  *                            → project the next step from committed entries
  *   provider call            admit(prepare) → prepare(append, manifest, CAS)
  *                            → admit(dispatch) → markDispatched → provider
@@ -21,6 +22,9 @@
  *   tool pipeline shaped them) are committed before the next step is
  *   projected, so no request is built from uncommitted output. A failed output
  *   commit fails the run.
+ * - A compaction between steps is a declared `compaction` transition that
+ *   the next call's prepare commits before the compacted context is sent.
+ *   A failed commit fails the step.
  * - Retries and fallback models are separate attempts: each provider call
  *   prepares its own manifest. A failed attempt is closed as `failed` (or
  *   `cancelled` when aborted).
@@ -62,6 +66,7 @@ import type {
 } from "../context-log/types.js";
 import { ConfigurationError } from "../errors/index.js";
 import type { GenerateOptions } from "../types.js";
+import type { LogCompaction } from "./log-compaction.js";
 
 /** Attempts for a store write whose outcome was uncertain. @internal */
 const STORE_WRITE_ATTEMPTS = 3;
@@ -137,6 +142,11 @@ export interface LogCallBoundaryDeps {
   screenOutputs: (
     items: ReadonlyArray<AssistantContextEntryInput | ToolResultContextEntryInput>,
   ) => Promise<ContextEntryInput[]>;
+  /**
+   * Plans a compaction of the committed path at `head` before the next step,
+   * or returns `undefined` when the context policy does not ask for one.
+   */
+  compact?: (entries: ContextEntryInput[], head: ContextHead) => Promise<LogCompaction | undefined>;
 }
 
 /**
@@ -341,10 +351,13 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   // Whether the last call was closed without its outputs (failed, cancelled
   // or unknown). Its outputs are never committed.
   let lastCallClosed = false;
-  // Response messages of this generation committed so far, and their entries
-  // as the store returned them.
+  // The committed path the next step is projected from (the plan's entries,
+  // or a compacted child's), then the response messages of this generation
+  // committed so far and their entries as the store returned them. A
+  // compaction folds the outputs into the base.
+  let baseEntries: ContextEntryInput[] = plan.entries;
   let committedCount = 0;
-  const committedOutputs: ContextEntryInput[] = [];
+  let committedOutputs: ContextEntryInput[] = [];
   let completion: Promise<void> | undefined;
   let completed = false;
   // Set once a provider answered but its outputs were not committed: they
@@ -584,7 +597,20 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       return undefined;
     }
     await recordingFailure(() => commitOutputs(responseMessages, false));
-    return { messages: await deps.project([...plan.entries, ...committedOutputs]) };
+    const entries = [...baseEntries, ...committedOutputs];
+    const compact = deps.compact;
+    const at = head;
+    if (compact && at) {
+      const compaction = await recordingFailure(() => compact(entries, at));
+      if (compaction) {
+        // Committed by the next call's prepare, before anything is sent.
+        pending = { transition: compaction.transition, append: compaction.append };
+        baseEntries = compaction.entries;
+        committedOutputs = [];
+        return { messages: await deps.project(baseEntries) };
+      }
+    }
+    return { messages: await deps.project(entries) };
   };
 
   const wrapGenerate: WrapGenerate = async ({ doGenerate, params, model }) => {

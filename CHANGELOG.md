@@ -54,8 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `PreGenerate` hooks as a user message in `options.messages`, so the
     secrets filter and guardrails see it before it is sent.
   - `promptBuilder` is rejected in log mode (the core is frozen per
-    version). `contextManager`, `resume()` and `resumeDataResponse()` are
-    rejected until their log-mode support lands.
+    version). `resume()` and `resumeDataResponse()` are rejected until their
+    log-mode support lands.
   - Checkpoints hold control state and a `ContextLogCursor` under
     `metadata.contextLog`, never messages.
   - Every provider step of a tool loop is projected through the adapter, and
@@ -128,6 +128,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     passing `PreGenerate` and committing through its own boundary.
   - Model id strings, and models that already have a boundary, are rejected
     in log mode: pass the innermost provider model.
+- Log-mode compaction (experimental). `contextManager` is accepted in log
+  mode, and compaction is a declared `compaction` transition the call's
+  prepare commits before the compacted context is first sent. A failed
+  commit fails the step; nothing is sent from an uncommitted compaction:
+  - The child version inherits the leading run of runtime context, then
+    holds the summary, then the retained tail re-appended unchanged in path
+    order (reasoning and tool call/result pairs intact), then the call's new
+    input. Runtime context is never summarised. Later calls append to the
+    child instead of summarising again.
+  - Compaction runs at the start of an attempt and between tool-loop steps,
+    with the same context policy and `PreCompact` / `PostCompact` hooks. The
+    summary passes the `PreGenerate` hooks before it is committed.
+  - Summaries must come from `ContextManagerOptions.summarizer`, which
+    receives `SummaryRequest.contextLog` (`CompactionContextLog`) with the
+    run id, a source digest and the `<runId>/summary/<sourceDigest>` stream
+    to run on. `ContextManager.compact()` takes an optional fourth
+    `CompactOptions` argument carrying it. `commitCompaction` is not called
+    for log-mode compactions, and the legacy error-fallback compaction does
+    not run in log mode.
 
 ### Changed
 

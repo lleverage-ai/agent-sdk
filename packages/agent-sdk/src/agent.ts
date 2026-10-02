@@ -21,6 +21,7 @@ import {
   mapSteps,
 } from "./agent/generation-runner.js";
 import type { LogCallBoundary } from "./agent/log-boundary.js";
+import { createLogCompactor, type LogCompactor } from "./agent/log-compaction.js";
 import {
   createLogContextRuntime,
   isLogModeEnabled,
@@ -236,7 +237,11 @@ export function createAgent(options: AgentOptions): Agent {
   validateLogModeOptions(options);
   const logContext =
     options.contextLog && isLogModeEnabled(options)
-      ? createLogContextRuntime({ ...options, contextLog: options.contextLog })
+      ? createLogContextRuntime(
+          { ...options, contextLog: options.contextLog },
+          // Built below from the message runtime; read only once a call runs.
+          { compactor: () => logCompactor },
+        )
       : undefined;
 
   // Determine prompt mode
@@ -809,6 +814,12 @@ export function createAgent(options: AgentOptions): Agent {
     checkpoints,
   });
   const { createStreamingCompactionState } = messageRuntime;
+  // Log mode records compaction as a transition in the log, through the
+  // same context policy and compaction hooks.
+  const logCompactor: LogCompactor | undefined =
+    logContext && options.contextManager
+      ? createLogCompactor(messageRuntime.compactMessagesIfNeeded)
+      : undefined;
 
   /**
    * Shared generation lifecycle (PreGenerate → attempt setup → AI SDK params →
@@ -1508,6 +1519,9 @@ export function createAgent(options: AgentOptions): Agent {
           // Note: Only attempt this ONCE to avoid infinite loops
           if (
             options.contextManager?.policy.enableErrorFallback &&
+            // Log mode never rewrites checkpoint history: it compacts by a
+            // declared transition before a call, not after a failure.
+            !logContext &&
             !effectiveGenOptions._skipCompaction &&
             retryState.retryAttempt === 0 && // Only on first error, not on retry
             isContextLengthError(normalizedError)

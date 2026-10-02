@@ -12,7 +12,6 @@ import { jsonSchema, type LanguageModel, type ModelMessage, tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import { MemorySaver } from "../../src/checkpointer/memory-saver.js";
-import { createContextManager } from "../../src/context-manager.js";
 import {
   type AgentOptions,
   ConfigurationError,
@@ -174,7 +173,6 @@ describe("createAgent in context log mode", () => {
       "both core sources",
       { contextLog: { mode: "log" as const, store, resolveCore: () => "core" } },
     ],
-    ["contextManager", { contextManager: createContextManager({ maxTokens: 1000 }) }],
     [
       "two producers with one name",
       {
