@@ -244,11 +244,25 @@ export const LEGACY_PROJECTION_IMPORT_REASON = "legacy_projection_import";
  * @category Context Log
  */
 export interface ContextHistoryEntry {
-  /** The entry's key: unique among the entries and stable across retries. */
+  /**
+   * The entry's key: unique among the entries and stable across retries, at
+   * most 1024 characters, without control characters. A host identifier
+   * (for example the id of the event the message came from): it is never
+   * screened or sent to the model, so it must not contain user content.
+   */
   key: string;
-  /** The message, as the model should see it. Content must be plain JSON. */
+  /**
+   * The message, as the model should see it. Content must be plain JSON.
+   * Its content and provider options, at message and part level, are
+   * screened by the PreGenerate hooks whatever its role, and kept (for
+   * example a reasoning signature) unless a hook transforms them.
+   */
   message: UserModelMessage | AssistantModelMessage | ToolModelMessage;
-  /** Host metadata, kept on the entry (and on a compaction's re-append). */
+  /**
+   * Host metadata, kept on the entry (and on a compaction's re-append). Like
+   * the key it is never screened or sent to the model: it must hold host
+   * identifiers and provenance only, never user content.
+   */
   metadata?: ContextMetadata;
 }
 
@@ -265,6 +279,14 @@ export interface ContextHistoryEntry {
  *   passing the same history converge on whichever committed first.
  * - Without `root`, the entries are appended after the head's path, before
  *   the run's input. An entry whose key is already on the path is dropped.
+ *   The host tracks what it has supplied: after a compaction, summarised
+ *   entries are no longer on the path.
+ * - History that leaves a tool call without a result before the next user
+ *   message or its end is refused (`history_unanswered_tool_call`).
+ * - Only the run it is passed to applies it, until its input is committed.
+ *   A background follow-up the agent starts never carries it.
+ * - `root.metadata` is host provenance, never screened or sent to the
+ *   model, like the entries' keys and metadata.
  *
  * @experimental
  * @category Context Log

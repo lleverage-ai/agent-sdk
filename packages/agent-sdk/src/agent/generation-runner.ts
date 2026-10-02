@@ -1090,9 +1090,13 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     let followUpPrompt = await getNextTaskPrompt();
     while (followUpPrompt !== null) {
+      // The host's history belonged to the initial run only: compaction may
+      // since have removed it from the path, and a follow-up must not bring
+      // it back.
       const {
         messages: _previousInput,
         _logRun: _previousRun,
+        contextHistory: _previousHistory,
         ...base
       } = initialAttempt.effectiveGenOptions;
       const run = await beginRun({

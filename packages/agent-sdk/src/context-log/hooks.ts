@@ -317,6 +317,25 @@ function writeTexts(
   return result;
 }
 
+/**
+ * Entries the caller supplied, whatever their role: the run's own input and
+ * host-supplied history (`contextHistory`). Their provider options are
+ * screened as data. Marked by object identity before screening; a hook's
+ * transform writes back onto the same entries.
+ */
+const callerSupplied = new WeakSet<ContextEntryInput>();
+
+/**
+ * Marks entries as caller-supplied, so screening treats their provider
+ * options as input even when their role is assistant or tool.
+ *
+ * @internal
+ */
+export function markCallerSupplied<T extends ContextEntryInput>(entries: T[]): T[] {
+  for (const entry of entries) callerSupplied.add(entry);
+  return entries;
+}
+
 /** How a pending entry is shown to hooks, and how to write a transform back. */
 type Presentation =
   | { kind: "native"; index: number; role: ModelMessage["role"] }
@@ -337,7 +356,10 @@ type Presentation =
  * inputs, tool results, runtime context payloads). Retractions and entries
  * without text are not shown. Hooks receive copies.
  */
-function present(pending: readonly ContextEntryInput[]): {
+function present(
+  pending: readonly ContextEntryInput[],
+  caller: readonly boolean[],
+): {
   messages: ModelMessage[];
   presentations: Presentation[];
 } {
@@ -345,10 +367,11 @@ function present(pending: readonly ContextEntryInput[]): {
   const presentations: Presentation[] = [];
   pending.forEach((entry, index) => {
     // Provider options on caller input can carry model input (for example
-    // a document's title or context), so a user message's are screened as
-    // data, at message and part level. A provider's own output keeps its
-    // provider options and metadata unscreened (signatures, item ids).
-    const callerOptions = entry.kind === "user";
+    // a document's title or context), so a user message's, and those of any
+    // message the host supplied as history, are screened as data, at message
+    // and part level. A provider's own output keeps its provider options and
+    // metadata unscreened (signatures, item ids).
+    const callerOptions = entry.kind === "user" || caller[index] === true;
     if (
       entry.kind !== "runtime_context" &&
       typeof entry.message.content === "string" &&
@@ -531,12 +554,14 @@ export async function invokeLogModePreGenerateHooks(
 ): Promise<LogModePreGenerateResult> {
   const { hooks, agent } = params;
   const pending = [...params.pending];
+  // Provenance is read once: a transform replaces entries, not their origin.
+  const caller = pending.map((entry) => callerSupplied.has(entry));
   let options = withoutInput(params.options);
   const messagesExempt = new Set(["messages"]);
 
   for (const hook of hooks) {
     const isolated = isolateOptions(options);
-    const { messages, presentations } = present(pending);
+    const { messages, presentations } = present(pending, caller);
     const view: GenerateOptions = { ...isolated.view, messages };
     const outputs = await invokeHooksWithTimeout(
       [hook],

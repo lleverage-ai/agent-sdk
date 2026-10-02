@@ -46,6 +46,7 @@ import {
   ContextLogInvalidError,
   ContextLogNotFoundError,
 } from "../context-log/errors.js";
+import { markCallerSupplied } from "../context-log/hooks.js";
 import { assertContextJsonOpaque } from "../context-log/json.js";
 import { resolveContextProducers, runContextProducers } from "../context-log/producers.js";
 import {
@@ -502,6 +503,15 @@ export function assertContextHistory(value: unknown): ContextHistoryInput {
     if (typeof key !== "string" || key.length === 0) {
       fail(`entries[${index}].key must be a non-empty string`);
     }
+    // Keys are host identifiers, never screened or projected: bounded, and
+    // without control characters a log reader could misread.
+    if ((key as string).length > MAX_HISTORY_KEY_LENGTH) {
+      fail(`entries[${index}].key must be at most ${MAX_HISTORY_KEY_LENGTH} characters`);
+    }
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: the check itself
+    if (/[\u0000-\u001f\u007f-\u009f]/.test(key as string)) {
+      fail(`entries[${index}].key must not contain control characters`);
+    }
     if (keys.has(key as string)) fail(`entries[${index}].key repeats an earlier key`);
     keys.add(key as string);
     const role = (message as { role?: unknown } | undefined)?.role;
@@ -518,15 +528,28 @@ export function assertContextHistory(value: unknown): ContextHistoryInput {
 }
 
 /**
- * The tool calls of a history that no tool result answers. Imported history
- * must not end mid-call: a projection could never send it.
+ * The tool calls of a history that no tool result answers in time, by the
+ * AI SDK's own rule (`convertToLanguageModelPrompt`): every tool call an
+ * assistant message makes, other than a provider-executed one, needs a
+ * result in a tool message before the next user message and before the
+ * history ends. Results without a call are allowed, as there. An approval
+ * response is not an answer here: an approved call that has no result is a
+ * pending execution, which history can't carry.
  */
 function unansweredToolCalls(entries: readonly ContextEntryInput[]): string[] {
-  const calls = new Map<string, true>();
+  const calls = new Set<string>();
+  const unanswered: string[] = [];
+  const settle = () => {
+    unanswered.push(...calls);
+    calls.clear();
+  };
   for (const entry of entries) {
+    if (entry.kind === "user") settle();
     if (entry.kind === "assistant" && Array.isArray(entry.message.content)) {
       for (const part of entry.message.content) {
-        if (part.type === "tool-call") calls.set(part.toolCallId, true);
+        if (part.type === "tool-call" && part.providerExecuted !== true) {
+          calls.add(part.toolCallId);
+        }
       }
     }
     if (entry.kind === "tool_result") {
@@ -535,25 +558,33 @@ function unansweredToolCalls(entries: readonly ContextEntryInput[]): string[] {
       }
     }
   }
-  return [...calls.keys()];
+  settle();
+  return unanswered;
 }
+
+/** The longest entry key `contextHistory` accepts. */
+const MAX_HISTORY_KEY_LENGTH = 1024;
 
 /** History entries as context entries, keeping key and metadata. */
 function historyEntries(history: ContextHistoryInput): ContextEntryInput[] {
-  return history.entries.map((entry): ContextEntryInput => {
-    const base = {
-      key: entry.key,
-      ...(entry.metadata !== undefined ? { metadata: entry.metadata } : {}),
-    };
-    switch (entry.message.role) {
-      case "user":
-        return { kind: "user", ...base, message: entry.message };
-      case "assistant":
-        return { kind: "assistant", ...base, message: entry.message };
-      default:
-        return { kind: "tool_result", ...base, message: entry.message };
-    }
-  });
+  // Host-supplied whatever the role: screening treats their provider options
+  // as input.
+  return markCallerSupplied(
+    history.entries.map((entry): ContextEntryInput => {
+      const base = {
+        key: entry.key,
+        ...(entry.metadata !== undefined ? { metadata: entry.metadata } : {}),
+      };
+      switch (entry.message.role) {
+        case "user":
+          return { kind: "user", ...base, message: entry.message };
+        case "assistant":
+          return { kind: "assistant", ...base, message: entry.message };
+        default:
+          return { kind: "tool_result", ...base, message: entry.message };
+      }
+    }),
+  );
 }
 
 /** The new user input of a run, after PreGenerate. @internal */
@@ -1000,12 +1031,14 @@ export function createLogContextRuntime(
       history && (history.root ? transition?.reason === LEGACY_PROJECTION_IMPORT_REASON : true)
         ? historyEntries(history).filter((entry) => !onPath.has(entry.key))
         : [];
-    if (history?.root && imported.length > 0) {
+    // Root or appended, history that leaves a tool call unanswered could
+    // never be sent: refused before anything is committed.
+    if (imported.length > 0) {
       const unanswered = unansweredToolCalls(imported);
       if (unanswered.length > 0) {
         throw new ContextLogInvalidError(
           "history_unanswered_tool_call",
-          `The imported history ends with ${unanswered.length} tool call(s) no tool result answers; drop them, or answer them, before importing`,
+          `The history leaves ${unanswered.length} tool call(s) without a tool result before the next user message or its end; drop them, or answer them, before supplying it`,
         );
       }
     }

@@ -704,16 +704,25 @@ await agent.generate({
 
 - Each entry is a `user`, `assistant` or `tool` message with a key that is
   unique within the history. Its key and metadata are committed with it.
+- **Keys and metadata are host-owned.** They are never screened by the hooks
+  and never sent to the model, so they must not contain user content: use
+  host identifiers (an event id) and provenance only. A key is at most 1024
+  characters, without control characters. `root.metadata` follows the same
+  rule.
 - **Root history** (`root` set) applies only when the prepare creates the
   stream's first version: a root version with the declared
   `legacy_projection_import` reason and `root.metadata`. If the stream already
   has a head (another run imported first) or the call declares
   `contextStream.branchFrom`, the root history is ignored and the head is the
   history, so concurrent first runs converge on one import.
-- A root import whose history ends with tool calls no tool result answers
-  fails with a `ContextLogInvalidError` (reason
-  `history_unanswered_tool_call`) before anything is committed. Drop or
-  answer a pending call before importing.
+- History that leaves a tool call without a result fails with a
+  `ContextLogInvalidError` (reason `history_unanswered_tool_call`) before
+  anything is committed, root or appended. The rule is the AI SDK's: every
+  tool call an assistant message makes, other than a provider-executed one,
+  needs a result in a tool message before the next user message and before
+  the history ends. A result without a call is allowed. An approval response
+  doesn't count as an answer: an approved call with no result is a pending
+  execution. Drop or answer a pending call before supplying the history.
 - **Appended history** (no `root`) is a pure append after the head's path,
   never inserted before an entry already on it. Entries whose key is already
   on the path are dropped, so a repeated or retried run appends nothing twice
@@ -723,10 +732,14 @@ await agent.generate({
   event cursor) rather than resending its whole outside history.
 - Entries pass the `PreGenerate` hooks with the run's input, as
   `options.messages` before the input, so redaction and guardrails apply to
-  them. Hooks never see `contextHistory` itself.
+  them. Whatever an entry's role, its provider options (message and part
+  level) are screened as input too, as a user message's are; they are kept,
+  so a reasoning signature survives the import. Hooks never see
+  `contextHistory` itself.
 - History is only committed by the run's first committed prepare; retries of
   that prepare carry the same entries, and later steps of the run ignore it.
-  It is never listed in `runInput`.
+  A background follow-up the agent starts after the run is a new run and
+  never carries it. It is never listed in `runInput`.
 - Malformed history is a `ValidationError`. Outside log mode,
   `contextHistory` is a `ConfigurationError`.
 
