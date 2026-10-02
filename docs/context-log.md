@@ -1,11 +1,13 @@
 # Context log mode (experimental)
 
 > **Status:** experimental. This release ships the contracts, an in-memory
-> store and a store conformance suite. The log-mode runtime (projection,
-> commit before dispatch, append-only hooks, compaction, resume and subagent
-> streams) lands in later releases. Until then `createAgent` rejects
-> `contextLog: { mode: "log" }`, and every agent keeps its legacy behaviour.
-> The exports may change before they are marked stable.
+> store, a store conformance suite and the first part of the log-mode
+> runtime: [request projection](#request-projection). Commit before dispatch,
+> output recording, append-only hooks, compaction, resume and subagent streams
+> land in later releases. Until commit lands, a log-mode agent projects its
+> requests from the log but does not write to it, so log mode is not usable on
+> its own yet. Agents without `contextLog: { mode: "log" }` keep their legacy
+> behaviour. The exports may change before they are marked stable.
 
 Today an agent's history is a mutable `ModelMessage[]` checkpoint. The SDK
 overwrites it after each generation, rebuilds the system prompt every time,
@@ -69,9 +71,11 @@ All exports are marked `@experimental`.
   call. Producers are deterministic and append-only. The entry key is the
   deduplication key: the runtime skips entries whose key is already on the path.
   See [Supersession and retraction](#supersession-and-retraction).
-- **`ProjectionAdapter`** turns a version and its path into model messages. It
-  is versioned: changing its output for an existing path needs a new version
-  and an `adapter_change` transition.
+- **`ProjectionAdapter`** turns a version's core and contract and its path
+  into model messages. It is versioned: changing its output for an existing
+  path needs a new version and an `adapter_change` transition. Its input is
+  content only (no positions, ids or timestamps), because a call is projected
+  before it is committed and must project to the same bytes afterwards.
 - **`ContextAdmitHook`** lets the host authorise every prepare and every
   dispatch (for example by re-checking access). It allows or refuses; it never
   rewrites the request.
@@ -158,6 +162,80 @@ These constrain the runtime that later releases add on top of the contracts:
 - **Log mode and legacy history stay separate.** A log-mode agent never reads
   or writes `Checkpoint.messages` history, and the legacy checkpoint fallback
   paths do not apply to it.
+
+## Request projection
+
+With `contextLog: { mode: "log", store }`, every model request is built as
+
+```text
+project(core(version), path(head) + new user input, target)
+```
+
+through the configured `ProjectionAdapter`
+(`createMessageProjectionAdapter()` by default):
+
+1. The call reads its stream's head once. On a stream without a head, the
+   call will create the first version (an `initial` transition) with the
+   core from `systemPrompt` or `contextLog.resolveCore`.
+2. Otherwise it reads the head's version and its full path. The **core is
+   frozen per version**: the stored bytes are projected unchanged, and the
+   resolver is never consulted for an existing version. Adopting a new core
+   needs a `core_policy_change` transition.
+3. The adapter projects the core, the path and the run's new user input
+   for the target model. The result is sent as the request's messages, with
+   no separate `system` parameter, alongside the agent's tools.
+4. Every later provider step of the tool loop is projected the same way,
+   from those entries followed by the assistant and tool messages the
+   generation's earlier steps produced. No provider request bypasses the
+   adapter, so its shaping and the contract's capability projection apply to
+   tool results too, and each step's input starts with the previous step's.
+
+Configuration:
+
+```typescript
+import { createAgent, MemoryContextLogStore } from "@lleverage-ai/agent-sdk";
+
+const agent = createAgent({
+  model,
+  // The core of every new version. Or use contextLog.resolveCore.
+  systemPrompt: "You are a helpful assistant.",
+  checkpointer,
+  contextLog: { mode: "log", store: new MemoryContextLogStore() },
+});
+
+await agent.generate({ prompt: "Hello", threadId: "thread-1" });
+```
+
+Rules in log mode:
+
+- **Only new user input.** Pass it as `prompt`. Caller-supplied `messages`
+  are rejected with a `ValidationError`, and so is a call without a
+  `threadId`. The prompt reaches `PreGenerate` hooks as a user message in
+  `options.messages`, so the secrets filter and guardrails redact or deny it
+  before it is sent. After the hooks the new input must still be user
+  messages only. A retry resends the same input: a `PostGenerateFailure`
+  hook that changes the prompt or messages fails the call with a
+  `ValidationError`, because that input never passed `PreGenerate`.
+- **Frozen core.** `promptBuilder` is rejected: set a static `systemPrompt`
+  (it may be empty) or `contextLog.resolveCore`, not both. Context that
+  changes between calls belongs in runtime context entries.
+- **The contract decides capability projection.** The runtime records
+  `adapter`, `adapterVersion`, `imageInput` and `fileInput`
+  (`ContextProjectionContractKey`) on the versions it creates. The default
+  adapter replaces tool-result media with the legacy text placeholders when
+  the contract says the model cannot accept it. A version whose recorded
+  values differ from the current adapter and model's capabilities is not
+  projected: the call fails with a `ContextLogConflictError` (reason
+  `transition_required`) before anything is sent.
+- **Checkpoints are control state.** A log-mode checkpoint holds the step,
+  todos, files and any pending interrupt, plus a `ContextLogCursor` under
+  `metadata.contextLog`. Its `messages` are always empty, and messages in a
+  stored checkpoint are never restored. `invalidateCheckpoint()` reloads that
+  control state; history always comes from the head.
+- **Not yet supported.** `contextManager` (compaction), `contextLog.producers`,
+  `contextLog.admit`, `resume()` / `resumeDataResponse()` and
+  `streamDataResponse()` background follow-ups throw until their log-mode
+  support lands. Subagents do not inherit log mode.
 
 ## How log mode maps to legacy concepts
 
