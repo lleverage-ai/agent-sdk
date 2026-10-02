@@ -310,6 +310,25 @@ describe("log-mode PreGenerate: history and system are append-only", () => {
     ).toMatch(/changed a field other than the text/);
   });
 
+  it("rejects a string message whose other fields are not plain JSON", async () => {
+    const entry = {
+      kind: "user",
+      key: "u1",
+      message: { role: "user", content: "hello", providerOptions: { a: { at: new Date(0) } } },
+    } as unknown as ContextEntryInput;
+    const spread = rewriting((options) => ({ ...options, maxTokens: 1 }));
+    expect(
+      await violation(
+        invokeLogModePreGenerateHooks({
+          hooks: [spread],
+          options: {},
+          pending: [entry],
+          agent: agent(),
+        }),
+      ),
+    ).toMatch(/changed a field other than the text/);
+  });
+
   it("keeps a string message's other fields when its text is redacted", async () => {
     const [secrets] = createSecretsFilterHooks();
     const entry: ContextEntryInput = {

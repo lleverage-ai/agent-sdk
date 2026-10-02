@@ -401,7 +401,10 @@ function applyMessages(
       }
       const { content: _before, ...originalRest } = entry.message;
       const { content: _after, ...nextRest } = after;
-      if (plainJson(nextRest) !== plainJson(originalRest)) {
+      // Committed messages must be plain JSON, so a field that is not counts
+      // as a change rather than letting two failed serialisations compare equal.
+      const original = plainJson(originalRest);
+      if (original === undefined || plainJson(nextRest) !== original) {
         throw violation(event, "changed a field other than the text of a new message");
       }
       pending[presentation.index] = {
