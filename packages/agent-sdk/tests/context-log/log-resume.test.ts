@@ -621,6 +621,39 @@ describe("log-mode resume", () => {
     expect(saved?.state.todos.map((todo) => todo.id)).toEqual(["t1", "t2"]);
   });
 
+  it("gives the resumed tool the stream's delegation scope, as in a normal step", async () => {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    const scopes: unknown[] = [];
+    const scopeTools = () => ({
+      ask: tool({
+        description: "Asks the user",
+        inputSchema: askInput,
+        execute: async (input, options) => {
+          await interruptOf(options)(input);
+          const context = options.experimental_context as {
+            agentSdk?: { contextLog?: { stream: ContextStreamRef } };
+          };
+          scopes.push(context.agentSdk?.contextLog?.stream);
+          return "noted";
+        },
+      }),
+    });
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["c1", "ask", { question: "Go?" }])]).model, store, {
+        tools: scopeTools(),
+        checkpointer,
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+
+    await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: scopeTools(),
+      checkpointer,
+    }).resume(THREAD, interrupt.id, "yes");
+
+    expect(scopes).toEqual([STREAM]);
+  });
+
   it("records a custom answer the tool does not echo", async () => {
     const store = new MemoryContextLogStore();
     const checkpointer = new MemorySaver();
