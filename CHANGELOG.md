@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.5] - 2026-10-02
+
+Fifth release candidate for 1.0.0. It adds two log-mode seams that hosts
+need to adopt context log mode: request middleware that run inside the
+commit boundary, so the log commits the request as the provider receives
+it, and a core that is resolved again for the target model on a
+`model_change`. Legacy agents are unchanged.
+
+### Migration notes
+
+- **Legacy mode.** No code change and no behaviour change from rc.4.
+  `contextLog.requestMiddleware` is ignored unless `mode` is `"log"`.
+- **Request middleware (log mode).** Hosts that wrapped the provider model
+  in request-changing middleware (reasoning-option translation, tool-input
+  sanitisation, JSON ordering, media relocation) before passing it to
+  `createAgent` should now pass the innermost provider model as `model` and
+  `fallbackModel` and move those middleware to
+  `contextLog.requestMiddleware`. The order is agent → projection → request
+  middleware → commit boundary → provider. Request middleware must be
+  deterministic, must not remove or overwrite a setting they read to shape
+  the prompt, must call the wrapped model, and must be pinned with the
+  projection adapter's `id` and `version` (see
+  [docs/context-log.md](./docs/context-log.md#the-commit-boundary)).
+  Middleware that do not change the request (usage, telemetry, retries) can
+  stay outside, around the agent. Transport headers are not part of the
+  committed digest.
+- **Core resolution (log mode).** `contextLog.resolveCore` is now called for
+  `model_change` versions as well as `initial` ones, and its input has
+  `target` (`{ provider, modelId }`) and `model`. A resolver that keyed only
+  on `reason === "initial"` must handle `"model_change"`: return the core
+  for the target model, or the parent's bytes to keep it. The
+  `model_change` version records the returned core; no separate
+  `core_policy_change` is created. Code that constructs a `ContextCoreInput`
+  must supply the two new fields. Agents with a static `systemPrompt` are
+  unaffected.
+
 ### Added
 
 - Experimental `ContextLogOptions.requestMiddleware`: host
@@ -1102,7 +1138,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.4...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.5...HEAD
+[1.0.0-rc.5]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.4...agent-sdk@1.0.0-rc.5
 [1.0.0-rc.4]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.3...agent-sdk@1.0.0-rc.4
 [1.0.0-rc.3]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.2...agent-sdk@1.0.0-rc.3
 [1.0.0-rc.2]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.1...agent-sdk@1.0.0-rc.2
