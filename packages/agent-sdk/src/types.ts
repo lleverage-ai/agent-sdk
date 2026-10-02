@@ -2120,6 +2120,17 @@ export interface GenerateOptions {
    */
   threadId?: string;
 
+  /**
+   * Context log mode only: the branch and stream of `threadId` the call runs
+   * on. Each defaults to `"main"`. A host uses its own session branch id as
+   * `branchId`, and a delegated child its own `streamId`.
+   *
+   * Rejected when the agent is not in context log mode.
+   *
+   * @experimental
+   */
+  contextStream?: { branchId?: string; streamId?: string };
+
   /** Maximum tokens to generate */
   maxTokens?: number;
 
@@ -2356,6 +2367,15 @@ export interface GenerateOptions {
    * @internal
    */
   _checkpointSnapshot?: { threadId: string; checkpoint: Checkpoint | undefined };
+
+  /**
+   * Internal, context log mode only: state shared by every attempt of one run.
+   * `id` is fixed when the run starts and keys the run's new input entries, so
+   * a retry finds the input it already committed instead of appending it
+   * again. `ordinal` and `attempt` number the run's model calls.
+   * @internal
+   */
+  _logRun?: { id: string; ordinal: number; attempt: number; lastInputDigest?: string };
 }
 
 /**

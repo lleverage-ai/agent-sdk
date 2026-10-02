@@ -1,14 +1,14 @@
 # Context log mode (experimental)
 
 > **Status:** experimental. This release ships the contracts, an in-memory
-> store, a store conformance suite and the first part of the log-mode
-> runtime: [request projection](#request-projection), plus
-> [producers](#producers) and the [hook rules](#hooks-in-log-mode) that the
-> commit runtime wires in. Commit before dispatch, output recording,
-> compaction, resume and subagent streams land in later releases. Until commit lands, a log-mode agent projects its
-> requests from the log but does not write to it, so log mode is not usable on
-> its own yet. Agents without `contextLog: { mode: "log" }` keep their legacy
-> behaviour. The exports may change before they are marked stable.
+> store, a store conformance suite and the core of the log-mode runtime:
+> [request projection](#request-projection), [producers](#producers), the
+> [hook rules](#hooks-in-log-mode) and the
+> [commit boundary](#the-commit-boundary), which commits every call's input
+> before dispatch and every model output before anything uses it.
+> Compaction, resume and subagent streams land in later releases. Agents
+> without `contextLog: { mode: "log" }` keep their legacy behaviour. The
+> exports may change before they are marked stable.
 
 Today an agent's history is a mutable `ModelMessage[]` checkpoint. The SDK
 overwrites it after each generation, rebuilds the system prompt every time,
@@ -102,8 +102,11 @@ and retractions and keeps everything else in order.
 
 ### Producers
 
-Producers run before each call, against the call's single head snapshot,
-and return `runtime_context` entries to append. The agent's own
+Producers run at the start of each generation attempt (not between the
+steps of a tool loop), against the attempt's single head snapshot, and
+return `runtime_context` entries to append. Their output passes the
+`PreGenerate` hooks with the new user input, and the attempt's first
+`prepare` commits both against that snapshot's revision. The agent's own
 `contextLog.producers` run first, then each plugin's `contextProducers` in
 plugin order; producer names must be unique. The runtime drops any entry
 whose key is already on the path, and rejects entries that are not the
@@ -195,9 +198,9 @@ recovery rule:
 ## The call lifecycle
 
 ```text
-readHead ─▶ produce context ─▶ admit(prepare) ─▶ prepare ─▶ admit(dispatch)
-        ─▶ markDispatched ─▶ send the committed input ─▶ appendOutputs
-        ─▶ recordOutcome
+readHead ─▶ produce context ─▶ PreGenerate hooks ─▶ admit(prepare) ─▶ prepare
+        ─▶ admit(dispatch) ─▶ markDispatched ─▶ send the committed input
+        ─▶ PreGenerate hooks over the outputs ─▶ appendOutputs ─▶ recordOutcome
 ```
 
 Nothing is sent without a committed manifest, and nothing generates from
@@ -244,7 +247,8 @@ through the configured `ProjectionAdapter`
    no separate `system` parameter, alongside the agent's tools.
 4. Every later provider step of the tool loop is projected the same way,
    from those entries followed by the assistant and tool messages the
-   generation's earlier steps produced. No provider request bypasses the
+   generation's earlier steps produced, as committed (see
+   [the commit boundary](#the-commit-boundary)). No provider request bypasses the
    adapter, so its shaping and the contract's capability projection apply to
    tool results too, and each step's input starts with the previous step's.
 
@@ -268,12 +272,12 @@ Rules in log mode:
 
 - **Only new user input.** Pass it as `prompt`. Caller-supplied `messages`
   are rejected with a `ValidationError`, and so is a call without a
-  `threadId`. The prompt reaches `PreGenerate` hooks as a user message in
-  `options.messages`, so the secrets filter and guardrails redact or deny it
-  before it is sent. After the hooks the new input must still be user
-  messages only. A retry resends the same input: a `PostGenerateFailure`
-  hook that changes the prompt or messages fails the call with a
-  `ValidationError`, because that input never passed `PreGenerate`.
+  `threadId`. Each attempt shows the prompt, with the producers' output, to
+  the `PreGenerate` hooks as new input (see
+  [Hooks in log mode](#hooks-in-log-mode)), so the secrets filter and
+  guardrails redact or deny it before it is committed or sent. A retry
+  resends the same, already committed input: retry hooks may only change
+  operational options.
 - **Frozen core.** `promptBuilder` is rejected: set a static `systemPrompt`
   (it may be empty) or `contextLog.resolveCore`, not both. Context that
   changes between calls belongs in runtime context entries.
@@ -290,10 +294,84 @@ Rules in log mode:
   `metadata.contextLog`. Its `messages` are always empty, and messages in a
   stored checkpoint are never restored. `invalidateCheckpoint()` reloads that
   control state; history always comes from the head.
-- **Not yet supported.** `contextManager` (compaction), `contextLog.producers`
-  and plugin `contextProducers`, `contextLog.admit`, `resume()` / `resumeDataResponse()` and
-  `streamDataResponse()` background follow-ups throw until their log-mode
-  support lands. Subagents do not inherit log mode.
+- **Branches and streams.** A call runs on `{ threadId, branchId, streamId }`.
+  Both ids default to `"main"`; set `contextStream: { branchId, streamId }` on
+  the call to choose others (for example the host's session branch, or a
+  delegated child's own stream). `contextStream` is rejected outside log mode.
+- **Not yet supported.** `contextManager` (compaction) and `resume()` /
+  `resumeDataResponse()` throw until their log-mode support lands. Subagents
+  do not inherit log mode.
+
+## The commit boundary
+
+Each generation attempt has a commit boundary. It wraps the attempt's
+**terminal provider model**, so every provider request (each tool-loop step,
+each AI SDK retry, each fallback attempt) passes through it, and it records
+exactly what the provider receives:
+
+1. **Prepare.** Before a call is sent, the boundary asks `contextLog.admit`
+   (phase `prepare`), then commits the run's new input, any declared
+   transition and the call's manifest in one compare-and-swap `prepare`
+   against the head the call was planned from. The manifest's `inputDigest`
+   is the SHA-256 of the provider call options (prompt, tool definitions and
+   settings; not the abort signal, transport headers or `includeRawChunks`),
+   `toolSnapshot` and `callOptions` hold their exact bytes, and
+   `ordinal` / `attempt` number the run's calls (a retry with the same input
+   is the next attempt of the same ordinal). The idempotency key is
+   `call:<run>:<ordinal>:<attempt>`.
+2. **Dispatch.** It asks `contextLog.admit` again (phase `dispatch`; a
+   refusal closes the call as `cancelled`), marks the call dispatched, and only
+   then calls the provider.
+3. **Outputs.** Before the next step is projected, it commits the previous
+   step's outputs with `appendOutputs`: the assistant message (with the model
+   that produced it), then the tool results as the tool pipeline shaped them,
+   and records the call `completed`. The outputs first pass the `PreGenerate`
+   hooks as new input, so the secrets filter redacts them and guardrails can
+   stop the run before they are committed; the committed, screened entries
+   are what later steps see. The next step is projected from the
+   committed entries. The generation's last step is committed the same way
+   before the run returns, so a run that ends with a plain reply leaves it as
+   the last entry.
+
+Failures:
+
+| What happens | Result |
+| --- | --- |
+| `prepare` loses the compare-and-swap race, or the admit hook refuses | Nothing is sent; the call fails with the `ContextLogError`. |
+| A write is uncertain (`unavailable`) | `prepare`, `appendOutputs` and `recordOutcome` are retried with the same request; `markDispatched` is never retried blindly (see above). |
+| The provider call fails | The call is closed as `failed` (`cancelled` when aborted). A retry or fallback is a new attempt with its own manifest; the run's input is committed once. |
+| An output commit fails | The run fails, including a streaming run whose failed commit the AI SDK turned into an error part. The call is closed as `unknown`, and nothing generates from the uncommitted output. |
+| The AI SDK throws after the provider answered (for example on invalid structured output) | The finished step's output is still committed and the call completed, then the error propagates. |
+| The process crashes after prepare, or after dispatch before the output commit | The call stays open. The next prepare on the stream closes it: `cancelled` if it was never dispatched, `unknown` if it was (`completed` if its outputs were committed). Its outputs can no longer be committed, because the head has moved past its manifest. Tool side effects are recovered by the host's tool ledger, never by replaying the call. |
+
+A fallback model whose input capabilities differ from the head version's
+contract (for example no image input) is a declared **`model_change`**: the
+first prepare creates a version that inherits the whole path under the same
+frozen core and the new contract. A different adapter id or version still
+fails with `transition_required` until an `adapter_change` is declared.
+
+When a call's tool definitions differ from the stream's previous call, the
+manifest's `toolSnapshotChange` records the previous and new snapshot digests
+and the cause (`model_change` when the previous call targeted another model,
+otherwise `tool_definition`).
+
+The boundary must be the last thing before the provider:
+
+- Pass the **innermost provider model** (after any media or transport
+  middleware) as `model` and `fallbackModel`, or move those transforms into
+  your `ProjectionAdapter`, which is pinned and versioned. A transform that
+  runs after the boundary would send bytes the manifest does not describe.
+- A model id string is rejected in log mode, because the AI SDK would resolve
+  it after the boundary. A model that already has a boundary is rejected too.
+
+Background follow-ups (`waitForBackgroundTasks`) are runs of their own on the
+same stream: each follow-up prompt passes the `PreGenerate` hooks as new user
+input, then is planned and committed through a boundary like any other call.
+In `streamDataResponse()`, a follow-up that raises an interrupt or stops the
+run records the pending interrupt and ends the follow-ups.
+In `streamRaw()`, the last step is committed by the stream's `onFinish`; the
+AI SDK cannot fail an already-returned stream, so a failed final commit closes
+the call as `unknown` instead, and the log stays consistent.
 
 ## Hooks in log mode
 
@@ -376,7 +454,7 @@ run, gives them an isolated copy, and resends the attempt's own input.
 | Compaction replaces the messages array | A `compaction` transition: a child version that inherits a prefix and appends the summary |
 | Forking or editing a message | A `branch` transition on a new branch, inheriting the unedited prefix |
 | `PreGenerate.updatedInput` | Only operational options and transforms of new input; see [Hooks in log mode](#hooks-in-log-mode) |
-| Checkpoint save after a generation | `appendOutputs` for each output and tool result, then `recordOutcome` |
+| Checkpoint save after a generation | `appendOutputs` for each step's output and tool results, then `recordOutcome` |
 | Resume from a checkpoint | Read the head and project its path |
 
 Run control state that is not history (pending interrupts, todos, files) stays

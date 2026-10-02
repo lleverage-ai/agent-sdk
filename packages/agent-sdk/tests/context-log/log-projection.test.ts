@@ -2,10 +2,9 @@
  * Log mode builds every request as a projection of the stream's head path
  * under the version's frozen core.
  *
- * The log-mode runtime does not commit inputs or outputs yet (that is the
- * commit-before-dispatch boundary), so these tests write the log the way that
- * boundary will: `commitTurn` prepares the turn's input, dispatches it and
- * appends the model's output.
+ * The runtime commits each call's input and outputs itself (see
+ * `log-commit.test.ts`). `commitTurn` writes history the way another writer
+ * would, to seed a stream before an agent runs on it.
  */
 
 import type { LanguageModelV3CallOptions, LanguageModelV3StreamPart } from "@ai-sdk/provider";
@@ -177,26 +176,17 @@ describe("createAgent in context log mode", () => {
     ],
     ["contextManager", { contextManager: createContextManager({ maxTokens: 1000 }) }],
     [
-      "producers",
+      "two producers with one name",
       {
         contextLog: {
           mode: "log" as const,
           store,
           producers: [{ name: "p", produce: () => [] }],
         },
-      },
-    ],
-    [
-      "plugin producers",
-      {
         plugins: [
           definePlugin({ name: "plug", contextProducers: [{ name: "p", produce: () => [] }] }),
         ],
       },
-    ],
-    [
-      "an admit hook",
-      { contextLog: { mode: "log" as const, store, admit: () => ({ allow: true as const }) } },
     ],
   ])("rejects %s with a configuration error", (_name, overrides) => {
     expect(() => logAgent(model, store, overrides as Partial<AgentOptions>)).toThrow(
@@ -224,15 +214,7 @@ describe("log-mode request projection", () => {
     const agent = logAgent(model, store);
 
     await agent.generate({ prompt: "first", threadId: THREAD });
-    await commitTurn(
-      store,
-      "turn-1",
-      [user("u1", "first")],
-      [assistant("a1", "A1")],
-      initialTransition("You are the core."),
-    );
     await agent.generate({ prompt: "second", threadId: THREAD });
-    await commitTurn(store, "turn-2", [user("u2", "second")], [assistant("a2", "A2")]);
     await agent.generate({ prompt: "third", threadId: THREAD });
 
     const [first, second, third] = requests.map((request) => request.prompt);
@@ -319,11 +301,12 @@ describe("log-mode request projection", () => {
     // A new agent object with no checkpointer and no in-memory state.
     const after = createRecordingModel();
     await logAgent(after.model, store, capabilities).generate({
-      prompt: "and now?",
+      prompt: "and then?",
       threadId: THREAD,
     });
 
-    expect(after.inputs()[0]).toBe(before.inputs()[0]);
+    // The new agent's request continues the previous request byte for byte.
+    expect(after.inputs()[0]!.startsWith(before.inputs()[0]!.slice(0, -1))).toBe(true);
     const prompt = JSON.stringify(after.requests[0]!.prompt);
     expect(prompt).toContain("Stored core");
     expect(prompt).not.toContain("You are the core.");
@@ -333,18 +316,21 @@ describe("log-mode request projection", () => {
   });
 
   it("projects the same input through stream() as through generate()", async () => {
-    const store = new MemoryContextLogStore();
-    await commitTurn(
-      store,
-      "turn-1",
-      [user("u1", "first")],
-      [assistant("a1", "A1")],
-      initialTransition("You are the core."),
-    );
+    const seeded = async () => {
+      const store = new MemoryContextLogStore();
+      await commitTurn(
+        store,
+        "turn-1",
+        [user("u1", "first")],
+        [assistant("a1", "A1")],
+        initialTransition("You are the core."),
+      );
+      return store;
+    };
     const generated = createRecordingModel();
-    await logAgent(generated.model, store).generate({ prompt: "next", threadId: THREAD });
+    await logAgent(generated.model, await seeded()).generate({ prompt: "next", threadId: THREAD });
     const streamed = createRecordingModel();
-    for await (const _part of logAgent(streamed.model, store).stream({
+    for await (const _part of logAgent(streamed.model, await seeded()).stream({
       prompt: "next",
       threadId: THREAD,
     })) {
@@ -367,7 +353,7 @@ describe("log-mode request projection", () => {
     expect(resolveCore).toHaveBeenCalledWith({ stream: STREAM, reason: "initial", parent: null });
     expect(first.requests[0]!.prompt[0]).toEqual({ role: "system", content: "Resolved core" });
 
-    await commitTurn(store, "turn-1", [user("u1", "hi")], [], initialTransition("Frozen core"));
+    resolveCore.mockReturnValue("A newer resolved core");
     const second = createRecordingModel();
     await createAgent({
       model: second.model,
@@ -380,21 +366,60 @@ describe("log-mode request projection", () => {
     });
 
     expect(resolveCore).toHaveBeenCalledTimes(1);
-    expect(second.requests[0]!.prompt[0]).toEqual({ role: "system", content: "Frozen core" });
-    expect(third.inputs()[0]).toBe(second.inputs()[0]);
+    expect(second.requests[0]!.prompt[0]).toEqual({ role: "system", content: "Resolved core" });
+    expect(third.requests[0]!.prompt[0]).toEqual({ role: "system", content: "Resolved core" });
+    expect(third.inputs()[0]!.startsWith(second.inputs()[0]!.slice(0, -1))).toBe(true);
   });
 
-  it("refuses to project a version created under a different contract", async () => {
+  it("refuses to project a version created under a different adapter", async () => {
     const store = new MemoryContextLogStore();
-    await commitTurn(store, "turn-1", [user("u1", "hi")], [], initialTransition("core"));
+    await commitTurn(
+      store,
+      "turn-1",
+      [user("u1", "hi")],
+      [],
+      initialTransition("core", { ...DEFAULT_CONTRACT, adapterVersion: "0" }),
+    );
     const { model, requests } = createRecordingModel();
-    const agent = logAgent(model, store, { modelCapabilities: { imageInput: false } });
+    const agent = logAgent(model, store);
 
     const error = await agent.generate({ prompt: "next", threadId: THREAD }).catch((e) => e);
 
     expect(error).toBeInstanceOf(ContextLogConflictError);
     expect(isContextLogError(error, "conflict") && error.reason).toBe("transition_required");
     expect(requests).toHaveLength(0);
+  });
+
+  it("declares a model_change for a model with different input capabilities", async () => {
+    const store = new MemoryContextLogStore();
+    await commitTurn(
+      store,
+      "turn-1",
+      [user("u1", "hi")],
+      [assistant("a1", "A1")],
+      initialTransition("core"),
+    );
+    const before = await store.readHead(STREAM);
+    const { model, requests } = createRecordingModel();
+    const agent = logAgent(model, store, { modelCapabilities: { imageInput: false } });
+
+    await agent.generate({ prompt: "next", threadId: THREAD });
+
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version).toMatchObject({
+      reason: "model_change",
+      parentVersionId: before!.versionId,
+      inheritedCount: before!.entryCount,
+      core: "core",
+      contract: { ...DEFAULT_CONTRACT, imageInput: "false" },
+    });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.prompt.slice(0, 3)).toEqual([
+      { role: "system", content: "core" },
+      { role: "user", content: [{ type: "text", text: "hi" }] },
+      { role: "assistant", content: [{ type: "text", text: "A1" }] },
+    ]);
   });
 
   it("projects through a configured adapter with the version's core and contract", async () => {
@@ -490,9 +515,9 @@ describe("log-mode input", () => {
       },
     });
 
-    await expect(agent.generate({ prompt: "hi", threadId: THREAD })).rejects.toThrow(
-      ValidationError,
-    );
+    const error = await agent.generate({ prompt: "hi", threadId: THREAD }).catch((e) => e);
+
+    expect(isContextLogError(error, "invalid") && error.reason).toBe("log_mode_hook_violation");
     expect(requests).toHaveLength(0);
   });
 });
@@ -507,12 +532,13 @@ describe("log-mode checkpoints", () => {
       [assistant("a1", "A1")],
       initialTransition("core"),
     );
-    const head = await store.readHead(STREAM);
     const checkpointer = new MemorySaver();
     const { model } = createRecordingModel();
 
     await logAgent(model, store, { checkpointer }).generate({ prompt: "next", threadId: THREAD });
 
+    // The cursor is the head after this run's own commits.
+    const head = await store.readHead(STREAM);
     const saved = await checkpointer.load(THREAD);
     expect(saved?.messages).toEqual([]);
     expect(saved?.step).toBe(1);
@@ -566,13 +592,7 @@ describe("log-mode checkpoints", () => {
 
     await agent.generate({ prompt: "first", threadId: THREAD });
     // Another writer extends the log behind this agent.
-    await commitTurn(
-      store,
-      "turn-1",
-      [user("u1", "first")],
-      [assistant("a1", "A1")],
-      initialTransition("You are the core."),
-    );
+    await commitTurn(store, "turn-1", [user("u1", "elsewhere")], [assistant("a1", "B1")]);
     agent.invalidateCheckpoint(THREAD);
     await agent.generate({ prompt: "second", threadId: THREAD });
 
@@ -580,6 +600,8 @@ describe("log-mode checkpoints", () => {
       { role: "system", content: "You are the core." },
       { role: "user", content: [{ type: "text", text: "first" }] },
       { role: "assistant", content: [{ type: "text", text: "A1" }] },
+      { role: "user", content: [{ type: "text", text: "elsewhere" }] },
+      { role: "assistant", content: [{ type: "text", text: "B1" }] },
       { role: "user", content: [{ type: "text", text: "second" }] },
     ]);
   });
@@ -830,20 +852,14 @@ describe("log-mode projection input", () => {
     });
 
     await agent.generate({ prompt: "first", threadId: THREAD });
-    const pending = JSON.parse(seen[0]!) as ContextEntryInput[];
-    await commitTurn(
-      store,
-      "turn-1",
-      pending,
-      [],
-      initialTransition("You are the core.", {
-        ...DEFAULT_CONTRACT,
-        adapter: "host/enumerating",
-      }),
-    );
     await agent.generate({ threadId: THREAD });
 
-    expect(seen[1]).toBe(seen[0]);
+    // The second call's entries are the first call's, committed, followed by
+    // the committed output: the same bytes before and after commit.
+    const first = JSON.parse(seen[0]!) as ContextEntryInput[];
+    const second = JSON.parse(seen[1]!) as ContextEntryInput[];
+    expect(JSON.stringify(second.slice(0, first.length))).toBe(seen[0]);
+    expect(second.slice(first.length).map((entry) => entry.kind)).toEqual(["assistant"]);
   });
 });
 

@@ -49,7 +49,7 @@ import type {
 } from "ai";
 import { streamText } from "ai";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
-import { createLogModeRetryGuard } from "../context-log/hooks.js";
+import { createLogModeRetryGuard, invokeLogModePreGenerateHooks } from "../context-log/hooks.js";
 import { type AgentError, ConfigurationError } from "../errors/index.js";
 import {
   createRetryLoopState,
@@ -84,7 +84,13 @@ import type {
   ToolResultPart,
 } from "../types.js";
 import type { CheckpointRuntime } from "./checkpoint-runtime.js";
-import type { LogCallPlan, LogContextRuntime } from "./log-context.js";
+import type { LogCallBoundary, LogModePrepareStep } from "./log-boundary.js";
+import {
+  createLogRunState,
+  type LogCallPlan,
+  type LogContextRuntime,
+  type LogInputScreen,
+} from "./log-context.js";
 import type { MessageRuntime, StreamingCompactionState } from "./messages.js";
 import { projectMessagesForModel, resolveModelInputCapabilities } from "./model-capabilities.js";
 import {
@@ -280,6 +286,12 @@ export interface AttemptContext {
    * already includes the frozen core and the capability projection.
    */
   logPlan?: LogCallPlan;
+  /**
+   * Log mode only: the attempt's commit boundary. Every provider call goes
+   * through its model; the mode commits the last step with `complete` and
+   * calls `abandon` when the attempt fails.
+   */
+  logCall?: LogCallBoundary;
   /** Thread used for checkpoint persistence and telemetry (the request `threadId`). */
   checkpointThreadId: string | undefined;
   startStep: number;
@@ -424,16 +436,7 @@ export interface GenerationRunner {
   ): Promise<GenerateOptions>;
 }
 
-/**
- * Log-mode `prepareStep`: projects every provider step after the first
- * through the projection adapter.
- *
- * @internal
- */
-export type LogModePrepareStep = (step: {
-  stepNumber: number;
-  responseMessages: ModelMessage[];
-}) => Promise<{ messages: ModelMessage[] } | undefined>;
+export type { LogModePrepareStep };
 
 /**
  * AI SDK call options shared by `generateText()` and `streamText()`.
@@ -456,8 +459,13 @@ export interface ModelCallParams extends RepairToolCallOptions {
   headers: GenerateOptions["headers"];
   telemetry: GenerateOptions["telemetry"];
   allowSystemInMessages: true;
-  /** Log mode only: projects tool-loop continuations through the adapter. */
+  /**
+   * Log mode only: commits each step's outputs and projects tool-loop
+   * continuations through the adapter.
+   */
   prepareStep?: LogModePrepareStep;
+  /** Log mode only: lets the boundary see each finished step. */
+  onStepFinish?: (step: { response: { messages: ModelMessage[] } }) => void;
 }
 
 /** @internal */
@@ -520,8 +528,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
   /**
    * Log-mode {@link beginRun}. Caller history is rejected and the checkpoint
-   * fallback does not apply: the new user input reaches PreGenerate hooks as
-   * `messages`, so redaction and guardrails see it before it is committed.
+   * fallback does not apply. The PreGenerate hooks do not run here: each
+   * attempt runs them on its own head snapshot, over the new user input and
+   * the producers' output, before anything is committed (see `plan`).
    */
   async function beginLogModeRun(
     requestedOptions: GenerateOptions,
@@ -529,24 +538,41 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
   ): Promise<RunStart> {
     const genOptions = log.prepareRunInput(requestedOptions);
     const runId = await checkpoints.resolveRunId(genOptions);
-    const preGenResult = await invokePreGenerateHooks<GenerateResult>(
-      effectiveHooks?.PreGenerate ?? [],
-      { ...genOptions, _runId: runId },
-      getAgent(),
-    );
     return {
       runId,
       effectiveGenOptions: {
-        ...log.acceptRunInput(preGenResult.effectiveOptions),
+        ...log.acceptRunInput(genOptions),
         _runId: runId,
+        // Fresh for every run, including a follow-up that spreads the
+        // previous run's options; shared by the run's retries.
+        _logRun: createLogRunState(runId),
       },
-      cachedResult: preGenResult.cachedResult,
     };
   }
+
+  /**
+   * Log mode: the PreGenerate hooks, run one after another over new entries
+   * only (the run's user input, producer output, or a step's outputs). They
+   * may redact them, change operational options or deny the call; anything
+   * else is a `log_mode_hook_violation`.
+   */
+  const screenLogInput: LogInputScreen = (screenOptions, pending) =>
+    invokeLogModePreGenerateHooks({
+      hooks: effectiveHooks?.PreGenerate ?? [],
+      options: screenOptions,
+      pending,
+      agent: getAgent(),
+    });
 
   async function beginRun(requestedOptions: GenerateOptions): Promise<RunStart> {
     if (logContext) {
       return beginLogModeRun(requestedOptions, logContext);
+    }
+    if (requestedOptions.contextStream !== undefined) {
+      throw new ConfigurationError(
+        'contextStream only applies in context log mode; set contextLog: { mode: "log" } on the agent',
+        { configKey: "contextStream" },
+      );
     }
     // A snapshot belongs to one run. Follow-up generations spread the previous
     // run's options after its checkpoint was saved, so never reuse one.
@@ -641,24 +667,38 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     effectiveGenOptions: GenerateOptions,
     currentModel: LanguageModel,
     log: LogContextRuntime,
-  ): Promise<{ messages: ModelMessage[]; checkpoint?: Checkpoint; logPlan: LogCallPlan }> {
+  ): Promise<{
+    messages: ModelMessage[];
+    checkpoint?: Checkpoint;
+    logPlan: LogCallPlan;
+    logCall: LogCallBoundary;
+  }> {
     const checkpoint = effectiveGenOptions.threadId
       ? await checkpoints.load(effectiveGenOptions.threadId)
       : undefined;
-    const logPlan = await log.plan(effectiveGenOptions, currentModel);
-    return { messages: logPlan.messages, checkpoint, logPlan };
+    const logPlan = await log.plan(effectiveGenOptions, currentModel, screenLogInput);
+    const logCall = log.createCall(logPlan, currentModel, screenLogInput);
+    return { messages: logPlan.messages, checkpoint, logPlan, logCall };
   }
 
   async function beginAttempt(
     effectiveGenOptions: GenerateOptions,
     currentModel: LanguageModel,
   ): Promise<AttemptContext> {
-    const { messages, checkpoint, logPlan } = logContext
+    const { messages, checkpoint, logPlan, logCall } = logContext
       ? await buildLogModeMessages(effectiveGenOptions, currentModel, logContext)
-      : { ...(await buildMessages(effectiveGenOptions)), logPlan: undefined };
+      : { ...(await buildMessages(effectiveGenOptions)), logPlan: undefined, logCall: undefined };
     const maxSteps = options.maxSteps ?? 10;
     const startStep = checkpoint?.step ?? 0;
     const checkpointThreadId = effectiveGenOptions.threadId;
+    // Log mode: the attempt runs with the options the PreGenerate hooks left
+    // (operational changes only), and keeps the run's own shared state.
+    const attemptOptions: GenerateOptions = logPlan
+      ? {
+          ...logPlan.options,
+          ...(effectiveGenOptions._logRun && { _logRun: effectiveGenOptions._logRun }),
+        }
+      : effectiveGenOptions;
     const executionBaseTelemetry = buildExecutionTelemetryFromIds({
       runId: effectiveGenOptions._runId ?? createRunId(),
       threadId: checkpointThreadId,
@@ -666,11 +706,12 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     });
 
     return {
-      effectiveGenOptions,
+      effectiveGenOptions: attemptOptions,
       currentModel,
       messages,
       checkpoint,
       ...(logPlan && { logPlan }),
+      ...(logCall && { logCall }),
       checkpointThreadId,
       startStep,
       maxSteps,
@@ -732,27 +773,17 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
   }
 
   /**
-   * Log mode: the first step sends the planned projection; every later step
-   * of the tool loop is projected again from the plan's entries plus the
-   * assistant and tool messages earlier steps produced, so no provider
-   * request bypasses the adapter or the version's contract.
+   * Log mode: the first step sends the planned projection; before every later
+   * step of the tool loop the boundary commits the previous step's outputs,
+   * then projects the step from the plan's entries plus the committed
+   * outputs, so no provider request bypasses the adapter, the version's
+   * contract or the commit.
    */
-  function createLogModePrepareStep(plan: LogCallPlan, log: LogContextRuntime): LogModePrepareStep {
-    return async ({ stepNumber, responseMessages }) => {
-      if (stepNumber === 0) {
-        return undefined;
-      }
-      return { messages: await log.projectStep(plan, responseMessages) };
-    };
-  }
-
   function prepareStepFor(
     attempt: PreparedAttempt,
     compactionPrepareStep: StreamingCompactionState["prepareStep"],
   ): StreamingCompactionState["prepareStep"] | LogModePrepareStep {
-    return attempt.logPlan && logContext
-      ? createLogModePrepareStep(attempt.logPlan, logContext)
-      : compactionPrepareStep;
+    return attempt.logCall ? attempt.logCall.prepareStep : compactionPrepareStep;
   }
 
   function buildModelCallParams(attempt: PreparedAttempt): ModelCallParams {
@@ -760,7 +791,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     const { toolExecutionContext } = attempt;
 
     return {
-      model: currentModel,
+      // Log mode: the boundary wraps the terminal model, so every provider
+      // call (each step and each AI SDK retry) is committed before dispatch.
+      model: attempt.logCall ? attempt.logCall.model : currentModel,
       ...repairToolCallOptions,
       system: initialParams.system,
       // Log mode: the projection adapter already applied the capability
@@ -786,8 +819,10 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       // Preserve AI SDK 6 behavior: allow system-role messages within the
       // message history (AI SDK 7 rejects them by default).
       allowSystemInMessages: true,
-      ...(attempt.logPlan &&
-        logContext && { prepareStep: createLogModePrepareStep(attempt.logPlan, logContext) }),
+      ...(attempt.logCall && {
+        prepareStep: attempt.logCall.prepareStep,
+        onStepFinish: attempt.logCall.onStepFinish,
+      }),
     };
   }
 
@@ -865,10 +900,22 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       // Keep the message base current for the save in `onFinish`. Like every
       // other generation mode, the stream saves the checkpoint once.
       onStepFinish: async (stepResult) => {
+        attempt.logCall?.onStepFinish(stepResult);
         streamingCompaction.appendStep(stepResult);
       },
       // Save checkpoint and invoke unified PostGenerate hook after completion
       onFinish: async (finishResult) => {
+        if (attempt.logCall) {
+          // The AI SDK swallows errors thrown here, so close the call on
+          // failure rather than leave it for the next prepare.
+          try {
+            effectiveGenOptions.signal?.throwIfAborted();
+            await attempt.logCall.complete(finishResult.steps);
+          } catch (error) {
+            await attempt.logCall.abandon(effectiveGenOptions.signal?.aborted);
+            throw error;
+          }
+        }
         effectiveGenOptions.signal?.throwIfAborted();
         updateContextUsage(
           finishResult.steps.at(-1)?.usage ?? finishResult.usage,
@@ -976,7 +1023,104 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     throw new Error("Unexpected: retry loop exited without return or throw");
   }
 
+  /**
+   * Log mode: each background follow-up is a run of its own on the same
+   * stream. Its prompt passes PreGenerate (redaction, guardrails) as new user
+   * input, and its request is planned, projected and committed through a
+   * boundary like any other attempt. Like legacy follow-ups, only failures
+   * while starting the stream are retried.
+   */
+  async function runLogModeUIStreamFollowUps(params: UIStreamFollowUpParams): Promise<void> {
+    const { writer, attempt: initialAttempt, result: initialResult, streamingContext } = params;
+    // The initial turn's outputs are committed before any follow-up plans.
+    await initialAttempt.logCall?.complete(await initialResult.steps);
+
+    let followUpPrompt = await getNextTaskPrompt();
+    while (followUpPrompt !== null) {
+      const {
+        messages: _previousInput,
+        _logRun: _previousRun,
+        ...base
+      } = initialAttempt.effectiveGenOptions;
+      const run = await beginRun({
+        ...base,
+        requestClass: "background",
+        prompt: followUpPrompt,
+      });
+
+      let requestOptions = run.effectiveGenOptions;
+      const retryState = createRetryState();
+      let started: { attempt: PreparedAttempt; result: ReturnType<typeof streamText> } | undefined;
+      while (!started) {
+        let logCall: LogCallBoundary | undefined;
+        try {
+          const attemptContext = await beginAttempt(requestOptions, retryState.currentModel);
+          logCall = attemptContext.logCall;
+          const attempt: PreparedAttempt = {
+            ...attemptContext,
+            ...prepareRequest(attemptContext, { streamingContext }),
+          };
+          const streamingCompaction = createStreamingCompactionState(
+            attempt.initialParams.messages,
+            requestOptions,
+            requestOptions.threadId,
+          );
+          const result = streamText({
+            ...buildModelCallParams(attempt),
+            prepareStep: prepareStepFor(attempt, streamingCompaction.prepareStep),
+            ...createStreamLifecycleCallbacks(attempt, streamingCompaction),
+          });
+          started = { attempt, result };
+        } catch (error) {
+          await logCall?.abandon(requestOptions.signal?.aborted);
+          requestOptions = await retryOrThrow(
+            normalizeError(error, "Stream generation failed", requestOptions.threadId),
+            requestOptions,
+            retryState,
+          );
+        }
+      }
+
+      const { attempt, result } = started;
+      try {
+        writer.merge(result.toUIMessageStream());
+        await result.text;
+        attempt.effectiveGenOptions.signal?.throwIfAborted();
+        await attempt.logCall?.complete(await result.steps);
+      } catch (error) {
+        await attempt.logCall?.abandon(attempt.effectiveGenOptions.signal?.aborted);
+        throw error;
+      }
+
+      // A follow-up's tool can raise an interrupt or stop the run, like the
+      // initial turn's: persist and announce it, and run no further turns.
+      const { signalState } = attempt;
+      if (signalState.interrupt) {
+        const threadId = attempt.effectiveGenOptions.threadId;
+        const interrupt = signalState.interrupt.interrupt;
+        if (threadId && options.checkpointer) {
+          await checkpoints.markPendingInterrupt(
+            threadId,
+            interrupt,
+            attempt.executionBaseTelemetry.runId,
+          );
+        }
+        await emitInterruptRequested(threadId, attempt.executionBaseTelemetry, interrupt);
+        return;
+      }
+      if (signalState.stop) {
+        return;
+      }
+
+      followUpPrompt = await getNextTaskPrompt();
+    }
+  }
+
   async function runUIStreamFollowUps(params: UIStreamFollowUpParams): Promise<void> {
+    if (logContext) {
+      await runLogModeUIStreamFollowUps(params);
+      return;
+    }
     const { writer, attempt, result, streamingCompaction, signalState, streamingContext } = params;
     const { effectiveGenOptions, maxSteps, startStep, executionBaseTelemetry } = attempt;
 
@@ -991,13 +1135,6 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     );
 
     let followUpPrompt = await getNextTaskPrompt();
-    if (followUpPrompt !== null && logContext) {
-      // These follow-ups build their request outside the projection.
-      throw new ConfigurationError(
-        "Background follow-up turns in streamDataResponse() are not supported in context log mode yet; set waitForBackgroundTasks: false",
-        { configKey: "waitForBackgroundTasks" },
-      );
-    }
     while (followUpPrompt !== null) {
       const followUpRequestOptions: GenerateOptions = {
         ...followUpBaseOptions,
@@ -1172,6 +1309,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
           _runId: updatedOptions._runId ?? effectiveGenOptions._runId,
           _checkpointSnapshot:
             updatedOptions._checkpointSnapshot ?? effectiveGenOptions._checkpointSnapshot,
+          // Log mode: the run's input keys and call numbering are the run's,
+          // never a hook's (the retry guard hands hooks a copy).
+          ...(effectiveGenOptions._logRun && { _logRun: effectiveGenOptions._logRun }),
         };
       }
       // Update retry state

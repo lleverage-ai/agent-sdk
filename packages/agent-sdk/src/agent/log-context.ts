@@ -15,7 +15,10 @@
  *   be committed or sent.
  * - Every provider step goes through the adapter: tool-loop continuations
  *   are projected from the same entries plus the assistant and tool messages
- *   earlier steps of the generation produced (`projectStep`).
+ *   earlier steps of the generation produced and committed.
+ * - Every provider call goes through the attempt's commit boundary
+ *   (`./log-boundary.ts`), which commits the call's input before dispatch and
+ *   each step's outputs before anything uses them.
  * - The adapter sees entry content only, never store-assigned fields, so a
  *   path projects to the same bytes before and after commit.
  * - Media capability projection happens inside the adapter, keyed by the
@@ -28,16 +31,17 @@
  * @internal
  */
 
+import { randomUUID } from "node:crypto";
 import type { LanguageModel, ModelMessage, UserModelMessage } from "ai";
 import { ContextLogConflictError, ContextLogInvalidError } from "../context-log/errors.js";
 import { assertContextJson } from "../context-log/json.js";
+import { resolveContextProducers, runContextProducers } from "../context-log/producers.js";
 import {
   buildProjectionContract,
   createMessageProjectionAdapter,
   projectionContractMismatches,
 } from "../context-log/projection.js";
 import {
-  type AssistantContextEntryInput,
   type ContextEntry,
   type ContextEntryInput,
   type ContextHead,
@@ -50,12 +54,20 @@ import {
   DEFAULT_CONTEXT_BRANCH_ID,
   DEFAULT_CONTEXT_STREAM_ID,
   type ProjectionAdapter,
-  type ToolResultContextEntryInput,
   type UserContextEntryInput,
 } from "../context-log/types.js";
 import { ConfigurationError, ValidationError } from "../errors/index.js";
 import { resolveModelIdentity } from "../observability/execution-metadata.js";
 import type { AgentOptions, GenerateOptions } from "../types.js";
+import {
+  assertTerminalModel,
+  createLogCallBoundary,
+  type LogCallBoundary,
+  type LogPreviousCall,
+  type LogRunState,
+  sha256Hex,
+  toEntryInput,
+} from "./log-boundary.js";
 import { resolveModelInputCapabilities } from "./model-capabilities.js";
 
 /** Page size for reading a head's path. @internal */
@@ -120,27 +132,18 @@ export function validateLogModeOptions(options: AgentOptions): void {
       { configKey: "contextManager" },
     );
   }
-  if (contextLog.producers && contextLog.producers.length > 0) {
-    throw new ConfigurationError(
-      "contextLog.producers are not supported by this release's log-mode runtime yet",
-      { configKey: "contextLog.producers" },
-    );
-  }
-  const pluginWithProducers = options.plugins?.find(
-    (plugin) => (plugin.contextProducers?.length ?? 0) > 0,
-  );
-  if (pluginWithProducers) {
-    throw new ConfigurationError(
-      `Plugin "${pluginWithProducers.name}" registers contextProducers, which this release's log-mode runtime does not support yet`,
-      { configKey: "plugins.contextProducers", actualValue: pluginWithProducers.name },
-    );
-  }
-  if (contextLog.admit) {
-    throw new ConfigurationError(
-      "contextLog.admit is not supported by this release's log-mode runtime yet",
-      { configKey: "contextLog.admit" },
-    );
-  }
+  assertTerminalModel(options.model, "model");
+  assertTerminalModel(options.fallbackModel, "fallbackModel");
+}
+
+/**
+ * Fresh run state for a log-mode run. Every attempt of the run shares it, so
+ * the run's input keeps the same keys across retries.
+ *
+ * @internal
+ */
+export function createLogRunState(runId: string): LogRunState {
+  return { id: `${runId}:${randomUUID()}`, ordinal: 0, attempt: 0 };
 }
 
 /**
@@ -154,8 +157,12 @@ export interface LogCallPlan {
   head: ContextHead | null;
   /** The transition that creates the stream's first version, when it has no head. */
   transition: ContextTransition | undefined;
-  /** The new user input, as entries to append after the head's path. */
-  append: UserContextEntryInput[];
+  /**
+   * Entries to append after the head's path: the run's new user input not
+   * yet committed, then producer output, both as the PreGenerate hooks left
+   * them.
+   */
+  append: ContextEntryInput[];
   /** The projected request messages, including the core system message. */
   messages: ModelMessage[];
   /** The adapter that projected the messages. */
@@ -170,7 +177,28 @@ export interface LogCallPlan {
   entries: ContextEntryInput[];
   /** Prefix for the keys of this call's output entries. */
   outputKeyPrefix: string;
+  /** The call that last moved the head, or `undefined` on a new stream. */
+  previousCall: LogPreviousCall | undefined;
+  /** The run's shared state. */
+  run: LogRunState;
+  /**
+   * The call's options after the PreGenerate hooks, without `prompt` or
+   * `messages` (the input is `append`).
+   */
+  options: GenerateOptions;
 }
+
+/**
+ * Screens new, not-yet-committed entries through the log-mode PreGenerate
+ * hooks (`invokeLogModePreGenerateHooks`): they may redact the entries,
+ * change operational options or deny the call.
+ *
+ * @internal
+ */
+export type LogInputScreen = (
+  options: GenerateOptions,
+  pending: ContextEntryInput[],
+) => Promise<{ options: GenerateOptions; pending: ContextEntryInput[] }>;
 
 /**
  * Log-mode runtime for one agent.
@@ -189,17 +217,22 @@ export interface LogContextRuntime {
    * user messages only. A prompt a hook set is folded into `messages`.
    */
   acceptRunInput(effectiveOptions: GenerateOptions): GenerateOptions;
-  /** Read the head once and project the call's request. */
-  plan(genOptions: GenerateOptions, model: LanguageModel): Promise<LogCallPlan>;
   /**
-   * Project a later provider step of the same generation: the plan's entries
-   * followed by the assistant and tool messages earlier steps produced, so
-   * tool-loop continuations go through the adapter too.
+   * Read the head once and plan the call on that snapshot: run the producers,
+   * screen the new input and producer output through `screen`, and project
+   * the request.
    */
-  projectStep(
-    plan: LogCallPlan,
-    responseMessages: readonly ModelMessage[],
-  ): Promise<ModelMessage[]>;
+  plan(
+    genOptions: GenerateOptions,
+    model: LanguageModel,
+    screen: LogInputScreen,
+  ): Promise<LogCallPlan>;
+  /**
+   * Create the commit boundary for an attempt planned with `plan`, wrapping
+   * the attempt's terminal provider model. `screen` screens each step's
+   * outputs before they are committed.
+   */
+  createCall(plan: LogCallPlan, model: LanguageModel, screen: LogInputScreen): LogCallBoundary;
   /** The cursor of the head the thread's latest plan was built from. */
   cursor(threadId: string): ContextLogCursor | undefined;
 }
@@ -238,34 +271,31 @@ async function readFullPath(store: ContextLogStore, head: ContextHead): Promise<
 }
 
 /**
- * The content of a committed entry, without store-assigned fields, so a
- * projection reads the same input before and after commit.
+ * The call that last moved the head, for tool-snapshot attribution and to
+ * close a call a crash left open. Part of the call's one head snapshot.
  *
  * @internal
  */
-function toEntryInput(entry: ContextEntry): ContextEntryInput {
-  const { position: _p, versionId: _v, manifestId: _m, createdAt: _c, ...input } = entry;
-  return input as ContextEntryInput;
-}
-
-/** Map a generation's response messages to output entries. @internal */
-function toOutputEntries(
-  responseMessages: readonly ModelMessage[],
-  keyPrefix: string,
-): Array<AssistantContextEntryInput | ToolResultContextEntryInput> {
-  return responseMessages.map((message, index) => {
-    const key = `${keyPrefix}:${index}`;
-    if (message.role === "assistant") {
-      return { kind: "assistant", key, message };
-    }
-    if (message.role === "tool") {
-      return { kind: "tool_result", key, message };
-    }
-    throw new ContextLogInvalidError(
-      "invalid_output",
-      `A model step produced a "${message.role}" message; only assistant and tool messages are outputs`,
-    );
-  });
+async function readPreviousCall(
+  store: ContextLogStore,
+  head: ContextHead,
+): Promise<LogPreviousCall> {
+  const manifest = await store.readManifest(head.lastManifestId);
+  return {
+    manifestId: manifest.id,
+    model: manifest.model,
+    toolSnapshotDigest:
+      manifest.toolSnapshot === undefined ? undefined : sha256Hex(manifest.toolSnapshot),
+    open:
+      manifest.outcome === null
+        ? {
+            dispatched: manifest.dispatchedAt !== null,
+            // A crash between the output commit and the outcome record.
+            outputsCommitted:
+              head.versionId === manifest.versionId && head.entryCount > manifest.entryCount,
+          }
+        : undefined,
+  };
 }
 
 /** The new user input of a run, after PreGenerate. @internal */
@@ -303,9 +333,11 @@ function toCursor(stream: ContextStreamRef, head: ContextHead | null): ContextLo
 export function createLogContextRuntime(
   options: AgentOptions & { contextLog: ContextLogOptions },
 ): LogContextRuntime {
-  const { store, resolveCore } = options.contextLog;
+  const { store, resolveCore, admit } = options.contextLog;
   const adapter: ProjectionAdapter =
     options.contextLog.projection ?? createMessageProjectionAdapter();
+  // The agent's producers, then each plugin's; names must be unique.
+  const producers = resolveContextProducers(options.contextLog.producers, options.plugins);
   const cursors = new Map<string, ContextLogCursor>();
 
   function prepareRunInput(genOptions: GenerateOptions): GenerateOptions {
@@ -331,6 +363,7 @@ export function createLogContextRuntime(
       messages: _messages,
       _historyUnlessCheckpointed: _history,
       _checkpointSnapshot: _snapshot,
+      _logRun: _previousRun,
       ...rest
     } = genOptions;
     return prompt ? { ...rest, messages: [{ role: "user", content: prompt }] } : rest;
@@ -346,18 +379,26 @@ export function createLogContextRuntime(
     return messages.length > 0 ? { ...rest, messages } : { ...rest, messages: undefined };
   }
 
-  async function plan(genOptions: GenerateOptions, model: LanguageModel): Promise<LogCallPlan> {
+  async function plan(
+    genOptions: GenerateOptions,
+    model: LanguageModel,
+    screen: LogInputScreen,
+  ): Promise<LogCallPlan> {
     const threadId = genOptions.threadId;
     if (!threadId) {
       throw new ValidationError("Context log mode needs a threadId to identify the log stream", {
         fieldErrors: { threadId: ["required in context log mode"] },
       });
     }
+    const run = genOptions._logRun;
+    if (!run) {
+      throw new ContextLogInvalidError("missing_run_state", "A log-mode plan needs run state");
+    }
     const input = newUserMessages(genOptions);
     const stream: ContextStreamRef = {
       threadId,
-      branchId: DEFAULT_CONTEXT_BRANCH_ID,
-      streamId: DEFAULT_CONTEXT_STREAM_ID,
+      branchId: genOptions.contextStream?.branchId ?? DEFAULT_CONTEXT_BRANCH_ID,
+      streamId: genOptions.contextStream?.streamId ?? DEFAULT_CONTEXT_STREAM_ID,
     };
     const target = toContextModelRef(model);
     const expectedContract = buildProjectionContract(
@@ -372,18 +413,33 @@ export function createLogContextRuntime(
     let contract: Readonly<Record<string, string>>;
     let transition: ContextTransition | undefined;
     let path: ContextEntry[] = [];
+    let previousCall: LogPreviousCall | undefined;
     if (head) {
       const version = await store.readVersion(head.versionId);
       const mismatched = projectionContractMismatches(version.contract, expectedContract);
-      if (mismatched.length > 0) {
+      if (mismatched.some((key) => key === "adapter" || key === "adapterVersion")) {
         throw new ContextLogConflictError("transition_required", {
           head,
-          message: `The head's version was created under a different projection contract (${mismatched.join(", ")}); projecting it for this adapter and model needs a declared adapter_change or model_change transition`,
+          message: `The head's version was created under a different projection adapter (${mismatched.join(", ")}); projecting it with this adapter needs a declared adapter_change transition`,
         });
       }
       core = version.core;
       contract = version.contract;
+      if (mismatched.length > 0) {
+        // The target model accepts different input than the version was
+        // projected for (for example a fallback model without image input).
+        // That is the declared cause: a model_change version inheriting the
+        // whole path under the same frozen core.
+        contract = { ...expectedContract };
+        transition = {
+          reason: "model_change",
+          parent: { versionId: head.versionId, inheritedCount: head.entryCount },
+          core,
+          contract: { ...expectedContract },
+        };
+      }
       path = await readFullPath(store, head);
+      previousCall = await readPreviousCall(store, head);
     } else {
       core = resolveCore
         ? await resolveCore({ stream, reason: "initial", parent: null })
@@ -392,17 +448,25 @@ export function createLogContextRuntime(
       transition = { reason: "initial", parent: null, core, contract: { ...expectedContract } };
     }
 
-    // Entry keys must be unique per call, so never fall back to a constant.
-    const runId = genOptions._runId;
-    if (!runId) {
-      throw new ContextLogInvalidError("missing_run_id", "A log-mode plan needs a run id");
-    }
-    const revision = head?.revision ?? 0;
-    const append: UserContextEntryInput[] = input.map((message, index) => ({
-      kind: "user",
-      key: `user:${runId}:${revision}:${index}`,
-      message,
-    }));
+    // The run's input keeps its keys across retries, so a retry finds the
+    // input an earlier attempt committed instead of appending it again.
+    const onPath = new Set(path.map((entry) => entry.key));
+    const userEntries: UserContextEntryInput[] = input
+      .map((message, index) => ({ kind: "user" as const, key: `user:${run.id}:${index}`, message }))
+      .filter((entry) => !onPath.has(entry.key));
+    // Producers run against this same head and path; entries already on the
+    // path are dropped. Then the new input and producer output pass the
+    // PreGenerate hooks (redaction, guardrails) before anything is committed
+    // or projected, and prepare commits them against this head's revision.
+    const produced = await runContextProducers({
+      producers,
+      stream,
+      head,
+      path,
+      ...(genOptions.signal ? { signal: genOptions.signal } : {}),
+    });
+    const screened = await screen(genOptions, [...userEntries, ...produced]);
+    const append = screened.pending;
 
     const entries: ContextEntryInput[] = [...path.map(toEntryInput), ...append];
     const messages = await project(core, contract, entries, target);
@@ -419,7 +483,12 @@ export function createLogContextRuntime(
       core,
       contract,
       entries,
-      outputKeyPrefix: `output:${runId}:${revision}`,
+      // Unique among attempts that commit outputs: each commits them only
+      // after its own prepare moved the head past this revision.
+      outputKeyPrefix: `output:${run.id}:${head?.revision ?? 0}`,
+      previousCall,
+      run,
+      options: screened.options,
     };
   }
 
@@ -439,23 +508,27 @@ export function createLogContextRuntime(
     return projected.messages;
   }
 
-  function projectStep(
+  function createCall(
     plan: LogCallPlan,
-    responseMessages: readonly ModelMessage[],
-  ): Promise<ModelMessage[]> {
-    return project(
-      plan.core,
-      plan.contract,
-      [...plan.entries, ...toOutputEntries(responseMessages, plan.outputKeyPrefix)],
-      plan.target,
-    );
+    model: LanguageModel,
+    screen: LogInputScreen,
+  ): LogCallBoundary {
+    return createLogCallBoundary({
+      store,
+      admit,
+      plan,
+      model,
+      project: (entries) => project(plan.core, plan.contract, entries, plan.target),
+      onHead: (head) => cursors.set(plan.stream.threadId, toCursor(plan.stream, head)),
+      screenOutputs: async (items) => (await screen(plan.options, [...items])).pending,
+    });
   }
 
   return {
     prepareRunInput,
     acceptRunInput,
     plan,
-    projectStep,
+    createCall,
     cursor: (threadId) => cursors.get(threadId),
   };
 }

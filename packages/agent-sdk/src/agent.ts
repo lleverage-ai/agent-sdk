@@ -20,6 +20,7 @@ import {
   createToolModelOutput,
   mapSteps,
 } from "./agent/generation-runner.js";
+import type { LogCallBoundary } from "./agent/log-boundary.js";
 import {
   createLogContextRuntime,
   isLogModeEnabled,
@@ -1227,8 +1228,11 @@ export function createAgent(options: AgentOptions): Agent {
       let lastBuiltMessages: ModelMessage[] = [];
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
+        // Log mode: the attempt's commit boundary, closed if the attempt fails.
+        let logCall: LogCallBoundary | undefined;
         try {
           const attempt = await runner.prepareAttempt(effectiveGenOptions, retryState.currentModel);
+          logCall = attempt.logCall;
           const { messages, checkpointThreadId, startStep, executionBaseTelemetry, signalState } =
             attempt;
           // Store for potential emergency compaction in catch block
@@ -1238,6 +1242,13 @@ export function createAgent(options: AgentOptions): Agent {
 
           // Execute generation
           const response = await generateText(runner.buildModelCallParams(attempt));
+
+          // Log mode: commit the last step's outputs before anything uses
+          // them. A late result after cancellation is never committed.
+          if (logCall) {
+            effectiveGenOptions.signal?.throwIfAborted();
+            await logCall.complete(response.steps);
+          }
 
           // Check for intercepted interrupt signal (cooperative path)
           if (signalState.interrupt) {
@@ -1429,6 +1440,7 @@ export function createAgent(options: AgentOptions): Agent {
 
           return lastResult;
         } catch (error) {
+          await logCall?.abandon(effectiveGenOptions.signal?.aborted);
           if (error instanceof NestedBackgroundGenerationError) {
             throw error.originalError;
           }
@@ -1649,8 +1661,11 @@ export function createAgent(options: AgentOptions): Agent {
       const retryState = runner.createRetryState();
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
+        // Log mode: the attempt's commit boundary, closed if the attempt fails.
+        let logCall: LogCallBoundary | undefined;
         try {
           const attempt = await runner.prepareAttempt(effectiveGenOptions, retryState.currentModel);
+          logCall = attempt.logCall;
           const { checkpointThreadId, startStep, executionBaseTelemetry, signalState } = attempt;
 
           const generationStartTime = Date.now();
@@ -1928,6 +1943,8 @@ export function createAgent(options: AgentOptions): Agent {
           };
 
           effectiveGenOptions.signal?.throwIfAborted();
+          // Log mode: commit the last step's outputs before anything uses them.
+          await logCall?.complete(steps);
           // Save checkpoint if threadId is provided. The streaming compaction
           // state is authoritative because prepareStep may have discarded
           // earlier history mid-run.
@@ -2002,6 +2019,7 @@ export function createAgent(options: AgentOptions): Agent {
 
           return;
         } catch (error) {
+          await logCall?.abandon(effectiveGenOptions.signal?.aborted);
           if (error instanceof NestedBackgroundGenerationError) {
             throw error.originalError;
           }
@@ -2018,6 +2036,10 @@ export function createAgent(options: AgentOptions): Agent {
             effectiveGenOptions,
             retryState,
           );
+        } finally {
+          // A consumer that stops iterating early skips `catch`. Closing is a
+          // no-op once the call completed or was already closed.
+          await logCall?.abandon(effectiveGenOptions.signal?.aborted);
         }
       }
 
@@ -2038,8 +2060,12 @@ export function createAgent(options: AgentOptions): Agent {
       const retryState = runner.createRetryState();
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
+        // Log mode: the attempt's commit boundary. Its last step is committed
+        // by the stream's onFinish.
+        let logCall: LogCallBoundary | undefined;
         try {
           const attempt = await runner.prepareAttempt(effectiveGenOptions, retryState.currentModel);
+          logCall = attempt.logCall;
 
           // Track the durable message base for checkpointing.
           const streamingCompaction = createStreamingCompactionState(
@@ -2057,6 +2083,7 @@ export function createAgent(options: AgentOptions): Agent {
 
           return result;
         } catch (error) {
+          await logCall?.abandon(effectiveGenOptions.signal?.aborted);
           // Normalize error to AgentError
           const normalizedError = normalizeError(
             error,
@@ -2101,11 +2128,14 @@ export function createAgent(options: AgentOptions): Agent {
       const retryState = runner.createRetryState();
 
       while (retryState.retryAttempt <= retryState.maxRetries) {
+        // Log mode: the attempt's commit boundary, closed if starting fails.
+        let logCall: LogCallBoundary | undefined;
         try {
           const attemptContext = await runner.beginAttempt(
             effectiveGenOptions,
             retryState.currentModel,
           );
+          logCall = attemptContext.logCall;
           const { executionBaseTelemetry } = attemptContext;
 
           // Create a UI message stream that tools can write to
@@ -2147,6 +2177,19 @@ export function createAgent(options: AgentOptions): Agent {
               // Wait for initial generation to complete
               await result.text;
 
+              // Log mode: commit the last step's outputs before anything uses
+              // them (onFinish commits too; the commit runs once). Failing
+              // here surfaces through the UI stream's error handling.
+              if (attempt.logCall) {
+                try {
+                  effectiveGenOptions.signal?.throwIfAborted();
+                  await attempt.logCall.complete(await result.steps);
+                } catch (error) {
+                  await attempt.logCall.abandon(effectiveGenOptions.signal?.aborted);
+                  throw error;
+                }
+              }
+
               // Save pending interrupt to checkpoint (mirrors stream() pattern)
               if (signalState.interrupt && effectiveGenOptions.threadId && options.checkpointer) {
                 const interrupt = signalState.interrupt.interrupt;
@@ -2179,6 +2222,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Convert the stream to a Response
           return createUIMessageStreamResponse({ stream });
         } catch (error) {
+          await logCall?.abandon(effectiveGenOptions.signal?.aborted);
           // Normalize error to AgentError
           const normalizedError = normalizeError(
             error,
