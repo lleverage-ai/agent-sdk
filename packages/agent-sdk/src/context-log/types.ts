@@ -842,8 +842,11 @@ export interface ProjectionInput {
  * - `fileInput` - `"false"` when the model cannot accept file input, otherwise `"true"`
  *
  * A version whose values differ from the ones the runtime would record for
- * the current adapter and model is not projected: changing them needs a
- * declared transition (`adapter_change` or `model_change`).
+ * the current adapter and model is not projected as it is. The runtime
+ * declares the transition by its cause: a different `adapterVersion` of the
+ * same adapter is an `adapter_change`, different `imageInput` or `fileInput`
+ * a `model_change`. A different `adapter` id has no declared cause and fails
+ * with `transition_required`.
  *
  * @experimental
  * @category Context Log
@@ -973,10 +976,13 @@ export interface ContextCoreInput {
 /**
  * Resolves the frozen core system for a new version.
  *
- * The runtime calls it only when it creates a version: `initial` on a stream
- * without a head, and `model_change` when a call targets another model than
- * the stream's previous call (a fallback, or a host switching models) or a
- * model that accepts different input. The returned bytes are stored on the
+ * The runtime calls it only when it creates a version whose core may change:
+ * `initial` on a stream without a head, `model_change` when a call targets
+ * another model than the stream's previous call (a fallback, or a host
+ * switching models) or a model that accepts different input, and
+ * `core_policy_change` when {@link ContextLogOptions.coreVersion} differs
+ * from the version recorded on the head's version. It is not called for an
+ * `adapter_change`, which keeps the core. The returned bytes are stored on the
  * version, and every call on that version projects them unchanged, so a
  * resolver never re-renders the core of an existing version.
  *
@@ -1057,6 +1063,22 @@ export interface ContextLogOptions {
    * with a static `systemPrompt`, which is the core of every new version.
    */
   resolveCore?: ContextCoreResolver;
+  /**
+   * The host's version of its core system, for example a prompt version it
+   * bumps whenever the core's text changes. Experimental.
+   *
+   * When set, every version the runtime creates records it in its contract
+   * under `CORE_VERSION_CONTRACT_KEY` (`"coreVersion"`), and a call whose
+   * head version recorded another value, or none, declares a
+   * `core_policy_change` transition: the new version inherits the whole path
+   * with the core from {@link ContextLogOptions.resolveCore} (called with
+   * `reason: "core_policy_change"`) or the static `systemPrompt`. The core
+   * change is declared by this value, never inferred by comparing cores.
+   *
+   * When it is not set, nothing is recorded and no `core_policy_change` is
+   * declared: an existing version keeps its core.
+   */
+  coreVersion?: string;
   /** Producers that append runtime context before each call. */
   producers?: readonly ContextProducer[];
   /** Authorises every prepare and dispatch. A refusal fails the call before anything is sent. */

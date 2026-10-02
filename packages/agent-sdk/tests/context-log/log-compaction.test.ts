@@ -673,6 +673,37 @@ describe("log-mode compaction", () => {
   });
 });
 
+describe("log-mode compaction with a declared transition", () => {
+  it("replaces a core_policy_change with one compaction under the new core and contract", async () => {
+    const store = new MemoryContextLogStore();
+    const { model } = createScriptedModel([text("a1"), text("a2")]);
+    await logAgent(model, store, {
+      contextLog: { mode: "log", store, producers: [settings], coreVersion: "1" },
+    }).generate({ prompt: "q1", threadId: THREAD });
+    const before = await store.readHead(STREAM);
+    const manager = createCompactingManager(4, { keepMessageCount: 1 });
+    const second = createScriptedModel([text("b1")]);
+
+    // The view has the core, the settings, q1, a1 and q2: it compacts.
+    await logAgent(second.model, store, {
+      systemPrompt: "Core v2",
+      contextManager: manager.contextManager,
+      contextLog: { mode: "log", store, producers: [settings], coreVersion: "2" },
+    }).generate({ prompt: "q2", threadId: THREAD });
+
+    expect(manager.requests).toHaveLength(1);
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version).toMatchObject({
+      reason: "compaction",
+      parentVersionId: before!.versionId,
+      core: "Core v2",
+      contract: { coreVersion: "2" },
+    });
+    expect(second.requests[0]!.prompt[0]).toEqual({ role: "system", content: "Core v2" });
+  });
+});
+
 describe("log-mode compaction planning", () => {
   const head: ContextHead = {
     stream: STREAM,

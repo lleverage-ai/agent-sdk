@@ -8,8 +8,9 @@
  *
  * - The core is frozen per version. A static `systemPrompt` or
  *   `contextLog.resolveCore` supplies it only when a version is created
- *   (`initial`, or `model_change` for the resolver, which then sees the
- *   target model); an existing version always projects its stored core.
+ *   (`initial`, `core_policy_change`, or `model_change` for the resolver,
+ *   which then sees the target model); an existing version always projects
+ *   its stored core.
  * - Caller-supplied history is rejected. The only new content is the run's
  *   user input, which reaches PreGenerate hooks as `options.messages` so the
  *   input-security hooks (secret redaction, guardrails) see it before it can
@@ -24,7 +25,11 @@
  *   path projects to the same bytes before and after commit.
  * - Media capability projection happens inside the adapter, keyed by the
  *   version's contract. A version whose contract does not match the current
- *   adapter and model is never projected; that needs a declared transition.
+ *   adapter and model is never projected as it is: the call declares the
+ *   transition by its cause (`adapter_change` for a new version of the same
+ *   adapter, `model_change` for another model or capabilities, and
+ *   `core_policy_change` for another `contextLog.coreVersion`), and fails
+ *   with `transition_required` for another adapter id.
  *
  * Nothing here reads or writes `Checkpoint.messages`.
  *
@@ -45,6 +50,7 @@ import { assertContextJsonOpaque } from "../context-log/json.js";
 import { resolveContextProducers, runContextProducers } from "../context-log/producers.js";
 import {
   buildProjectionContract,
+  CORE_VERSION_CONTRACT_KEY,
   createMessageProjectionAdapter,
   newVersionContract,
   projectionContractMismatches,
@@ -62,6 +68,7 @@ import {
   type ContextRunInputRef,
   type ContextStreamRef,
   type ContextTransition,
+  type ContextTransitionReason,
   DEFAULT_CONTEXT_BRANCH_ID,
   DEFAULT_CONTEXT_STREAM_ID,
   type ProjectionAdapter,
@@ -147,6 +154,14 @@ export function validateLogModeOptions(options: AgentOptions): void {
     );
   }
   if (
+    contextLog.coreVersion !== undefined &&
+    (typeof contextLog.coreVersion !== "string" || contextLog.coreVersion.length === 0)
+  ) {
+    throw new ConfigurationError("contextLog.coreVersion must be a non-empty string", {
+      configKey: "contextLog.coreVersion",
+    });
+  }
+  if (
     contextLog.requestMiddleware !== undefined &&
     (!Array.isArray(contextLog.requestMiddleware) ||
       contextLog.requestMiddleware.some(
@@ -182,8 +197,9 @@ export interface LogCallPlan {
   head: ContextHead | null;
   /**
    * The transition the call's prepare declares: `initial` on a stream
-   * without a head, `model_change`, or `compaction` when the context policy
-   * compacted the path.
+   * without a head, `core_policy_change`, `model_change` or
+   * `adapter_change` (in that precedence when several causes hold), or
+   * `compaction` when the context policy compacted the path.
    */
   transition: ContextTransition | undefined;
   /**
@@ -494,7 +510,7 @@ export function createLogContextRuntime(
   options: AgentOptions & { contextLog: ContextLogOptions },
   deps: LogContextRuntimeDeps = {},
 ): LogContextRuntime {
-  const { store, resolveCore, admit, requestMiddleware } = options.contextLog;
+  const { store, resolveCore, coreVersion, admit, requestMiddleware } = options.contextLog;
   const adapter: ProjectionAdapter =
     options.contextLog.projection ?? createMessageProjectionAdapter();
   // The agent's producers, then each plugin's; names must be unique.
@@ -608,26 +624,44 @@ export function createLogContextRuntime(
     if (head) {
       const version = await store.readVersion(head.versionId);
       const mismatched = projectionContractMismatches(version.contract, expectedContract);
-      if (mismatched.some((key) => key === "adapter" || key === "adapterVersion")) {
+      if (mismatched.includes("adapter")) {
         throw new ContextLogConflictError("transition_required", {
           head,
-          message: `The head's version was created under a different projection adapter (${mismatched.join(", ")}); projecting it with this adapter needs a declared adapter_change transition`,
+          message: `The head's version was created under a different projection adapter (${mismatched.join(", ")}); log mode declares an adapter_change only for a new version of the same adapter`,
         });
       }
       core = version.core;
       contract = version.contract;
       previousCall = await readPreviousCall(store, head);
-      // The call goes to another model than the stream's previous call (a
-      // fallback, or a host switching models), or to one that accepts
-      // different input than the version was projected for. Either is the
-      // declared cause of a model_change version, which inherits the whole
-      // path under the same frozen core. Same-capability route changes are
-      // declared too: a target-sensitive adapter may render differently.
+      // Every transition below is declared by its cause, never by comparing
+      // request content:
+      // - `core_policy_change`: the host declares another core version than
+      //   the one the head's version recorded (or none was recorded).
+      // - `model_change`: the call goes to another model than the stream's
+      //   previous call (a fallback, or a host switching models), or to one
+      //   that accepts different input than the version was projected for.
+      //   Same-capability route changes are declared too: a
+      //   target-sensitive adapter may render differently.
+      // - `adapter_change`: the adapter's own version differs from the one
+      //   the head's version was projected under.
+      // One prepare declares one transition, in that precedence. Each
+      // inherits the whole path and records this call's contract, so every
+      // cause that held is resolved by it.
+      const corePolicyChanged =
+        coreVersion !== undefined && version.contract[CORE_VERSION_CONTRACT_KEY] !== coreVersion;
       const modelChanged =
-        previousCall !== undefined &&
-        (previousCall.model.provider !== target.provider ||
-          previousCall.model.modelId !== target.modelId);
-      const declareModelChange = mismatched.length > 0 || modelChanged;
+        (previousCall !== undefined &&
+          (previousCall.model.provider !== target.provider ||
+            previousCall.model.modelId !== target.modelId)) ||
+        mismatched.some((key) => key === "imageInput" || key === "fileInput");
+      const adapterChanged = mismatched.includes("adapterVersion");
+      const reason: ContextTransitionReason | undefined = corePolicyChanged
+        ? "core_policy_change"
+        : modelChanged
+          ? "model_change"
+          : adapterChanged
+            ? "adapter_change"
+            : undefined;
       path = await readFullPath(store, head);
       // A tool call waiting on an interrupt has no result yet, so no request
       // can be projected from this path until the interrupt is resumed.
@@ -642,23 +676,25 @@ export function createLogContextRuntime(
             )}); resume it with resume(), resumeDataResponse() or resumeStream() before generating on this stream`,
         });
       }
-      if (declareModelChange) {
-        // The model_change version may adopt the host's core for the target
-        // model: it records the resolved core, so the transition that
-        // declares the model change declares the core change too. A
-        // resolver that returns the same bytes keeps the core unchanged.
+      if (reason) {
         const parent = { versionId: head.versionId, inheritedCount: head.entryCount };
-        if (resolveCore) {
-          core = await resolveVersionCore(resolveCore, {
-            stream,
-            reason: "model_change",
-            parent,
-            target,
-            model,
-          });
+        if (reason === "core_policy_change") {
+          // The host's core changed: the new version adopts the current
+          // core, from the resolver or the static systemPrompt.
+          core = resolveCore
+            ? await resolveVersionCore(resolveCore, { stream, reason, parent, target, model })
+            : (options.systemPrompt ?? "");
+        } else if (reason === "model_change" && resolveCore) {
+          // The model_change version may adopt the host's core for the
+          // target model: it records the resolved core, so the transition
+          // that declares the model change declares the core change too. A
+          // resolver that returns the same bytes keeps the core unchanged.
+          core = await resolveVersionCore(resolveCore, { stream, reason, parent, target, model });
         }
-        contract = newVersionContract(expectedContract);
-        transition = { reason: "model_change", parent, core, contract: { ...contract } };
+        // An adapter_change keeps the version's frozen core: only the
+        // projection of the same history changes.
+        contract = newVersionContract(expectedContract, coreVersion);
+        transition = { reason, parent, core, contract: { ...contract } };
       }
     } else {
       core = resolveCore
@@ -670,7 +706,7 @@ export function createLogContextRuntime(
             model,
           })
         : (options.systemPrompt ?? "");
-      contract = newVersionContract(expectedContract);
+      contract = newVersionContract(expectedContract, coreVersion);
       transition = { reason: "initial", parent: null, core, contract: { ...contract } };
     }
 
@@ -706,9 +742,10 @@ export function createLogContextRuntime(
     const committed = path.map(toEntryInput);
     let entries: ContextEntryInput[] = [...committed, ...append];
     // On the same snapshot, the context policy may compact the path. The
-    // compaction transition replaces any model_change (the child is created
-    // under this call's contract) and is committed by the call's prepare,
-    // before the compacted context is first sent.
+    // compaction transition replaces any core_policy_change, model_change or
+    // adapter_change (the child is created under this call's core and
+    // contract, so it resolves the same causes) and is committed by the
+    // call's prepare, before the compacted context is first sent.
     const compaction = head
       ? await compactPath({
           stream,
