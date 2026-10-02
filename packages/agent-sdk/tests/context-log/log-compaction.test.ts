@@ -657,12 +657,16 @@ describe("log-mode compaction planning", () => {
   });
 
   it("treats copies of kept messages as new content, never guessing their source", async () => {
-    // A manager that returns copies: the copied tool result cannot be new
-    // content, so the compaction is refused rather than matched by content.
-    const compactor = createLogCompactor(async (messages) => ({
-      compacted: true,
-      messages: structuredClone(messages.filter((message) => message.role !== "user")),
-    }));
+    // A manager that returns copies: a copied tool call or result cannot be
+    // new content, so the compaction is refused rather than matched by
+    // content, whether it copies the call, the result or both.
+    const copying = (copy: (message: ModelMessage) => boolean) =>
+      createLogCompactor(async (messages) => ({
+        compacted: true,
+        messages: messages
+          .filter((message) => message.role !== "user")
+          .map((message) => (copy(message) ? structuredClone(message) : message)),
+      }));
     const toolPath: ContextEntryInput[] = [
       path[2]!,
       {
@@ -690,19 +694,25 @@ describe("log-mode compaction planning", () => {
       },
     ];
 
-    await expect(
-      compactor({
-        stream: STREAM,
-        head,
-        core: "",
-        contract: {},
-        path: toolPath,
-        pending,
-        keyPrefix: "k",
-        options: {},
-        screen: async (entries) => entries,
-      }),
-    ).rejects.toMatchObject({ reason: "compaction_invalid_summary" });
+    for (const copy of [
+      () => true,
+      (message: ModelMessage) => message.role === "assistant",
+      (message: ModelMessage) => message.role === "tool",
+    ]) {
+      await expect(
+        copying(copy)({
+          stream: STREAM,
+          head,
+          core: "",
+          contract: {},
+          path: toolPath,
+          pending,
+          keyPrefix: "k",
+          options: {},
+          screen: async (entries) => entries,
+        }),
+      ).rejects.toMatchObject({ reason: "compaction_invalid_summary" });
+    }
   });
 
   it("does nothing when the policy does not ask for compaction", async () => {

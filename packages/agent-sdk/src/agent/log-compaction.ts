@@ -322,6 +322,17 @@ export function createLogCompactor(
       }
       const message = outcome.messages[at]!;
       const key = `${input.keyPrefix}:summary:${summary.length}`;
+      // A summary is prose. A tool part in a new message is a copy of a kept
+      // call or result, whose pairing with the source entries is lost.
+      if (
+        Array.isArray(message.content) &&
+        message.content.some((part) => part.type.startsWith("tool-"))
+      ) {
+        throw new ContextLogInvalidError(
+          "compaction_invalid_summary",
+          "Compaction produced a new message with tool parts; return kept messages unchanged and a summary without tool calls or results",
+        );
+      }
       if (message.role === "assistant") {
         summary.push({ kind: "assistant", key, message });
       } else if (message.role === "user") {
