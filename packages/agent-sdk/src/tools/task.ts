@@ -661,6 +661,12 @@ ${subagentDescriptions}`;
 
       // Log mode: the parent call's store and stream, if any.
       const delegationScope = readDelegationScope(toolOptions);
+      const openStream = () =>
+        delegationScope
+          ? openDelegationStream(delegationScope, toolOptions?.toolCallId, subagent_type)
+          : Promise.resolve(undefined);
+      // Set when the stream was opened before execution started.
+      let preOpened: Awaited<ReturnType<typeof openStream>>;
 
       // Execute task function
       const executeTask = async (signal?: AbortSignal): Promise<string> => {
@@ -681,15 +687,11 @@ ${subagentDescriptions}`;
         // Log mode: the delegation runs on its own stream. A finished child
         // stream is read back without running anything again.
         let childContextLog: SubagentContextLog | undefined;
-        if (delegationScope) {
-          const opened = await openDelegationStream(
-            delegationScope,
-            toolOptions?.toolCallId,
-            subagent_type,
-          );
-          if ("completedText" in opened) {
-            return opened.completedText;
-          }
+        const opened = preOpened ?? (await openStream());
+        if (opened && "completedText" in opened) {
+          return opened.completedText;
+        }
+        if (opened) {
           childContextLog = opened.contextLog;
         }
         const childStreamOptions = childContextLog
@@ -872,6 +874,11 @@ ${subagentDescriptions}`;
             message: `Streaming subagent "${subagent_type}" cannot run in background. Remove run_in_background or use a non-streaming subagent.`,
           };
         }
+
+        // Log mode: open the child stream before returning, so a delegation
+        // that needs host recovery rejects with its typed error here rather
+        // than only failing the detached task.
+        preOpened = await openStream();
 
         // Create abort controller for cancellation
         const abortController = new AbortController();

@@ -447,7 +447,11 @@ reads the child stream before anything else (`readSubagentDelegation`):
 | Any other head (a crash mid-task, a failed call, a run that stopped on a tool call) | The tool call rejects with `DelegationRecoveryRequiredError` (a `ContextLogRefusedError` with reason `delegation_recovery_required`, carrying the stream and head). |
 
 The SDK never replays the task on an existing child stream: the child's tools
-may already have run. The error reaches the host's `transformToolError` and
+may already have run. A background delegation (`run_in_background`) checks the
+stream before it starts, so the error rejects the tool call too. Under an
+`ownedTaskPolicy`, the owned runner first replays an in-process delivery for
+the same tool call; a background owned delegation that needs recovery is
+reported as a failed task. The error reaches the host's `transformToolError` and
 `PostToolUseFailure` hooks; as with any failed tool, the AI SDK then gives
 the model a tool error, which is committed as the parent's tool result.
 The read-back returns the committed final reply only: a `PostGenerate`

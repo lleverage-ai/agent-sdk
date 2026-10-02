@@ -344,6 +344,48 @@ describe("log-mode subagent streams", () => {
     expect(toolErrors[0]).toBeInstanceOf(DelegationRecoveryRequiredError);
   });
 
+  it("rejects a background delegation with an unfinished head before it starts", async () => {
+    const store = new MemoryContextLogStore();
+    const childStream = childStreamFor("call-1");
+    await store.prepare({
+      stream: childStream,
+      expectedRevision: 0,
+      idempotencyKey: "crashed",
+      transition: { reason: "initial", parent: null, core: "core", contract: {} },
+      append: [{ kind: "user", key: "user:1", message: { role: "user", content: "task" } }],
+      manifest: {
+        projection: { adapter: "test", version: "1" },
+        model: { provider: "mock-provider", modelId: "mock-model" },
+        inputDigest: "0".repeat(64),
+      },
+    });
+
+    const child = scriptedModel([text("Should not run")]);
+    const { definition, contexts } = researcher(child.model);
+    const toolErrors: unknown[] = [];
+    const backgroundCall = call("call-1", "task", {
+      description: "Research the topic",
+      subagent_type: "researcher",
+      run_in_background: true,
+    });
+    await parentAgent(
+      scriptedModel([backgroundCall, text("Reported")]).model,
+      store,
+      [definition],
+      {
+        transformToolError: (error) => {
+          toolErrors.push(error);
+          return error;
+        },
+      },
+    ).generate({ prompt: "Delegate it", threadId: THREAD });
+
+    expect(contexts).toHaveLength(0);
+    expect(child.requests).toHaveLength(0);
+    expect(toolErrors).toHaveLength(1);
+    expect(toolErrors[0]).toBeInstanceOf(DelegationRecoveryRequiredError);
+  });
+
   it("requires the factory to return a log-mode agent on the delegation's store", async () => {
     for (const childLog of [
       undefined,
