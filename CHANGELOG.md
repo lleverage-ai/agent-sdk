@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `GenerateOptions.contextHistory` (`ContextHistoryInput`, experimental)
+  lets a log-mode host commit history written outside the agent with a
+  run's first prepare, before the run's input. With `root` on a stream
+  without a head, the entries become the stream's first version, declared
+  as the new `legacy_projection_import` transition reason
+  (`LEGACY_PROJECTION_IMPORT_REASON`) with the root's metadata; on a stream
+  that already has a head, or on a `branchFrom` branch, the root history is
+  ignored, so concurrent first runs converge on one import. Without `root`,
+  entries already on the path are skipped and the rest are pure appends
+  after it, so a repeated or retried run never duplicates them (the host
+  tracks what it supplied across compactions). Every entry
+  passes the `PreGenerate` hooks with the run's input and keeps its key and
+  metadata. A root import whose history ends with an unanswered tool call
+  fails with `ContextLogInvalidError` (reason
+  `history_unanswered_tool_call`) before anything is committed. Malformed
+  history is a `ValidationError`, and `contextHistory` outside log mode is a
+  `ConfigurationError`. The store conformance suite checks that a store
+  round-trips an imported root version and appended history. (LLE-14014)
+
 ## [1.0.0-rc.8] - 2026-10-02
 
 Eighth release candidate for 1.0.0. In log mode, supersession is

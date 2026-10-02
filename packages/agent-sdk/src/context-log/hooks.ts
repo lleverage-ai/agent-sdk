@@ -47,7 +47,9 @@ export const LOG_MODE_OPERATIONAL_OPTIONS: ReadonlySet<keyof GenerateOptions> = 
 ]);
 
 /** Options that describe the input; the runtime supplies them as pending entries. */
-const INPUT_OPTIONS = ["prompt", "input", "messages"] as const;
+// `contextHistory` is input too: hooks see its entries, screened, as new
+// messages, never the unscreened option.
+const INPUT_OPTIONS = ["prompt", "input", "messages", "contextHistory"] as const;
 
 function violation(event: HookEvent, detail: string): ContextLogInvalidError {
   return new ContextLogInvalidError(

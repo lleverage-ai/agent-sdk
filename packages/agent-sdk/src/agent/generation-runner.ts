@@ -600,6 +600,12 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         { configKey: "contextStream" },
       );
     }
+    if (requestedOptions.contextHistory !== undefined) {
+      throw new ConfigurationError(
+        'contextHistory only applies in context log mode; set contextLog: { mode: "log" } on the agent',
+        { configKey: "contextHistory" },
+      );
+    }
     if (requestedOptions.input !== undefined) {
       throw new ConfigurationError(
         'input only applies in context log mode; set contextLog: { mode: "log" } on the agent, or pass prompt or messages',

@@ -670,6 +670,66 @@ type ContextRunInputRef = { key: string; index: number };
   it in the request's idempotency digest when present. `contextLog.admit`
   sees it on the prepare request.
 
+### History written outside the agent
+
+A host that moves an existing conversation to log mode, or that records
+messages another writer produced (a voice turn, an operator message), gives
+them to the run with `GenerateOptions.contextHistory`. The run's first
+prepare commits them before its input:
+
+```typescript
+// The session's first log-mode run imports its legacy history.
+await agent.generate({
+  input,
+  threadId: sessionId,
+  contextHistory: {
+    root: { reason: LEGACY_PROJECTION_IMPORT_REASON, metadata: { legacyImport: provenance } },
+    entries: legacyMessages.map((message, index) => ({ key: `import:${index}`, message })),
+  },
+});
+
+// A later run indexes messages another writer added since the last run.
+await agent.generate({
+  input,
+  threadId: sessionId,
+  contextHistory: {
+    entries: outsideEvents.map((event) => ({
+      key: `outside:${event.id}`,
+      message: event.message,
+      metadata: { eventId: event.id },
+    })),
+  },
+});
+```
+
+- Each entry is a `user`, `assistant` or `tool` message with a key that is
+  unique within the history. Its key and metadata are committed with it.
+- **Root history** (`root` set) applies only when the prepare creates the
+  stream's first version: a root version with the declared
+  `legacy_projection_import` reason and `root.metadata`. If the stream already
+  has a head (another run imported first) or the call declares
+  `contextStream.branchFrom`, the root history is ignored and the head is the
+  history, so concurrent first runs converge on one import.
+- A root import whose history ends with tool calls no tool result answers
+  fails with a `ContextLogInvalidError` (reason
+  `history_unanswered_tool_call`) before anything is committed. Drop or
+  answer a pending call before importing.
+- **Appended history** (no `root`) is a pure append after the head's path,
+  never inserted before an entry already on it. Entries whose key is already
+  on the path are dropped, so a repeated or retried run appends nothing twice
+  and sends the same bytes. Deduplication only sees the current path: after a
+  compaction, entries that were summarised are no longer on it, so the host
+  must track which messages it has already supplied (for example with an
+  event cursor) rather than resending its whole outside history.
+- Entries pass the `PreGenerate` hooks with the run's input, as
+  `options.messages` before the input, so redaction and guardrails apply to
+  them. Hooks never see `contextHistory` itself.
+- History is only committed by the run's first committed prepare; retries of
+  that prepare carry the same entries, and later steps of the run ignore it.
+  It is never listed in `runInput`.
+- Malformed history is a `ValidationError`. Outside log mode,
+  `contextHistory` is a `ConfigurationError`.
+
 ## Compaction
 
 With a `contextManager`, log mode compacts by a declared **`compaction`**

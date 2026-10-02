@@ -2237,6 +2237,17 @@ export interface GenerateOptions {
    */
   contextStream?: { branchId?: string; streamId?: string; branchFrom?: ContextPathRef };
 
+  /**
+   * Context log mode only: history the host supplies for the run, committed
+   * before the run's new input by its first prepare, after every entry has
+   * passed the PreGenerate hooks. With `root`, it imports a stream's history
+   * as its first version; without, it appends to the head's path. See
+   * {@link ContextHistoryInput}.
+   *
+   * @experimental
+   */
+  contextHistory?: import("./context-log/types.js").ContextHistoryInput;
+
   /** Maximum tokens to generate */
   maxTokens?: number;
 

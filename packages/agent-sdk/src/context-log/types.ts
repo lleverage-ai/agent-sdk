@@ -229,6 +229,55 @@ export type ContextEntryInput =
   | RuntimeContextEntryInput;
 
 /**
+ * The declared transition of a stream's first version when it starts from
+ * history a host imports (see {@link ContextHistoryInput.root}).
+ *
+ * @experimental
+ * @category Context Log
+ */
+export const LEGACY_PROJECTION_IMPORT_REASON = "legacy_projection_import";
+
+/**
+ * One history message a host supplies for a log-mode run.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextHistoryEntry {
+  /** The entry's key: unique among the entries and stable across retries. */
+  key: string;
+  /** The message, as the model should see it. Content must be plain JSON. */
+  message: UserModelMessage | AssistantModelMessage | ToolModelMessage;
+  /** Host metadata, kept on the entry (and on a compaction's re-append). */
+  metadata?: ContextMetadata;
+}
+
+/**
+ * History a host supplies for a log-mode run (`GenerateOptions.contextHistory`),
+ * committed before the run's new input by the run's first prepare. Each
+ * entry is screened by the PreGenerate hooks like new input.
+ *
+ * - With `root`, the entries are the stream's imported history: they start
+ *   the stream as a root version with the declared
+ *   {@link LEGACY_PROJECTION_IMPORT_REASON} transition (and `root.metadata`
+ *   on the transition), but only when the stream has no head and the call
+ *   declares no `branchFrom`. Otherwise they are ignored, so two first runs
+ *   passing the same history converge on whichever committed first.
+ * - Without `root`, the entries are appended after the head's path, before
+ *   the run's input. An entry whose key is already on the path is dropped.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextHistoryInput {
+  entries: readonly ContextHistoryEntry[];
+  root?: {
+    reason: typeof LEGACY_PROJECTION_IMPORT_REASON;
+    metadata?: ContextMetadata;
+  };
+}
+
+/**
  * Where a stored entry sits in the log.
  *
  * @experimental
@@ -268,6 +317,8 @@ export type ContextEntry = ContextEntryInput & ContextEntryRecord;
  * - `core_policy_change` - The frozen core system changed
  * - `audience_transition` - The host changed who the context is replayed to
  * - `legacy_import` - History imported from a non-log source
+ * - `legacy_projection_import` - A host's legacy history imported as the
+ *   stream's first version (see {@link ContextHistoryInput})
  *
  * Hosts may declare their own reasons. Transitions are always declared by
  * their cause; nothing infers them by comparing requests.
