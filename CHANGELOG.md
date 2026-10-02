@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Log mode: a resume checks the projection adapter** (LLE-14019).
+  `resume()`, `resumeDataResponse()` and `resumeStream()` read a pending
+  interrupt's head version and now check the adapter it was projected
+  under before the interrupted tool runs. A version created under another
+  adapter `id` is refused with `transition_required` (as `generate()` already
+  refuses it), so an approved side effect never runs for a continuation that
+  cannot be planned. A new version of the same adapter, or other model
+  capabilities, is still resumed: the resolution and result do not depend
+  on the projection, and the continuation declares the `adapter_change` or
+  `model_change`. The tool's `messages` are then the current adapter's
+  rendering of the history under the version's contract; they are only
+  handed to the tool, never sent or committed. This lifts the known
+  limitation noted in 1.0.0-rc.7.
+
 ## [1.0.0-rc.9] - 2026-10-02
 
 Ninth release candidate for 1.0.0. In log mode, a host can commit history
