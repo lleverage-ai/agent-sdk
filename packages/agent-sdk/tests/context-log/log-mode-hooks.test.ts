@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { wrapToolsWithHooks } from "../../src/agent/tool-pipeline.js";
 import {
-  assertLogModeRetryOptions,
+  createLogModeRetryGuard,
   invokeLogModePreGenerateHooks,
 } from "../../src/context-log/hooks.js";
 import { runContextProducers } from "../../src/context-log/producers.js";
@@ -17,6 +17,7 @@ import {
   createGuardrailsHooks,
   createSecretsFilterHooks,
   createSlotContextProducer,
+  type GenerateOptions,
   GeneratePermissionDeniedError,
   type HookCallback,
   type HookRegistration,
@@ -152,7 +153,11 @@ describe("log-mode PreGenerate: input security still applies before commit", () 
 
     // The producer's slot is unchanged, so only the new user message is new input.
     expect(seen).toEqual([[{ role: "user", content: "second turn" }]]);
-    expect(committed.map((entry) => entry.key)).toEqual(["u1", "ctx:settings:slot:notes:1", "u2"]);
+    expect(committed.map((entry) => entry.key)).toEqual([
+      "u1",
+      expect.stringMatching(/^ctx:settings:slot:notes:1:[0-9a-f]{32}$/),
+      "u2",
+    ]);
   });
 
   it("guardrails deny blocked new input and nothing is committed", async () => {
@@ -421,38 +426,311 @@ describe("log-mode PreGenerate: history and system are append-only", () => {
   });
 });
 
-describe("log-mode retries", () => {
-  it("accepts a retry hook that spreads the previous options, input included", () => {
-    const messages = [{ role: "user" as const, content: "hello" }];
-    const previous = { threadId: "t", prompt: "p", messages };
+describe("log-mode PreGenerate: hooks compose instead of racing", () => {
+  const maxTokens = rewriting((options) => ({ ...options, maxTokens: 64 }));
+
+  it("keeps the secrets filter's redaction when an operational hook also returns an update", async () => {
+    const [secrets] = createSecretsFilterHooks();
+    for (const hooks of [
+      [maxTokens, secrets],
+      [secrets, maxTokens],
+    ]) {
+      const result = await invokeLogModePreGenerateHooks({
+        hooks,
+        options: { threadId: "t1" },
+        pending: [user("u1", `key ${AWS_KEY}`)],
+        agent: agent(),
+      });
+      expect(result.pending).toEqual([user("u1", "key [REDACTED]")]);
+      expect(result.options).toEqual({ threadId: "t1", maxTokens: 64 });
+    }
+  });
+
+  it("keeps a guardrail transform and lets later hooks see it", async () => {
+    const [guardrail] = createGuardrailsHooks({
+      checkInput: (input) => ({
+        ...input,
+        options: {
+          ...input.options,
+          messages: input.options.messages?.map((message) => ({
+            ...message,
+            content: String(message.content).replace("555-1234", "[PHONE]"),
+          })) as ModelMessage[],
+        },
+      }),
+    });
+    const seen: unknown[] = [];
+    const spy: HookCallback = (input) => {
+      seen.push((input as PreGenerateInput).options.messages);
+      return undefined;
+    };
+    const result = await invokeLogModePreGenerateHooks({
+      hooks: [maxTokens, guardrail, spy],
+      options: {},
+      pending: [user("u1", "call 555-1234")],
+      agent: agent(),
+    });
+    expect(result.pending).toEqual([user("u1", "call [PHONE]")]);
+    expect(seen).toEqual([[{ role: "user", content: "call [PHONE]" }]]);
+    expect(result.options).toEqual({ maxTokens: 64 });
+  });
+
+  it("stops at any hook's denial", async () => {
+    const [guard] = createGuardrailsHooks({ blockedInputPatterns: [/forbidden/] });
+    await expect(
+      invokeLogModePreGenerateHooks({
+        hooks: [maxTokens, guard],
+        options: {},
+        pending: [user("u1", "forbidden")],
+        agent: agent(),
+      }),
+    ).rejects.toBeInstanceOf(GeneratePermissionDeniedError);
+  });
+});
+
+describe("log-mode PreGenerate: new tool calls and results are screened", () => {
+  const assistantCall: ContextEntryInput = {
+    kind: "assistant",
+    key: "a1",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Reading the config." },
+        {
+          type: "tool-call",
+          toolCallId: "call-1",
+          toolName: "read",
+          input: { path: `/keys/${AWS_KEY}` },
+        },
+      ],
+    },
+  };
+  const textResult: ContextEntryInput = {
+    kind: "tool_result",
+    key: "t1",
+    message: {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call-1",
+          toolName: "read",
+          output: { type: "text", value: `aws_access_key_id = ${AWS_KEY}` },
+        },
+      ],
+    },
+  };
+  const jsonResult: ContextEntryInput = {
+    kind: "tool_result",
+    key: "t2",
+    message: {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call-2",
+          toolName: "env",
+          output: { type: "json", value: { env: [{ type: "AWS", value: AWS_KEY }], count: 1 } },
+        },
+        {
+          type: "tool-result",
+          toolCallId: "call-3",
+          toolName: "shot",
+          output: {
+            type: "content",
+            value: [
+              { type: "text", text: `caption ${AWS_KEY}` },
+              { type: "file-data", data: "aGVsbG8=", mediaType: "image/png" },
+            ],
+          },
+        },
+      ],
+    },
+  };
+
+  it("redacts text and JSON tool results and tool call input before commit, keeping ids and structure", async () => {
+    const store = new MemoryContextLogStore();
+    const [secrets] = createSecretsFilterHooks();
+    const { pending } = await invokeLogModePreGenerateHooks({
+      hooks: [secrets],
+      options: {},
+      pending: [assistantCall, textResult, jsonResult],
+      agent: agent(),
+    });
+    await store.prepare({
+      stream,
+      expectedRevision: 0,
+      idempotencyKey: "1",
+      transition: { reason: "initial", parent: null, core: "c", contract: {} },
+      append: pending,
+      manifest,
+    });
+    const committed = await readFullPath(store, await store.readHead(stream));
+
+    expect(JSON.stringify(committed)).not.toContain(AWS_KEY);
+    const redact = (value: string) => value.replaceAll(AWS_KEY, "[REDACTED]");
+    const expected = [assistantCall, textResult, jsonResult].map((entry) =>
+      JSON.parse(redact(JSON.stringify(entry))),
+    );
     expect(
-      assertLogModeRetryOptions(previous, {
-        ...previous,
-        messages: [{ role: "user", content: "hello" }],
-        maxTokens: 10,
+      committed.map(({ position, versionId, manifestId, createdAt, ...entry }) => entry),
+    ).toEqual(expected);
+  });
+
+  it("guardrails deny blocked text in a new tool result", async () => {
+    const [guard] = createGuardrailsHooks({ blockedInputPatterns: [/aws_access_key_id/] });
+    await expect(
+      invokeLogModePreGenerateHooks({
+        hooks: [guard],
+        options: {},
+        pending: [textResult],
+        agent: agent(),
       }),
-    ).toEqual({ threadId: "t", maxTokens: 10 });
+    ).rejects.toBeInstanceOf(GeneratePermissionDeniedError);
+  });
+
+  it("guardrails deny blocked text inside a JSON tool result or tool call input", async () => {
+    const [guard] = createGuardrailsHooks({ blockedInputPatterns: [/AKIA/] });
+    for (const entry of [jsonResult, assistantCall]) {
+      await expect(
+        invokeLogModePreGenerateHooks({
+          hooks: [guard],
+          options: {},
+          pending: [entry],
+          agent: agent(),
+        }),
+      ).rejects.toBeInstanceOf(GeneratePermissionDeniedError);
+    }
+  });
+
+  it("rejects a hook that reshapes a tool result's text view", async () => {
+    const reshape = rewriting((options) => ({
+      ...options,
+      messages: [{ role: "tool", content: [{ type: "text", text: "merged" }] }],
+    }));
+    expect(
+      await violation(
+        invokeLogModePreGenerateHooks({
+          hooks: [reshape],
+          options: {},
+          pending: [jsonResult],
+          agent: agent(),
+        }),
+      ),
+    ).toMatch(/changed the shape of new input/);
+  });
+});
+
+describe("log-mode PreGenerate: options are isolated from hooks", () => {
+  it("catches nested in-place changes to provider options", async () => {
+    const options: GenerateOptions = { providerOptions: { openai: { instructions: "original" } } };
+    const nested: HookCallback = (input) => {
+      const view = (input as PreGenerateInput).options;
+      view.providerOptions.openai.instructions = "injected";
+      return { hookSpecificOutput: { hookEventName: "PreGenerate", updatedInput: { ...view } } };
+    };
+    expect(
+      await violation(
+        invokeLogModePreGenerateHooks({
+          hooks: [nested],
+          options,
+          pending: [user("u1", "x")],
+          agent: agent(),
+        }),
+      ),
+    ).toMatch(/changed "providerOptions"/);
+    expect(options.providerOptions.openai.instructions).toBe("original");
+  });
+
+  it("withholds options that are not plain JSON and restores them unchanged", async () => {
+    const output = { schema: { parse: () => "x" } } as unknown as GenerateOptions["output"];
+    const seen: unknown[] = [];
+    const spy: HookCallback = (input) => {
+      seen.push("output" in (input as PreGenerateInput).options);
+      return undefined;
+    };
+    const result = await invokeLogModePreGenerateHooks({
+      hooks: [spy],
+      options: { output },
+      pending: [user("u1", "x")],
+      agent: agent(),
+    });
+    expect(seen).toEqual([false]);
+    expect(result.options.output).toBe(output);
+
+    const replace = rewriting((view) => ({ ...view, output: {} }));
+    expect(
+      await violation(
+        invokeLogModePreGenerateHooks({
+          hooks: [replace],
+          options: { output },
+          pending: [],
+          agent: agent(),
+        }),
+      ),
+    ).toMatch(/changed "output"/);
+  });
+});
+
+describe("log-mode producers with input filters", () => {
+  it("does not re-append an unchanged slot whose committed payload was redacted", async () => {
+    const store = new MemoryContextLogStore();
+    const [secrets] = createSecretsFilterHooks();
+    const first = await prepareTurn(store, [secrets], [user("u1", "one")], "1");
+    expect(JSON.stringify(first.committed)).not.toContain(AWS_KEY);
+    const second = await prepareTurn(store, [secrets], [user("u2", "two")], "2");
+    const third = await prepareTurn(store, [secrets], [user("u3", "three")], "3");
+    expect(second.committed.length - first.committed.length).toBe(1);
+    expect(third.committed.map((entry) => entry.kind)).toEqual([
+      "user",
+      "runtime_context",
+      "user",
+      "user",
+    ]);
+  });
+});
+
+describe("log-mode retries", () => {
+  function retry(
+    previous: GenerateOptions,
+    hook: (options: GenerateOptions) => GenerateOptions | undefined,
+  ) {
+    const guard = createLogModeRetryGuard(previous);
+    return guard.accept(hook(guard.options));
+  }
+
+  it("accepts a retry hook that spreads the previous options, input included", () => {
+    const previous = {
+      threadId: "t",
+      prompt: "p",
+      messages: [{ role: "user" as const, content: "hello" }],
+    };
+    expect(retry(previous, (options) => ({ ...options, maxTokens: 10 }))).toEqual({
+      threadId: "t",
+      maxTokens: 10,
+    });
     expect(() =>
-      assertLogModeRetryOptions(previous, {
-        ...previous,
+      retry(previous, (options) => ({
+        ...options,
         messages: [{ role: "user", content: "changed" }],
-      }),
+      })),
     ).toThrow(/changed "messages"/);
   });
 
   it("lets a PostGenerateFailure hook change operational options only", () => {
-    expect(assertLogModeRetryOptions({ threadId: "t" }, { threadId: "t", maxTokens: 10 })).toEqual({
+    expect(retry({ threadId: "t" }, (options) => ({ ...options, maxTokens: 10 }))).toEqual({
       threadId: "t",
       maxTokens: 10,
     });
-    for (const next of [
-      { threadId: "t", messages: [{ role: "user" as const, content: "retry with this" }] },
-      { threadId: "t", prompt: "again" },
-      { threadId: "t", instructionLayers: [{ label: "x", instructions: "y" }] },
+    for (const change of [
+      { messages: [{ role: "user" as const, content: "retry with this" }] },
+      { prompt: "again" },
+      { instructionLayers: [{ label: "x", instructions: "y" }] },
+      { providerOptions: { openai: { instructions: "new system" } } },
     ]) {
       const error = (() => {
         try {
-          assertLogModeRetryOptions({ threadId: "t" }, next);
+          retry({ threadId: "t" }, (options) => ({ ...options, ...change }));
         } catch (caught) {
           return caught;
         }
@@ -460,6 +738,46 @@ describe("log-mode retries", () => {
       expect(isContextLogError(error, "invalid")).toBe(true);
       expect((error as Error).message).toMatch(/^PostGenerateFailure hook/);
     }
+  });
+
+  it("catches provider input changed in place, before or without a returned update", () => {
+    const previous: GenerateOptions = {
+      threadId: "t",
+      providerOptions: { openai: { instructions: "original" } },
+    };
+    const mutate = (options: GenerateOptions) => {
+      options.providerOptions.openai.instructions = "injected";
+    };
+    // Mutated in place and returned as a shallow spread.
+    expect(() =>
+      retry(previous, (options) => {
+        mutate(options);
+        return { ...options };
+      }),
+    ).toThrow(/changed "providerOptions"/);
+    // Mutated in place only.
+    expect(() =>
+      retry(previous, (options) => {
+        mutate(options);
+        return undefined;
+      }),
+    ).toThrow(/changed "providerOptions"/);
+    // The attempt's own options are never handed to the hooks.
+    expect(previous.providerOptions.openai.instructions).toBe("original");
+  });
+
+  it("withholds options that are not plain JSON and restores them", () => {
+    const output = { schema: { parse: () => "x" } } as unknown as GenerateOptions["output"];
+    const guard = createLogModeRetryGuard({ threadId: "t", output });
+    expect(guard.options).not.toHaveProperty("output");
+    expect(guard.accept({ ...guard.options, maxTokens: 3 })).toEqual({
+      threadId: "t",
+      output,
+      maxTokens: 3,
+    });
+    expect(() =>
+      guard.accept({ ...guard.options, output: {} as GenerateOptions["output"] }),
+    ).toThrow(/changed "output"/);
   });
 });
 

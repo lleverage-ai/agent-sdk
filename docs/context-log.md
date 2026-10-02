@@ -126,7 +126,7 @@ It reads its own earlier entries from the path and appends only changes:
 
 | Situation | What is appended |
 | --- | --- |
-| A slot appears for the first time | An entry with key `ctx:<producer>:slot:<slot>:1` |
+| A slot appears for the first time | An entry with key `ctx:<producer>:slot:<slot>:1:<fingerprint>` |
 | A slot's payload and metadata are unchanged | Nothing |
 | A slot's value changes | A new entry that `supersedes` the slot's latest entry |
 | A slot that was active is no longer returned | A retraction, unless `retractAbsent` is `false` (use that for retrieved data, which stays part of the history) |
@@ -136,7 +136,11 @@ It reads its own earlier entries from the path and appends only changes:
 
 The marker's `reason` comes from `describeFailure` and never copies the
 error message by default. Keys are deterministic, so a retry from the same
-head re-derives byte-identical entries.
+head re-derives byte-identical entries. The key's last segment is a
+truncated SHA-256 of the slot's source value, and deduplication compares
+that rather than the committed payload. Input filters such as secret
+redaction can change the payload before commit without defeating
+deduplication, and the key never carries the value itself.
 
 ### Errors
 
@@ -209,12 +213,22 @@ Hooks never rewrite the log. In log mode they may only:
 - **append context**, through producers;
 - **transform new input** before it is committed. `PreGenerate` hooks see
   `options.messages` set to the call's new input only (the user's message,
-  producer output and any imported history), never committed entries. A
-  `runtime_context` entry is shown as a user message with one text part per
-  string in its payload, so text filters can scan and redact it; the
-  transformed text is written back into the payload. The secrets filter and
-  guardrails therefore keep redacting and blocking new input, and the
-  redacted content is what gets committed;
+  producer output, new tool calls and results, and any imported history),
+  never committed entries. A message whose content is a string is shown as
+  itself. Any other entry is shown as a message of the same role, with one
+  text part per string it carries: text and reasoning parts, a tool call's
+  input, a tool result's text or JSON value, or a runtime context payload.
+  Ids, part types, binary data and provider options are not shown. Text
+  filters can therefore scan and redact all of it, and the transformed text
+  is written back without changing the entry's structure. The secrets filter
+  and guardrails keep redacting and blocking new input, and the redacted
+  content is what gets committed.
+
+  Unlike legacy mode, where every hook sees the same input and the first
+  `updatedInput` wins, log-mode `PreGenerate` hooks run one after another.
+  Each hook sees the input as the earlier hooks left it, so an operational
+  hook can never discard another hook's redaction. Any hook's denial stops
+  the call.
 - **change operational options**: `maxTokens`, `temperature`,
   `stopSequences`, `signal`, `shouldStopAfterStep`, `headers`, `telemetry`,
   `experimental_telemetry`, `requestClass` and `onStreamWriterReady`.
@@ -233,9 +247,14 @@ Anything else throws a `ContextLogInvalidError` with reason
 adding or removing messages, changing a message's role or a
 runtime context entry's shape, setting `prompt`, changing `instructionLayers`,
 `memory`, `output`, `threadId` or any other non-operational option, and
-`respondWith` (its response would never be committed). Options a
-`PostGenerateFailure` hook returns for a retry follow the same rule, and
-their messages cannot change at all because the input is already committed.
+`respondWith` (its response would never be committed). Hooks receive
+copies of the options, so changes made in place are caught as well as
+returned ones. Options that are not plain JSON, such as `output` and
+`streamingContext`, are withheld from hooks and restored afterwards. Options
+a `PostGenerateFailure` hook returns for a retry follow the same rule, and
+their input cannot change at all because it is already committed: the
+runtime snapshots the attempt's options before the hooks run and gives them
+an isolated copy.
 
 | Legacy hook use | Log-mode equivalent |
 | --- | --- |

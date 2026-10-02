@@ -17,7 +17,7 @@ import { extractRespondWith, extractUpdatedInput, invokeHooksWithTimeout } from 
 import type { Agent, GenerateOptions, HookCallback, HookEvent } from "../types.js";
 import { ContextLogInvalidError } from "./errors.js";
 import { assertContextJson, canonicalContextJson } from "./json.js";
-import type { ContextEntryInput, ContextJsonValue, RuntimeContextEntryInput } from "./types.js";
+import type { ContextEntryInput } from "./types.js";
 
 type ModelMessage = NonNullable<GenerateOptions["messages"]>[number];
 
@@ -49,6 +49,293 @@ export const LOG_MODE_OPERATIONAL_OPTIONS: ReadonlySet<keyof GenerateOptions> = 
 /** Options that describe the input; the runtime supplies them as pending entries. */
 const INPUT_OPTIONS = ["prompt", "messages"] as const;
 
+function violation(event: HookEvent, detail: string): ContextLogInvalidError {
+  return new ContextLogInvalidError(
+    "log_mode_hook_violation",
+    `${event} hook ${detail} in log mode. Log-mode hooks may only change operational options (${[
+      ...LOG_MODE_OPERATIONAL_OPTIONS,
+    ].join(
+      ", ",
+    )}), transform new input before it is committed, gate execution, or shape a new tool result. Append context with a ContextProducer instead.`,
+  );
+}
+
+function withoutInput(options: GenerateOptions): GenerateOptions {
+  const rest: GenerateOptions = { ...options };
+  for (const key of INPUT_OPTIONS) delete rest[key];
+  return rest;
+}
+
+function isOperational(key: string): boolean {
+  return LOG_MODE_OPERATIONAL_OPTIONS.has(key as keyof GenerateOptions);
+}
+
+// =============================================================================
+// Option isolation
+// =============================================================================
+
+function plainJson(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  try {
+    assertContextJson(value);
+    return canonicalContextJson(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Isolates options from the hooks that receive them.
+ *
+ * Comparison state is captured before any hook runs. Hooks get a view in
+ * which:
+ *
+ * - operational options are passed through (hooks may change them);
+ * - other plain-JSON options are deep copies, so mutating them in place
+ *   cannot reach the call, and changes are detected by content;
+ * - other options that are not plain JSON (for example `output` or
+ *   `streamingContext`) are withheld, so hooks cannot reach them at all.
+ *
+ * `accept` checks the options a hook returned (or the view itself, when the
+ * hook returned none, to catch in-place changes) and returns the effective
+ * options with withheld values restored.
+ */
+function isolateOptions(options: GenerateOptions): {
+  view: GenerateOptions;
+  accept(next: GenerateOptions, event: HookEvent, exempt?: ReadonlySet<string>): GenerateOptions;
+} {
+  const snapshots = new Map<string, string>();
+  const withheld = new Map<string, unknown>();
+  const view: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(options)) {
+    if (isOperational(key) || value === undefined) {
+      view[key] = value;
+      continue;
+    }
+    const json = plainJson(value);
+    if (json === undefined) {
+      withheld.set(key, value);
+      continue;
+    }
+    snapshots.set(key, json);
+    view[key] = JSON.parse(json);
+  }
+
+  return {
+    view: view as GenerateOptions,
+    accept(next, event, exempt = new Set()) {
+      if (typeof next !== "object" || next === null) {
+        throw violation(event, "returned updatedInput that is not an options object");
+      }
+      const result: Record<string, unknown> = {};
+      const keys = new Set([...Object.keys(next), ...snapshots.keys(), ...withheld.keys()]);
+      for (const key of keys) {
+        const after = (next as Record<string, unknown>)[key];
+        if (exempt.has(key)) continue;
+        if (isOperational(key)) {
+          if (after !== undefined) result[key] = after;
+          continue;
+        }
+        if (withheld.has(key)) {
+          // Hooks never saw the value, so they may only leave it absent.
+          if (after !== undefined && !Object.is(after, withheld.get(key))) {
+            throw violation(event, `changed "${key}"`);
+          }
+          result[key] = withheld.get(key);
+          continue;
+        }
+        if (plainJson(after) !== snapshots.get(key)) {
+          throw violation(
+            event,
+            key === "prompt" || key === "messages"
+              ? `changed "${key}" (history is append-only)`
+              : `changed "${key}"`,
+          );
+        }
+        if (after !== undefined) result[key] = after;
+      }
+      return withoutInput(result as GenerateOptions);
+    },
+  };
+}
+
+// =============================================================================
+// Presenting new input as text
+// =============================================================================
+
+type Path = ReadonlyArray<string | number>;
+
+/** Keys of message parts that are protocol structure, never screened content. */
+const STRUCTURAL_KEYS = new Set([
+  "type",
+  "toolCallId",
+  "toolName",
+  "mediaType",
+  "providerOptions",
+  "providerMetadata",
+  "providerExecuted",
+  "signature",
+  "data",
+  "image",
+]);
+
+/**
+ * Collects the paths of every string under `value`. Outside caller data,
+ * structural keys (ids, part types, binary data, provider options) are
+ * skipped, so screening never changes a tool call id or a part type. Inside
+ * caller data (a tool call's `input`, a JSON tool result's `value`, a runtime
+ * context payload) every string is screened.
+ */
+function collectTextPaths(value: unknown, path: Path, data: boolean, into: Path[]): void {
+  if (typeof value === "string") {
+    into.push(path);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => {
+      collectTextPaths(item, [...path, index], data, into);
+    });
+    return;
+  }
+  if (value === null || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  const jsonOutput = record.type === "json" || record.type === "error-json";
+  for (const [key, item] of Object.entries(record)) {
+    if (data) {
+      collectTextPaths(item, [...path, key], true, into);
+    } else if (key === "input" || (key === "value" && jsonOutput)) {
+      collectTextPaths(item, [...path, key], true, into);
+    } else if (!STRUCTURAL_KEYS.has(key)) {
+      collectTextPaths(item, [...path, key], false, into);
+    }
+  }
+}
+
+function readAt(root: unknown, path: Path): unknown {
+  let current = root;
+  for (const segment of path) current = (current as Record<string | number, unknown>)[segment];
+  return current;
+}
+
+function writeAt(root: unknown, path: Path, value: string): unknown {
+  if (path.length === 0) return value;
+  const parent = readAt(root, path.slice(0, -1)) as Record<string | number, unknown>;
+  parent[path[path.length - 1] as string | number] = value;
+  return root;
+}
+
+/** How a pending entry is shown to hooks, and how to write a transform back. */
+type Presentation =
+  | { kind: "native"; index: number; role: ModelMessage["role"] }
+  | {
+      kind: "text";
+      index: number;
+      role: ModelMessage["role"];
+      /** Where the screened strings live: the entry's message or its payload. */
+      target: "message" | "payload";
+      paths: Path[];
+    };
+
+/**
+ * Shows the pending entries to hooks as model messages that text filters
+ * (secrets, guardrails) can read: a message whose content is a string is
+ * shown as itself; any other entry is shown as a message of the same role
+ * with one text part per screened string (text parts, reasoning, tool call
+ * inputs, tool results, runtime context payloads). Retractions and entries
+ * without text are not shown. Hooks receive copies.
+ */
+function present(pending: readonly ContextEntryInput[]): {
+  messages: ModelMessage[];
+  presentations: Presentation[];
+} {
+  const messages: ModelMessage[] = [];
+  const presentations: Presentation[] = [];
+  pending.forEach((entry, index) => {
+    if (entry.kind !== "runtime_context" && typeof entry.message.content === "string") {
+      messages.push(structuredClone(entry.message));
+      presentations.push({ kind: "native", index, role: entry.message.role });
+      return;
+    }
+    const paths: Path[] = [];
+    const target = entry.kind === "runtime_context" ? "payload" : "message";
+    const root = entry.kind === "runtime_context" ? entry.payload : entry.message;
+    if (entry.kind === "runtime_context") collectTextPaths(root, [], true, paths);
+    else collectTextPaths(entry.message.content, ["content"], false, paths);
+    if (paths.length === 0) return;
+    const role = entry.kind === "runtime_context" ? "user" : entry.message.role;
+    messages.push({
+      role,
+      content: paths.map((path) => ({ type: "text" as const, text: readAt(root, path) as string })),
+    } as ModelMessage);
+    presentations.push({ kind: "text", index, role, target, paths });
+  });
+  return { messages, presentations };
+}
+
+function readTexts(message: ModelMessage, count: number, event: HookEvent): string[] {
+  const content = message.content as unknown;
+  if (typeof content === "string" && count === 1) return [content];
+  if (
+    Array.isArray(content) &&
+    content.length === count &&
+    content.every(
+      (part) =>
+        typeof part === "object" &&
+        part !== null &&
+        (part as { type?: unknown }).type === "text" &&
+        typeof (part as { text?: unknown }).text === "string",
+    )
+  ) {
+    return content.map((part) => (part as { text: string }).text);
+  }
+  throw violation(event, "changed the shape of new input (only its text may be transformed)");
+}
+
+/** Writes the hook's view of the new input back onto the pending entries. */
+function applyMessages(
+  pending: ContextEntryInput[],
+  presentations: readonly Presentation[],
+  nextMessages: unknown,
+  event: HookEvent,
+): void {
+  if (!Array.isArray(nextMessages) || nextMessages.length !== presentations.length) {
+    throw violation(event, "added, removed or dropped messages (history is append-only)");
+  }
+  presentations.forEach((presentation, position) => {
+    const after = nextMessages[position] as ModelMessage;
+    if (typeof after !== "object" || after === null) {
+      throw violation(event, "replaced a new message with a non-message value");
+    }
+    if (after.role !== presentation.role) {
+      throw violation(event, `changed the role of a new ${presentation.role} message`);
+    }
+    const entry = pending[presentation.index] as ContextEntryInput;
+    if (presentation.kind === "native") {
+      pending[presentation.index] = { ...entry, message: after } as ContextEntryInput;
+      return;
+    }
+    const texts = readTexts(after, presentation.paths.length, event);
+    if (presentation.target === "payload" && entry.kind === "runtime_context") {
+      let payload: unknown = structuredClone(entry.payload);
+      presentation.paths.forEach((path, i) => {
+        payload = writeAt(payload, path, texts[i] as string);
+      });
+      pending[presentation.index] = { ...entry, payload: payload as typeof entry.payload };
+      return;
+    }
+    if (entry.kind === "runtime_context") return;
+    const message = structuredClone(entry.message);
+    presentation.paths.forEach((path, i) => {
+      writeAt(message, path, texts[i] as string);
+    });
+    pending[presentation.index] = { ...entry, message } as ContextEntryInput;
+  });
+}
+
+// =============================================================================
+// PreGenerate
+// =============================================================================
+
 /**
  * Input to {@link invokeLogModePreGenerateHooks}.
  *
@@ -64,7 +351,8 @@ export interface LogModePreGenerateParams {
   options: GenerateOptions;
   /**
    * New entries about to be committed by this call's prepare: the user's
-   * input, producer output and any imported history. Never committed entries.
+   * input, producer output, tool results and any imported history. Never
+   * committed entries.
    */
   pending: readonly ContextEntryInput[];
   /** The agent the hooks run for. */
@@ -83,183 +371,14 @@ export interface LogModePreGenerateResult {
   pending: ContextEntryInput[];
 }
 
-/** How a pending entry is shown to hooks, and how to read it back. */
-type Presentation =
-  | { kind: "message"; index: number; role: ModelMessage["role"] }
-  | { kind: "runtime_context"; index: number; leaves: number };
-
-function violation(event: HookEvent, detail: string): ContextLogInvalidError {
-  return new ContextLogInvalidError(
-    "log_mode_hook_violation",
-    `${event} hook ${detail} in log mode. Log-mode hooks may only change operational options (${[
-      ...LOG_MODE_OPERATIONAL_OPTIONS,
-    ].join(
-      ", ",
-    )}), transform new input before it is committed, gate execution, or shape a new tool result. Append context with a ContextProducer instead.`,
-  );
-}
-
-function withoutInput(options: GenerateOptions): GenerateOptions {
-  const rest: GenerateOptions = { ...options };
-  for (const key of INPUT_OPTIONS) delete rest[key];
-  return rest;
-}
-
-/** Strings of a JSON value in a fixed traversal order. */
-function stringLeaves(value: ContextJsonValue): string[] {
-  const leaves: string[] = [];
-  const visit = (current: ContextJsonValue | undefined): void => {
-    if (typeof current === "string") leaves.push(current);
-    else if (Array.isArray(current)) for (const item of current) visit(item);
-    else if (current !== null && typeof current === "object") {
-      for (const item of Object.values(current)) visit(item);
-    }
-  };
-  visit(value);
-  return leaves;
-}
-
-/** Replaces the strings of a JSON value, in the order of {@link stringLeaves}. */
-function replaceStringLeaves(
-  value: ContextJsonValue,
-  replacements: readonly string[],
-): ContextJsonValue {
-  let next = 0;
-  const visit = (current: ContextJsonValue): ContextJsonValue => {
-    if (typeof current === "string") return replacements[next++] as string;
-    if (Array.isArray(current)) return current.map(visit);
-    if (current !== null && typeof current === "object") {
-      const copy: { [key: string]: ContextJsonValue } = {};
-      for (const [key, item] of Object.entries(current)) {
-        if (item !== undefined) copy[key] = visit(item);
-      }
-      return copy;
-    }
-    return current;
-  };
-  return visit(value);
-}
-
-/**
- * Shows the pending entries to hooks as model messages. User, assistant and
- * tool result entries are their own messages. A runtime context entry's
- * payload is opaque, so it is shown as a user message with one text part per
- * string in the payload; that lets text filters (secrets, guardrails) scan
- * and redact it. Retractions and payloads without text are not shown.
- *
- * Hooks receive copies, so mutating a presented message in place cannot
- * reach the pending entries without passing the checks below.
- */
-function present(pending: readonly ContextEntryInput[]): {
-  messages: ModelMessage[];
-  presentations: Presentation[];
-} {
-  const messages: ModelMessage[] = [];
-  const presentations: Presentation[] = [];
-  pending.forEach((entry, index) => {
-    if (entry.kind !== "runtime_context") {
-      messages.push(structuredClone(entry.message));
-      presentations.push({ kind: "message", index, role: entry.message.role });
-      return;
-    }
-    const leaves = stringLeaves(entry.payload);
-    if (leaves.length === 0) return;
-    messages.push({
-      role: "user",
-      content: leaves.map((text) => ({ type: "text" as const, text })),
-    });
-    presentations.push({ kind: "runtime_context", index, leaves: leaves.length });
-  });
-  return { messages, presentations };
-}
-
-function readRuntimeContextTexts(
-  message: ModelMessage,
-  leaves: number,
-  event: HookEvent,
-): string[] {
-  if (message.role !== "user") {
-    throw violation(event, "changed the role of new runtime context");
-  }
-  if (typeof message.content === "string" && leaves === 1) return [message.content];
-  if (
-    Array.isArray(message.content) &&
-    message.content.length === leaves &&
-    message.content.every((part) => part.type === "text" && typeof part.text === "string")
-  ) {
-    return message.content.map((part) => (part as { text: string }).text);
-  }
-  throw violation(
-    event,
-    "changed the shape of new runtime context (only its text may be transformed)",
-  );
-}
-
-/** A non-operational option as it was before the hooks ran. */
-interface OptionSnapshot {
-  value: unknown;
-  /** Canonical JSON when the value is plain JSON, so in-place mutation is detected. */
-  json: string | undefined;
-}
-
-function plainJson(value: unknown): string | undefined {
-  if (value === undefined) return undefined;
-  try {
-    assertContextJson(value);
-    return canonicalContextJson(value);
-  } catch {
-    return undefined;
-  }
-}
-
-/** Snapshots every non-operational option before hooks can touch it. */
-function snapshotOptions(options: GenerateOptions): Map<string, OptionSnapshot> {
-  const snapshot = new Map<string, OptionSnapshot>();
-  for (const [key, value] of Object.entries(options)) {
-    if (LOG_MODE_OPERATIONAL_OPTIONS.has(key as keyof GenerateOptions)) continue;
-    snapshot.set(key, { value, json: plainJson(value) });
-  }
-  return snapshot;
-}
-
-/** Same value, or equal JSON for plain values a hook rebuilt instead of copying. */
-function unchanged(before: OptionSnapshot | undefined, after: unknown): boolean {
-  if (before === undefined) return after === undefined;
-  if (before.json !== undefined) return plainJson(after) === before.json;
-  return Object.is(before.value, after);
-}
-
-/**
- * Checks that `next` changes only operational options of a snapshot.
- *
- * @param snapshot - The non-operational options before the hooks ran
- * @param next - The options after the hooks ran
- * @param event - The hook event, for the error message
- * @param exempt - Keys the caller checks separately
- * @throws {ContextLogInvalidError} With reason `log_mode_hook_violation`
- */
-function assertOperationalChangesOnly(
-  snapshot: ReadonlyMap<string, OptionSnapshot>,
-  next: GenerateOptions,
-  event: HookEvent,
-  exempt: ReadonlySet<string> = new Set(),
-): void {
-  const keys = new Set([...snapshot.keys(), ...Object.keys(next)]);
-  for (const key of keys) {
-    if (exempt.has(key) || LOG_MODE_OPERATIONAL_OPTIONS.has(key as keyof GenerateOptions)) continue;
-    if (!unchanged(snapshot.get(key), next[key as keyof GenerateOptions])) {
-      throw violation(
-        event,
-        key === "prompt" || key === "messages"
-          ? `changed "${key}" (history is append-only)`
-          : `changed "${key}"`,
-      );
-    }
-  }
-}
-
 /**
  * Runs PreGenerate hooks for a log-mode call, before its input is committed.
+ *
+ * Unlike legacy mode, where every hook sees the same input and the first
+ * `updatedInput` wins, log-mode hooks run **one after another**: each hook
+ * sees the input as the previous hooks left it, and every transform is kept.
+ * An operational hook can therefore never discard the secrets filter's
+ * redaction. Any hook's denial stops the call.
  *
  * Hooks receive the call's options with `messages` set to the **new** input
  * only (see `present`); committed history is never shown, so it cannot be
@@ -268,16 +387,18 @@ function assertOperationalChangesOnly(
  * - deny the call (`permissionDecision: "deny"`), which throws
  *   {@link GeneratePermissionDeniedError} before anything is committed;
  * - change operational options ({@link LOG_MODE_OPERATIONAL_OPTIONS});
- * - transform the new messages in place, for example to redact secrets. The
- *   transforms are applied to the pending entries, so the redacted content
- *   is what gets committed.
+ * - transform the text of the new messages, for example to redact secrets.
+ *   The transforms are written back to the pending entries without changing
+ *   their structure, ids or part types, so the redacted content is what gets
+ *   committed.
  *
  * Any other change throws a {@link ContextLogInvalidError} with reason
- * `log_mode_hook_violation`: adding or removing messages,
- * changing a message's role, setting `prompt`, or changing any non-operational
- * option such as `instructionLayers`, `memory`, `output` or `threadId`. A
- * `respondWith` short-circuit is also rejected, because its result would
- * never be committed to the log.
+ * `log_mode_hook_violation`: adding or removing messages, changing a
+ * message's role or shape, setting `prompt`, or changing any non-operational
+ * option such as `instructionLayers`, `memory`, `providerOptions` or
+ * `threadId`, whether returned or made in place. A `respondWith`
+ * short-circuit is also rejected, because its result would never be
+ * committed to the log.
  *
  * @internal
  */
@@ -286,85 +407,74 @@ export async function invokeLogModePreGenerateHooks(
 ): Promise<LogModePreGenerateResult> {
   const { hooks, agent } = params;
   const pending = [...params.pending];
-  const baseOptions = withoutInput(params.options);
-  if (hooks.length === 0) return { options: baseOptions, pending };
+  let options = withoutInput(params.options);
+  const messagesExempt = new Set(["messages"]);
 
-  const snapshot = snapshotOptions(baseOptions);
-  const { messages, presentations } = present(pending);
-  const presented: GenerateOptions = { ...baseOptions, messages };
-  const outputs = await invokeHooksWithTimeout(
-    hooks,
-    buildPreGenerateInput(presented, agent),
-    null,
-    agent,
-  );
+  for (const hook of hooks) {
+    const isolated = isolateOptions(options);
+    const { messages, presentations } = present(pending);
+    const view: GenerateOptions = { ...isolated.view, messages };
+    const outputs = await invokeHooksWithTimeout(
+      [hook],
+      buildPreGenerateInput(view, agent),
+      null,
+      agent,
+    );
 
-  throwIfGenerationDenied(outputs);
-
-  if (extractRespondWith(outputs) !== undefined) {
-    throw violation("PreGenerate", "returned respondWith (a response that is never committed)");
-  }
-
-  // Without updatedInput, the presented options are still checked: a hook
-  // may have mutated them in place.
-  const next = extractUpdatedInput<GenerateOptions>(outputs) ?? presented;
-  if (typeof next !== "object" || next === null) {
-    throw violation("PreGenerate", "returned updatedInput that is not an options object");
-  }
-
-  assertOperationalChangesOnly(snapshot, next, "PreGenerate", new Set(["messages"]));
-
-  const nextMessages = next.messages;
-  if (!Array.isArray(nextMessages) || nextMessages.length !== presentations.length) {
-    throw violation("PreGenerate", "added, removed or dropped messages (history is append-only)");
-  }
-
-  presentations.forEach((presentation, position) => {
-    const after = nextMessages[position] as ModelMessage;
-    if (typeof after !== "object" || after === null) {
-      throw violation("PreGenerate", "replaced a new message with a non-message value");
+    throwIfGenerationDenied(outputs);
+    if (extractRespondWith(outputs) !== undefined) {
+      throw violation("PreGenerate", "returned respondWith (a response that is never committed)");
     }
-    const entry = pending[presentation.index] as ContextEntryInput;
-    if (presentation.kind === "message") {
-      if (after.role !== presentation.role) {
-        throw violation("PreGenerate", `changed the role of a new ${presentation.role} message`);
-      }
-      pending[presentation.index] = { ...entry, message: after } as ContextEntryInput;
-      return;
-    }
-    const runtime = entry as RuntimeContextEntryInput;
-    const texts = readRuntimeContextTexts(after, presentation.leaves, "PreGenerate");
-    pending[presentation.index] = {
-      ...runtime,
-      payload: replaceStringLeaves(runtime.payload, texts),
-    };
-  });
 
-  return { options: withoutInput(next), pending };
+    // Without updatedInput the view is still checked: a hook may have
+    // changed it in place.
+    const next = extractUpdatedInput<GenerateOptions>(outputs) ?? view;
+    options = isolated.accept(next, "PreGenerate", messagesExempt);
+    applyMessages(pending, presentations, next.messages, "PreGenerate");
+  }
+
+  return { options, pending };
 }
 
+// =============================================================================
+// Retries
+// =============================================================================
+
 /**
- * Checks the options a `PostGenerateFailure` hook returned for a retry. In
- * log mode the call's input is already committed, so a retry may only change
- * operational options.
- *
- * @param previous - The options of the failed attempt
- * @param next - The options a hook returned for the next attempt
- * @returns `next` without `prompt` or `messages`
- * @throws {ContextLogInvalidError} With reason `log_mode_hook_violation`
+ * Guards the options of a log-mode retry.
  *
  * @internal
  */
-export function assertLogModeRetryOptions(
-  previous: GenerateOptions,
-  next: GenerateOptions,
-): GenerateOptions {
-  assertOperationalChangesOnly(
-    // Snapshot with the input, so a hook that spreads the previous options
-    // unchanged passes; any change to the input is still rejected.
-    snapshotOptions(previous),
-    next,
-    "PostGenerateFailure",
-  );
-  return withoutInput(next);
+export interface LogModeRetryGuard {
+  /** Isolated options to hand to the `PostGenerateFailure` hooks. */
+  options: GenerateOptions;
+  /**
+   * Checks the options a hook returned (or, when none was returned, the
+   * isolated options themselves) and returns the options for the next
+   * attempt, without `prompt` or `messages`.
+   *
+   * @throws {ContextLogInvalidError} With reason `log_mode_hook_violation`
+   */
+  accept(next?: GenerateOptions): GenerateOptions;
+}
+
+/**
+ * Captures a failed attempt's options **before** the `PostGenerateFailure`
+ * hooks run. In log mode the call's input is already committed, so a retry
+ * may only change operational options. Pass `guard.options` to the hooks,
+ * never the attempt's own options object, then call `guard.accept` with the
+ * hook's `updatedInput`: changes made in place are caught as well as
+ * returned ones.
+ *
+ * @param previous - The options of the failed attempt
+ * @returns The isolated hook options and the check for the result
+ *
+ * @internal
+ */
+export function createLogModeRetryGuard(previous: GenerateOptions): LogModeRetryGuard {
+  const isolated = isolateOptions(previous);
+  return {
+    options: isolated.view,
+    accept: (next) => isolated.accept(next ?? isolated.view, "PostGenerateFailure"),
+  };
 }

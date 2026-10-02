@@ -22,6 +22,12 @@ const manifest = {
   inputDigest: "d".repeat(64),
 };
 
+/** Matches a slot producer key; the last segment is the source fingerprint, or `-` for a retraction. */
+function key(producer: string, slot: string, count: number) {
+  const escaped = `ctx:${producer}:${slot}:${count}:`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return expect.stringMatching(new RegExp(`^${escaped}([0-9a-f]{32}|-)$`));
+}
+
 async function readFullPath(store: ContextLogStore, head: ContextHead | null) {
   if (!head) return [];
   const entries: ContextEntry[] = [];
@@ -86,7 +92,7 @@ describe("createSlotContextProducer", () => {
     expect(first.produced).toEqual([
       {
         kind: "runtime_context",
-        key: "ctx:settings:slot:persona:1",
+        key: key("settings", "slot:persona", 1),
         producer: "settings",
         payload: { name: "Ada" },
       },
@@ -109,13 +115,15 @@ describe("createSlotContextProducer", () => {
     expect(produced).toEqual([
       {
         kind: "runtime_context",
-        key: "ctx:settings:slot:persona:2",
+        key: key("settings", "slot:persona", 2),
         producer: "settings",
         payload: { name: "Grace" },
-        supersedes: "ctx:settings:slot:persona:1",
+        supersedes: key("settings", "slot:persona", 1),
       },
     ]);
-    expect(committed.map((entry) => entry.key)).toContain("ctx:settings:slot:persona:1");
+    expect(committed.map((entry) => entry.key)).toEqual(
+      expect.arrayContaining([key("settings", "slot:persona", 1)]),
+    );
     expect(activePayloads(committed)).toEqual([{ name: "Grace" }]);
   });
 
@@ -129,7 +137,7 @@ describe("createSlotContextProducer", () => {
     expect(produced).toHaveLength(1);
     expect(produced[0]).toMatchObject({
       metadata: { revision: "2" },
-      supersedes: "ctx:settings:slot:s:1",
+      supersedes: key("settings", "slot:s", 1),
     });
   });
 
@@ -147,10 +155,10 @@ describe("createSlotContextProducer", () => {
     expect(removed.produced).toEqual([
       {
         kind: "runtime_context",
-        key: "ctx:settings:slot:result_contract:2",
+        key: key("settings", "slot:result_contract", 2),
         producer: "settings",
         payload: null,
-        supersedes: "ctx:settings:slot:result_contract:1",
+        supersedes: key("settings", "slot:result_contract", 1),
         retraction: true,
       },
     ]);
@@ -167,10 +175,10 @@ describe("createSlotContextProducer", () => {
     expect(restored.produced).toEqual([
       {
         kind: "runtime_context",
-        key: "ctx:settings:slot:result_contract:3",
+        key: key("settings", "slot:result_contract", 3),
         producer: "settings",
         payload: "submit JSON",
-        supersedes: "ctx:settings:slot:result_contract:2",
+        supersedes: key("settings", "slot:result_contract", 2),
       },
     ]);
     expect(activePayloads(restored.committed)).toEqual(["Ada", "submit JSON"]);
@@ -183,7 +191,7 @@ describe("createSlotContextProducer", () => {
     await turn(store, [producer], "1");
     state.values = [{ slot: "file:b", payload: "B" }];
     const { produced, committed } = await turn(store, [producer], "2");
-    expect(produced.map((entry) => entry.key)).toEqual(["ctx:settings:slot:file%3Ab:1"]);
+    expect(produced.map((entry) => entry.key)).toEqual([key("settings", "slot:file%3Ab", 1)]);
     expect(activePayloads(committed)).toEqual(["A", "B"]);
   });
 
@@ -203,7 +211,7 @@ describe("createSlotContextProducer", () => {
     await turn(store, [producer], "1");
     const { produced } = await turn(store, [producer], "2");
     expect(produced).toEqual([
-      expect.objectContaining({ key: "ctx:mixed:slot:config%3Ax:2", retraction: true }),
+      expect.objectContaining({ key: key("mixed", "slot:config%3Ax", 2), retraction: true }),
     ]);
   });
 
@@ -218,7 +226,7 @@ describe("createSlotContextProducer", () => {
     expect(failed.produced).toEqual([
       {
         kind: "runtime_context",
-        key: "ctx:settings:unavailable:1",
+        key: key("settings", "unavailable", 1),
         producer: "settings",
         payload: {
           type: CONTEXT_UNAVAILABLE,
@@ -243,18 +251,18 @@ describe("createSlotContextProducer", () => {
     expect(recovered.produced).toEqual([
       {
         kind: "runtime_context",
-        key: "ctx:settings:unavailable:2",
+        key: key("settings", "unavailable", 2),
         producer: "settings",
         payload: null,
-        supersedes: "ctx:settings:unavailable:1",
+        supersedes: key("settings", "unavailable", 1),
         retraction: true,
       },
       {
         kind: "runtime_context",
-        key: "ctx:settings:slot:persona:2",
+        key: key("settings", "slot:persona", 2),
         producer: "settings",
         payload: "Grace",
-        supersedes: "ctx:settings:slot:persona:1",
+        supersedes: key("settings", "slot:persona", 1),
       },
     ]);
     expect(activePayloads(recovered.committed)).toEqual(["Grace"]);
@@ -264,8 +272,8 @@ describe("createSlotContextProducer", () => {
     const again = await turn(store, [producer], "5");
     expect(again.produced).toEqual([
       expect.objectContaining({
-        key: "ctx:settings:unavailable:3",
-        supersedes: "ctx:settings:unavailable:2",
+        key: key("settings", "unavailable", 3),
+        supersedes: key("settings", "unavailable", 2),
       }),
     ]);
   });
@@ -366,7 +374,7 @@ describe("createSlotContextProducer", () => {
       produce: () => [
         {
           kind: "runtime_context",
-          key: "ctx:settings:slot:persona:7",
+          key: `ctx:settings:slot:persona:7:${"a".repeat(32)}`,
           producer: "other",
           payload: "x",
         },
@@ -375,8 +383,8 @@ describe("createSlotContextProducer", () => {
     state.values = [{ slot: "persona", payload: "Ada" }];
     const { produced } = await turn(store, [other, producer], "1");
     expect(produced.map((entry) => entry.key)).toEqual([
-      "ctx:settings:slot:persona:7",
-      "ctx:settings:slot:persona:1",
+      `ctx:settings:slot:persona:7:${"a".repeat(32)}`,
+      key("settings", "slot:persona", 1),
     ]);
   });
 });

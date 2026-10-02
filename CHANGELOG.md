@@ -48,14 +48,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `AgentPlugin.contextProducers` and `PluginOptions.contextProducers` let
     plugins register producers. They run after the agent's own
     `contextLog.producers`, and producer names must be unique.
-  - In log mode, `PreGenerate` hooks see only new, not-yet-committed input.
-    They may deny it, transform it in place (so the secrets filter and
-    guardrails still redact or block it before it is committed) and change
-    operational options. Changing history, `prompt`, `instructionLayers`,
-    `memory` or other non-operational options, or short-circuiting with
-    `respondWith`, throws a `ContextLogInvalidError` with reason
-    `log_mode_hook_violation`. Retry options from `PostGenerateFailure` are
-    held to the same rule. See the hook mapping in
+  - In log mode, `PreGenerate` hooks run one after another and see only new,
+    not-yet-committed input, including new tool calls and tool results as
+    text. They may deny it, transform its text (so the secrets filter and
+    guardrails still redact or block it before it is committed, and no hook
+    can discard another's redaction) and change operational options.
+    Changing history, `prompt`, `instructionLayers`, `memory`,
+    `providerOptions` or other non-operational options, or short-circuiting
+    with `respondWith`, throws a `ContextLogInvalidError` with reason
+    `log_mode_hook_violation`, whether the change is returned or made in
+    place. Retry options from `PostGenerateFailure` are held to the same
+    rule. See the hook mapping in
     [docs/context-log.md](./docs/context-log.md#hooks-in-log-mode).
 
 ### Changed
