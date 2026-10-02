@@ -450,19 +450,32 @@ function toOutputEntries(
   keyPrefix: string,
   model: ContextModelRef,
 ): Array<AssistantContextEntryInput | ToolResultContextEntryInput> {
-  return messages.map(({ message, index }) => {
-    const key = `${keyPrefix}:${index}`;
-    if (message.role === "assistant") {
-      return { kind: "assistant", key, message, model };
-    }
-    if (message.role === "tool") {
-      return { kind: "tool_result", key, message };
-    }
-    throw new ContextLogInvalidError(
-      "invalid_output",
-      `A model step produced a "${message.role}" message; only assistant and tool messages are outputs`,
-    );
-  });
+  return messages.flatMap(
+    ({ message, index }): Array<AssistantContextEntryInput | ToolResultContextEntryInput> => {
+      const key = `${keyPrefix}:${index}`;
+      if (message.role === "assistant") {
+        return [{ kind: "assistant", key, message, model }];
+      }
+      if (message.role === "tool") {
+        // A step with parallel tool calls answers them in one tool message. Each
+        // result is its own entry (a host records one result per entry), keyed
+        // by its part index. Projection is unchanged: the AI SDK merges adjacent
+        // tool messages into one, keeping the first one's provider options.
+        if (message.content.length <= 1) {
+          return [{ kind: "tool_result", key, message }];
+        }
+        return message.content.map((part, partIndex) => ({
+          kind: "tool_result",
+          key: `${key}:${partIndex}`,
+          message: { ...message, content: [part] },
+        }));
+      }
+      throw new ContextLogInvalidError(
+        "invalid_output",
+        `A model step produced a "${message.role}" message; only assistant and tool messages are outputs`,
+      );
+    },
+  );
 }
 
 /**

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Log mode:** a model step with parallel tool calls commits one
+  `tool_result` entry per result, in call order, instead of one entry holding
+  every result, so a host that records one result per entry (a product event
+  per tool call) can commit it. Keys of a split step are
+  `<step key>:<part index>`; a step with a single result keeps its key.
+  Provider input is unchanged, because the AI SDK merges adjacent tool
+  messages (LLE-13965).
+
 ## [1.0.0-rc.5] - 2026-10-02
 
 Fifth release candidate for 1.0.0. It adds two log-mode seams that hosts
