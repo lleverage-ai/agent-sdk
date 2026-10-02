@@ -8,6 +8,13 @@
  */
 
 export {
+  deriveSubagentContextStream,
+  readSubagentDelegation,
+  type SubagentDelegationState,
+  type SubagentStreamInput,
+  type SubagentStreamResolver,
+} from "./delegation.js";
+export {
   type ContextLogConflictReason,
   ContextLogConflictError,
   ContextLogError,
@@ -17,6 +24,7 @@ export {
   ContextLogRefusedError,
   type ContextLogResource,
   ContextLogUnavailableError,
+  DelegationRecoveryRequiredError,
   isContextLogError,
 } from "./errors.js";
 export { assertContextJson, canonicalContextJson } from "./json.js";

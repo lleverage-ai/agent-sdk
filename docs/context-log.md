@@ -5,9 +5,10 @@
 > [request projection](#request-projection), [producers](#producers), the
 > [hook rules](#hooks-in-log-mode) and the
 > [commit boundary](#the-commit-boundary), which commits every call's input
-> before dispatch and every model output before anything uses it, and
-> [interrupts and resume](#interrupts-and-resume).
-> Compaction and subagent streams land in later releases. Agents
+> before dispatch and every model output before anything uses it,
+> [interrupts and resume](#interrupts-and-resume), and delegated
+> [subagents on their own streams](#subagent-streams).
+> Compaction lands in a later release. Agents
 > without `contextLog: { mode: "log" }` keep their legacy behaviour. The
 > exports may change before they are marked stable.
 
@@ -305,7 +306,7 @@ Rules in log mode:
   the call to choose others (for example the host's session branch, or a
   delegated child's own stream). `contextStream` is rejected outside log mode.
 - **Not yet supported.** `contextManager` (compaction) throws until its
-  log-mode support lands. Subagents do not inherit log mode.
+  log-mode support lands.
 
 ## The commit boundary
 
@@ -504,6 +505,99 @@ Other failure points recover without that:
 | After the result is committed, before the pending interrupt is cleared | Does not run the tool; clears the interrupt and continues |
 | After the interrupt is cleared, before the continuation finishes | There is nothing to resume. Continue with an ordinary generation without a prompt. |
 | The `PreGenerate` hooks deny the result | The result is not committed, so the resume is in doubt as above |
+
+## Subagent streams
+
+When a log-mode agent delegates with the `task` tool, the subagent keeps its
+history on a stream of its own in the parent's store, on the parent's thread
+and branch:
+
+- The child stream is derived from the parent call's stream and the
+  originating `toolCallId`: by default
+  `<parent stream>/subagent/<type>-<digest>`, where the type is
+  percent-encoded (`encodeURIComponent`, so it never contains `/`) and the
+  digest is the first 32 hex characters of the SHA-256 of the tool call id
+  (`deriveSubagentContextStream`). A host can choose another with
+  `contextLog.subagentStream`, which must be deterministic and give each
+  delegation its own stream.
+- The factory receives it as `SubagentCreateContext.contextLog`
+  (`{ store, stream, parentStream }`) and must return an agent in log mode on
+  that store. Give the child no checkpointer, or one of its own: a log-mode
+  child that shares the parent's checkpointer is rejected, because both would
+  save control state under the same `threadId`. The task tool runs the child
+  with the task as its prompt on the child stream, so the child's calls go
+  through its own commit boundary.
+- The child's history is its stream, so a host that runs a delegation as
+  several bounded `generate()` calls (for example to continue after a step
+  limit) passes the same options with a new prompt each time, and every call
+  continues from the committed history. No private checkpointer is needed.
+- The delegation's result is always the child's **committed** final reply,
+  read from its stream once the child's run (and, for a streaming subagent,
+  its stream) has fully settled. A first run therefore returns exactly what
+  recovery would later read back: the reply as the input filters screened it,
+  without a `PostGenerate` hook's `updatedResult`, and for a streaming
+  subagent the last reply's text rather than every step's streamed text. A
+  run that did not commit a final reply (it stopped on a tool call, was
+  interrupted, or its final output commit failed) rejects with
+  `DelegationRecoveryRequiredError`, as below.
+- The parent receives that reply as an ordinary tool result, committed on the
+  parent's stream like any other.
+
+```typescript
+const researcher: SubagentDefinition = {
+  type: "researcher",
+  description: "Researches a topic",
+  create: (ctx) =>
+    createAgent({
+      model: providerModel,
+      systemPrompt: "You are a researcher.",
+      contextLog: ctx.contextLog && { mode: "log", store: ctx.contextLog.store },
+    }),
+};
+```
+
+The built-in general-purpose and plugin subagents do this themselves, with
+the parent's `admit` hook and projection adapter (not its producers).
+
+**Recovery.** When a delegation is created again for the same tool call (for
+example when a host re-executes a tool call after a crash), the task tool
+reads the child stream before anything else (`readSubagentDelegation`):
+
+| Child stream | Result |
+| --- | --- |
+| No head | The delegation starts. |
+| The last call committed a final reply (an assistant message without tool calls, appended by that call's own output commit) and its outcome is `completed` or not yet recorded | That reply is the tool result. The factory, the subagent hooks and the model are not called. |
+| Any other head (a crash mid-task, a call recorded `failed`, `cancelled` or `unknown`, a run that stopped on a tool call) | The tool call rejects with `DelegationRecoveryRequiredError` (a `ContextLogRefusedError` with reason `delegation_recovery_required`, carrying the stream and head). |
+
+An outcome that is not yet recorded counts when the final reply is already
+committed: the outputs are durable, and the stream's next prepare would
+close the call `completed` (`closeSuperseded`). An explicit `failed`,
+`cancelled` or `unknown` outcome is never read back.
+
+The SDK never replays the task on an existing child stream: the child's tools
+may already have run. A background delegation (`run_in_background`) checks the
+stream before it starts, so the error rejects the tool call too. Under an
+`ownedTaskPolicy`, the owned runner first replays an in-process delivery for
+the same tool call; a background owned delegation that needs recovery is
+reported as a failed task. The error reaches the host's `transformToolError` and
+`PostToolUseFailure` hooks; as with any failed tool, the AI SDK then gives
+the model a tool error, which is committed as the parent's tool result.
+
+
+**Concurrent deliveries.** The task tool's check and the child's first call
+are not one atomic step, so two deliveries of the same tool call could both
+find no head. Each delegation therefore claims its stream: every child call
+it makes plans only on the head revision the delegation itself last left
+(none, before its first write), and the stream's compare-and-swap covers the
+window between planning and prepare. A delivery whose stream another
+delivery moved never appends the task again: it re-reads the stream and
+returns the committed final reply, or rejects with
+`DelegationRecoveryRequiredError`. The claim travels in the generate options
+the task tool passes to the subagent, so a host that wraps the subagent's
+`generate()` (for example in a bounded loop) must spread those options into
+each call, or it loses this protection. Hosts should still hold one lease
+over the whole delegation, from the tool call to its result, as part of
+their single-writer obligation for streams.
 
 ## Hooks in log mode
 

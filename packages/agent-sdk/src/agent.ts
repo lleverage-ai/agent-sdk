@@ -67,7 +67,7 @@ import type {
   PromptMemoryContext,
 } from "./prompt-builder/index.js";
 import { ACCEPT_EDITS_BLOCKED_PATTERNS } from "./security/index.js";
-import { createSubagent } from "./subagents.js";
+import { createSubagent, subagentContextLogOptions } from "./subagents.js";
 import { TaskManager } from "./task-manager.js";
 import type { BackgroundTask } from "./task-store/types.js";
 import { formatPluginToolName, resolveStaticToolDescription } from "./tool-names.js";
@@ -463,6 +463,7 @@ export function createAgent(options: AgentOptions): Agent {
             systemPrompt:
               plugin.subagent!.prompt ??
               `You are a ${plugin.name} specialist. Complete the requested task using available tools and return a clear summary.`,
+            contextLog: subagentContextLogOptions(agent, _ctx),
           }),
       });
     }

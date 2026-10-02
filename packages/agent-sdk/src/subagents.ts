@@ -5,8 +5,15 @@
  */
 
 import { createAgent } from "./agent.js";
+import type { ContextLogOptions } from "./context-log/types.js";
 import { applyMiddleware, mergeHooks as mergeHookRegistrations } from "./middleware/apply.js";
-import type { Agent, HookRegistration, InheritableHookEvent, SubagentOptions } from "./types.js";
+import type {
+  Agent,
+  HookRegistration,
+  InheritableHookEvent,
+  SubagentCreateContext,
+  SubagentOptions,
+} from "./types.js";
 
 /**
  * Creates a subagent that inherits configuration from a parent agent.
@@ -121,7 +128,31 @@ export function createSubagent(parentAgent: Agent, options: SubagentOptions): Ag
     workflowExecutionGate:
       options.workflowExecutionGate ?? parentAgent.options.workflowExecutionGate,
     disallowedTools: options.disallowedTools,
+    contextLog: options.contextLog,
   });
+}
+
+/**
+ * Log-mode options for an SDK-built subagent: the delegation's store, with
+ * the parent's admission hook and projection adapter. `undefined` when the
+ * delegation is not in log mode. The parent's producers are not inherited.
+ *
+ * @internal
+ */
+export function subagentContextLogOptions(
+  parentAgent: Agent,
+  ctx: SubagentCreateContext,
+): ContextLogOptions | undefined {
+  if (!ctx.contextLog) {
+    return undefined;
+  }
+  const parent = parentAgent.options.contextLog;
+  return {
+    mode: "log",
+    store: ctx.contextLog.store,
+    ...(parent?.admit && { admit: parent.admit }),
+    ...(parent?.projection && { projection: parent.projection }),
+  };
 }
 
 /**

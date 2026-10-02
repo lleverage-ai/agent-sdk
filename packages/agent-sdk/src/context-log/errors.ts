@@ -5,7 +5,7 @@
  */
 
 import { AgentError } from "../errors/index.js";
-import type { ContextHead } from "./types.js";
+import type { ContextHead, ContextStreamRef } from "./types.js";
 
 /**
  * Category of a {@link ContextLogError}.
@@ -33,6 +33,7 @@ export type ContextLogErrorKind = "conflict" | "not_found" | "refused" | "unavai
  * - `invalid_supersession` - A `supersedes` target is not an active runtime context entry earlier on the path
  * - `interrupt_pending` - The log-mode runtime refused to plan a call on a stream with an unresolved interrupt; resume it first
  * - `resume_in_doubt` - A log-mode resume found the interrupt's resolution but not its result, so the tool may already have run
+ * - `delegation_claim_lost` - A delegated subagent's stream moved outside the delegation (another delivery wrote to it)
  *
  * Stores may report additional, store-specific reasons.
  *
@@ -47,6 +48,7 @@ export type ContextLogConflictReason =
   | "dispatch_already_started"
   | "invalid_lifecycle"
   | "invalid_supersession"
+  | "delegation_claim_lost"
   | (string & {});
 
 /**
@@ -161,6 +163,32 @@ export class ContextLogRefusedError extends ContextLogError {
       cause: options.cause,
     });
     this.name = "ContextLogRefusedError";
+  }
+}
+
+/**
+ * A delegated subagent's stream already has a head, but no final reply the
+ * delegation can be read back from: the child was interrupted mid-task, for
+ * example by a crash. Its tools may have run, so the SDK never replays the
+ * task. The host decides how to recover (for example by reporting the
+ * delegation as failed). The reason is `delegation_recovery_required`.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export class DelegationRecoveryRequiredError extends ContextLogRefusedError {
+  /** The child stream of the delegation. */
+  readonly stream: ContextStreamRef;
+  /** The child stream's head when the delegation was recreated. */
+  readonly head: ContextHead;
+
+  constructor(stream: ContextStreamRef, head: ContextHead) {
+    super("delegation_recovery_required", {
+      message: `Subagent stream "${stream.streamId}" already has an unfinished history; the delegation cannot be replayed and needs host recovery`,
+    });
+    this.name = "DelegationRecoveryRequiredError";
+    this.stream = stream;
+    this.head = head;
   }
 }
 
