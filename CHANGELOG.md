@@ -131,8 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `AgentSession` supports log mode (experimental). Each turn passes only the
   new prompt, since the thread's log holds the history, and `getMessages()` is
   a display copy. A log-mode session needs a `threadId` and does not accept
-  `initialMessages` (both are a `ConfigurationError`). Sessions without log
-  mode are unchanged.
+  non-empty `initialMessages` (both are a `ConfigurationError`). Sessions
+  without log mode are unchanged.
 
 ### Changed
 
