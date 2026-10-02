@@ -2338,9 +2338,11 @@ export function createAgent(options: AgentOptions): Agent {
         } as GenerateResultInterrupted;
       }
 
+      // A resume continues the interrupted run: it never takes new input.
+      const { input: _input, ...resumeOptions } = outcome.genOptions ?? {};
       return agent.generate({
         threadId: outcome.threadId,
-        ...outcome.genOptions,
+        ...resumeOptions,
         prompt: undefined,
       });
     },
@@ -2360,9 +2362,11 @@ export function createAgent(options: AgentOptions): Agent {
         return new Response(null, { status: 204 });
       }
 
+      // A resume continues the interrupted run: it never takes new input.
+      const { input: _input, ...resumeOptions } = outcome.genOptions ?? {};
       return agent.streamDataResponse({
         threadId: outcome.threadId,
-        ...outcome.genOptions,
+        ...resumeOptions,
         prompt: undefined,
       });
     },

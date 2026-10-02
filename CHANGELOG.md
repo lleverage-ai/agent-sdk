@@ -9,14 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0-rc.6] - 2026-10-02
 
-Sixth release candidate for 1.0.0. In log mode, a model step with parallel
-tool calls now commits one `tool_result` entry per result, so a host that
-records one product event per tool result can commit the step. Provider
-input is unchanged. Legacy agents are unchanged.
+Sixth release candidate for 1.0.0. It adds two log-mode changes that hosts
+need to map their product events onto the log: a run's new input can be
+several user messages, including image and file parts, each committed as
+its own `user` entry; and a model step with parallel tool calls commits one
+`tool_result` entry per result. Provider input for existing logs is
+unchanged. Legacy agents are unchanged.
 
 ### Migration notes
 
 - **Legacy mode.** No code change and no behaviour change from rc.5.
+  `GenerateOptions.input` is rejected outside log mode, so legacy callers
+  keep using `prompt` or `messages`.
+- **Log mode, several user messages and attachments.** Hosts that joined
+  queued messages into one `prompt`, or relocated attachments, can pass them
+  as `input`: an array of `UserModelMessage`s, each committed as its own
+  `user` entry, in order. Messages must be plain JSON: text, image and file
+  parts only, with image and file data as a string (base64, a data URL or a
+  URL) and a `mediaType` on file parts. `input` is rejected together with
+  `prompt`. A retry resends the committed input and never appends it again.
+  A new user message's `providerOptions` (message and part level) are
+  screened by the `PreGenerate` hooks like caller data, so a secrets filter
+  or guardrail sees them. Context versions created by rc.6 record
+  `userMedia: "placeholder"` in their contract; on those, user image and
+  file parts the version's capability contract excludes project as the
+  legacy text placeholders. Versions created earlier lack the key and
+  project user parts as stored, and the key is not compared, so its absence
+  never forces a transition. A store that persists only known contract
+  keys must keep `userMedia`, or a reloaded version projects user media as
+  stored.
 - **Log mode, parallel tool results.** A step whose tool message holds more
   than one result now commits one entry per result, in call order, keyed
   `<step key>:<part index>` (the step's entry key in rc.5 was
@@ -28,6 +49,21 @@ input is unchanged. Legacy agents are unchanged.
   readable and need no rewrite: a multi-result entry and its split form
   give the provider the same input, because the AI SDK merges adjacent
   tool messages.
+
+### Added
+
+- **Log mode:** `GenerateOptions.input` takes a run's new input as an array
+  of user messages (several queued messages, or text with image and file
+  parts). Each message passes the `PreGenerate` input-security hooks and is
+  committed as its own `user` entry, in order, under the call's one head
+  snapshot; a retry never appends any of it again. It is rejected together
+  with `prompt` and outside log mode. A new user message's `providerOptions`
+  (message and part level) are screened like caller data. New versions
+  record `userMedia: "placeholder"` in their contract, and on those the
+  default projection adapter replaces user image and file parts the
+  version's capability contract excludes with the legacy text placeholders.
+  Existing versions, without the key, keep projecting user parts as stored
+  (LLE-13995).
 
 ### Changed
 

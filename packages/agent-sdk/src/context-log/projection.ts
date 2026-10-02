@@ -6,7 +6,7 @@
  */
 
 import type { ModelMessage } from "ai";
-import { projectMessagesForModel } from "../agent/model-capabilities.js";
+import { projectMessagesForModel, projectUserMediaForModel } from "../agent/model-capabilities.js";
 import type { ModelInputCapabilities } from "../types.js";
 import { canonicalContextJson } from "./json.js";
 import { activeContextEntries } from "./supersession.js";
@@ -39,6 +39,30 @@ export function buildProjectionContract(
     imageInput: capabilities?.imageInput === false ? "false" : "true",
     fileInput: capabilities?.fileInput === false ? "false" : "true",
   };
+}
+
+/**
+ * Contract key recording that the version projects user image and file
+ * parts its capabilities exclude as text placeholders. The runtime records
+ * it on every version it creates; versions created before it existed lack
+ * it and keep projecting user media as stored, so a version always projects
+ * to the same bytes. It is not compared with the expected contract, so its
+ * absence never requires a transition.
+ *
+ * @internal
+ */
+export const USER_MEDIA_CONTRACT_KEY = "userMedia";
+
+/**
+ * The contract a new version records: the expected contract plus the
+ * projection behaviours this runtime version applies.
+ *
+ * @internal
+ */
+export function newVersionContract(
+  expected: Record<ContextProjectionContractKey, string>,
+): Record<string, string> {
+  return { ...expected, [USER_MEDIA_CONTRACT_KEY]: "placeholder" };
 }
 
 /**
@@ -99,8 +123,12 @@ function renderEntry(entry: ContextEntryInput): ModelMessage {
  *   string payload as is, any other payload as canonical JSON (sorted keys).
  * - When the contract records `imageInput: "false"` or `fileInput: "false"`,
  *   tool-result media is replaced by the same text placeholders legacy mode
- *   uses. The decision follows the version's contract, not the live model
- *   settings, so a path always projects to the same messages.
+ *   uses. On a version whose contract records `userMedia: "placeholder"`
+ *   (every version the runtime creates from 1.0.0-rc.6), user image and
+ *   file parts are replaced too (a file part with an image media type counts
+ *   as an image); older versions project user parts as stored. The decision
+ *   follows the version's contract, not the live model settings, so a path
+ *   always projects to the same messages.
  *
  * A host that renders runtime context or converts between providers
  * differently supplies its own adapter, with its own id and version.
@@ -129,7 +157,14 @@ export function createMessageProjectionAdapter(): ProjectionAdapter {
       for (const entry of activeContextEntries(entries)) {
         messages.push(renderEntry(entry));
       }
-      return { messages: projectMessagesForModel(messages, contractCapabilities(contract)) };
+      const capabilities = contractCapabilities(contract);
+      const projected = projectMessagesForModel(messages, capabilities);
+      return {
+        messages:
+          contract[USER_MEDIA_CONTRACT_KEY] === "placeholder"
+            ? projectUserMediaForModel(projected, capabilities)
+            : projected,
+      };
     },
   };
 }
