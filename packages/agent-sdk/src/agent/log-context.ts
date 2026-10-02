@@ -126,6 +126,15 @@ export function validateLogModeOptions(options: AgentOptions): void {
       { configKey: "contextLog.producers" },
     );
   }
+  const pluginWithProducers = options.plugins?.find(
+    (plugin) => (plugin.contextProducers?.length ?? 0) > 0,
+  );
+  if (pluginWithProducers) {
+    throw new ConfigurationError(
+      `Plugin "${pluginWithProducers.name}" registers contextProducers, which this release's log-mode runtime does not support yet`,
+      { configKey: "plugins.contextProducers", actualValue: pluginWithProducers.name },
+    );
+  }
   if (contextLog.admit) {
     throw new ConfigurationError(
       "contextLog.admit is not supported by this release's log-mode runtime yet",

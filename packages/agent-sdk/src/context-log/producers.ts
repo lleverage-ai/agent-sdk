@@ -9,7 +9,7 @@
  * @packageDocumentation
  */
 
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 
 import { ConfigurationError } from "../errors/index.js";
 import { ContextLogInvalidError } from "./errors.js";
@@ -108,20 +108,39 @@ export interface SlotContextProducerOptions {
    * @defaultValue `() => "The context could not be loaded."`
    */
   describeFailure?: (error: unknown) => string;
+  /**
+   * Host secret that keys the source fingerprint recorded in each entry key.
+   * Must stay the same for a stream across processes and releases; rotating
+   * it makes each slot re-append once.
+   *
+   * With a secret, deduplication compares an HMAC-SHA-256 of the slot's
+   * source value, so input filters that redact the payload before commit
+   * (for example the secrets filter) do not make every call append the slot
+   * again. Without one, no source fingerprint is persisted and
+   * deduplication compares the committed payload, which a redacting filter
+   * changes: an unchanged slot whose payload is redacted is then re-appended
+   * on every call. An unkeyed hash is never persisted, because a reader of
+   * the redacted log could brute-force low-entropy values from it.
+   */
+  fingerprintSecret?: string | Uint8Array;
 }
 
 const KEY_PREFIX = "ctx";
 const SLOT_SEGMENT = "slot";
 const UNAVAILABLE_SEGMENT = "unavailable";
-const RETRACTED_FINGERPRINT = "-";
+const NO_FINGERPRINT = "-";
 const DEFAULT_FAILURE_REASON = "The context could not be loaded.";
 
 /** The latest committed entry of one slot. */
 interface SlotLedgerEntry {
   key: string;
   count: number;
-  /** Fingerprint of the source value, or `null` for a retraction. */
-  fingerprint: string | null;
+  /** False once a retraction has superseded the slot. */
+  active: boolean;
+  /** Keyed fingerprint of the source value from the entry key, when recorded. */
+  source: string | null;
+  /** Canonical committed payload and metadata. */
+  committed: string;
 }
 
 /** A slot is either a loader slot or the producer's unavailable marker. */
@@ -133,7 +152,7 @@ function slotIdKey(id: SlotId): string {
 
 function entryKey(name: string, id: SlotId, count: number, fingerprint: string | null): string {
   const encodedName = encodeURIComponent(name);
-  const suffix = `${count}:${fingerprint ?? RETRACTED_FINGERPRINT}`;
+  const suffix = `${count}:${fingerprint ?? NO_FINGERPRINT}`;
   return id.kind === "slot"
     ? `${KEY_PREFIX}:${encodedName}:${SLOT_SEGMENT}:${encodeURIComponent(id.slot)}:${suffix}`
     : `${KEY_PREFIX}:${encodedName}:${UNAVAILABLE_SEGMENT}:${suffix}`;
@@ -146,7 +165,7 @@ function parseEntryKey(
   const parts = key.split(":");
   if (parts[0] !== KEY_PREFIX || parts[1] !== encodeURIComponent(name)) return null;
   const fingerprintPart = parts[parts.length - 1] as string;
-  const fingerprint = fingerprintPart === RETRACTED_FINGERPRINT ? null : fingerprintPart;
+  const fingerprint = fingerprintPart === NO_FINGERPRINT ? null : fingerprintPart;
   const count = Number(parts[parts.length - 2]);
   if (!Number.isSafeInteger(count) || count < 1) return null;
   if (parts.length === 6 && parts[2] === SLOT_SEGMENT) {
@@ -167,22 +186,20 @@ function parseEntryKey(
 }
 
 /**
- * Fingerprint of a slot's **source** value, recorded in the entry key.
- *
- * Deduplication compares source values, not committed payloads: input
- * filters (for example secret redaction) may transform the payload before it
- * is committed, and comparing the redacted payload with the unredacted source
- * would append a new entry on every call. The fingerprint is a truncated
- * SHA-256 of the canonical source value, so the key never carries the value
- * itself.
+ * Keyed fingerprint of a slot's **source** value, recorded in the entry key
+ * when the host supplies `fingerprintSecret`. Deduplication compares source
+ * values rather than committed payloads, which input filters may have
+ * redacted. The HMAC is keyed so the persisted key cannot be used to
+ * brute-force a redacted value.
  */
-function fingerprint(
+function sourceFingerprint(
+  secret: string | Uint8Array,
   name: string,
   id: SlotId,
   payload: ContextJsonValue,
   metadata: ContextMetadata | undefined,
 ): string {
-  return createHash("sha256")
+  return createHmac("sha256", secret)
     .update(
       canonicalContextJson({
         producer: name,
@@ -193,6 +210,13 @@ function fingerprint(
     )
     .digest("hex")
     .slice(0, 32);
+}
+
+function committedFingerprint(
+  payload: ContextJsonValue,
+  metadata: ContextMetadata | undefined,
+): string {
+  return canonicalContextJson({ payload, metadata: metadata ?? null });
 }
 
 /** Rebuilds the per-slot ledger from this producer's entries on the path. */
@@ -207,7 +231,9 @@ function slotLedger(name: string, path: readonly ContextEntry[]): Map<string, Sl
     ledger.set(id, {
       key: entry.key,
       count: Math.max(parsed.count, previous?.count ?? 0),
-      fingerprint: entry.retraction === true ? null : parsed.fingerprint,
+      active: entry.retraction !== true,
+      source: parsed.fingerprint,
+      committed: committedFingerprint(entry.payload, entry.metadata),
     });
   }
   return ledger;
@@ -233,10 +259,11 @@ function slotLedger(name: string, path: readonly ContextEntry[]): Map<string, Sl
  *   recovers, the marker is retracted before the fresh values.
  *
  * Keys are deterministic (`ctx:<producer>:slot:<slot>:<n>:<fingerprint>`),
- * so a retry from the same head re-derives byte-identical entries. The
- * fingerprint is a truncated SHA-256 of the slot's source value; dedup
- * compares it rather than the committed payload, so input filters that
- * redact the payload before commit do not defeat deduplication.
+ * so a retry from the same head re-derives byte-identical entries. With a
+ * `fingerprintSecret`, the fingerprint is a keyed HMAC of the slot's source
+ * value and deduplication compares it, so input filters that redact the
+ * payload before commit do not defeat deduplication. Without one, the
+ * fingerprint segment is `-` and deduplication compares committed payloads.
  *
  * @param options - Producer name, loader and slot policies
  * @returns A producer to register in `contextLog.producers` or on a plugin
@@ -257,7 +284,7 @@ function slotLedger(name: string, path: readonly ContextEntry[]): Map<string, Sl
  * @category Context Log
  */
 export function createSlotContextProducer(options: SlotContextProducerOptions): ContextProducer {
-  const { name, load, optional = false } = options;
+  const { name, load, optional = false, fingerprintSecret } = options;
   const retractAbsent = options.retractAbsent ?? true;
   const describeFailure = options.describeFailure ?? (() => DEFAULT_FAILURE_REASON);
   const shouldRetract = (slot: string) =>
@@ -271,10 +298,21 @@ export function createSlotContextProducer(options: SlotContextProducerOptions): 
 
       const append = (id: SlotId, payload: ContextJsonValue, metadata?: ContextMetadata) => {
         const previous = ledger.get(slotIdKey(id));
-        const print = fingerprint(name, id, payload, metadata);
-        if (previous?.fingerprint === print) return;
+        const source =
+          fingerprintSecret === undefined
+            ? null
+            : sourceFingerprint(fingerprintSecret, name, id, payload, metadata);
+        const committed = committedFingerprint(payload, metadata);
+        if (
+          previous?.active &&
+          (source !== null && previous.source !== null
+            ? previous.source === source
+            : previous.committed === committed)
+        ) {
+          return;
+        }
         const count = (previous?.count ?? 0) + 1;
-        const key = entryKey(name, id, count, print);
+        const key = entryKey(name, id, count, source);
         entries.push({
           kind: "runtime_context",
           key,
@@ -283,12 +321,12 @@ export function createSlotContextProducer(options: SlotContextProducerOptions): 
           ...(metadata !== undefined ? { metadata } : {}),
           ...(previous ? { supersedes: previous.key } : {}),
         });
-        ledger.set(slotIdKey(id), { key, count, fingerprint: print });
+        ledger.set(slotIdKey(id), { key, count, active: true, source, committed });
       };
 
       const retract = (id: SlotId) => {
         const previous = ledger.get(slotIdKey(id));
-        if (!previous || previous.fingerprint === null) return;
+        if (!previous?.active) return;
         const count = previous.count + 1;
         const key = entryKey(name, id, count, null);
         entries.push({
@@ -299,7 +337,13 @@ export function createSlotContextProducer(options: SlotContextProducerOptions): 
           supersedes: previous.key,
           retraction: true,
         });
-        ledger.set(slotIdKey(id), { key, count, fingerprint: null });
+        ledger.set(slotIdKey(id), {
+          key,
+          count,
+          active: false,
+          source: null,
+          committed: committedFingerprint(null, undefined),
+        });
       };
 
       let values: readonly ContextSlotValue[];

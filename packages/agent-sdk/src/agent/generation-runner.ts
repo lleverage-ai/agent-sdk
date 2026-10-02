@@ -49,7 +49,8 @@ import type {
 } from "ai";
 import { streamText } from "ai";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
-import { type AgentError, ConfigurationError, ValidationError } from "../errors/index.js";
+import { createLogModeRetryGuard } from "../context-log/hooks.js";
+import { type AgentError, ConfigurationError } from "../errors/index.js";
 import {
   createRetryLoopState,
   invokePreGenerateHooks,
@@ -1136,24 +1137,6 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     }
   }
 
-  /**
-   * Log mode: a retry resends the run's input. Input a retry hook changes
-   * never passed PreGenerate (redaction, guardrails), so refuse it rather
-   * than send it or silently drop it.
-   */
-  function logModeInputSnapshot(genOptions: GenerateOptions): string {
-    return JSON.stringify([genOptions.prompt ?? "", genOptions.messages ?? []]);
-  }
-
-  function assertUnchangedLogModeInput(snapshot: string, next: GenerateOptions): void {
-    if (logModeInputSnapshot(next) !== snapshot) {
-      throw new ValidationError(
-        "Retry hooks cannot change the prompt or messages in context log mode: new input must pass PreGenerate before it is sent",
-        { fieldErrors: { prompt: ["cannot be changed on retry in context log mode"] } },
-      );
-    }
-  }
-
   async function retryOrThrow(
     normalizedError: AgentError,
     effectiveGenOptions: GenerateOptions,
@@ -1162,14 +1145,16 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     // Handle error with PostGenerateFailure hooks and fallback logic
     const postGenerateFailureHooks = effectiveHooks?.PostGenerateFailure ?? [];
     const retryDecisionHooks = effectiveHooks?.GenerationRetryDecision ?? [];
-    // Taken before the hooks run: they receive the live options object and
-    // could change its input in place.
-    const inputSnapshot = logContext ? logModeInputSnapshot(effectiveGenOptions) : undefined;
+    // Log mode: a retry resends the run's committed input, so retry hooks and
+    // policies may only change operational options. The guard snapshots the
+    // options before they run and hands them an isolated copy, so changes
+    // made in place are caught as well as returned ones.
+    const retryGuard = logContext ? createLogModeRetryGuard(effectiveGenOptions) : undefined;
     const errorDecision = await handleGenerationError({
       error: normalizedError,
       failureHooks: postGenerateFailureHooks,
       decisionHooks: retryDecisionHooks,
-      genOptions: effectiveGenOptions,
+      genOptions: retryGuard?.options ?? effectiveGenOptions,
       agent: getAgent(),
       state: retryState,
       fallbackModel: options.fallbackModel,
@@ -1178,19 +1163,15 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
 
     if (errorDecision.shouldRetry) {
       let nextOptions = effectiveGenOptions;
-      if (inputSnapshot !== undefined) {
-        assertUnchangedLogModeInput(
-          inputSnapshot,
-          errorDecision.updatedOptions ?? effectiveGenOptions,
-        );
-      }
-      if (errorDecision.updatedOptions) {
+      const updatedOptions = retryGuard
+        ? retryGuard.accept(errorDecision.updatedOptions)
+        : errorDecision.updatedOptions;
+      if (updatedOptions) {
         nextOptions = {
-          ...errorDecision.updatedOptions,
-          _runId: errorDecision.updatedOptions._runId ?? effectiveGenOptions._runId,
+          ...updatedOptions,
+          _runId: updatedOptions._runId ?? effectiveGenOptions._runId,
           _checkpointSnapshot:
-            errorDecision.updatedOptions._checkpointSnapshot ??
-            effectiveGenOptions._checkpointSnapshot,
+            updatedOptions._checkpointSnapshot ?? effectiveGenOptions._checkpointSnapshot,
         };
       }
       // Update retry state

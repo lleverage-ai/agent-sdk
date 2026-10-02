@@ -67,6 +67,7 @@ async function prepareTurn(
   hooks: HookCallback[],
   input: ContextEntryInput[],
   label: string,
+  fingerprintSecret: string | null = "host-secret",
 ) {
   const head = await store.readHead(stream);
   const path = await readFullPath(store, head);
@@ -74,6 +75,7 @@ async function prepareTurn(
     producers: [
       createSlotContextProducer({
         name: "settings",
+        ...(fingerprintSecret === null ? {} : { fingerprintSecret }),
         load: () => [{ slot: "notes", payload: { title: "deploy", body: `use ${AWS_KEY}` } }],
       }),
     ],
@@ -621,6 +623,96 @@ describe("log-mode PreGenerate: new tool calls and results are screened", () => 
   });
 });
 
+describe("log-mode PreGenerate: object keys and numbers in data are screened", () => {
+  const runtime = (payload: unknown): ContextEntryInput => ({
+    kind: "runtime_context",
+    key: "r",
+    producer: "p",
+    payload: payload as null,
+  });
+  const jsonTool = (value: unknown): ContextEntryInput => ({
+    kind: "tool_result",
+    key: "t",
+    message: {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          toolCallId: "call-1",
+          toolName: "env",
+          output: { type: "json", value: value as null },
+        },
+      ],
+    },
+  });
+
+  async function screen(hooks: HookCallback[], pending: ContextEntryInput[]) {
+    return invokeLogModePreGenerateHooks({ hooks, options: {}, pending, agent: agent() });
+  }
+
+  it("redacts a secret that is only an object key, keeping key order and values", async () => {
+    const [secrets] = createSecretsFilterHooks();
+    const { pending } = await screen([secrets], [runtime({ first: 1, [AWS_KEY]: 2, last: 3 })]);
+    const payload = (pending[0] as { payload: Record<string, number> }).payload;
+    expect(Object.entries(payload)).toEqual([
+      ["first", 1],
+      ["[REDACTED]", 2],
+      ["last", 3],
+    ]);
+  });
+
+  it("redacts nested keys in JSON tool results and runtime context, with values under them", async () => {
+    const [secrets] = createSecretsFilterHooks();
+    const { pending } = await screen(
+      [secrets],
+      [
+        jsonTool({ env: { [AWS_KEY]: { note: `copy of ${AWS_KEY}` } } }),
+        runtime([{ deep: { [AWS_KEY]: true } }]),
+      ],
+    );
+    expect(JSON.stringify(pending)).not.toContain(AWS_KEY);
+    expect(pending[0]).toMatchObject({
+      message: {
+        content: [
+          {
+            toolCallId: "call-1",
+            output: {
+              type: "json",
+              value: { env: { "[REDACTED]": { note: "copy of [REDACTED]" } } },
+            },
+          },
+        ],
+      },
+    });
+    expect(pending[1]).toMatchObject({ payload: [{ deep: { "[REDACTED]": true } }] });
+  });
+
+  it("guardrails deny a blocked key", async () => {
+    const [guard] = createGuardrailsHooks({ blockedInputPatterns: [/AKIA[0-9A-Z]{16}/] });
+    for (const entry of [runtime({ [AWS_KEY]: 1 }), jsonTool({ a: { [AWS_KEY]: null } })]) {
+      await expect(screen([guard], [entry])).rejects.toBeInstanceOf(GeneratePermissionDeniedError);
+    }
+  });
+
+  it("rejects a redaction that would merge two fields", async () => {
+    const [secrets] = createSecretsFilterHooks();
+    expect(
+      await violation(screen([secrets], [runtime({ [AWS_KEY]: 1, "[REDACTED]": 2 })])),
+    ).toMatch(/would merge two fields/);
+  });
+
+  it("screens numbers as their decimal text and writes a changed number back as a string", async () => {
+    const [secrets] = createSecretsFilterHooks({ patterns: [/\b4111\d{12}\b/g] });
+    const { pending } = await screen([secrets], [runtime({ card: 4111111111111111, count: 2 })]);
+    expect(pending[0]).toMatchObject({ payload: { card: "[REDACTED]", count: 2 } });
+
+    const [guard] = createGuardrailsHooks({ blockedInputPatterns: [/^1234$/m] });
+    await expect(screen([guard], [jsonTool({ pin: 1234 })])).rejects.toBeInstanceOf(
+      GeneratePermissionDeniedError,
+    );
+  });
+});
+
 describe("log-mode PreGenerate: options are isolated from hooks", () => {
   it("catches nested in-place changes to provider options", async () => {
     const options: GenerateOptions = { providerOptions: { openai: { instructions: "original" } } };
@@ -688,6 +780,32 @@ describe("log-mode producers with input filters", () => {
       "user",
     ]);
   });
+
+  it("persists only a keyed fingerprint, and none without a host secret", async () => {
+    const [secrets] = createSecretsFilterHooks();
+    const keyed = await prepareTurn(new MemoryContextLogStore(), [secrets], [user("u1", "x")], "1");
+    const otherSecret = await prepareTurn(
+      new MemoryContextLogStore(),
+      [secrets],
+      [user("u1", "x")],
+      "1",
+      "another-secret",
+    );
+    const keyOf = (committed: ContextEntry[]) =>
+      committed.find((entry) => entry.kind === "runtime_context")?.key;
+    expect(keyOf(keyed.committed)).toMatch(/^ctx:settings:slot:notes:1:[0-9a-f]{32}$/);
+    // Keyed: the same source under another secret has an unrelated fingerprint.
+    expect(keyOf(otherSecret.committed)).not.toBe(keyOf(keyed.committed));
+
+    // Without a secret, nothing derived from the unredacted source is persisted,
+    // and a redacted slot is compared by its committed payload, so it is
+    // appended again.
+    const store = new MemoryContextLogStore();
+    const first = await prepareTurn(store, [secrets], [user("u1", "x")], "1", null);
+    expect(keyOf(first.committed)).toBe("ctx:settings:slot:notes:1:-");
+    const second = await prepareTurn(store, [secrets], [user("u2", "y")], "2", null);
+    expect(second.committed.filter((entry) => entry.kind === "runtime_context")).toHaveLength(2);
+  });
 });
 
 describe("log-mode retries", () => {
@@ -705,10 +823,10 @@ describe("log-mode retries", () => {
       prompt: "p",
       messages: [{ role: "user" as const, content: "hello" }],
     };
-    expect(retry(previous, (options) => ({ ...options, maxTokens: 10 }))).toEqual({
-      threadId: "t",
-      maxTokens: 10,
-    });
+    const next = retry(previous, (options) => ({ ...options, maxTokens: 10 }));
+    expect(next).toEqual({ ...previous, maxTokens: 10 });
+    // The attempt's own input is kept, not the hook's copy.
+    expect(next.messages).toBe(previous.messages);
     expect(() =>
       retry(previous, (options) => ({
         ...options,

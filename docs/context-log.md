@@ -118,6 +118,7 @@ import { createSlotContextProducer, definePlugin } from "@lleverage-ai/agent-sdk
 const settings = createSlotContextProducer({
   name: "project-settings",
   optional: true,
+  fingerprintSecret: process.env.CONTEXT_FINGERPRINT_SECRET,
   load: async () => {
     const settings = await loadSettings();
     return settings ? [{ slot: "settings", payload: settings }] : [];
@@ -131,7 +132,7 @@ It reads its own earlier entries from the path and appends only changes:
 
 | Situation | What is appended |
 | --- | --- |
-| A slot appears for the first time | An entry with key `ctx:<producer>:slot:<slot>:1:<fingerprint>` |
+| A slot appears for the first time | An entry with key `ctx:<producer>:slot:<slot>:1:<fingerprint>` (`-` without a `fingerprintSecret`) |
 | A slot's payload and metadata are unchanged | Nothing |
 | A slot's value changes | A new entry that `supersedes` the slot's latest entry |
 | A slot that was active is no longer returned | A retraction, unless `retractAbsent` is `false` (use that for retrieved data, which stays part of the history) |
@@ -141,11 +142,20 @@ It reads its own earlier entries from the path and appends only changes:
 
 The marker's `reason` comes from `describeFailure` and never copies the
 error message by default. Keys are deterministic, so a retry from the same
-head re-derives byte-identical entries. The key's last segment is a
-truncated SHA-256 of the slot's source value, and deduplication compares
-that rather than the committed payload. Input filters such as secret
-redaction can change the payload before commit without defeating
-deduplication, and the key never carries the value itself.
+head re-derives byte-identical entries.
+
+Deduplication needs to know whether a slot's **source** value changed, but
+the committed payload may differ from the source because input filters (for
+example the secrets filter) redact it before commit. With a
+`fingerprintSecret`, the key's last segment is an HMAC-SHA-256 of the source
+value keyed by that secret, and deduplication compares it, so a redacted
+slot is not appended again on every call. The secret must stay the same for
+a stream across processes; rotating it makes each slot re-append once.
+Without a secret, nothing derived from the source is persisted (the segment
+is `-`) and deduplication compares committed payloads, so a slot whose
+payload a filter redacts is appended again on every call. An unkeyed hash is
+never persisted, because anyone reading the redacted log could brute-force a
+low-entropy value (a PIN, a short password) from it.
 
 ### Errors
 
@@ -280,8 +290,8 @@ Rules in log mode:
   `metadata.contextLog`. Its `messages` are always empty, and messages in a
   stored checkpoint are never restored. `invalidateCheckpoint()` reloads that
   control state; history always comes from the head.
-- **Not yet supported.** `contextManager` (compaction), `contextLog.producers`,
-  `contextLog.admit`, `resume()` / `resumeDataResponse()` and
+- **Not yet supported.** `contextManager` (compaction), `contextLog.producers`
+  and plugin `contextProducers`, `contextLog.admit`, `resume()` / `resumeDataResponse()` and
   `streamDataResponse()` background follow-ups throw until their log-mode
   support lands. Subagents do not inherit log mode.
 
@@ -297,7 +307,13 @@ Hooks never rewrite the log. In log mode they may only:
   itself. Any other entry is shown as a message of the same role, with one
   text part per string it carries: text and reasoning parts, a tool call's
   input, a tool result's text or JSON value, or a runtime context payload.
-  Ids, part types, binary data and provider options are not shown. Text
+  Inside caller data (a tool call's input, a JSON tool result's value, a
+  runtime context payload) object keys and finite numbers are shown too: a
+  number as its decimal text, a key as its name. A redacted number is
+  written back as a string, and a key renamed onto a key the object already
+  has (which would merge two fields) is a violation. Booleans and `null` are
+  not screened. Ids, part types, binary data and provider options are not
+  shown. Text
   filters can therefore scan and redact all of it, and the transformed text
   is written back without changing the entry's structure. The secrets filter
   and guardrails keep redacting and blocking new input, and the redacted
@@ -330,10 +346,10 @@ runtime context entry's shape, setting `prompt`, changing `instructionLayers`,
 copies of the options, so changes made in place are caught as well as
 returned ones. Options that are not plain JSON, such as `output` and
 `streamingContext`, are withheld from hooks and restored afterwards. Options
-a `PostGenerateFailure` hook returns for a retry follow the same rule, and
-their input cannot change at all because it is already committed: the
-runtime snapshots the attempt's options before the hooks run and gives them
-an isolated copy.
+a `PostGenerateFailure` hook or a retry policy returns for a retry follow
+the same rule, and the input cannot change at all because it is already
+being sent: the runtime snapshots the attempt's options before the hooks
+run, gives them an isolated copy, and resends the attempt's own input.
 
 | Legacy hook use | Log-mode equivalent |
 | --- | --- |

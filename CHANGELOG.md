@@ -69,21 +69,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     supersedes the slot's latest entry, removed configuration is retracted,
     and a failed `optional` loader appends a `context_unavailable` marker
     (`CONTEXT_UNAVAILABLE`, `ContextUnavailablePayload`) that is retracted
-    when the loader recovers.
+    when the loader recovers. With a host `fingerprintSecret`, deduplication
+    compares a keyed HMAC of the source value, so redacting input filters do
+    not defeat it; without one, no source fingerprint is persisted.
   - `AgentPlugin.contextProducers` and `PluginOptions.contextProducers` let
     plugins register producers. They run after the agent's own
-    `contextLog.producers`, and producer names must be unique.
+    `contextLog.producers`, and producer names must be unique. Like
+    `contextLog.producers`, they are rejected in log mode until the commit
+    runtime lands.
   - In log mode, `PreGenerate` hooks run one after another and see only new,
     not-yet-committed input, including new tool calls and tool results as
-    text. They may deny it, transform its text (so the secrets filter and
+    text, and object keys and numbers inside caller data. They may deny it, transform its text (so the secrets filter and
     guardrails still redact or block it before it is committed, and no hook
     can discard another's redaction) and change operational options.
     Changing history, `prompt`, `instructionLayers`, `memory`,
     `providerOptions` or other non-operational options, or short-circuiting
     with `respondWith`, throws a `ContextLogInvalidError` with reason
     `log_mode_hook_violation`, whether the change is returned or made in
-    place. Retry options from `PostGenerateFailure` are held to the same
-    rule. See the hook mapping in
+    place. Retry options from `PostGenerateFailure` hooks and retry
+    policies are held to the same rule: log-mode retries now snapshot the
+    attempt's options before the hooks run and hand them an isolated copy,
+    which also covers call-level `providerOptions`. A rejected retry throws
+    `ContextLogInvalidError` rather than `ValidationError`. See the hook mapping in
     [docs/context-log.md](./docs/context-log.md#hooks-in-log-mode).
 
 ### Changed

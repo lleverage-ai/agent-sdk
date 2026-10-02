@@ -98,13 +98,15 @@ function plainJson(value: unknown): string | undefined {
  *
  * `accept` checks the options a hook returned (or the view itself, when the
  * hook returned none, to catch in-place changes) and returns the effective
- * options with withheld values restored.
+ * options: the hook's operational options, and the caller's own values for
+ * everything else (exempt keys are left out).
  */
 function isolateOptions(options: GenerateOptions): {
   view: GenerateOptions;
   accept(next: GenerateOptions, event: HookEvent, exempt?: ReadonlySet<string>): GenerateOptions;
 } {
   const snapshots = new Map<string, string>();
+  const originals = new Map<string, unknown>();
   const withheld = new Map<string, unknown>();
   const view: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(options)) {
@@ -118,6 +120,7 @@ function isolateOptions(options: GenerateOptions): {
       continue;
     }
     snapshots.set(key, json);
+    originals.set(key, value);
     view[key] = JSON.parse(json);
   }
 
@@ -152,9 +155,10 @@ function isolateOptions(options: GenerateOptions): {
               : `changed "${key}"`,
           );
         }
-        if (after !== undefined) result[key] = after;
+        // Unchanged: keep the caller's own value, not the hook's copy.
+        if (originals.has(key)) result[key] = originals.get(key);
       }
-      return withoutInput(result as GenerateOptions);
+      return result as GenerateOptions;
     },
   };
 }
@@ -180,20 +184,36 @@ const STRUCTURAL_KEYS = new Set([
 ]);
 
 /**
- * Collects the paths of every string under `value`. Outside caller data,
- * structural keys (ids, part types, binary data, provider options) are
- * skipped, so screening never changes a tool call id or a part type. Inside
- * caller data (a tool call's `input`, a JSON tool result's `value`, a runtime
- * context payload) every string is screened.
+ * A screened text: a string value, an object key, or a number, located by
+ * its path (for a key, the path of the property it names).
  */
-function collectTextPaths(value: unknown, path: Path, data: boolean, into: Path[]): void {
+interface TextLocation {
+  path: Path;
+  kind: "value" | "key" | "number";
+}
+
+/**
+ * Collects every screened text under `value`, in a fixed traversal order.
+ *
+ * Outside caller data, only string values are screened and structural keys
+ * (ids, part types, binary data, provider options) are skipped, so
+ * screening never changes a tool call id or a part type. Inside caller data
+ * (a tool call's `input`, a JSON tool result's `value`, a runtime context
+ * payload) every object key, string and finite number is screened: a secret
+ * can sit in a property name or a numeric value as easily as in a string.
+ */
+function collectTexts(value: unknown, path: Path, data: boolean, into: TextLocation[]): void {
   if (typeof value === "string") {
-    into.push(path);
+    into.push({ path, kind: "value" });
+    return;
+  }
+  if (typeof value === "number") {
+    if (data && Number.isFinite(value)) into.push({ path, kind: "number" });
     return;
   }
   if (Array.isArray(value)) {
     value.forEach((item, index) => {
-      collectTextPaths(item, [...path, index], data, into);
+      collectTexts(item, [...path, index], data, into);
     });
     return;
   }
@@ -202,11 +222,12 @@ function collectTextPaths(value: unknown, path: Path, data: boolean, into: Path[
   const jsonOutput = record.type === "json" || record.type === "error-json";
   for (const [key, item] of Object.entries(record)) {
     if (data) {
-      collectTextPaths(item, [...path, key], true, into);
+      into.push({ path: [...path, key], kind: "key" });
+      collectTexts(item, [...path, key], true, into);
     } else if (key === "input" || (key === "value" && jsonOutput)) {
-      collectTextPaths(item, [...path, key], true, into);
+      collectTexts(item, [...path, key], true, into);
     } else if (!STRUCTURAL_KEYS.has(key)) {
-      collectTextPaths(item, [...path, key], false, into);
+      collectTexts(item, [...path, key], false, into);
     }
   }
 }
@@ -217,11 +238,68 @@ function readAt(root: unknown, path: Path): unknown {
   return current;
 }
 
-function writeAt(root: unknown, path: Path, value: string): unknown {
+function readText(root: unknown, location: TextLocation): string {
+  if (location.kind === "key") return String(location.path[location.path.length - 1]);
+  const value = readAt(root, location.path);
+  return location.kind === "number" ? String(value) : (value as string);
+}
+
+function setAt(root: unknown, path: Path, value: unknown): unknown {
   if (path.length === 0) return value;
   const parent = readAt(root, path.slice(0, -1)) as Record<string | number, unknown>;
   parent[path[path.length - 1] as string | number] = value;
   return root;
+}
+
+/**
+ * Writes transformed texts back onto a copy of `root`. Values are written
+ * first, by their original paths; keys are renamed afterwards, deepest
+ * first, so every path stays valid. A number whose text is unchanged keeps
+ * its type; a changed number (for example a redacted one) becomes a string.
+ * A rename onto a key the object already has would merge two fields, so it
+ * is rejected.
+ */
+function writeTexts(
+  root: unknown,
+  locations: readonly TextLocation[],
+  texts: readonly string[],
+  event: HookEvent,
+): unknown {
+  let result = structuredClone(root);
+  locations.forEach((location, i) => {
+    const text = texts[i] as string;
+    if (location.kind === "value") result = setAt(result, location.path, text);
+    else if (location.kind === "number" && text !== readText(result, location)) {
+      result = setAt(result, location.path, text);
+    }
+  });
+  const renames = locations
+    .map((location, i) => ({ location, text: texts[i] as string }))
+    .filter(({ location }) => location.kind === "key")
+    .sort((a, b) => b.location.path.length - a.location.path.length);
+  for (const { location, text } of renames) {
+    const before = String(location.path[location.path.length - 1]);
+    if (text === before) continue;
+    const parentPath = location.path.slice(0, -1);
+    const parent = readAt(result, parentPath) as Record<string, unknown>;
+    if (Object.hasOwn(parent, text)) {
+      throw violation(
+        event,
+        `renamed key "${before}" onto existing key "${text}", which would merge two fields of new input`,
+      );
+    }
+    const renamed: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(parent)) {
+      Object.defineProperty(renamed, key === before ? text : key, {
+        value: item,
+        enumerable: true,
+        writable: true,
+        configurable: true,
+      });
+    }
+    result = setAt(result, parentPath, renamed);
+  }
+  return result;
 }
 
 /** How a pending entry is shown to hooks, and how to write a transform back. */
@@ -233,7 +311,7 @@ type Presentation =
       role: ModelMessage["role"];
       /** Where the screened strings live: the entry's message or its payload. */
       target: "message" | "payload";
-      paths: Path[];
+      locations: TextLocation[];
     };
 
 /**
@@ -256,18 +334,21 @@ function present(pending: readonly ContextEntryInput[]): {
       presentations.push({ kind: "native", index, role: entry.message.role });
       return;
     }
-    const paths: Path[] = [];
+    const locations: TextLocation[] = [];
     const target = entry.kind === "runtime_context" ? "payload" : "message";
     const root = entry.kind === "runtime_context" ? entry.payload : entry.message;
-    if (entry.kind === "runtime_context") collectTextPaths(root, [], true, paths);
-    else collectTextPaths(entry.message.content, ["content"], false, paths);
-    if (paths.length === 0) return;
+    if (entry.kind === "runtime_context") collectTexts(root, [], true, locations);
+    else collectTexts(entry.message.content, ["content"], false, locations);
+    if (locations.length === 0) return;
     const role = entry.kind === "runtime_context" ? "user" : entry.message.role;
     messages.push({
       role,
-      content: paths.map((path) => ({ type: "text" as const, text: readAt(root, path) as string })),
+      content: locations.map((location) => ({
+        type: "text" as const,
+        text: readText(root, location),
+      })),
     } as ModelMessage);
-    presentations.push({ kind: "text", index, role, target, paths });
+    presentations.push({ kind: "text", index, role, target, locations });
   });
   return { messages, presentations };
 }
@@ -314,20 +395,13 @@ function applyMessages(
       pending[presentation.index] = { ...entry, message: after } as ContextEntryInput;
       return;
     }
-    const texts = readTexts(after, presentation.paths.length, event);
-    if (presentation.target === "payload" && entry.kind === "runtime_context") {
-      let payload: unknown = structuredClone(entry.payload);
-      presentation.paths.forEach((path, i) => {
-        payload = writeAt(payload, path, texts[i] as string);
-      });
+    const texts = readTexts(after, presentation.locations.length, event);
+    if (entry.kind === "runtime_context") {
+      const payload = writeTexts(entry.payload, presentation.locations, texts, event);
       pending[presentation.index] = { ...entry, payload: payload as typeof entry.payload };
       return;
     }
-    if (entry.kind === "runtime_context") return;
-    const message = structuredClone(entry.message);
-    presentation.paths.forEach((path, i) => {
-      writeAt(message, path, texts[i] as string);
-    });
+    const message = writeTexts(entry.message, presentation.locations, texts, event);
     pending[presentation.index] = { ...entry, message } as ContextEntryInput;
   });
 }
@@ -449,9 +523,10 @@ export interface LogModeRetryGuard {
   /** Isolated options to hand to the `PostGenerateFailure` hooks. */
   options: GenerateOptions;
   /**
-   * Checks the options a hook returned (or, when none was returned, the
-   * isolated options themselves) and returns the options for the next
-   * attempt, without `prompt` or `messages`.
+   * Checks the options a hook or retry policy returned (or, when none was
+   * returned, the isolated options themselves) and returns the options for
+   * the next attempt: the returned operational options and the attempt's own
+   * values for everything else, including its unchanged input.
    *
    * @throws {ContextLogInvalidError} With reason `log_mode_hook_violation`
    */
