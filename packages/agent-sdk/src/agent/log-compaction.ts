@@ -27,6 +27,12 @@
  * - A tool call, its approval request, its resolution and its result stay
  *   together: when the manager keeps any of them, all are kept, and a child
  *   that still splits them is refused.
+ * - Under append-only supersession (a contract with `supersession: "append"`)
+ *   the request carries every superseded entry and retraction, so the
+ *   manager is shown them too, as system messages it counts but never
+ *   summarises. The child drops them: compaction is the only place they
+ *   leave the request. When the manager keeps every conversation entry, a
+ *   child without a summary that only drops them is still progress.
  * - Nothing is compacted while a call waits for its interrupt's resolution.
  * - The summary is new content: it passes the PreGenerate screening
  *   (redaction, guardrails) before it is committed.
@@ -43,6 +49,7 @@
 import type { ModelMessage } from "ai";
 import { ContextLogConflictError, ContextLogInvalidError } from "../context-log/errors.js";
 import { canonicalContextJson } from "../context-log/json.js";
+import { appendOnlyRuntimeTexts, SUPERSESSION_CONTRACT_KEY } from "../context-log/projection.js";
 import { activeContextEntries } from "../context-log/supersession.js";
 import type {
   ContextEntryInput,
@@ -109,12 +116,15 @@ export interface LogCompaction {
 export type LogCompactor = (input: LogCompactionInput) => Promise<LogCompaction | undefined>;
 
 /**
- * Where a message of the compaction view came from: the core, a runtime
- * context entry of the path (always kept), a conversation entry of the path
- * (kept or summarised), or the call's new input (always kept).
+ * Where a message of the compaction view came from: the core, a superseded
+ * runtime context entry or retraction the request still carries (counted,
+ * never kept), a runtime context entry of the path (always kept), a
+ * conversation entry of the path (kept or summarised), or the call's new
+ * input (always kept).
  */
 type ViewSource =
   | { kind: "core" }
+  | { kind: "superseded" }
   | { kind: "runtime"; index: number }
   | { kind: "path"; index: number; resolution?: number }
   | { kind: "pending"; index: number };
@@ -391,8 +401,21 @@ export function createLogCompactor(
       view.push({ role: "system", content: core });
       sources.push({ kind: "core" });
     }
+    // Under append-only supersession the request also carries every
+    // superseded entry and retraction, so the manager counts them (as
+    // system messages, never summarised); the child drops them.
+    const appendOnly = input.contract[SUPERSESSION_CONTRACT_KEY] === "append";
+    const rendered = appendOnly ? appendOnlyRuntimeTexts([...path, ...pending]) : [];
+    const pushSuperseded = (index: number) => {
+      view.push({ role: "system", content: rendered[index]! });
+      sources.push({ kind: "superseded" });
+    };
     path.forEach((entry, index) => {
-      if (!active.has(entry) || pairs.has(index)) return;
+      if (!active.has(entry)) {
+        if (appendOnly) pushSuperseded(index);
+        return;
+      }
+      if (pairs.has(index)) return;
       const resolution = resolutionOf.get(index);
       if (resolution !== undefined && entry.kind === "tool_result") {
         const paired = path[resolution] as Extract<ContextEntryInput, { kind: "tool_result" }>;
@@ -410,6 +433,8 @@ export function createLogCompactor(
       if (active.has(entry)) {
         view.push(viewMessage(entry));
         sources.push({ kind: "pending", index });
+      } else if (appendOnly) {
+        pushSuperseded(path.length + index);
       }
     });
 
@@ -499,24 +524,27 @@ export function createLogCompactor(
     // summarised, or the groups brought back all that was), a child would
     // only add a summary to the same entries. Without a summary, a child
     // would drop history that nothing summarises. Either way the head's
-    // version stays current, and no transition is declared.
+    // version stays current, and no transition is declared, unless the
+    // request carries superseded entries (append-only supersession): then a
+    // child that keeps every conversation entry, without a summary, still
+    // drops them.
     const compactable = sources.filter((source) => source.kind === "path");
-    if (
-      summary.length === 0 ||
-      compactable.every(
-        (source) =>
-          retained.has(source.index) &&
-          (source.resolution === undefined || retained.has(source.resolution)),
-      )
-    ) {
+    const keptAll = compactable.every(
+      (source) =>
+        retained.has(source.index) &&
+        (source.resolution === undefined || retained.has(source.resolution)),
+    );
+    const prunable = appendOnly && path.some((entry) => !active.has(entry));
+    if (keptAll ? !prunable : summary.length === 0) {
       return undefined;
     }
+    const kept = keptAll ? [] : summary;
 
     // The summary is new content: screen it like any other new input.
-    const screened = summary.length > 0 ? await input.screen(summary) : [];
+    const screened = kept.length > 0 ? await input.screen(kept) : [];
     if (
-      screened.length !== summary.length ||
-      screened.some((entry, index) => entry.kind !== summary[index]!.kind)
+      screened.length !== kept.length ||
+      screened.some((entry, index) => entry.kind !== kept[index]!.kind)
     ) {
       throw new ContextLogInvalidError(
         "compaction_invalid_summary",

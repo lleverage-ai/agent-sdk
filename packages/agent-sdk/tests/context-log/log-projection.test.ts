@@ -18,6 +18,7 @@ import {
   type ContextEntryInput,
   ContextLogConflictError,
   type ContextLogStore,
+  type ContextProducer,
   type ContextStreamRef,
   type ContextTransition,
   createAgent,
@@ -38,7 +39,7 @@ const THREAD = "thread-1";
 const STREAM: ContextStreamRef = { threadId: THREAD, branchId: "main", streamId: "main" };
 const DEFAULT_CONTRACT = {
   adapter: "agent-sdk/messages",
-  adapterVersion: "1",
+  adapterVersion: "2",
   imageInput: "true",
   fileInput: "true",
 };
@@ -108,7 +109,7 @@ async function commitTurn(
     ...(transition && { transition }),
     append,
     manifest: {
-      projection: { adapter: "agent-sdk/messages", version: "1" },
+      projection: { adapter: "agent-sdk/messages", version: "2" },
       model: { provider: "mock-provider", modelId: "mock-model-id" },
       inputDigest: "0".repeat(64),
     },
@@ -445,6 +446,7 @@ describe("log-mode request projection", () => {
         adapter: "host/adapter",
         adapterVersion: "7",
         userMedia: "placeholder",
+        supersession: "append",
       },
       entries: [
         {
@@ -620,7 +622,7 @@ describe("createMessageProjectionAdapter", () => {
   const adapter = createMessageProjectionAdapter();
   const target = { provider: "p", modelId: "m" };
 
-  it("omits an empty core and renders runtime context deterministically", async () => {
+  it("omits an empty core and drops superseded context on a version without the supersession key", async () => {
     const result = await adapter.project({
       core: "",
       contract: DEFAULT_CONTRACT,
@@ -979,5 +981,270 @@ describe("log-mode retries", () => {
 
     expect(requests).toHaveLength(2);
     expect(JSON.stringify(requests[1]!.prompt)).toBe(JSON.stringify(requests[0]!.prompt));
+  });
+});
+
+/**
+ * A producer whose slot changes every turn, as a memory digest can: each
+ * call appends a new value that supersedes the slot's latest one.
+ */
+const digest: ContextProducer = {
+  name: "digest",
+  produce: ({ path }) => {
+    const latest = path.filter((entry) => entry.key.startsWith("digest:")).at(-1);
+    const turn = path.filter((entry) => entry.kind === "user").length + 1;
+    return [
+      {
+        kind: "runtime_context",
+        key: `digest:${turn}`,
+        producer: "digest",
+        payload: { digest: `memory after ${turn - 1} turns` },
+        ...(latest && { supersedes: latest.key }),
+      },
+    ];
+  },
+};
+
+describe("append-only supersession", () => {
+  const APPEND_CONTRACT = { ...DEFAULT_CONTRACT, userMedia: "placeholder", supersession: "append" };
+  const adapter = createMessageProjectionAdapter();
+  const target = { provider: "p", modelId: "m" };
+  const entries: ContextEntryInput[] = [
+    { kind: "runtime_context", key: "a", producer: "p", payload: { b: 1, a: [2] } },
+    { kind: "runtime_context", key: "b", producer: "p", payload: "text" },
+    user("u1", "hi"),
+    {
+      kind: "runtime_context",
+      key: "b2",
+      producer: "p",
+      payload: "newer text",
+      supersedes: "b",
+    },
+    {
+      kind: "runtime_context",
+      key: "a-gone",
+      producer: "p",
+      payload: null,
+      supersedes: "a",
+      retraction: true,
+    },
+  ];
+
+  it("keeps superseded entries in place and renders updates and retractions", async () => {
+    const result = await adapter.project({ core: "", contract: APPEND_CONTRACT, entries, target });
+
+    expect(result.messages).toEqual([
+      { role: "user", content: [{ type: "text", text: '{"a":[2],"b":1}' }] },
+      { role: "user", content: [{ type: "text", text: "text" }] },
+      { role: "user", content: "hi" },
+      {
+        role: "user",
+        content: [{ type: "text", text: "(updates earlier context)\nnewer text" }],
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: '(removes earlier context: the following no longer applies)\n{"a":[2],"b":1}',
+          },
+        ],
+      },
+    ]);
+    // Keys and producer names never reach the model.
+    expect(JSON.stringify(result.messages)).not.toMatch(/a-gone|b2|"p"/);
+  });
+
+  it("renders a retraction of a retraction without quoting it", async () => {
+    const result = await adapter.project({
+      core: "",
+      contract: APPEND_CONTRACT,
+      entries: [
+        ...entries,
+        {
+          kind: "runtime_context",
+          key: "a-gone-again",
+          producer: "p",
+          payload: null,
+          supersedes: "a-gone",
+          retraction: true,
+        },
+      ],
+      target,
+    });
+    expect(result.messages.at(-1)).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "(removes earlier context: the following no longer applies)" },
+      ],
+    });
+  });
+
+  it("projects every prefix of the path as a prefix of the full projection", async () => {
+    const full = await adapter.project({
+      core: "core",
+      contract: APPEND_CONTRACT,
+      entries,
+      target,
+    });
+    for (let length = 0; length < entries.length; length += 1) {
+      const prefix = await adapter.project({
+        core: "core",
+        contract: APPEND_CONTRACT,
+        entries: entries.slice(0, length),
+        target,
+      });
+      expect(full.messages.slice(0, prefix.messages.length)).toEqual(prefix.messages);
+      expect(prefix.messages).toHaveLength(length + 1);
+    }
+  });
+
+  it("extends the prefix and never rewrites it when a slot changes every turn", async () => {
+    const store = new MemoryContextLogStore();
+    const { model, inputs, requests } = createRecordingModel();
+    const options = { contextLog: { mode: "log" as const, store, producers: [digest] } };
+    const turns = 6;
+
+    for (let turn = 1; turn <= turns; turn += 1) {
+      // Every other turn runs on a new agent object, as a cold process would.
+      const agent = logAgent(model, store, options);
+      await agent.generate({ prompt: `q${turn}`, threadId: THREAD });
+    }
+
+    const serialised = inputs();
+    expect(serialised).toHaveLength(turns);
+    for (let turn = 1; turn < turns; turn += 1) {
+      // Byte for byte: the previous request without its closing bracket.
+      expect(serialised[turn]!.startsWith(serialised[turn - 1]!.slice(0, -1))).toBe(true);
+    }
+    const last = requests.at(-1)!.prompt;
+    // Every value the slot ever had is still there, in its original place.
+    for (let turn = 1; turn <= turns; turn += 1) {
+      expect(JSON.stringify(last)).toContain(`memory after ${turn - 1} turns`);
+    }
+    expect(JSON.parse(JSON.stringify(last.slice(0, 6)))).toEqual([
+      { role: "system", content: "You are the core." },
+      { role: "user", content: [{ type: "text", text: "q1" }] },
+      { role: "user", content: [{ type: "text", text: '{"digest":"memory after 0 turns"}' }] },
+      { role: "assistant", content: [{ type: "text", text: "A1" }] },
+      { role: "user", content: [{ type: "text", text: "q2" }] },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: '(updates earlier context)\n{"digest":"memory after 1 turns"}' },
+        ],
+      },
+    ]);
+    // One version: no transition was needed for any slot change.
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version.reason).toBe("initial");
+    expect(version.contract.supersession).toBe("append");
+  });
+
+  it("keeps dropping superseded entries on a version created before the key, without a transition", async () => {
+    const store = new MemoryContextLogStore();
+    await commitTurn(
+      store,
+      "turn-1",
+      [
+        {
+          kind: "runtime_context",
+          key: "digest:1",
+          producer: "digest",
+          payload: { digest: "old" },
+        },
+        user("user:seed:0", "q1"),
+      ],
+      [assistant("a1", "A1")],
+      // An rc.7-era version of a host adapter that wraps the default one
+      // and has not bumped its own version.
+      initialTransition("core", {
+        ...DEFAULT_CONTRACT,
+        adapter: "host/adapter",
+        adapterVersion: "7",
+        userMedia: "placeholder",
+      }),
+    );
+    const before = await store.readHead(STREAM);
+    const inner = createMessageProjectionAdapter();
+    const { model, requests } = createRecordingModel();
+    const agent = logAgent(model, store, {
+      contextLog: {
+        mode: "log",
+        store,
+        producers: [digest],
+        projection: { id: "host/adapter", version: "7", project: (input) => inner.project(input) },
+      },
+    });
+
+    await agent.generate({ prompt: "q2", threadId: THREAD });
+
+    expect(requests[0]!.prompt).toEqual([
+      { role: "system", content: "core" },
+      { role: "user", content: [{ type: "text", text: "q1" }] },
+      { role: "assistant", content: [{ type: "text", text: "A1" }] },
+      { role: "user", content: [{ type: "text", text: "q2" }] },
+      { role: "user", content: [{ type: "text", text: '{"digest":"memory after 1 turns"}' }] },
+    ]);
+    const head = await store.readHead(STREAM);
+    expect(head!.versionId).toBe(before!.versionId);
+  });
+
+  it("moves a default-adapter version 1 stream to version 2 with one adapter_change", async () => {
+    const store = new MemoryContextLogStore();
+    await commitTurn(
+      store,
+      "turn-1",
+      [
+        {
+          kind: "runtime_context",
+          key: "digest:1",
+          producer: "digest",
+          payload: { digest: "old" },
+        },
+        user("user:seed:0", "q1"),
+      ],
+      [assistant("a1", "A1")],
+      initialTransition("core", { ...DEFAULT_CONTRACT, adapterVersion: "1" }),
+    );
+    await commitTurn(
+      store,
+      "turn-2",
+      [
+        {
+          kind: "runtime_context",
+          key: "digest:2",
+          producer: "digest",
+          payload: { digest: "new" },
+          supersedes: "digest:1",
+        },
+      ],
+      [],
+    );
+    const before = await store.readHead(STREAM);
+    const { model, requests } = createRecordingModel();
+
+    await logAgent(model, store).generate({ prompt: "q2", threadId: THREAD });
+
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version).toMatchObject({
+      reason: "adapter_change",
+      parentVersionId: before!.versionId,
+      core: "core",
+      contract: { ...APPEND_CONTRACT, adapterVersion: "2" },
+    });
+    expect(requests[0]!.prompt).toEqual([
+      { role: "system", content: "core" },
+      { role: "user", content: [{ type: "text", text: '{"digest":"old"}' }] },
+      { role: "user", content: [{ type: "text", text: "q1" }] },
+      { role: "assistant", content: [{ type: "text", text: "A1" }] },
+      {
+        role: "user",
+        content: [{ type: "text", text: '(updates earlier context)\n{"digest":"new"}' }],
+      },
+      { role: "user", content: [{ type: "text", text: "q2" }] },
+    ]);
   });
 });

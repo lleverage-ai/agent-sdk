@@ -510,7 +510,7 @@ describe("user media projection", () => {
     const store = new MemoryContextLogStore();
     const older = {
       adapter: "agent-sdk/messages",
-      adapterVersion: "1",
+      adapterVersion: "2",
       imageInput: "true",
       fileInput: "false",
     };
@@ -521,7 +521,7 @@ describe("user media projection", () => {
       transition: { reason: "initial", parent: null, core: "You are the core.", contract: older },
       append: entries,
       manifest: {
-        projection: { adapter: "agent-sdk/messages", version: "1" },
+        projection: { adapter: "agent-sdk/messages", version: "2" },
         model: { provider: "mock-provider", modelId: "mock-model-id" },
         inputDigest: "0".repeat(64),
       },

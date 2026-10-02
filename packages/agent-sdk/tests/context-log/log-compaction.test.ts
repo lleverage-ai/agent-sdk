@@ -425,6 +425,120 @@ describe("log-mode compaction", () => {
     },
   );
 
+  it("is the only place superseded runtime context is dropped", async () => {
+    // A slot that changes every turn, as a memory digest can.
+    const digest: ContextProducer = {
+      name: "digest",
+      produce: ({ path }) => {
+        const latest = path.filter((entry) => entry.key.startsWith("digest:")).at(-1);
+        const turn = path.filter((entry) => entry.kind === "user").length + 1;
+        return [
+          {
+            kind: "runtime_context",
+            key: `digest:${turn}`,
+            producer: "digest",
+            payload: `digest ${turn}`,
+            ...(latest && { supersedes: latest.key }),
+          },
+        ];
+      },
+    };
+    const store = new MemoryContextLogStore();
+    const { model, requests } = createScriptedModel([text("a")]);
+    const manager = createCompactingManager(11);
+    const agent = logAgent(model, store, {
+      contextManager: manager.contextManager,
+      contextLog: { mode: "log", store, producers: [settings, digest] },
+    });
+
+    for (const prompt of ["q1", "q2", "q3"]) {
+      await agent.generate({ prompt, threadId: THREAD });
+    }
+    // Before compaction every value stays in the projection, in place.
+    expect(manager.requests).toHaveLength(0);
+    const beforeCompaction = JSON.stringify(requests[2]!.prompt);
+    for (const value of ["digest 1", "digest 2", "(updates earlier context)\\ndigest 3"]) {
+      expect(beforeCompaction).toContain(value);
+    }
+
+    await agent.generate({ prompt: "q4", threadId: THREAD });
+
+    expect(manager.requests).toHaveLength(1);
+    const head = await store.readHead(STREAM);
+    expect((await store.readVersion(head!.versionId)).reason).toBe("compaction");
+    // The child inherits only active entries: the slot's current value, with
+    // no reference to the values it replaced.
+    const childPath = await readPath(store);
+    const digests = childPath.filter((entry) => entry.key.startsWith("digest:"));
+    expect(content(digests)).toEqual([
+      { kind: "runtime_context", key: "digest:4", producer: "digest", payload: "digest 4" },
+    ]);
+    const compacted = JSON.stringify(requests[3]!.prompt);
+    expect(compacted).not.toMatch(/digest [123]|updates earlier context/);
+    expect(compacted).toContain("digest 4");
+  });
+
+  it("counts superseded runtime context and drops it without a summary when no history can go", async () => {
+    const digest: ContextProducer = {
+      name: "digest",
+      produce: ({ path }) => {
+        const latest = path.filter((entry) => entry.key.startsWith("digest:")).at(-1);
+        const turn = path.filter((entry) => entry.kind === "user").length + 1;
+        return [
+          {
+            kind: "runtime_context",
+            key: `digest:${turn}`,
+            producer: "digest",
+            payload: `digest ${turn}`,
+            ...(latest && { supersedes: latest.key }),
+          },
+        ];
+      },
+    };
+    const store = new MemoryContextLogStore();
+    const { model, requests } = createScriptedModel([text("a")]);
+    const views: number[] = [];
+    // Keeps every conversation message: nothing can be summarised.
+    const manager = createCompactingManager(11, { keepMessageCount: 100 });
+    const shouldCompact = manager.contextManager.shouldCompact.bind(manager.contextManager);
+    manager.contextManager.shouldCompact = (messages) => {
+      views.push(messages.length);
+      return shouldCompact(messages);
+    };
+    const agent = logAgent(model, store, {
+      contextManager: manager.contextManager,
+      contextLog: { mode: "log", store, producers: [settings, digest] },
+    });
+
+    for (const prompt of ["q1", "q2", "q3"]) {
+      await agent.generate({ prompt, threadId: THREAD });
+    }
+    const before = await store.readHead(STREAM);
+    expect((await store.readVersion(before!.versionId)).reason).toBe("initial");
+
+    // The fourth call's view: the core, the settings, three superseded
+    // digests, the current one and seven conversation messages: 13, over the
+    // threshold of 11. The active entries alone (ten) would not be.
+    await agent.generate({ prompt: "q4", threadId: THREAD });
+
+    expect(views.at(-1)).toBe(13);
+    expect(manager.requests).toHaveLength(0);
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version).toMatchObject({ reason: "compaction", parentVersionId: before!.versionId });
+    const childPath = await readPath(store);
+    // Every conversation entry is kept and no summary is added; only the
+    // superseded digests are gone.
+    expect(
+      childPath.filter((entry) => entry.kind === "user").map((entry) => entry.key),
+    ).toHaveLength(4);
+    expect(childPath.some((entry) => entry.key.includes(":summary:"))).toBe(false);
+    expect(content(childPath.filter((entry) => entry.key.startsWith("digest:")))).toEqual([
+      { kind: "runtime_context", key: "digest:4", producer: "digest", payload: "digest 4" },
+    ]);
+    expect(JSON.stringify(requests[3]!.prompt)).not.toMatch(/digest [123]/);
+  });
+
   it("never retries or falls back after a compaction commit failed, even if the store recovers", async () => {
     // Three uncertain failures exhaust the identical-request retries; the
     // store would accept a fresh compaction afterwards.
