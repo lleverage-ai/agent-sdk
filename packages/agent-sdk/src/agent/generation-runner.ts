@@ -1115,15 +1115,15 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         await attempt.logCall?.abandon(attempt.effectiveGenOptions.signal?.aborted);
         throw error;
       }
+      // The stream's onFinish saves the checkpoint after the result resolves.
+      // Wait for it, so neither an interrupt stamp nor the next follow-up can
+      // race that save.
+      await finished;
 
       // A follow-up's tool can raise an interrupt or stop the run, like the
       // initial turn's: persist and announce it, and run no further turns.
       const { signalState } = attempt;
       if (signalState.interrupt) {
-        // The stream's onFinish saves the checkpoint after the result
-        // resolves; stamp the interrupt only once that save is done, so it
-        // cannot overwrite the pending interrupt.
-        await finished;
         const threadId = attempt.effectiveGenOptions.threadId;
         const interrupt = signalState.interrupt.interrupt;
         if (threadId && options.checkpointer) {
