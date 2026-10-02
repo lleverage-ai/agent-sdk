@@ -285,7 +285,16 @@ describe("log-mode subagent streams", () => {
     const { definition, contexts } = researcher(child.model);
     const toolErrors: unknown[] = [];
     const parent = scriptedModel([delegate("call-1"), text("Reported")]);
+    let subagentStops = 0;
     await parentAgent(parent.model, store, [definition], {
+      hooks: {
+        SubagentStop: [
+          async () => {
+            subagentStops++;
+            return {};
+          },
+        ],
+      },
       transformToolError: (error) => {
         toolErrors.push(error);
         return error;
@@ -295,6 +304,7 @@ describe("log-mode subagent streams", () => {
     expect(contexts).toHaveLength(0);
     expect(child.requests).toHaveLength(0);
     expect(await store.readHead(childStream)).toEqual(before);
+    expect(subagentStops).toBe(0);
     expect(toolErrors).toHaveLength(1);
     const error = toolErrors[0];
     expect(error).toBeInstanceOf(DelegationRecoveryRequiredError);

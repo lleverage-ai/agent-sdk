@@ -673,6 +673,11 @@ ${subagentDescriptions}`;
         signal?.throwIfAborted();
         const startTime = Date.now();
 
+        // Log mode: the delegation runs on its own stream. Open it before the
+        // task is marked running, so a delegation that needs host recovery
+        // leaves no task record behind.
+        const opened = preOpened ?? (await openStream());
+
         // Update task status to running
         const runningTask = updateBackgroundTask(task, { status: "running" });
         if (taskManager?.owned) {
@@ -684,10 +689,8 @@ ${subagentDescriptions}`;
         }
         Object.assign(task, runningTask);
 
-        // Log mode: the delegation runs on its own stream. A finished child
-        // stream is read back without running anything again.
+        // A finished child stream is read back without running anything again.
         let childContextLog: SubagentContextLog | undefined;
-        const opened = preOpened ?? (await openStream());
         if (opened && "completedText" in opened) {
           return opened.completedText;
         }
@@ -975,6 +978,14 @@ ${subagentDescriptions}`;
           text: resultText,
         };
       } catch (error) {
+        // A delegation that needs host recovery never started: no SubagentStop
+        // and no failed task. It rejects with its typed error, so the host's
+        // tool error handling (or a direct caller) can tell it apart from an
+        // ordinary failed task.
+        if (isDelegationRecoveryRequired(error)) {
+          throw error;
+        }
+
         const subagentStopHooks = parentAgent.options.hooks?.SubagentStop ?? [];
         if (subagentStopHooks.length > 0) {
           const input: SubagentStopInput = {
@@ -1000,13 +1011,6 @@ ${subagentDescriptions}`;
         // Optional persistence for foreground tasks
         if (taskStore) {
           await taskStore.save(failedTask);
-        }
-
-        // A delegation that needs host recovery rejects with its typed error,
-        // so the host's tool error handling (or a direct caller) can tell it
-        // apart from an ordinary failed task.
-        if (isDelegationRecoveryRequired(error)) {
-          throw error;
         }
 
         return {
