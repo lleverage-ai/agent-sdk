@@ -25,6 +25,10 @@
  * - A compaction between steps is a declared `compaction` transition that
  *   the next call's prepare commits before the compacted context is sent.
  *   A failed commit fails the step.
+ * - Host request middleware (`contextLog.requestMiddleware`) wrap the
+ *   boundary, so they run after the projection and the boundary commits the
+ *   request they produce: agent → projection → request middleware →
+ *   boundary → provider.
  * - Retries and fallback models are separate attempts: each provider call
  *   prepares its own manifest. A failed attempt is closed as `failed` (or
  *   `cancelled` when aborted).
@@ -134,6 +138,11 @@ export interface LogCallBoundaryDeps {
   plan: LogBoundaryPlan;
   /** The attempt's terminal provider model. */
   model: LanguageModel;
+  /**
+   * Host request middleware, applied in order between the projected request
+   * and the boundary, so the boundary commits the request they produce.
+   */
+  requestMiddleware?: readonly LanguageModelMiddleware[];
   /** Projects a step's request from committed entries. */
   project: (entries: readonly ContextEntryInput[]) => Promise<ModelMessage[]>;
   /** Called whenever the boundary moves or observes the head. */
@@ -182,7 +191,10 @@ export type LogModePrepareStep = (step: {
  * @internal
  */
 export interface LogCallBoundary {
-  /** The terminal model wrapped by the boundary. Send every step through it. */
+  /**
+   * The terminal model wrapped by the boundary, and then by the host's
+   * request middleware. Send every step through it.
+   */
   readonly model: LanguageModel;
   /** The AI SDK `prepareStep` for the attempt. */
   readonly prepareStep: LogModePrepareStep;
@@ -280,6 +292,57 @@ export function describeProviderCall(params: ProviderCallOptions): {
     callOptions,
   };
 }
+
+/**
+ * A deep copy of request data: arrays, plain objects, byte arrays and URLs
+ * are copied; anything else (functions, class instances) is kept as is.
+ */
+function copyRequestData(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(copyRequestData);
+  if (value instanceof Uint8Array) return value.slice();
+  if (value instanceof URL) return new URL(value.href);
+  if (value !== null && typeof value === "object") {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype === Object.prototype || prototype === null) {
+      const copy: Record<string, unknown> = {};
+      for (const [key, item] of Object.entries(value)) {
+        // Defined, not assigned, so an own `__proto__` key stays a property.
+        Object.defineProperty(copy, key, {
+          value: copyRequestData(item),
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
+      return copy;
+    }
+  }
+  return value;
+}
+
+/**
+ * Provider call options whose request data (prompt, tools, settings and
+ * provider options) is a private copy, so a middleware that changes it in
+ * place cannot change the AI SDK's own objects, which the AI SDK reuses for
+ * its retries and later steps. The abort signal and transport headers are
+ * passed through unchanged.
+ *
+ * @internal
+ */
+export function isolateCallOptions(params: ProviderCallOptions): ProviderCallOptions {
+  const { abortSignal, headers, ...data } = params;
+  return {
+    ...(copyRequestData(data) as typeof data),
+    ...("abortSignal" in params && { abortSignal }),
+    ...("headers" in params && { headers }),
+  };
+}
+
+/** Gives the next middleware its own copy of the request data. */
+const isolateRequestMiddleware: LanguageModelMiddleware = {
+  specificationVersion: "v4",
+  transformParams: async ({ params }) => isolateCallOptions(params),
+};
 
 /** Whether a model is already a log-mode boundary. @internal */
 export function isLogBoundaryModel(model: LanguageModel | undefined): boolean {
@@ -517,6 +580,10 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   let finishedMessages: ModelMessage[] = [];
   // Reads the interrupt a tool raised during the attempt, if any.
   let readInterrupt: (() => LogInterruptMark | undefined) | undefined;
+  // Provider responses received through the boundary. Lets the request
+  // middleware guard tell a response the provider gave from one a host
+  // middleware made up without calling it.
+  let providerResponses = 0;
 
   function moveHead(next: ContextHead): void {
     head = next;
@@ -747,6 +814,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       params.abortSignal?.throwIfAborted();
       const result = await doGenerate();
       if (open) open.responded = true;
+      providerResponses += 1;
       return result;
     } catch (error) {
       await closeOpen(params.abortSignal?.aborted ? "cancelled" : "failed");
@@ -760,6 +828,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
     try {
       params.abortSignal?.throwIfAborted();
       result = await doStream();
+      providerResponses += 1;
     } catch (error) {
       await closeOpen(params.abortSignal?.aborted ? "cancelled" : "failed");
       throw error;
@@ -818,10 +887,52 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       configKey: "model",
     });
   }
-  const model = wrapLanguageModel({
+  const boundaryModel = wrapLanguageModel({
     model: deps.model,
     middleware: { specificationVersion: "v4", wrapGenerate, wrapStream },
   });
+  boundaryModels.add(boundaryModel);
+  // Host request middleware run after the projection and before the
+  // boundary: the first one transforms the projected request first, and the
+  // boundary commits and digests the request the last one produces. Each
+  // gets its own copy of the request data, so one that rewrites it in place
+  // cannot change the AI SDK's request, which a retry or a later step
+  // reuses: every attempt applies the middleware once to the projection.
+  // The outermost guard refuses a response a host middleware returned
+  // without the provider answering through the boundary (a cache, or a
+  // swallowed failure), before the AI SDK can run its tool calls: nothing
+  // may generate from output that has no committed call.
+  const requestMiddleware = deps.requestMiddleware ?? [];
+  const bypassed = () =>
+    new ContextLogInvalidError(
+      "boundary_bypassed",
+      "A request middleware returned a response the provider did not give through the commit boundary; request middleware must call the wrapped model",
+    );
+  const guardMiddleware: LanguageModelMiddleware = {
+    specificationVersion: "v4",
+    wrapGenerate: async ({ doGenerate }) => {
+      const before = providerResponses;
+      const result = await doGenerate();
+      if (providerResponses === before) throw bypassed();
+      return result;
+    },
+    wrapStream: async ({ doStream }) => {
+      const before = providerResponses;
+      const result = await doStream();
+      if (providerResponses === before) throw bypassed();
+      return result;
+    },
+  };
+  const model =
+    requestMiddleware.length > 0
+      ? wrapLanguageModel({
+          model: boundaryModel,
+          middleware: [
+            guardMiddleware,
+            ...requestMiddleware.flatMap((middleware) => [isolateRequestMiddleware, middleware]),
+          ],
+        })
+      : boundaryModel;
   boundaryModels.add(model);
 
   return {

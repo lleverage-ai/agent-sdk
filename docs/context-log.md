@@ -247,7 +247,9 @@ through the configured `ProjectionAdapter`
    core from `systemPrompt` or `contextLog.resolveCore`.
 2. Otherwise it reads the head's version and its full path. The **core is
    frozen per version**: the stored bytes are projected unchanged, and the
-   resolver is never consulted for an existing version. Adopting a new core
+   resolver is never consulted for an existing version. The resolver is
+   consulted again only when the call creates a `model_change` version (see
+   [Model changes](#model-changes)). Adopting a new core for any other reason
    needs a `core_policy_change` transition.
 3. The adapter projects the core, the path and the run's new user input
    for the target model. The result is sent as the request's messages, with
@@ -352,13 +354,6 @@ Failures:
 | Something fails after the run's last step was committed (a checkpoint save, a `PostGenerate` hook) | The error propagates and is never retried: a retry would run the model and its tools again and append a second reply. |
 | The process crashes after prepare, or after dispatch before the output commit, or the call's outcome cannot be recorded | The call stays open until the next prepare on the stream, which closes it in the same atomic write (`closeSuperseded`): `cancelled` if it was never dispatched, `unknown` if it was (`completed` if its outputs were committed). Its outputs can no longer be committed, because the head has moved past its manifest. Tool side effects are recovered by the host's tool ledger, never by replaying the call. |
 
-A call to another model than the stream's previous call (a fallback, or a
-host switching models) is a declared **`model_change`**, whether or not the
-model's input capabilities differ: the first prepare creates a version that
-inherits the whole path under the same frozen core, with the contract for
-the new model. A different adapter id or version still fails with
-`transition_required` until an `adapter_change` is declared.
-
 **One writer per stream.** The boundary treats any call it supersedes as
 crashed. `markDispatched` does not move the head's revision, so another
 process can read the head while a dispatched call and its tools are still
@@ -376,10 +371,61 @@ otherwise `tool_definition`).
 
 The boundary must be the last thing before the provider:
 
-- Pass the **innermost provider model** (after any media or transport
-  middleware) as `model` and `fallbackModel`, or move those transforms into
-  your `ProjectionAdapter`, which is pinned and versioned. A transform that
-  runs after the boundary would send bytes the manifest does not describe.
+- Pass the **innermost provider model** as `model` and `fallbackModel`. A
+  transform that runs after the boundary would send bytes the manifest does
+  not describe.
+- Put transforms that change the request (for example reasoning-option
+  translation, tool-input sanitisation, JSON key ordering or media
+  relocation) in `contextLog.requestMiddleware`, or in your
+  `ProjectionAdapter`. The wrap order is
+
+  ```text
+  agent → projection → requestMiddleware[0] → … → requestMiddleware[n] → commit boundary → provider
+  ```
+
+  so the boundary digests and commits the request as the provider receives
+  it: the prompt, tool definitions and settings, after the middleware. The
+  digest never covers the abort signal, transport headers or
+  `includeRawChunks`, so headers a middleware adds are not committed. The
+  first middleware sees the projected request first. The middleware run on
+  every provider call of the agent: each tool-loop step, each AI SDK retry
+  and each fallback attempt, and SDK-built subagents inherit them with the
+  projection adapter. Each middleware receives its own copy of the request
+  data, so one that rewrites it in place cannot leak the change into the
+  AI SDK's request, which a retry or later step reuses: every attempt
+  applies the middleware exactly once to its projection. The log keeps the
+  entries, not the transformed request: the manifest's `inputDigest`,
+  `toolSnapshot` and `callOptions` describe the request after the
+  middleware.
+- Request middleware are part of the **serialisation contract**. A call is
+  reconstructed offline by projecting the version's core and the path
+  before the call, converting it to the provider prompt, adding the
+  manifest's recorded `toolSnapshot` and `callOptions`, applying the pinned
+  middleware once, and comparing the digest with `inputDigest`. For that to
+  hold, request middleware must:
+  - be deterministic, deriving changes only from the request they receive
+    and their pinned configuration (no clocks, random values or external
+    lookups);
+  - leave the tool definitions and settings they produce unchanged when
+    applied to them again, and never remove or overwrite a setting they read
+    to shape the prompt (keep it, or record what they used in a setting
+    they keep), because only the settings after the middleware are recorded;
+  - be pinned like an adapter change: a change to what they produce needs a
+    new projection adapter `id` or `version` (for example
+    `{ ...createMessageProjectionAdapter(), version: "1+host.3" }`), which
+    every version records.
+
+  The SDK does not check these rules; a middleware that breaks them sends
+  requests the log can no longer reproduce.
+- A request middleware's `wrapGenerate` or `wrapStream` must call the
+  wrapped model. A response returned without the provider answering through
+  the boundary (a response cache, or a substitute for a failed call) fails
+  the run with a `ContextLogInvalidError` (reason `boundary_bypassed`)
+  before the AI SDK can act on it, so no tool runs from output without a
+  committed call. A middleware may still reshape the provider's response;
+  the outputs are committed as the agent receives them.
+- Wrappers that do not change the request (usage accounting, telemetry,
+  retries) can stay outside, around the agent, as before.
 - A model id string is rejected in log mode, because the AI SDK would resolve
   it after the boundary. A model that already has a boundary is rejected too.
 
@@ -388,9 +434,56 @@ same stream: each follow-up prompt passes the `PreGenerate` hooks as new user
 input, then is planned and committed through a boundary like any other call.
 In `streamDataResponse()`, a follow-up that raises an interrupt or stops the
 run records the pending interrupt and ends the follow-ups.
+Streaming fallbacks follow the legacy rules. `streamRaw()` and
+`streamDataResponse()` retry or fall back only when starting the stream
+throws synchronously. `stream()` retries within its own loop, but a provider
+error raised inside the stream reaches it as the AI SDK's
+`NoOutputGeneratedError`, which the default policy does not retry or fall
+back on. A fallback that does happen is planned and committed like any
+other attempt.
 In `streamRaw()`, the last step is committed by the stream's `onFinish`; the
 AI SDK cannot fail an already-returned stream, so a failed final commit closes
 the call as `unknown` instead, and the log stays consistent.
+
+### Model changes
+
+A call to another model than the stream's previous call (a fallback, or a
+host switching models) is a declared **`model_change`**, whether or not the
+model's input capabilities differ, and so is a call to a model whose input
+capabilities differ from the version's contract. The first prepare creates
+a version that inherits the whole path, with the contract for the new model.
+A different adapter id or version still fails with `transition_required`
+until an `adapter_change` is declared.
+
+The new version's core:
+
+- With a static `systemPrompt`, it keeps the parent's core.
+- With `contextLog.resolveCore`, the runtime calls the resolver with
+  `reason: "model_change"`, the inherited `parent`, and the call's `target`
+  (`{ provider, modelId }`, where the provider is the route the call takes)
+  and terminal `model`. The `initial` call gets the same fields. A host whose
+  core depends on the model family returns the core for the target; the
+  `model_change` version records it, so the transition that declares the
+  model change also declares the core change, and no separate
+  `core_policy_change` is created. When the resolver returns the parent's
+  bytes, the core is unchanged. The resolver must be deterministic for its
+  input.
+
+```typescript
+const agent = createAgent({
+  model: claude,
+  fallbackModel: gpt,
+  contextLog: {
+    mode: "log",
+    store,
+    // Called for `initial` and `model_change` versions only.
+    resolveCore: ({ target }) => corePromptFor(familyOf(target.modelId)),
+  },
+});
+```
+
+A compaction planned by the same call replaces the `model_change`, as
+before, and its child records the resolved core.
 
 ## Compaction
 

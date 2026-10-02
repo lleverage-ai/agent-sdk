@@ -600,6 +600,38 @@ describe("log-mode subagent streams", () => {
     expect(await toolResultFor(store, "call-1")).toContain("General result");
   });
 
+  it("runs the parent's request middleware on a built-in subagent's requests", async () => {
+    const store = new MemoryContextLogStore();
+    let rewrites = 0;
+    const shared = scriptedModel([
+      call("call-1", "task", { description: "Summarise", subagent_type: "general-purpose" }),
+      text("General result"),
+      text("Done"),
+    ]);
+    await createAgent({
+      model: shared.model,
+      systemPrompt: "You are the parent.",
+      contextLog: {
+        mode: "log",
+        store,
+        requestMiddleware: [
+          {
+            specificationVersion: "v4",
+            transformParams: async ({ params }) => {
+              rewrites++;
+              return { ...params, temperature: 0.5 };
+            },
+          },
+        ],
+      },
+    }).generate({ prompt: "Delegate it", threadId: THREAD });
+
+    // Parent step, child call, parent step: every request went through it.
+    expect(shared.requests).toHaveLength(3);
+    expect(rewrites).toBe(3);
+    expect(shared.requests.map((request) => request.temperature)).toEqual([0.5, 0.5, 0.5]);
+  });
+
   it("fails a first run that stops on a tool call instead of returning its text", async () => {
     const store = new MemoryContextLogStore();
     const child = scriptedModel([[...text("Partial"), ...call("echo-1", "echo", { value: "a" })]]);
