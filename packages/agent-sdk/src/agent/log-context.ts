@@ -271,8 +271,8 @@ async function readFullPath(store: ContextLogStore, head: ContextHead): Promise<
 }
 
 /**
- * The call that last moved the head, for tool-snapshot attribution and to
- * close a call a crash left open. Part of the call's one head snapshot.
+ * The call that last moved the head, for model-change declaration and
+ * tool-snapshot attribution. Part of the call's one head snapshot.
  *
  * @internal
  */
@@ -286,15 +286,6 @@ async function readPreviousCall(
     model: manifest.model,
     toolSnapshotDigest:
       manifest.toolSnapshot === undefined ? undefined : sha256Hex(manifest.toolSnapshot),
-    open:
-      manifest.outcome === null
-        ? {
-            dispatched: manifest.dispatchedAt !== null,
-            // A crash between the output commit and the outcome record.
-            outputsCommitted:
-              head.versionId === manifest.versionId && head.entryCount > manifest.entryCount,
-          }
-        : undefined,
   };
 }
 
@@ -425,11 +416,18 @@ export function createLogContextRuntime(
       }
       core = version.core;
       contract = version.contract;
-      if (mismatched.length > 0) {
-        // The target model accepts different input than the version was
-        // projected for (for example a fallback model without image input).
-        // That is the declared cause: a model_change version inheriting the
-        // whole path under the same frozen core.
+      previousCall = await readPreviousCall(store, head);
+      // The call goes to another model than the stream's previous call (a
+      // fallback, or a host switching models), or to one that accepts
+      // different input than the version was projected for. Either is the
+      // declared cause of a model_change version, which inherits the whole
+      // path under the same frozen core. Same-capability route changes are
+      // declared too: a target-sensitive adapter may render differently.
+      const modelChanged =
+        previousCall !== undefined &&
+        (previousCall.model.provider !== target.provider ||
+          previousCall.model.modelId !== target.modelId);
+      if (mismatched.length > 0 || modelChanged) {
         contract = { ...expectedContract };
         transition = {
           reason: "model_change",
@@ -439,7 +437,6 @@ export function createLogContextRuntime(
         };
       }
       path = await readFullPath(store, head);
-      previousCall = await readPreviousCall(store, head);
     } else {
       core = resolveCore
         ? await resolveCore({ stream, reason: "initial", parent: null })

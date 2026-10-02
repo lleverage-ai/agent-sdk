@@ -553,6 +553,19 @@ export interface ContextPrepareRequest {
   append: ContextEntryInput[];
   /** What the call will send. */
   manifest: ContextManifestInput;
+  /**
+   * Closes the call this prepare supersedes, in the same atomic write. It
+   * must be the manifest the head points at (`head.lastManifestId` at
+   * `expectedRevision`); anything else is `invalid`. If that call has no
+   * outcome, the store records one: `completed` when entries were appended
+   * after its prepare (its outputs), otherwise `unknown` when it was
+   * dispatched, otherwise `cancelled`. A call with an outcome is left
+   * unchanged. Once the head has moved past a call it can never be
+   * dispatched or commit outputs, so a crash between this prepare and a
+   * separate `recordOutcome` can no longer leave it open for good.
+   * Optional and additive: a request without it behaves as before.
+   */
+  closeSuperseded?: string;
 }
 
 /**

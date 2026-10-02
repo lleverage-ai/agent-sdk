@@ -107,10 +107,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `PreGenerate` hooks now run per attempt over new entries, not once per
     run over `options.messages`.
   - Retries and fallbacks are separate attempts that commit the run's input
-    once. A fallback with a different capability contract is a declared
+    once. A call to another model than the stream's previous call (for
+    example a fallback, with or without different capabilities) is a declared
     `model_change` transition.
-  - A call left open by a crash is closed by the next prepare on its stream
-    (`cancelled` before dispatch, otherwise `unknown`).
+  - A call left open by a crash, or whose outcome could not be recorded, is
+    closed by the next prepare on its stream in the same atomic write
+    (`cancelled` before dispatch, otherwise `unknown`, or `completed` if its
+    outputs were committed). `ContextPrepareRequest.closeSuperseded` is the
+    additive store-contract field for this, with conformance cases.
+  - Once a provider answered and its outputs were lost, or a reply was
+    committed, the run is never retried and never falls back.
+  - Hosts must enforce one writer per stream across the generation, tool and
+    output lifecycle; the boundary treats any superseded call as crashed.
   - `ContextManifestInput.toolSnapshotChange` (`ContextToolSnapshotChange`)
     attributes a tool-definition change to a model change or a definition
     change.

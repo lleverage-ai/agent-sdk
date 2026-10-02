@@ -16,6 +16,7 @@ import type {
   ContextAppendOutputsRequest,
   ContextAppendOutputsResult,
   ContextCallOutcome,
+  ContextCallOutcomeStatus,
   ContextEntry,
   ContextEntryInput,
   ContextEntryKind,
@@ -336,6 +337,9 @@ export class MemoryContextLogStore implements ContextLogStore {
     if (request.transition !== undefined) validateTransition(request.transition);
     validateEntries(request.append, ENTRY_KINDS, "append");
     validateManifest(request.manifest);
+    if (request.closeSuperseded !== undefined) {
+      requireString(request.closeSuperseded, "closeSuperseded");
+    }
 
     const key = streamKey(stream);
     const requestDigest = digestRequest(
@@ -344,6 +348,7 @@ export class MemoryContextLogStore implements ContextLogStore {
         expectedRevision: request.expectedRevision,
         transition: request.transition ?? null,
         manifest: request.manifest,
+        ...(request.closeSuperseded !== undefined && { closeSuperseded: request.closeSuperseded }),
       },
       request.append,
     );
@@ -364,6 +369,29 @@ export class MemoryContextLogStore implements ContextLogStore {
     const head = this.heads.get(key) ?? null;
     if ((head?.revision ?? 0) !== request.expectedRevision) {
       throw new ContextLogConflictError("head_moved", { head: head ? clone(head) : null });
+    }
+    // The superseded call to close in this write, when the caller names it.
+    let superseded: { record: ContextManifest; status: ContextCallOutcomeStatus } | undefined;
+    if (request.closeSuperseded !== undefined) {
+      if (!head || request.closeSuperseded !== head.lastManifestId) {
+        throw new ContextLogInvalidError(
+          "invalid_field",
+          "closeSuperseded must name the manifest the head points at",
+        );
+      }
+      const record = this.requireManifest(request.closeSuperseded).record;
+      if (record.outcome === null) {
+        const outputsCommitted =
+          head.versionId === record.versionId && head.entryCount > record.entryCount;
+        superseded = {
+          record,
+          status: outputsCommitted
+            ? "completed"
+            : record.dispatchedAt !== null
+              ? "unknown"
+              : "cancelled",
+        };
+      }
     }
 
     // Stage everything first. Nothing below the commit marker can throw, so a
@@ -474,6 +502,9 @@ export class MemoryContextLogStore implements ContextLogStore {
     // Commit.
     if (isNewVersion) this.versions.set(target.record.id, target);
     commitStaged(target, staged);
+    if (superseded) {
+      superseded.record.outcome = { status: superseded.status, recordedAt: now };
+    }
     this.heads.set(key, nextHead);
     this.manifests.set(manifestId, { record: manifest, requestDigest, outputs: new Map() });
     this.idempotency.set(idempotencyKey, manifestId);

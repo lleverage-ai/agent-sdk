@@ -1230,3 +1230,154 @@ describe("log-mode commit edge cases", () => {
     expect((await checkpointer.load(THREAD))?.pendingInterrupt?.toolName).toBe("ask");
   });
 });
+
+describe("log-mode retry safety and supersession", () => {
+  const retryEverything = () =>
+    vi.fn(async () => ({
+      hookSpecificOutput: {
+        hookEventName: "PostGenerateFailure" as const,
+        retry: true,
+        retryDelayMs: 0,
+      },
+    }));
+
+  it("never falls back or retries after a provider's outputs were lost", async () => {
+    const store = new FaultyStore().fail("appendOutputs", "unavailable", 3);
+    let executions = 0;
+    const tools = {
+      echo: tool({
+        ...echoTools.echo,
+        execute: async ({ value }: { value: string }) => {
+          executions++;
+          return `echo:${value}`;
+        },
+      }),
+    };
+    const primary = createScriptedModel([toolCalls(["c1", "echo", { value: "a" }]), text("x")]);
+    const fallback = createScriptedModel([text("from fallback")], { modelId: "fallback-model" });
+    const retry = retryEverything();
+
+    const error = await logAgent(primary.model, store, {
+      tools,
+      fallbackModel: fallback.model,
+      hooks: { PostGenerateFailure: [retry] },
+    })
+      .generate({ prompt: "go", threadId: THREAD })
+      .catch((e) => e);
+
+    expect(isContextLogError(error, "unavailable")).toBe(true);
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(fallback.requests).toHaveLength(0);
+    expect(primary.requests).toHaveLength(1);
+    expect(executions).toBe(1);
+  });
+
+  it("never retries after committing a reply whose structured output failed", async () => {
+    const store = new MemoryContextLogStore();
+    const primary = createScriptedModel([text("not json"), text("again")]);
+    const fallback = createScriptedModel([text("from fallback")], { modelId: "fallback-model" });
+    const retry = retryEverything();
+
+    await expect(
+      logAgent(primary.model, store, {
+        fallbackModel: fallback.model,
+        hooks: { PostGenerateFailure: [retry] },
+      }).generate({
+        prompt: "answer",
+        threadId: THREAD,
+        output: Output.object({
+          schema: jsonSchema<{ answer: number }>({
+            type: "object",
+            properties: { answer: { type: "number" } },
+            required: ["answer"],
+          }),
+        }),
+      }),
+    ).rejects.toThrow();
+
+    expect(primary.requests).toHaveLength(1);
+    expect(fallback.requests).toHaveLength(0);
+    expect((await readPath(store)).map((entry) => entry.kind)).toEqual(["user", "assistant"]);
+  });
+
+  it("declares a model_change for a same-capability fallback on another provider", async () => {
+    const store = new MemoryContextLogStore();
+    const primary = createScriptedModel([
+      () => {
+        throw new Error("Request timeout exceeded");
+      },
+    ]);
+    const fallback = createScriptedModel([text("from fallback")], {
+      modelId: "other-provider-model",
+    });
+
+    await logAgent(primary.model, store, { fallbackModel: fallback.model }).generate({
+      prompt: "first",
+      threadId: THREAD,
+    });
+
+    const head = await store.readHead(STREAM);
+    const version = await store.readVersion(head!.versionId);
+    expect(version).toMatchObject({ reason: "model_change", inheritedCount: 1 });
+    expect(version.contract).toEqual((await store.readVersion(version.parentVersionId!)).contract);
+    expect((await readPath(store)).map((entry) => entry.kind)).toEqual(["user", "assistant"]);
+  });
+
+  it("closes each crashed call in the next prepare, even when that one crashes too", async () => {
+    const store = new MemoryContextLogStore();
+    // A: crashes after dispatch.
+    const first = new FaultyStore();
+    Object.assign(first, { inner: store });
+    const crashA = createScriptedModel([text("lost")], {
+      onCall: () => {
+        first.crashed = true;
+        throw new CrashError();
+      },
+    });
+    await expect(
+      logAgent(crashA.model, first).generate({ prompt: "a", threadId: THREAD }),
+    ).rejects.toSatisfy(isCrash);
+    const [callA] = await readManifests(store);
+
+    // B: crashes right after its prepare, before closing anything itself.
+    const second = new FaultyStore().fail("markDispatched", "crash");
+    Object.assign(second, { inner: store });
+    await expect(
+      logAgent(createScriptedModel([text("x")]).model, second).generate({
+        prompt: "b",
+        threadId: THREAD,
+      }),
+    ).rejects.toSatisfy(isCrash);
+    expect((await store.readManifest(callA!.id)).outcome?.status).toBe("unknown");
+    const callB = (await store.readHead(STREAM))!.lastManifestId;
+    expect((await store.readManifest(callB)).outcome).toBeNull();
+
+    // C succeeds and closes B.
+    await logAgent(createScriptedModel([text("C")]).model, store).generate({
+      prompt: "c",
+      threadId: THREAD,
+    });
+    expect((await store.readManifest(callB)).outcome?.status).toBe("cancelled");
+  });
+
+  it("closes a failed call whose outcome could not be recorded in the next prepare", async () => {
+    const store = new FaultyStore().fail("recordOutcome", "unavailable", 3);
+    const failing = createScriptedModel([
+      () => {
+        throw new Error("provider exploded");
+      },
+    ]);
+    await expect(
+      logAgent(failing.model, store).generate({ prompt: "a", threadId: THREAD }),
+    ).rejects.toThrow();
+    const [stale] = await readManifests(store.inner);
+    expect(stale!.outcome).toBeNull();
+
+    await logAgent(createScriptedModel([text("B")]).model, store.inner).generate({
+      prompt: "b",
+      threadId: THREAD,
+    });
+
+    expect((await store.inner.readManifest(stale!.id)).outcome?.status).toBe("unknown");
+  });
+});

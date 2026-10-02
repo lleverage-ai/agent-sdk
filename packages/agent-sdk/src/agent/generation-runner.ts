@@ -1341,13 +1341,15 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     // transient. Retrying would only repeat it, and after a step's outputs
     // were blocked it would re-run the model and its tools. The hooks above
     // still observe the failure.
-    // Nor is a failure after the attempt's call was committed (for example a
-    // checkpoint save or a PostGenerate hook): a retry would run the model
-    // and its tools again and append a second reply.
+    // Nor is a failure after the attempt's reply was committed (for example a
+    // checkpoint save or a PostGenerate hook), or after a provider answered
+    // and its outputs could not be committed: a retry or fallback would run
+    // the model and its tools again, and could append a second reply.
     if (
       errorDecision.shouldRetry &&
       logContext &&
-      (isFinalLogModeFailure(normalizedError) || attempt?.logCall?.isCompleted())
+      (isFinalLogModeFailure(normalizedError) ||
+        (attempt?.logCall !== undefined && !attempt.logCall.isRetrySafe()))
     ) {
       throw normalizedError;
     }

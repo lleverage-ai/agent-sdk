@@ -55,9 +55,14 @@ All exports are marked `@experimental`.
     order. The result depends only on the reference, so a manifest always reads
     back exactly the path it committed.
   - `readVersion(id)` and `readManifest(id)` read committed records.
-  - `prepare({ stream, expectedRevision, idempotencyKey, transition?, append, manifest })`
+  - `prepare({ stream, expectedRevision, idempotencyKey, transition?, append, manifest, closeSuperseded? })`
     commits an optional transition, the entries to append and the manifest in
     one atomic, compare-and-swap write, and moves the head by one revision.
+    With `closeSuperseded` (the head's `lastManifestId`), the same write
+    closes that call if it has no outcome yet: `completed` if outputs were
+    appended after its prepare, otherwise `unknown` if it was dispatched,
+    otherwise `cancelled`. It is optional and additive; the log-mode runtime
+    always sets it.
   - `markDispatched(manifestId)` records that dispatch started. It conflicts
     when the head has already moved past the manifest, so a stale candidate is
     never sent.
@@ -343,16 +348,27 @@ Failures:
 | `prepare` loses the compare-and-swap race, or the admit hook refuses | Nothing is sent; the call fails with the `ContextLogError`. |
 | A write is uncertain (`unavailable`) | `prepare`, `appendOutputs` and `recordOutcome` are retried with the same request; `markDispatched` is never retried blindly (see above). |
 | The provider call fails | The call is closed as `failed` (`cancelled` when aborted). A retry or fallback is a new attempt with its own manifest; the run's input is committed once. |
-| An output commit fails | The run fails, including a streaming run whose failed commit the AI SDK turned into an error part. The call is closed as `unknown`, and nothing generates from the uncommitted output. |
-| The AI SDK throws after the provider answered (for example on invalid structured output) | The finished step's output is still committed and the call completed, then the error propagates. |
+| An output commit fails | The run fails, including a streaming run whose failed commit the AI SDK turned into an error part. The call is closed as `unknown`, and nothing generates from the uncommitted output. The run is never retried and never falls back: the provider answered and its tools may have run. |
+| The AI SDK throws after the provider answered (for example on invalid structured output) | The finished step's output is still committed and the call completed, then the error propagates without a retry or fallback. |
 | Something fails after the run's last step was committed (a checkpoint save, a `PostGenerate` hook) | The error propagates and is never retried: a retry would run the model and its tools again and append a second reply. |
-| The process crashes after prepare, or after dispatch before the output commit | The call stays open. The next prepare on the stream closes it: `cancelled` if it was never dispatched, `unknown` if it was (`completed` if its outputs were committed). Its outputs can no longer be committed, because the head has moved past its manifest. Tool side effects are recovered by the host's tool ledger, never by replaying the call. |
+| The process crashes after prepare, or after dispatch before the output commit, or the call's outcome cannot be recorded | The call stays open until the next prepare on the stream, which closes it in the same atomic write (`closeSuperseded`): `cancelled` if it was never dispatched, `unknown` if it was (`completed` if its outputs were committed). Its outputs can no longer be committed, because the head has moved past its manifest. Tool side effects are recovered by the host's tool ledger, never by replaying the call. |
 
-A fallback model whose input capabilities differ from the head version's
-contract (for example no image input) is a declared **`model_change`**: the
-first prepare creates a version that inherits the whole path under the same
-frozen core and the new contract. A different adapter id or version still
-fails with `transition_required` until an `adapter_change` is declared.
+A call to another model than the stream's previous call (a fallback, or a
+host switching models) is a declared **`model_change`**, whether or not the
+model's input capabilities differ: the first prepare creates a version that
+inherits the whole path under the same frozen core, with the contract for
+the new model. A different adapter id or version still fails with
+`transition_required` until an `adapter_change` is declared.
+
+**One writer per stream.** The boundary treats any call it supersedes as
+crashed. `markDispatched` does not move the head's revision, so another
+process can read the head while a dispatched call and its tools are still
+running, prepare, and close that live call as `unknown`: its outputs are then
+refused, but its provider call and tool side effects continue. Hosts must
+therefore enforce single-writer ownership of a stream across the whole
+generation, tool and output lifecycle, with distributed fencing (for example
+a run lease checked by the admit hook and the store). The SDK does not
+enforce it.
 
 When a call's tool definitions differ from the stream's previous call, the
 manifest's `toolSnapshotChange` records the previous and new snapshot digests

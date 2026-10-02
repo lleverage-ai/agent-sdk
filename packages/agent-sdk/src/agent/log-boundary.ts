@@ -94,11 +94,6 @@ export interface LogPreviousCall {
   model: ContextModelRef;
   /** Digest of the call's tool snapshot, when it recorded one. */
   toolSnapshotDigest: string | undefined;
-  /**
-   * Set when the call has no outcome yet: whether it was dispatched, and
-   * whether its outputs were committed.
-   */
-  open: { dispatched: boolean; outputsCommitted: boolean } | undefined;
 }
 
 /**
@@ -185,8 +180,13 @@ export interface LogCallBoundary {
    * outputs. Never throws.
    */
   abandon(cancelled?: boolean): Promise<void>;
-  /** Whether `complete()` committed the attempt's last step. */
-  isCompleted(): boolean;
+  /**
+   * Whether the run may start another attempt after this one failed. Not
+   * once the attempt's reply was committed (a retry would append a second
+   * one), nor once a provider answered and its outputs were lost (its tools
+   * may have run, and a retry would run them again).
+   */
+  isRetrySafe(): boolean;
 }
 
 /** Lowercase hexadecimal SHA-256 of a string. @internal */
@@ -336,7 +336,6 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
     append: plan.append,
   };
   let previous = plan.previousCall;
-  let recoveredPrevious = false;
   // The dispatched call whose outputs are not committed yet.
   let open: { manifestId: string; model: ContextModelRef; responded: boolean } | undefined;
   // Whether the last call was closed without its outputs (failed, cancelled
@@ -348,6 +347,9 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   const committedOutputs: ContextEntryInput[] = [];
   let completion: Promise<void> | undefined;
   let completed = false;
+  // Set once a provider answered but its outputs were not committed: they
+  // are lost, and its tools may have run.
+  let outputsLost = false;
   let closed = false;
   // The first commit failure (prepare, dispatch or outputs). The AI SDK can
   // turn it into a stream error part and still finish, so complete() and
@@ -367,36 +369,10 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
     open = undefined;
     if (!call) return;
     lastCallClosed = true;
+    if (status === "unknown") outputsLost = true;
     await withRetriedWrite(() => store.recordOutcome(call.manifestId, { status })).catch(
       () => undefined,
     );
-  }
-
-  /**
-   * A call the head still points at but nobody closed (the process that made
-   * it crashed, or abandoned it). Once this boundary's prepare has moved the
-   * head past it, its outputs can never be committed: record that.
-   */
-  async function closeAbandonedPrevious(): Promise<void> {
-    if (recoveredPrevious) return;
-    recoveredPrevious = true;
-    const stale = plan.previousCall;
-    if (!stale?.open) return;
-    try {
-      // Re-read the lifecycle: the call may have been dispatched or closed
-      // since the snapshot. Its outputs could not have been committed since,
-      // because that would have moved the head and failed this prepare.
-      const current = await store.readManifest(stale.manifestId);
-      if (current.outcome !== null) return;
-      const status: ContextCallOutcomeStatus = stale.open.outputsCommitted
-        ? "completed"
-        : current.dispatchedAt !== null
-          ? "unknown"
-          : "cancelled";
-      await withRetriedWrite(() => store.recordOutcome(stale.manifestId, { status }));
-    } catch {
-      // Best effort: a later prepare retries, and the outputs stay refused.
-    }
   }
 
   async function admitOrRefuse(input: Parameters<ContextAdmitHook>[0]): Promise<void> {
@@ -495,6 +471,11 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       idempotencyKey: `call:${run.id}:${run.ordinal}:${run.attempt}`,
       ...(pending.transition && { transition: pending.transition }),
       append: pending.append,
+      // The call the head points at is superseded by this one. Whatever its
+      // state (a crash left it open, or this process could not record its
+      // outcome), the store closes it in the same write, so it can never stay
+      // open once the head has moved past it.
+      ...(head && { closeSuperseded: head.lastManifestId }),
       manifest: {
         projection: plan.projection,
         model: modelRef,
@@ -516,13 +497,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
     }
     moveHead(prepared.head);
     pending = { transition: undefined, append: [] };
-    previous = {
-      manifestId: prepared.manifest.id,
-      model: modelRef,
-      toolSnapshotDigest,
-      open: undefined,
-    };
-    await closeAbandonedPrevious();
+    previous = { manifestId: prepared.manifest.id, model: modelRef, toolSnapshotDigest };
 
     const manifest: ContextManifest = prepared.manifest;
     try {
@@ -718,7 +693,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       })();
       return completion;
     },
-    isCompleted: () => completed,
+    isRetrySafe: () => !completed && !outputsLost,
     async abandon(cancelled = false) {
       if (closed && !open) return;
       closed = true;
@@ -735,6 +710,8 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
         // is real: commit it rather than lose it.
         try {
           await commitOutputs(finishedMessages, true);
+          // The reply is committed: the attempt must not run again.
+          completed = true;
           return;
         } catch {
           // Fall through: the output stays uncommitted.

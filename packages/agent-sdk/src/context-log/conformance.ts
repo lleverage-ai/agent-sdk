@@ -1221,6 +1221,74 @@ export function createContextLogStoreConformanceCases(
   );
 
   define(
+    "closeSuperseded closes the superseded call in the same write by its lifecycle",
+    async ({ store, stream, prepare }) => {
+      // Never dispatched: cancelled, and it can no longer be dispatched.
+      const prepared = await prepare(stream(), [user("u1")]);
+      const afterPrepared = await prepare(stream(), [user("u2")], {
+        closeSuperseded: prepared.manifest.id,
+      });
+      same(
+        (await store.readManifest(prepared.manifest.id)).outcome?.status,
+        "cancelled",
+        "an undispatched superseded call is cancelled",
+      );
+      await rejects(() => store.markDispatched(prepared.manifest.id), "conflict");
+
+      // Dispatched without outputs: unknown.
+      await store.markDispatched(afterPrepared.manifest.id);
+      const afterDispatched = await prepare(stream(), [user("u3")], {
+        closeSuperseded: afterPrepared.manifest.id,
+      });
+      same(
+        (await store.readManifest(afterPrepared.manifest.id)).outcome?.status,
+        "unknown",
+        "a dispatched superseded call without outputs is unknown",
+      );
+
+      // Dispatched with committed outputs: completed.
+      await store.markDispatched(afterDispatched.manifest.id);
+      await store.appendOutputs({
+        manifestId: afterDispatched.manifest.id,
+        expectedRevision: afterDispatched.head.revision,
+        items: [assistant("a3")],
+      });
+      const afterOutputs = await prepare(stream(), [user("u4")], {
+        closeSuperseded: afterDispatched.manifest.id,
+      });
+      same(
+        (await store.readManifest(afterDispatched.manifest.id)).outcome?.status,
+        "completed",
+        "a superseded call whose outputs were committed is completed",
+      );
+
+      // An existing outcome is left unchanged.
+      await store.markDispatched(afterOutputs.manifest.id);
+      await store.recordOutcome(afterOutputs.manifest.id, { status: "failed" });
+      await prepare(stream(), [user("u5")], { closeSuperseded: afterOutputs.manifest.id });
+      same(
+        (await store.readManifest(afterOutputs.manifest.id)).outcome?.status,
+        "failed",
+        "a recorded outcome is not changed",
+      );
+    },
+  );
+
+  define(
+    "closeSuperseded must name the head's last manifest and writes nothing otherwise",
+    async ({ store, stream, prepare }) => {
+      const first = await prepare(stream(), [user("u1")]);
+      await prepare(stream(), [user("u2")]);
+      const head = await store.readHead(stream());
+      await rejects(
+        () => prepare(stream(), [user("u3")], { closeSuperseded: first.manifest.id }),
+        "invalid",
+      );
+      same(await store.readHead(stream()), head, "a refused prepare writes nothing");
+    },
+  );
+
+  define(
     "outputs and a new prepare racing on one revision: exactly one wins",
     async ({ store, stream, key, prepare }) => {
       const first = await prepare(stream(), [user("u1")]);
