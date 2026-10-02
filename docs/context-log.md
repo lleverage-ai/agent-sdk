@@ -203,7 +203,8 @@ transitions, branch inheritance, independent streams, output ownership,
 racing writes, supersession and sparse-array rejection. If your store
 requires call fields that the contract leaves optional (such as `toolSnapshot`
 or `ordinal`), the suite fills deterministic placeholders, and the
-`completeManifest` hook can replace them with host-required values. A store may scope
+`completeManifest` hook can replace them with host-required values or add
+required host keys to `metadata` (it must keep the keys the suite set). A store may scope
 idempotency keys and manifest ids more narrowly (for example per session),
 and it may report additional, store-specific conflict reasons.
 

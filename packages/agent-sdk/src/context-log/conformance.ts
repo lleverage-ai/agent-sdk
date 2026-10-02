@@ -55,8 +55,9 @@ export interface ContextLogStoreConformanceOptions {
    * Before this hook runs, the suite fills any missing `toolSnapshot`
    * (`"[]"`), `callOptions` (`"{}"`), `attempt` (`1`) and `ordinal` (unique per
    * idempotency key within a case, so new calls never collide). The hook may
-   * replace those placeholders, but must not change `metadata`, because
-   * cases check that it round-trips.
+   * replace those placeholders. It may add host keys to `metadata`, but must
+   * keep the keys and values the suite set; cases check that the completed
+   * manifest, including the added keys, round-trips.
    * @defaultValue no further changes
    */
   completeManifest?: (
@@ -241,6 +242,8 @@ interface CaseContext {
   thread: string;
   stream: (branchId?: string, streamId?: string) => ContextStreamRef;
   key: (label: string) => string;
+  /** The manifest actually sent for an idempotency key, after completion. */
+  sent: (idempotencyKey: string) => ContextManifestInput | undefined;
   /** Prepares on a stream, reading the expected revision from its head. */
   prepare: (
     stream: ContextStreamRef,
@@ -276,6 +279,7 @@ export function createContextLogStoreConformanceCases(
         // Ordinals are stable per idempotency key: retries reuse them and
         // every new call gets a fresh one.
         const ordinals = new Map<string, number>();
+        const sentManifests = new Map<string, ContextManifestInput>();
         const store: ContextLogStore = {
           readHead: (ref) => raw.readHead(ref),
           readPath: (ref, readOptions) => raw.readPath(ref, readOptions),
@@ -302,6 +306,14 @@ export function createContextLogStoreConformanceCases(
                   ordinal,
                 })
               : filled;
+            for (const [field, value] of Object.entries(request.manifest.metadata ?? {})) {
+              if (
+                canonicalContextJson(completed.metadata?.[field]) !== canonicalContextJson(value)
+              ) {
+                fail(`completeManifest must keep manifest.metadata.${field}`);
+              }
+            }
+            sentManifests.set(request.idempotencyKey, completed);
             return raw.prepare({ ...request, manifest: completed });
           },
         };
@@ -327,7 +339,8 @@ export function createContextLogStoreConformanceCases(
               ...extra,
             });
           };
-          await body({ store, thread, stream, key, prepare });
+          const sent = (idempotencyKey: string) => sentManifests.get(idempotencyKey);
+          await body({ store, thread, stream, key, sent, prepare });
         } finally {
           await options.disposeStore?.(raw);
         }
@@ -357,7 +370,7 @@ export function createContextLogStoreConformanceCases(
 
   define(
     "prepare commits a root version, entries, a manifest and a head",
-    async ({ store, stream, key }) => {
+    async ({ store, stream, key, sent }) => {
       const idempotencyKey = key("prepare");
       const result = await store.prepare({
         stream: stream(),
@@ -387,7 +400,8 @@ export function createContextLogStoreConformanceCases(
         committed.dispatchedAt === null && committed.outcome === null,
         "a new manifest is open",
       );
-      same(committed.metadata, { run: "r-1" }, "manifest metadata");
+      check(committed.metadata?.run === "r-1", "the suite's manifest metadata is kept");
+      same(committed.metadata, sent(idempotencyKey)?.metadata, "manifest metadata round-trips");
       same(await store.readManifest(committed.id), committed, "readManifest");
 
       const version = await store.readVersion(head.versionId);

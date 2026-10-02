@@ -42,6 +42,31 @@ describe("context log store conformance suite", () => {
     expect(seen.size).toBeGreaterThan(cases.length);
   });
 
+  it("accepts a completeManifest hook that adds required host metadata", async () => {
+    const store = new MemoryContextLogStore();
+    const requiring = Object.create(store) as MemoryContextLogStore;
+    requiring.prepare = async (request) => {
+      if (request.manifest.metadata?.tenant !== "t-1") throw new Error("tenant metadata required");
+      return store.prepare(request);
+    };
+    const cases = createContextLogStoreConformanceCases({
+      createStore: () => requiring,
+      completeManifest: (manifest) => ({
+        ...manifest,
+        metadata: { ...manifest.metadata, tenant: "t-1" },
+      }),
+    });
+    for (const testCase of cases) await testCase.run();
+  });
+
+  it("rejects a completeManifest hook that drops the suite's metadata", async () => {
+    const testCase = createContextLogStoreConformanceCases({
+      createStore: () => new MemoryContextLogStore(),
+      completeManifest: (manifest) => ({ ...manifest, metadata: { tenant: "t-1" } }),
+    }).find((candidate) => candidate.name.startsWith("prepare commits a root version"));
+    await expect(testCase!.run()).rejects.toThrow(/must keep manifest.metadata.run/);
+  });
+
   it("fails against a store that ignores the expected revision", async () => {
     const store = new MemoryContextLogStore();
     const broken = Object.create(store) as MemoryContextLogStore;
