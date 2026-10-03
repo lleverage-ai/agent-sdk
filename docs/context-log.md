@@ -744,8 +744,13 @@ await agent.generate({
   that prepare carry the same entries, and later steps of the run ignore it.
   A background follow-up the agent starts after the run is a new run and
   never carries it. It is never listed in `runInput`.
-- Malformed history is a `ValidationError`. Outside log mode,
-  `contextHistory` is a `ConfigurationError`.
+- Malformed history is a `ValidationError` naming the field, never its
+  content: a key, a role, content of the wrong shape for its role (user and
+  assistant content is a string or a list of parts; tool content is a list
+  of tool results or approval responses; every part has a string `type`, and
+  tool calls and results a string `toolCallId`), or a message or metadata
+  that is not plain JSON. Outside log mode, `contextHistory` is a
+  `ConfigurationError`.
 
 ## Compaction
 

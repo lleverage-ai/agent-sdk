@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `GenerateOptions.contextHistory` now refuses every malformed history with a
+  `ValidationError` (`fieldErrors.contextHistory`) before anything is
+  committed, as documented. A message's content must have the shape its role
+  allows: a string or a list of parts for user and assistant messages, and a
+  list of tool results (or approval responses) for tool messages. Every part
+  is an object with a string `type`, and tool calls and results carry a string
+  `toolCallId`. Before this, a tool message with `null` content reached the
+  tool-call check and threw a `TypeError`, and a value that is not plain JSON
+  (a `bigint`, a `Date`) in a message, entry metadata or `root.metadata`
+  threw a `ContextLogInvalidError`. Error messages name the field, never its
+  content. (LLE-14090)
+
 ## [1.0.0-rc.12] - 2026-10-03
 
 Twelfth release candidate for 1.0.0. `turn-end` and `finish` stream parts
