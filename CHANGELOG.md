@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.13] - 2026-10-03
+
+Thirteenth release candidate for 1.0.0. In log mode, malformed
+`contextHistory` is now always refused with the documented
+`ValidationError`, before anything is committed. Legacy agents are
+unchanged.
+
+### Migration notes
+
+- Legacy mode: no change.
+- Log mode: valid history is unchanged. A host that caught `TypeError` or
+  `ContextLogInvalidError` for malformed history now gets `ValidationError`
+  (`fieldErrors.contextHistory`).
+
 ### Fixed
 
 - `GenerateOptions.contextHistory` now refuses every malformed history with a
@@ -1564,7 +1578,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.12...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.13...HEAD
+[1.0.0-rc.13]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.12...agent-sdk@1.0.0-rc.13
 [1.0.0-rc.12]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.11...agent-sdk@1.0.0-rc.12
 [1.0.0-rc.11]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.10...agent-sdk@1.0.0-rc.11
 [1.0.0-rc.10]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.9...agent-sdk@1.0.0-rc.10
