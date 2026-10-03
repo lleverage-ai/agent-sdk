@@ -1413,6 +1413,149 @@ describe("log-mode resume across a projection adapter change (LLE-14019)", () =>
     expect(runs).toEqual([{ approved: true, messages: 2 }]);
   });
 
+  /** An interrupt raised under `adapter`, on a store that can crash. */
+  async function crashableInterruptUnder(adapter: ProjectionAdapter) {
+    const store = new CrashingStore();
+    const checkpointer = new MemorySaver();
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls(["call-1", "deploy", { env: "prod" }])]).model, store, {
+        tools: recordingTools([]),
+        checkpointer,
+        contextLog: { mode: "log", store, projection: adapter },
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+    return { store, checkpointer, interrupt };
+  }
+
+  /** Resumes and returns the error it was refused with. */
+  const refusal = (promise: Promise<unknown>) =>
+    promise.then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+
+  it("refuses an in-doubt resume under another adapter even with inDoubtResume: reexecute (LLE-14095)", async () => {
+    const adapter = hostAdapter("host/adapter", "1");
+    const { store, checkpointer, interrupt } = await crashableInterruptUnder(adapter);
+    const runs: Array<{ approved: boolean; messages: number }> = [];
+    // The resolution commits, the tool runs, then its result commit crashes:
+    // the call is in doubt.
+    store.crashOnAppend = store.appendCalls + 2;
+    await expect(
+      logAgent(scriptedModel([text("never")]).model, store, {
+        tools: recordingTools(runs),
+        checkpointer,
+        contextLog: { mode: "log", store, projection: adapter },
+      }).resume(THREAD, interrupt.id, { approved: true }),
+    ).rejects.toThrow("process crashed");
+    expect(runs).toHaveLength(1);
+    const path = await readPath(store);
+    const ledger = vi.fn(async () => ({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse" as const,
+        respondWith: "recorded result",
+      },
+    }));
+
+    // Another adapter id: refused before anything re-runs, is written or is
+    // sent, and the interrupt stays pending.
+    const other = scriptedModel([text("never")]);
+    const error = await refusal(
+      logAgent(other.model, store, {
+        tools: recordingTools(runs),
+        checkpointer,
+        hooks: { PreToolUse: [{ hooks: [ledger] }] },
+        contextLog: {
+          mode: "log",
+          store,
+          projection: hostAdapter("host/other", "1"),
+          inDoubtResume: "reexecute",
+        },
+      }).resume(THREAD, interrupt.id, { approved: true }),
+    );
+    expect(isContextLogError(error, "conflict") && error.reason).toBe("transition_required");
+    expect(runs).toHaveLength(1);
+    expect(ledger).not.toHaveBeenCalled();
+    expect(await readPath(store)).toEqual(path);
+    expect((await checkpointer.load(THREAD))?.pendingInterrupt?.id).toBe(interrupt.id);
+    expect(other.requests).toHaveLength(0);
+
+    // A compatible adapter then recovers it through the host's ledger, and
+    // the tool still ran only once.
+    const recovered = await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: recordingTools(runs),
+      checkpointer,
+      hooks: { PreToolUse: [{ hooks: [ledger] }] },
+      contextLog: {
+        mode: "log",
+        store,
+        projection: hostAdapter("host/adapter", "2"),
+        inDoubtResume: "reexecute",
+      },
+    }).resume(THREAD, interrupt.id, { approved: true });
+    expect(recovered.status).toBe("complete");
+    expect(runs).toHaveLength(1);
+    expect(ledger).toHaveBeenCalledOnce();
+  });
+
+  it("refuses a resolved resume with a stale pending checkpoint under another adapter (LLE-14095)", async () => {
+    // A checkpointer that loses the save clearing the interrupt.
+    class LosingSaver extends MemorySaver {
+      losing = true;
+      override async save(...args: Parameters<MemorySaver["save"]>) {
+        if (this.losing && args[0].pendingInterrupt === undefined) {
+          throw new Error("process crashed");
+        }
+        return super.save(...args);
+      }
+    }
+    const adapter = hostAdapter("host/adapter", "1");
+    const { store, checkpointer, interrupt } = await crashableInterruptUnder(adapter);
+    const losing = new LosingSaver();
+    await losing.save((await checkpointer.load(THREAD))!);
+    const runs: Array<{ approved: boolean; messages: number }> = [];
+    // The result commits; only clearing the interrupt is lost.
+    await expect(
+      logAgent(scriptedModel([text("never")]).model, store, {
+        tools: recordingTools(runs),
+        checkpointer: losing,
+        contextLog: { mode: "log", store, projection: adapter },
+      }).resume(THREAD, interrupt.id, { approved: true }),
+    ).rejects.toThrow("process crashed");
+    expect(runs).toHaveLength(1);
+    losing.losing = false;
+    const path = await readPath(store);
+
+    const other = scriptedModel([text("never")]);
+    const error = await refusal(
+      logAgent(other.model, store, {
+        tools: recordingTools(runs),
+        checkpointer: losing,
+        contextLog: { mode: "log", store, projection: hostAdapter("host/other", "1") },
+      }).resume(THREAD, interrupt.id, { approved: true }),
+    );
+    expect(isContextLogError(error, "conflict") && error.reason).toBe("transition_required");
+    // Nothing ran, nothing was written, the stale pending interrupt wasn't
+    // cleared, and nothing was sent.
+    expect(runs).toHaveLength(1);
+    expect(await readPath(store)).toEqual(path);
+    expect((await losing.load(THREAD))?.pendingInterrupt?.id).toBe(interrupt.id);
+    expect(other.requests).toHaveLength(0);
+
+    // The original adapter clears it and continues, without running the
+    // tool again.
+    const resumed = scriptedModel([text("done")]);
+    const result = await logAgent(resumed.model, store, {
+      tools: recordingTools(runs),
+      checkpointer: losing,
+      contextLog: { mode: "log", store, projection: adapter },
+    }).resume(THREAD, interrupt.id, { approved: true });
+    expect(result.status).toBe("complete");
+    expect(runs).toHaveLength(1);
+    expect(resumed.requests).toHaveLength(1);
+    expect((await losing.load(THREAD))?.pendingInterrupt).toBeUndefined();
+  });
+
   it("refuses a custom answer through resumeDataResponse() under another adapter", async () => {
     const store = new MemoryContextLogStore();
     const checkpointer = new MemorySaver();
