@@ -173,6 +173,7 @@ function createCompactingManager(
   overrides: {
     keepMessageCount?: number;
     keepToolResultCount?: number;
+    keepMaxTokens?: number;
     summary?: string;
     commitCompaction?: () => void;
   } = {},
@@ -189,6 +190,7 @@ function createCompactingManager(
     summarization: {
       keepMessageCount: overrides.keepMessageCount ?? 2,
       keepToolResultCount: overrides.keepToolResultCount ?? 0,
+      ...(overrides.keepMaxTokens !== undefined && { keepMaxTokens: overrides.keepMaxTokens }),
     },
     summarizer: async (request) => {
       requests.push(request);
@@ -959,6 +961,72 @@ describe("log-mode compaction planning", () => {
     const summarised = JSON.stringify(request!.messages);
     expect(summarised).toContain("q1");
     expect(summarised).not.toContain("notes");
+  });
+
+  it("keeps a non-contiguous tail when a tool group released by keepMaxTokens is interleaved with kept turns (LLE-14171)", async () => {
+    const big = "x".repeat(20_000);
+    const interleaved: ContextEntryInput[] = [
+      settingsEntry,
+      { kind: "user", key: "u1", message: { role: "user", content: `q1 ${big}` } },
+      {
+        kind: "assistant",
+        key: "a1",
+        message: {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "c1", toolName: "echo", input: { big } }],
+        },
+      },
+      // A message that landed between the call and its result.
+      { kind: "user", key: "u2", message: { role: "user", content: "q2" } },
+      {
+        kind: "tool_result",
+        key: "r1",
+        message: {
+          role: "tool",
+          content: [
+            {
+              type: "tool-result",
+              toolCallId: "c1",
+              toolName: "echo",
+              output: { type: "text", value: big },
+            },
+          ],
+        },
+      },
+      { kind: "assistant", key: "a2", message: { role: "assistant", content: "a2" } },
+    ];
+    const { contextManager } = createCompactingManager(0, {
+      keepMessageCount: 10,
+      keepToolResultCount: 5,
+      keepMaxTokens: 200,
+    });
+    const compactor = testCompactor(async (messages, _options, _threadId, compactOptions) => {
+      const result = await contextManager.compact(
+        messages,
+        {} as Agent,
+        "token_threshold",
+        compactOptions,
+      );
+      return { compacted: true, messages: result.newMessages };
+    });
+    const compaction = await compactor({
+      stream: STREAM,
+      head: { ...head, entryCount: interleaved.length },
+      core: "core",
+      contract: { adapter: "a" },
+      path: interleaved,
+      pending,
+      keyPrefix: "compaction:run:4",
+      options: { _runId: "run-1" },
+      screen: async (entries) => entries,
+    });
+
+    // The big turn and the whole tool group are summarised; the turns
+    // between and after it are kept in path order, around the gap the
+    // group leaves.
+    const keys = compaction!.append.map((entry) => entry.key);
+    expect(keys).toEqual(["compaction:run:4:summary:0", "u2", "a2", "u3"]);
+    expect(compaction!.entries[0]).toEqual(settingsEntry);
   });
 
   it("drops a new retraction whose target was summarised", async () => {
