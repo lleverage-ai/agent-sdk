@@ -2518,18 +2518,15 @@ function trimRetainedToTokenBudget(
   }
   if (retainedTokens <= budget) return;
 
-  // Units in conversation order: a tool protocol block, or one message.
-  const units: number[][] = [];
-  for (let position = 0; position < conversationMessages.length; ) {
-    const block = findToolProtocolBlock(conversationMessages, position);
-    const end = block && block.start === position ? block.end : position;
-    units.push(
-      conversationMessages.slice(position, end + 1).map(({ originalIndex }) => originalIndex),
-    );
-    position = end + 1;
-  }
+  // Units: messages connected through a tool protocol (a call, its approval
+  // request and response, and its results share a tool call or approval id,
+  // even when other messages sit between them), or one message. Ordered by
+  // their first message.
+  const units = connectedProtocolUnits(conversationMessages);
+  const newest = conversationMessages.at(-1)?.originalIndex;
+  const releasable = units.filter((unit) => !unit.includes(newest as number));
 
-  for (const unit of units.slice(0, -1)) {
+  for (const unit of releasable) {
     if (retainedTokens <= budget) return;
     if (!unit.every((index) => retainedIndices.has(index))) continue;
     if (unit.some((index) => pinnedIndices.has(index))) continue;
@@ -2538,6 +2535,49 @@ function trimRetainedToTokenBudget(
       retainedTokens -= tokens.get(index) ?? 0;
     }
   }
+}
+
+/** Tool call and approval ids a message's parts name. */
+function protocolIds(message: ModelMessage): string[] {
+  if (!Array.isArray(message.content)) return [];
+  const ids: string[] = [];
+  for (const part of message.content as Array<Record<string, unknown>>) {
+    if (typeof part.toolCallId === "string") ids.push(`call:${part.toolCallId}`);
+    if (typeof part.approvalId === "string") ids.push(`approval:${part.approvalId}`);
+  }
+  return ids;
+}
+
+/**
+ * Groups conversation messages connected through a tool protocol (see
+ * {@link trimRetainedToTokenBudget}), as lists of original indices ordered by
+ * each group's first message.
+ */
+function connectedProtocolUnits(conversationMessages: IndexedMessage[]): number[][] {
+  const parent = conversationMessages.map((_, position) => position);
+  const find = (position: number): number => {
+    while (parent[position] !== position) {
+      parent[position] = parent[parent[position]!]!;
+      position = parent[position]!;
+    }
+    return position;
+  };
+  const owner = new Map<string, number>();
+  conversationMessages.forEach(({ message }, position) => {
+    for (const id of protocolIds(message)) {
+      const seen = owner.get(id);
+      if (seen === undefined) owner.set(id, position);
+      else parent[find(position)] = find(seen);
+    }
+  });
+  const groups = new Map<number, number[]>();
+  conversationMessages.forEach(({ originalIndex }, position) => {
+    const root = find(position);
+    const group = groups.get(root) ?? [];
+    group.push(originalIndex);
+    groups.set(root, group);
+  });
+  return [...groups.values()].sort((a, b) => a[0]! - b[0]!);
 }
 
 /**

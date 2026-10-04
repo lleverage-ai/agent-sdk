@@ -98,4 +98,47 @@ describe("compaction retention bounded by tokens (LLE-14171)", () => {
     expect(hasCall).toBe(hasResult);
     expect(kept.at(-1)).toEqual(messages[4]);
   });
+
+  it("keeps a call, its approval and its result together across messages between them", async () => {
+    const messages: ModelMessage[] = [
+      { role: "user", content: "Record a payment." },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "c-pay",
+            toolName: "pay",
+            input: { note: big("pay") },
+          },
+          { type: "tool-approval-request", approvalId: "a-pay", toolCallId: "c-pay" },
+        ],
+      },
+      {
+        role: "tool",
+        content: [{ type: "tool-approval-response", approvalId: "a-pay", approved: true }],
+      },
+      {
+        role: "tool",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: "c-pay",
+            toolName: "pay",
+            output: { type: "json", value: { id: "r-1" } },
+          },
+        ],
+      },
+      { role: "user", content: "Thanks." },
+    ];
+    const pinned = manager(100);
+    // The call is pinned: its approval and result must stay with it.
+    pinned.pinMessage(1, "the payment");
+    const result = await pinned.compact(messages, agentStub(), "hard_cap");
+    const kept = new Set(result.newMessages);
+    expect(kept.has(messages[1]!)).toBe(true);
+    expect(kept.has(messages[2]!)).toBe(true);
+    expect(kept.has(messages[3]!)).toBe(true);
+    expect(kept.has(messages[4]!)).toBe(true);
+  });
 });
