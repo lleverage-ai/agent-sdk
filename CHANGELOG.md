@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SummarizationConfig.keepMaxTokens` bounds the conversation messages a
+  compaction keeps, as the context manager's token counter counts them.
+  After `keepMessageCount` and `keepToolResultCount` choose what to keep, the
+  oldest kept messages are summarised instead (a whole tool call block at a
+  time) until the kept messages fit. Pinned messages and the newest
+  conversation message are always kept. Without it, a few very large turns
+  inside the keep window are never compacted: a transcript of four huge
+  turns kept all of them and stayed over the budget that asked for the
+  compaction (LLE-14171). Unset, retention is unchanged.
+
 ## [1.0.0-rc.13] - 2026-10-03
 
 Thirteenth release candidate for 1.0.0. In log mode, malformed

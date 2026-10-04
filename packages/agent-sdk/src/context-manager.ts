@@ -648,6 +648,22 @@ export interface SummarizationConfig {
   keepToolResultCount: number;
 
   /**
+   * Upper bound, in tokens (as the manager's token counter counts them), on
+   * the conversation messages a compaction keeps. After `keepMessageCount`
+   * and `keepToolResultCount` choose what to keep, the oldest kept messages
+   * are summarised instead, a whole tool call block at a time, until the
+   * kept messages fit. Pinned messages and the newest conversation message
+   * are always kept.
+   *
+   * Without it a few very large messages inside the keep window are never
+   * compacted: a transcript of four huge turns keeps all of them, so it
+   * stays over the budget that asked for the compaction.
+   *
+   * @defaultValue undefined (keep by count only)
+   */
+  keepMaxTokens?: number;
+
+  /**
    * Custom summarization prompt.
    * If not provided, a default prompt is used.
    */
@@ -1887,6 +1903,7 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
       const {
         keepMessageCount,
         keepToolResultCount,
+        keepMaxTokens,
         strategy = "rollup",
         enableStructuredSummary,
         enableTieredSummaries,
@@ -1901,6 +1918,10 @@ export function createContextManager(options: ContextManagerOptions): ContextMan
         pinnedIndices,
         keepMessageCount,
         keepToolResultCount,
+        ...(keepMaxTokens !== undefined && {
+          keepMaxTokens,
+          countTokens: (message: ModelMessage) => tokenCounter.countMessages([message]),
+        }),
       });
       const retainedMessages = messages.filter(
         (message, index) => message.role !== "system" && retainedIndices.has(index),
@@ -2403,6 +2424,8 @@ function collectRetainedConversationIndices(
     pinnedIndices: Set<number>;
     keepMessageCount: number;
     keepToolResultCount: number;
+    keepMaxTokens?: number;
+    countTokens?: (message: ModelMessage) => number;
   },
 ): Set<number> {
   const { pinnedIndices, keepMessageCount, keepToolResultCount } = options;
@@ -2460,7 +2483,101 @@ function collectRetainedConversationIndices(
     }
   }
 
+  if (options.keepMaxTokens !== undefined && options.countTokens) {
+    trimRetainedToTokenBudget(
+      conversationMessages,
+      retainedIndices,
+      pinnedIndices,
+      options.keepMaxTokens,
+      options.countTokens,
+    );
+  }
+
   return retainedIndices;
+}
+
+/**
+ * Releases the oldest kept conversation messages (a whole tool call block at
+ * a time) until the kept messages fit `budget`. Pinned messages and the
+ * newest conversation message's unit are never released.
+ */
+function trimRetainedToTokenBudget(
+  conversationMessages: IndexedMessage[],
+  retainedIndices: Set<number>,
+  pinnedIndices: Set<number>,
+  budget: number,
+  countTokens: (message: ModelMessage) => number,
+): void {
+  const tokens = new Map<number, number>();
+  let retainedTokens = 0;
+  for (const { message, originalIndex } of conversationMessages) {
+    if (!retainedIndices.has(originalIndex)) continue;
+    const count = countTokens(message);
+    tokens.set(originalIndex, count);
+    retainedTokens += count;
+  }
+  if (retainedTokens <= budget) return;
+
+  // Units: messages connected through a tool protocol (a call, its approval
+  // request and response, and its results share a tool call or approval id,
+  // even when other messages sit between them), or one message. Ordered by
+  // their first message.
+  const units = connectedProtocolUnits(conversationMessages);
+  const newest = conversationMessages.at(-1)?.originalIndex;
+  const releasable = units.filter((unit) => !unit.includes(newest as number));
+
+  for (const unit of releasable) {
+    if (retainedTokens <= budget) return;
+    if (!unit.every((index) => retainedIndices.has(index))) continue;
+    if (unit.some((index) => pinnedIndices.has(index))) continue;
+    for (const index of unit) {
+      retainedIndices.delete(index);
+      retainedTokens -= tokens.get(index) ?? 0;
+    }
+  }
+}
+
+/** Tool call and approval ids a message's parts name. */
+function protocolIds(message: ModelMessage): string[] {
+  if (!Array.isArray(message.content)) return [];
+  const ids: string[] = [];
+  for (const part of message.content as Array<Record<string, unknown>>) {
+    if (typeof part.toolCallId === "string") ids.push(`call:${part.toolCallId}`);
+    if (typeof part.approvalId === "string") ids.push(`approval:${part.approvalId}`);
+  }
+  return ids;
+}
+
+/**
+ * Groups conversation messages connected through a tool protocol (see
+ * {@link trimRetainedToTokenBudget}), as lists of original indices ordered by
+ * each group's first message.
+ */
+function connectedProtocolUnits(conversationMessages: IndexedMessage[]): number[][] {
+  const parent = conversationMessages.map((_, position) => position);
+  const find = (position: number): number => {
+    while (parent[position] !== position) {
+      parent[position] = parent[parent[position]!]!;
+      position = parent[position]!;
+    }
+    return position;
+  };
+  const owner = new Map<string, number>();
+  conversationMessages.forEach(({ message }, position) => {
+    for (const id of protocolIds(message)) {
+      const seen = owner.get(id);
+      if (seen === undefined) owner.set(id, position);
+      else parent[find(position)] = find(seen);
+    }
+  });
+  const groups = new Map<number, number[]>();
+  conversationMessages.forEach(({ originalIndex }, position) => {
+    const root = find(position);
+    const group = groups.get(root) ?? [];
+    group.push(originalIndex);
+    groups.set(root, group);
+  });
+  return [...groups.values()].sort((a, b) => a[0]! - b[0]!);
 }
 
 /**
