@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.14] - 2026-10-04
+
+Fourteenth release candidate for 1.0.0. Compaction can bound what it keeps
+by tokens, so a few very large turns are summarised instead of all kept
+inside the count window. Opt-in; unset, compaction is unchanged.
+
+### Migration notes
+
+- No change unless a host sets `summarization.keepMaxTokens`.
+
 ### Added
 
 - `SummarizationConfig.keepMaxTokens` bounds the conversation messages a
@@ -1590,7 +1600,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.13...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.14...HEAD
+[1.0.0-rc.14]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.13...agent-sdk@1.0.0-rc.14
 [1.0.0-rc.13]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.12...agent-sdk@1.0.0-rc.13
 [1.0.0-rc.12]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.11...agent-sdk@1.0.0-rc.12
 [1.0.0-rc.11]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.10...agent-sdk@1.0.0-rc.11
