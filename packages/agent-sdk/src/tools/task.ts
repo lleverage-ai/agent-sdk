@@ -582,7 +582,12 @@ function resolveSubagentCall(
       ? definition.model
       : (parent?.model ?? defaultModel);
   const reasoning = definition.reasoning ?? parent?.callSettings.reasoning;
-  const providerOptions = definition.providerOptions ?? parent?.callSettings.providerOptions;
+  // Each delegation gets its own copy (provider options are JSON), so a
+  // factory or child hook that adjusts them in place cannot change the
+  // parent's request, the definition or a sibling delegation.
+  const sharedProviderOptions = definition.providerOptions ?? parent?.callSettings.providerOptions;
+  const providerOptions =
+    sharedProviderOptions === undefined ? undefined : structuredClone(sharedProviderOptions);
   return {
     model,
     callSettings: {

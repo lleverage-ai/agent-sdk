@@ -154,6 +154,30 @@ describe("subagent call settings", () => {
     expect(def.contexts[0]!.callSettings).toEqual({ reasoning: "medium" });
   });
 
+  it("gives each delegation its own copy of the provider options", async () => {
+    const definitionOptions = { test: { budget: 1 } };
+    const parentOptions = { test: { budget: 2 } };
+    const mutate = (ctx: SubagentCreateContext) => {
+      (ctx.callSettings!.providerOptions!.test as { budget: number }).budget = 99;
+      return mockAgent();
+    };
+    const own = definition({ providerOptions: definitionOptions, create: mutate });
+    const inherited = definition({ type: "inheritor", inheritCallSettings: true, create: mutate });
+    const tool = createTaskTool({
+      subagents: [own, inherited],
+      defaultModel,
+      parentAgent: mockAgent(),
+      includeGeneralPurpose: false,
+    });
+    const options = parentCallOptions({ providerOptions: parentOptions });
+
+    await tool.execute!({ description: "a", subagent_type: "worker" }, options as never);
+    await tool.execute!({ description: "b", subagent_type: "inheritor" }, options as never);
+
+    expect(definitionOptions).toEqual({ test: { budget: 1 } });
+    expect(parentOptions).toEqual({ test: { budget: 2 } });
+  });
+
   it("rejects inheritCallSettings with an explicit model", () => {
     expect(() =>
       createTaskTool({

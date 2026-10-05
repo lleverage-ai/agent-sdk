@@ -17,8 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the model serving the parent call (after any fallback or hook model
   change) with the parent call's `reasoning` and `providerOptions`, instead
   of only the task tool's default model. The definition's own `reasoning` or
-  `providerOptions` replaces the inherited value. Combining it with an
-  explicit model throws a `ConfigurationError` (LLE-14248).
+  `providerOptions` replaces the inherited value. Each delegation gets its
+  own copy of the provider options. During `resume()` the parent call is the
+  resume call (its settings, the agent's configured model). Combining it
+  with an explicit model throws a `ConfigurationError` (LLE-14248).
 - `GenerateOptions.reasoning` passes a reasoning effort straight through to
   the AI SDK's `reasoning` call setting. Unset, nothing is sent, as before.
   In log mode it is an operational option hooks may change, like

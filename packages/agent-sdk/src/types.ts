@@ -4120,7 +4120,12 @@ export interface SubagentDefinition {
    *
    * When the task tool runs outside an agent call (no parent call settings
    * are available), the subagent falls back to the default model with only
-   * this definition's own settings.
+   * this definition's own settings. When a `task` call runs while resuming
+   * an interrupt (`resume()`), the parent call is the resume call: its
+   * `reasoning` and `providerOptions`, and the agent's configured model,
+   * since a fallback model chosen before the interrupt is not recorded.
+   *
+   * Each delegation gets its own copy of the provider options.
    *
    * @defaultValue false — `"inherit"` resolves to the task tool's default
    * model and no parent call settings are carried, as before.
