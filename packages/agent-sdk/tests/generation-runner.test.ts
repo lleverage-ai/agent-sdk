@@ -188,14 +188,32 @@ describe("createToolExecutionContext", () => {
     const model = createMockModel();
     const resolver = vi.fn(() => ({ imageInput: false }));
     expect(createToolExecutionContext({ model, modelCapabilities: resolver }, model)).toEqual({
-      agentSdk: { currentModel: model, modelCapabilities: { imageInput: false } },
+      agentSdk: { currentModel: model, callSettings: {}, modelCapabilities: { imageInput: false } },
     });
     expect(resolver).toHaveBeenCalledWith(model);
     expect(
       createToolExecutionContext({ model, modelCapabilities: { fileInput: false } }, model),
-    ).toEqual({ agentSdk: { currentModel: model, modelCapabilities: { fileInput: false } } });
+    ).toEqual({
+      agentSdk: { currentModel: model, callSettings: {}, modelCapabilities: { fileInput: false } },
+    });
     expect(createToolExecutionContext({ model }, model)).toEqual({
-      agentSdk: { currentModel: model },
+      agentSdk: { currentModel: model, callSettings: {} },
+    });
+  });
+
+  it("carries the call's own reasoning and provider options, and nothing else", () => {
+    const model = createMockModel();
+    expect(
+      createToolExecutionContext({ model }, model, {
+        reasoning: "low",
+        providerOptions: { x: { y: 1 } },
+        temperature: 0.5,
+      } as GenerateOptions),
+    ).toEqual({
+      agentSdk: {
+        currentModel: model,
+        callSettings: { reasoning: "low", providerOptions: { x: { y: 1 } } },
+      },
     });
   });
 });
@@ -472,7 +490,7 @@ describe("createGenerationRunner", () => {
       });
       const runner = createGenerationRunner(deps);
       const attempt = await runner.prepareAttempt(
-        { prompt: "p", headers: { h: "1" }, providerOptions: { x: 1 } },
+        { prompt: "p", headers: { h: "1" }, providerOptions: { x: 1 }, reasoning: "low" },
         deps.options.model,
       );
 
@@ -486,6 +504,7 @@ describe("createGenerationRunner", () => {
       expect(params.allowSystemInMessages).toBe(true);
       expect(params.headers).toEqual({ h: "1" });
       expect(params.providerOptions).toEqual({ x: 1 });
+      expect(params.reasoning).toBe("low");
       expect(params.stopWhen).toHaveLength(3);
 
       // Tools are wrapped with the execution context.
@@ -500,6 +519,7 @@ describe("createGenerationRunner", () => {
           experimental_context: {
             agentSdk: {
               currentModel: deps.options.model,
+              callSettings: { reasoning: "low", providerOptions: { x: 1 } },
               modelCapabilities: { imageInput: false },
             },
           },

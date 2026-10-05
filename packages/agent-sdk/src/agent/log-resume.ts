@@ -343,7 +343,7 @@ export function createLogResume(
               signalState,
             }),
             // The interrupted call's stream scopes delegations, as in a step.
-            createToolExecutionContext(options, options.model, site.stream),
+            createToolExecutionContext(options, options.model, genOptions, site.stream),
           );
       if (!rejected && !tools[toolName]?.execute) {
         throw new Error(`Cannot resume: tool "${toolName}" not found or has no execute function`);

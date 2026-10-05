@@ -87,6 +87,7 @@ import type {
   ModelInputCapabilities,
   PostGenerateInput,
   StreamingContext,
+  SubagentCallSettings,
   ToolCallResult,
   ToolResultPart,
 } from "../types.js";
@@ -123,6 +124,11 @@ export { projectMessagesForModel };
 export interface ToolExecutionContext {
   agentSdk: {
     currentModel: AgentOptions["model"];
+    /**
+     * The call's own reasoning and provider options, for delegated
+     * subagents that inherit the parent call's settings.
+     */
+    callSettings: SubagentCallSettings;
     modelCapabilities?: ModelInputCapabilities;
     /** Log mode only: the call's store and stream, for delegated subagents. */
     contextLog?: DelegationScope;
@@ -133,6 +139,7 @@ export interface ToolExecutionContext {
 export function createToolExecutionContext(
   options: AgentOptions,
   model: AgentOptions["model"],
+  call?: Pick<GenerateOptions, "reasoning" | "providerOptions">,
   logStream?: ContextStreamRef,
 ): ToolExecutionContext {
   const modelCapabilities = resolveModelInputCapabilities(options, model);
@@ -147,9 +154,15 @@ export function createToolExecutionContext(
         }
       : undefined;
 
+  const callSettings: SubagentCallSettings = {
+    ...(call?.reasoning !== undefined && { reasoning: call.reasoning }),
+    ...(call?.providerOptions !== undefined && { providerOptions: call.providerOptions }),
+  };
+
   return {
     agentSdk: {
       currentModel: model,
+      callSettings,
       ...(modelCapabilities ? { modelCapabilities } : {}),
       ...(contextLog && { contextLog }),
     },
@@ -344,6 +357,7 @@ export interface PreparedRequest {
     tools: ToolSet;
     maxTokens: GenerateOptions["maxTokens"];
     temperature: GenerateOptions["temperature"];
+    reasoning: GenerateOptions["reasoning"];
     stopSequences: GenerateOptions["stopSequences"];
     abortSignal: GenerateOptions["signal"];
     providerOptions: GenerateOptions["providerOptions"];
@@ -476,6 +490,7 @@ export interface ModelCallParams extends RepairToolCallOptions {
   tools: ToolSet;
   maxOutputTokens: GenerateOptions["maxTokens"];
   temperature: GenerateOptions["temperature"];
+  reasoning?: GenerateOptions["reasoning"];
   stopSequences: GenerateOptions["stopSequences"];
   abortSignal: GenerateOptions["signal"];
   stopWhen: ReturnType<typeof buildStopConditions>;
@@ -801,6 +816,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       tools: activeTools,
       maxTokens: effectiveGenOptions.maxTokens,
       temperature: effectiveGenOptions.temperature,
+      reasoning: effectiveGenOptions.reasoning,
       stopSequences: effectiveGenOptions.stopSequences,
       abortSignal: effectiveGenOptions.signal,
       providerOptions: effectiveGenOptions.providerOptions,
@@ -811,6 +827,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     const toolExecutionContext = createToolExecutionContext(
       options,
       currentModel,
+      effectiveGenOptions,
       attempt.logPlan?.stream,
     );
 
@@ -860,6 +877,8 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       tools: wrapToolsWithExecutionContext(initialParams.tools as ToolSet, toolExecutionContext),
       maxOutputTokens: initialParams.maxTokens,
       temperature: initialParams.temperature,
+      // Sent only when set, so a call without it is unchanged.
+      ...(initialParams.reasoning !== undefined && { reasoning: initialParams.reasoning }),
       stopSequences: initialParams.stopSequences,
       abortSignal: initialParams.abortSignal,
       stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),
@@ -1255,7 +1274,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
           followUpMessages,
           requestOptions.threadId,
         );
-        const toolExecutionContext = createToolExecutionContext(options, currentModel);
+        const toolExecutionContext = createToolExecutionContext(
+          options,
+          currentModel,
+          requestOptions,
+        );
 
         return streamText({
           model: currentModel,
@@ -1275,6 +1298,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
           },
           maxOutputTokens: requestOptions.maxTokens,
           temperature: requestOptions.temperature,
+          ...(requestOptions.reasoning !== undefined && { reasoning: requestOptions.reasoning }),
           stopSequences: requestOptions.stopSequences,
           abortSignal: requestOptions.signal,
           stopWhen: buildStopConditions(signalState, effectiveGenOptions, maxSteps),

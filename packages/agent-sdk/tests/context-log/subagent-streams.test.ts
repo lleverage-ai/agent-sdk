@@ -223,6 +223,25 @@ async function toolResultFor(
 }
 
 describe("log-mode subagent streams", () => {
+  it("runs an inheriting delegation with the parent call's settings (LLE-14248)", async () => {
+    const store = new MemoryContextLogStore();
+    const parent = scriptedModel([delegate("call-1"), text("All done")], "parent-model");
+    const child = scriptedModel([text("Child result")], "child-model");
+    const { definition, contexts } = researcher(child.model);
+    const providerOptions = { test: { effort: "high" } };
+
+    const result = await parentAgent(parent.model, store, [
+      { ...definition, inheritCallSettings: true },
+    ]).generate({ prompt: "Delegate it", threadId: THREAD, providerOptions });
+
+    expect(result.status).toBe("complete");
+    expect(contexts[0]!.model).toBe(parent.model);
+    expect(contexts[0]!.callSettings).toEqual({ providerOptions });
+    expect(child.requests).toHaveLength(1);
+    expect(child.requests[0]!.providerOptions).toEqual(providerOptions);
+    expect(await toolResultFor(store, "call-1")).toContain("Child result");
+  });
+
   it("runs a delegation on its own stream in the parent's store", async () => {
     const store = new MemoryContextLogStore();
     const parent = scriptedModel([delegate("call-1"), text("All done")], "parent-model");
@@ -324,6 +343,32 @@ describe("log-mode subagent streams", () => {
     expect(child.requests).toHaveLength(1);
     expect(await readPath(store, childStreamFor("call-1"))).toHaveLength(2);
     expect(promptText(restarted.requests[1]!.prompt)).toContain("Child result");
+  });
+
+  it("reads a finished delegation back once its type is hidden, on the same stream (LLE-14266)", async () => {
+    const store = new MemoryContextLogStore();
+    const child = scriptedModel([text("Child result")]);
+    const { definition, contexts } = researcher(child.model);
+    const visible = researcher(scriptedModel([text("unused")]).model).definition;
+    await parentAgent(scriptedModel([delegate("call-1"), text("Done")]).model, store, [
+      definition,
+    ]).generate({ prompt: "Delegate it", threadId: THREAD });
+
+    // The type leaves the roster but stays registered as hidden; a restarted
+    // parent re-executes the same tool call through the real tool pipeline.
+    const restarted = scriptedModel([delegate("call-1"), text("Done again")]);
+    const result = await parentAgent(restarted.model, store, [
+      { ...visible, type: "explore" },
+      { ...definition, hidden: true },
+    ]).generate({ prompt: "Again", threadId: THREAD });
+
+    expect(result.status).toBe("complete");
+    expect(contexts).toHaveLength(1);
+    expect(child.requests).toHaveLength(1);
+    expect(await readPath(store, childStreamFor("call-1"))).toHaveLength(2);
+    expect(promptText(restarted.requests[1]!.prompt)).toContain("Child result");
+    const taskTool = restarted.requests[0]!.tools?.find((tool) => tool.name === "task");
+    expect(JSON.stringify(taskTool)).not.toContain("researcher");
   });
 
   it("fails a recreated delegation with an unfinished head with the typed error", async () => {
