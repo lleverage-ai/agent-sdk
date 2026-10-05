@@ -223,6 +223,25 @@ async function toolResultFor(
 }
 
 describe("log-mode subagent streams", () => {
+  it("runs an inheriting delegation with the parent call's settings (LLE-14248)", async () => {
+    const store = new MemoryContextLogStore();
+    const parent = scriptedModel([delegate("call-1"), text("All done")], "parent-model");
+    const child = scriptedModel([text("Child result")], "child-model");
+    const { definition, contexts } = researcher(child.model);
+    const providerOptions = { test: { effort: "high" } };
+
+    const result = await parentAgent(parent.model, store, [
+      { ...definition, inheritCallSettings: true },
+    ]).generate({ prompt: "Delegate it", threadId: THREAD, providerOptions });
+
+    expect(result.status).toBe("complete");
+    expect(contexts[0]!.model).toBe(parent.model);
+    expect(contexts[0]!.callSettings).toEqual({ providerOptions });
+    expect(child.requests).toHaveLength(1);
+    expect(child.requests[0]!.providerOptions).toEqual(providerOptions);
+    expect(await toolResultFor(store, "call-1")).toContain("Child result");
+  });
+
   it("runs a delegation on its own stream in the parent's store", async () => {
     const store = new MemoryContextLogStore();
     const parent = scriptedModel([delegate("call-1"), text("All done")], "parent-model");

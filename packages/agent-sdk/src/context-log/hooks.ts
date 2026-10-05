@@ -23,8 +23,8 @@ type ModelMessage = NonNullable<GenerateOptions["messages"]>[number];
 
 /**
  * Generation options a hook may change in log mode. They control how a call
- * runs, not what it says: limits, sampling, cancellation, transport and
- * telemetry. Every other option is fixed for the call. `providerOptions` is
+ * runs, not what it says: limits, sampling, reasoning effort, cancellation,
+ * transport and telemetry. Every other option is fixed for the call. `providerOptions` is
  * deliberately not here: some providers accept model input through it (for
  * example replacement instructions or server-side history), which would
  * bypass the log.
@@ -36,6 +36,7 @@ export const LOG_MODE_OPERATIONAL_OPTIONS: ReadonlySet<keyof GenerateOptions> = 
 >([
   "maxTokens",
   "temperature",
+  "reasoning",
   "stopSequences",
   "signal",
   "shouldStopAfterStep",

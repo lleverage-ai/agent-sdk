@@ -8,6 +8,7 @@
  */
 
 import type {
+  CallSettings,
   LanguageModel,
   LanguageModelUsage,
   ModelMessage,
@@ -2149,6 +2150,20 @@ export interface GenerationRetryPolicy {
 }
 
 /**
+ * A model call's reasoning effort: the AI SDK's `reasoning` call setting
+ * (for example `"low"`, `"high"`, `"none"` or `"provider-default"`).
+ *
+ * @category Agent
+ */
+export type ReasoningEffort = NonNullable<CallSettings["reasoning"]>;
+
+/**
+ * The AI SDK's provider options shape (provider name to options object),
+ * which `ai` does not export by name.
+ */
+type ProviderOptions = NonNullable<UserModelMessage["providerOptions"]>;
+
+/**
  * Options for generating a response.
  *
  * @example
@@ -2280,6 +2295,19 @@ export interface GenerateOptions {
    * @defaultValue Model default
    */
   temperature?: number;
+
+  /**
+   * Reasoning effort for the call, passed straight through to the AI SDK's
+   * `reasoning` call setting. Providers translate it to their own control
+   * (for example a thinking budget or `reasoning_effort`).
+   *
+   * When unset the SDK sends nothing and the provider applies its default,
+   * as before. Provider-specific thinking settings in `providerOptions` still
+   * apply; how the two combine is up to the provider.
+   *
+   * @defaultValue Provider default
+   */
+  reasoning?: ReasoningEffort;
 
   /** Sequences that will stop generation */
   stopSequences?: string[];
@@ -4030,6 +4058,102 @@ export interface SubagentDefinition {
   model?: LanguageModel | "inherit";
 
   /**
+   * Reasoning effort for the subagent's model calls.
+   *
+   * The task tool passes it as {@link GenerateOptions.reasoning} on the
+   * subagent's `generate()`/`streamRaw()` call and exposes it to the factory
+   * as `ctx.callSettings.reasoning`. When unset, the subagent's calls carry no
+   * reasoning setting (the provider default), unless
+   * {@link SubagentDefinition.inheritCallSettings} takes the parent's.
+   *
+   * @example
+   * ```typescript
+   * { type: "explore", model: fastModel, reasoning: "low", create }
+   * ```
+   */
+  reasoning?: ReasoningEffort;
+
+  /**
+   * Provider options for the subagent's model calls, for example a
+   * provider-specific thinking configuration.
+   *
+   * The task tool passes them as {@link GenerateOptions.providerOptions} on
+   * the subagent's `generate()`/`streamRaw()` call and exposes them to the
+   * factory as `ctx.callSettings.providerOptions`. When
+   * {@link SubagentDefinition.inheritCallSettings} is set, these replace the
+   * parent call's provider options as a whole; they are not merged.
+   *
+   * @example
+   * ```typescript
+   * {
+   *   type: "deep-analyst",
+   *   model: anthropic("claude-sonnet-4-20250514"),
+   *   providerOptions: { anthropic: { thinking: { type: "enabled", budgetTokens: 8000 } } },
+   *   create,
+   * }
+   * ```
+   */
+  providerOptions?: ProviderOptions;
+
+  /**
+   * Inherit the delegating parent call's resolved call settings, not just
+   * its configured model.
+   *
+   * When `true`:
+   * - the subagent runs on the model serving the parent call that invoked
+   *   the task tool (after any fallback or hook model change), instead of
+   *   the task tool's default model;
+   * - its calls carry the parent call's `reasoning` and `providerOptions`,
+   *   unless this definition sets its own {@link SubagentDefinition.reasoning}
+   *   or {@link SubagentDefinition.providerOptions}, which then replace the
+   *   inherited value.
+   *
+   * The parent's provider options are carried whole, including anything
+   * request-specific in them (for example a prompt cache key or gateway
+   * metadata). Set `providerOptions` on the definition to send something
+   * else.
+   *
+   * Only valid when the model is inherited (`model` unset or `"inherit"`):
+   * a parent's provider options belong to the parent's model. Combining it
+   * with an explicit model throws a `ConfigurationError` when the task tool
+   * is created.
+   *
+   * When the task tool runs outside an agent call (no parent call settings
+   * are available), the subagent falls back to the default model with only
+   * this definition's own settings.
+   *
+   * @defaultValue false — `"inherit"` resolves to the task tool's default
+   * model and no parent call settings are carried, as before.
+   *
+   * @example
+   * ```typescript
+   * { type: "general-purpose", model: "inherit", inheritCallSettings: true, create }
+   * ```
+   */
+  inheritCallSettings?: boolean;
+
+  /**
+   * Hide this subagent type from the model.
+   *
+   * A hidden type is left out of the task tool's description and of the
+   * input schema sent to the provider, but a `task` call that carries it is
+   * still accepted and dispatched as usual, under exactly that
+   * `subagent_type` string (child stream identity, task records, hooks and
+   * `task_output` all see it unchanged). Use it to keep a retired type
+   * resolving for replay and recovery without offering it for new work.
+   *
+   * At least one subagent must stay visible when any is hidden.
+   *
+   * @defaultValue false
+   *
+   * @example
+   * ```typescript
+   * { type: "claude-sonnet-4", description: "Retired", hidden: true, create }
+   * ```
+   */
+  hidden?: boolean;
+
+  /**
    * Restrict which tools this subagent can use.
    *
    * When provided, only the specified tools will be available to
@@ -4143,6 +4267,18 @@ export interface SubagentDefinition {
 }
 
 /**
+ * Call settings the task tool applies to a subagent's model calls.
+ *
+ * @category Subagents
+ */
+export interface SubagentCallSettings {
+  /** Reasoning effort, passed as {@link GenerateOptions.reasoning}. */
+  reasoning?: ReasoningEffort;
+  /** Provider options, passed as {@link GenerateOptions.providerOptions}. */
+  providerOptions?: ProviderOptions;
+}
+
+/**
  * Context log mode only: where a delegated subagent's history lives.
  *
  * @experimental
@@ -4196,10 +4332,25 @@ export interface SubagentCreateContext {
    *
    * This is determined by priority:
    * 1. SubagentDefinition.model (if not "inherit")
-   * 2. TaskToolOptions.defaultModel
-   * 3. Parent agent's model
+   * 2. With SubagentDefinition.inheritCallSettings, the model serving the
+   *    parent call
+   * 3. TaskToolOptions.defaultModel
    */
   model: LanguageModel;
+
+  /**
+   * The resolved call settings for the subagent's model calls: the
+   * definition's own `reasoning` and `providerOptions`, or the parent call's
+   * when {@link SubagentDefinition.inheritCallSettings} is set. Empty when
+   * none apply.
+   *
+   * The task tool already passes these on the subagent's `generate()` or
+   * `streamRaw()` call, so a factory does not need to apply them. They are
+   * here for factories that bake call settings into the model they build.
+   * The task tool always sets it; it is optional only so contexts built
+   * outside the task tool stay valid.
+   */
+  callSettings?: SubagentCallSettings;
 
   /**
    * Tool restrictions for this subagent, if any.

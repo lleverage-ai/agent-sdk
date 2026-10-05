@@ -467,6 +467,7 @@ describe("Task Tool", () => {
       expect(subagent.create).toHaveBeenCalledWith({
         toolCallId: "tc-1",
         model: fastModel,
+        callSettings: {},
         allowedTools: ["read"],
       });
     });

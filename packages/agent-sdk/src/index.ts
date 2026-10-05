@@ -782,6 +782,7 @@ export type {
   // Hook input types (for typed hook implementations)
   PreGenerateInput,
   PreToolUseInput,
+  ReasoningEffort,
   // Skill types (SkillOptions for defineSkill)
   SkillOptions,
   SseMCPServerConfig,
@@ -794,6 +795,7 @@ export type {
   StreamingWriter,
   StreamingToolsFactory,
   StreamPart,
+  SubagentCallSettings,
   SubagentContextLog,
   SubagentCreateContext,
   SubagentDefinition,
