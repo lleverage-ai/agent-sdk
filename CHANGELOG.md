@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.15] - 2026-10-05
+
+Fifteenth release candidate for 1.0.0. Subagent definitions can set their
+own reasoning effort and provider options, inherit the parent call's model
+and settings, and be hidden from the model while still being dispatched.
+All opt-in; definitions without the new fields behave as before.
+
+### Migration notes
+
+- No change unless a host sets `reasoning`, `providerOptions`,
+  `inheritCallSettings` or `hidden` on a subagent definition, or
+  `reasoning` on a generate call. Factories now always receive
+  `ctx.callSettings` (`{}` when nothing applies).
+
 ### Added
 
 - `SubagentDefinition.reasoning` and `SubagentDefinition.providerOptions`
@@ -1633,7 +1647,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.14...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.15...HEAD
+[1.0.0-rc.15]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.14...agent-sdk@1.0.0-rc.15
 [1.0.0-rc.14]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.13...agent-sdk@1.0.0-rc.14
 [1.0.0-rc.13]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.12...agent-sdk@1.0.0-rc.13
 [1.0.0-rc.12]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.11...agent-sdk@1.0.0-rc.12
