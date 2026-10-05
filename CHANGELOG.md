@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.16] - 2026-10-05
+
+Sixteenth release candidate for 1.0.0. In owned-task mode, a task whose
+result was already delivered stays resolvable for the rest of the run, so
+`task_output` reports it as finished instead of `Task not found`.
+
+### Migration notes
+
+- Owned-task hosts only: `task_output` on an already-delivered task now
+  returns its status and a short note instead of `Task not found`, and
+  `kill_task` on it fails with "Task already finished". Results are still
+  delivered once.
+
 ### Added
 
 - `TaskManager.getDeliveredTask(taskId)` returns a finished task whose result
@@ -1665,7 +1678,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.15...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.16...HEAD
+[1.0.0-rc.16]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.15...agent-sdk@1.0.0-rc.16
 [1.0.0-rc.15]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.14...agent-sdk@1.0.0-rc.15
 [1.0.0-rc.14]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.13...agent-sdk@1.0.0-rc.14
 [1.0.0-rc.13]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.12...agent-sdk@1.0.0-rc.13
