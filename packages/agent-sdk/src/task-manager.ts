@@ -182,9 +182,10 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
 
   /**
    * A finished task of the current run whose result was already delivered,
-   * kept so its ID still resolves after {@link consumeTask} or an inline
-   * foreground return. Released with the run's results. Result and error
-   * payloads are not retained. Only owned delegations are tracked.
+   * kept so its ID still resolves after {@link consumeTask}, {@link removeTask}
+   * or an inline foreground delegation return. Released with the run's
+   * results. Result and error payloads are not retained. Tracked only when
+   * owned-task mode is enabled ({@link configureOwnedTasks}).
    * @param taskId - The task ID
    * @returns The delivered task, or undefined if unknown or not yet delivered
    */
@@ -293,6 +294,9 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
     }
 
     if (this.owned?.records.has(taskId)) return false;
+    // A host removing a finished task (AgentSession's own delivery) keeps its
+    // ID resolvable for the run, as consumeTask does.
+    this.owned?.retire(task);
     this.tasks.delete(taskId);
     this.resources.delete(taskId);
     return true;

@@ -179,7 +179,8 @@ export class OwnedTasks {
     return this.delivered.get(id);
   }
 
-  private retire(task: BackgroundTask): void {
+  /** Record a delivered task's identity and status. @internal */
+  retire(task: BackgroundTask): void {
     this.delivered.set(task.id, {
       id: task.id,
       subagentType: task.subagentType,

@@ -1256,6 +1256,26 @@ describe("delivered task IDs stay resolvable for the run (LLE-14245)", () => {
     expect(f.manager.getAllTasks()).toHaveLength(0);
   });
 
+  it.each(["completed", "failed"] as const)(
+    "a %s task removed by its host (AgentSession delivery) still resolves",
+    async (status) => {
+      const f = fixture();
+      await f.start();
+      const taskId = f.id();
+      if (status === "completed") f.work.resolve(answer);
+      else f.work.reject(new Error("provider failure"));
+      await flush();
+
+      expect(f.manager.removeTask(taskId)).toBe(true);
+      expect(f.manager.getTask(taskId)).toBeUndefined();
+      expect(await read(f.manager, taskId)).toMatchObject({ ...delivered(taskId), status });
+      expect(await f.manager.killTask(taskId)).toEqual({
+        killed: false,
+        reason: "Task already finished",
+      });
+    },
+  );
+
   it("keeps a killed task's status", async () => {
     const f = fixture({ cooperative: true });
     await f.start();
