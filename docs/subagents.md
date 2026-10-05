@@ -36,6 +36,38 @@ The parent agent receives a `task` tool to delegate work:
 // Agent can call: task({ description: "Research AI trends and summarize the main findings", subagent_type: "researcher" })
 ```
 
+## Model, reasoning effort and provider options
+
+Each definition can pick its own model, reasoning effort and provider
+options. The task tool passes `reasoning` and `providerOptions` on the
+subagent's `generate()`/`streamRaw()` call, and gives the factory the
+resolved model as `ctx.model` and the settings as `ctx.callSettings`.
+
+```typescript
+const subagents: SubagentDefinition[] = [
+  // A fixed model at low effort.
+  { type: "explore", description: "Fast read-only search", model: fastModel, reasoning: "low", create },
+  // The parent call's model and settings, whatever is serving it.
+  { type: "general-purpose", description: "General work", model: "inherit", inheritCallSettings: true, create },
+];
+```
+
+`model: "inherit"` (or no model) on its own means the task tool's default
+model with no call settings, as before. With `inheritCallSettings: true` the
+subagent runs on the model serving the parent call (after any fallback or
+hook model change) and its calls carry the parent call's `reasoning` and
+`providerOptions`; a definition's own `reasoning` or `providerOptions`
+replaces the inherited value. `inheritCallSettings` cannot be combined with
+an explicit model.
+
+## Hidden subagent types
+
+A definition with `hidden: true` is left out of the task tool's description
+and the input schema sent to the provider, but a `task` call that carries its
+type is still accepted and dispatched under that exact `subagent_type`. Use it
+to keep a retired type resolving for replay and recovery without offering it
+to the model. At least one subagent must stay visible.
+
 ## Owned delegation lifecycles
 
 `AgentOptions.ownedTaskPolicy` opts the agent's `task` tool into process-local

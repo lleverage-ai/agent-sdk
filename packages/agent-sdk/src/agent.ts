@@ -1087,7 +1087,11 @@ export function createAgent(options: AgentOptions): Agent {
         }
 
         try {
-          const toolExecutionContext = createToolExecutionContext(options, options.model);
+          const toolExecutionContext = createToolExecutionContext(
+            options,
+            options.model,
+            genOptions,
+          );
           toolResultOutput = await tool.execute(interrupt.request.args, {
             toolCallId: interrupt.toolCallId,
             messages: checkpoint.messages,
@@ -1188,7 +1192,7 @@ export function createAgent(options: AgentOptions): Agent {
 
     let customToolResult: unknown;
     try {
-      const toolExecutionContext = createToolExecutionContext(options, options.model);
+      const toolExecutionContext = createToolExecutionContext(options, options.model, genOptions);
       // Execute the tool, providing an interrupt function that returns
       // the stored user response. This mirrors what happens inside the
       // permission-mode tool wrapper when pendingResponses has a match.

@@ -9,7 +9,7 @@
  */
 
 import type { LanguageModel, Tool, ToolExecutionOptions } from "ai";
-import { tool } from "ai";
+import { jsonSchema, tool, zodSchema } from "ai";
 import { z } from "zod";
 import {
   type DelegationScope,
@@ -34,6 +34,7 @@ import type {
   HookCallback,
   StreamingContext,
   StreamingMetadata,
+  SubagentCallSettings,
   SubagentContextLog,
   SubagentCreateContext,
   SubagentDefinition,
@@ -541,6 +542,61 @@ async function committedDelegationReply(
   );
 }
 
+/**
+ * The settings of the parent call that is running the task tool: the model
+ * serving it and its own reasoning and provider options. `undefined` when
+ * the tool runs outside an agent call.
+ *
+ * @internal
+ */
+function readParentCall(
+  toolOptions: unknown,
+): { model: LanguageModel; callSettings: SubagentCallSettings } | undefined {
+  const context = (toolOptions as { experimental_context?: unknown } | undefined)
+    ?.experimental_context as
+    | { agentSdk?: { currentModel?: LanguageModel; callSettings?: SubagentCallSettings } }
+    | undefined;
+  const agentSdk = context?.agentSdk;
+  if (!agentSdk?.currentModel) return undefined;
+  return { model: agentSdk.currentModel, callSettings: agentSdk.callSettings ?? {} };
+}
+
+/**
+ * Resolve a subagent's model and call settings for one delegation.
+ *
+ * The model is the definition's own, else (with `inheritCallSettings`) the
+ * model serving the parent call, else the task tool's default. Reasoning and
+ * provider options are the definition's own, else (with
+ * `inheritCallSettings`) the parent call's.
+ *
+ * @internal
+ */
+function resolveSubagentCall(
+  definition: SubagentDefinition,
+  defaultModel: LanguageModel,
+  toolOptions: unknown,
+): { model: LanguageModel; callSettings: SubagentCallSettings } {
+  const parent = definition.inheritCallSettings ? readParentCall(toolOptions) : undefined;
+  const model =
+    definition.model && definition.model !== "inherit"
+      ? definition.model
+      : (parent?.model ?? defaultModel);
+  const reasoning = definition.reasoning ?? parent?.callSettings.reasoning;
+  // Each delegation gets its own copy (provider options are JSON), so a
+  // factory or child hook that adjusts them in place cannot change the
+  // parent's request, the definition or a sibling delegation.
+  const sharedProviderOptions = definition.providerOptions ?? parent?.callSettings.providerOptions;
+  const providerOptions =
+    sharedProviderOptions === undefined ? undefined : structuredClone(sharedProviderOptions);
+  return {
+    model,
+    callSettings: {
+      ...(reasoning !== undefined && { reasoning }),
+      ...(providerOptions !== undefined && { providerOptions }),
+    },
+  };
+}
+
 /** Whether a delegation failed because its child stream needs host recovery. @internal */
 function isDelegationRecoveryRequired(error: unknown): boolean {
   return isContextLogError(error, "refused") && error.reason === "delegation_recovery_required";
@@ -635,6 +691,20 @@ export function createTaskTool(options: TaskToolOptions): Tool {
     taskManager,
   } = options;
 
+  // A parent's call settings belong to the parent's model.
+  for (const definition of userSubagents) {
+    if (
+      definition.inheritCallSettings &&
+      definition.model !== undefined &&
+      definition.model !== "inherit"
+    ) {
+      throw new ConfigurationError(
+        `Subagent "${definition.type}" sets inheritCallSettings with an explicit model; inheritCallSettings requires an inherited model (model unset or "inherit")`,
+        { configKey: "subagents" },
+      );
+    }
+  }
+
   // Set the global task store for persistence
   setGlobalTaskStore(taskStore);
 
@@ -646,9 +716,19 @@ export function createTaskTool(options: TaskToolOptions): Tool {
     );
   }
 
-  // Build subagent type enum and descriptions
-  const subagentTypes = subagents.map((s) => s.type);
-  const subagentDescriptions = subagents.map((s) => `- ${s.type}: ${s.description}`).join("\n");
+  // Build subagent type enum and descriptions. Hidden types are dispatched
+  // but never offered to the model.
+  const visibleSubagents = subagents.filter((s) => !s.hidden);
+  const hiddenTypes = subagents.filter((s) => s.hidden).map((s) => s.type);
+  if (visibleSubagents.length === 0 && hiddenTypes.length > 0) {
+    throw new ConfigurationError("The task tool needs at least one subagent that is not hidden", {
+      configKey: "subagents",
+    });
+  }
+  const visibleTypes = visibleSubagents.map((s) => s.type);
+  const subagentDescriptions = visibleSubagents
+    .map((s) => `- ${s.type}: ${s.description}`)
+    .join("\n");
 
   const toolDescription =
     options.description ??
@@ -663,13 +743,10 @@ Make the description self-contained. Include the goal, relevant context, constra
 Available subagent types:
 ${subagentDescriptions}`;
 
-  return tool({
-    description: toolDescription,
-    inputSchema: z.object({
+  const inputSchemaFor = (types: string[]) =>
+    z.object({
       description: z.string().describe("The task description for the subagent"),
-      subagent_type: z
-        .enum(subagentTypes as [string, ...string[]])
-        .describe("The type of subagent to use"),
+      subagent_type: z.enum(types as [string, ...string[]]).describe("The type of subagent to use"),
       max_turns: z
         .number()
         .optional()
@@ -680,7 +757,29 @@ ${subagentDescriptions}`;
         .describe(
           "Fire-and-forget: start the task in the background and continue the conversation immediately. Only use this for work you do not need before your next important step. If your host surfaces background completions automatically, prefer waiting for that notification rather than polling. For parallel execution where you still need the results before continuing, call the task tool multiple times in the same step instead.",
         ),
-    }),
+    });
+  const visibleInputSchema = inputSchemaFor(visibleTypes);
+  type TaskInput = z.infer<typeof visibleInputSchema>;
+
+  // Without hidden types the schema is exactly the visible one. With them,
+  // the provider sees only the visible types, while validation accepts all.
+  let inputSchema: typeof visibleInputSchema | ReturnType<typeof jsonSchema<TaskInput>> =
+    visibleInputSchema;
+  if (hiddenTypes.length > 0) {
+    const acceptedInputSchema = inputSchemaFor([...visibleTypes, ...hiddenTypes]);
+    inputSchema = jsonSchema<TaskInput>(() => zodSchema(visibleInputSchema).jsonSchema, {
+      validate: (value) => {
+        const parsed = acceptedInputSchema.safeParse(value);
+        return parsed.success
+          ? { success: true, value: parsed.data }
+          : { success: false, error: parsed.error };
+      },
+    });
+  }
+
+  return tool({
+    description: toolDescription,
+    inputSchema,
     execute: async (params, toolOptions?: ToolExecutionOptions<unknown>) => {
       const { description, subagent_type, max_turns, run_in_background } = params;
       const executionTelemetry = (
@@ -759,12 +858,14 @@ ${subagentDescriptions}`;
             }
           : {};
 
-        // Determine the model to use
-        // Priority: subagentDef.model > defaultModel > parentAgent.model
-        let subagentModel = defaultModel;
-        if (subagentDef.model && subagentDef.model !== "inherit") {
-          subagentModel = subagentDef.model;
-        }
+        // Determine the model and call settings to use. Priority for the
+        // model: subagentDef.model > (inheritCallSettings) the model serving
+        // the parent call > defaultModel.
+        const { model: subagentModel, callSettings } = resolveSubagentCall(
+          subagentDef,
+          defaultModel,
+          toolOptions,
+        );
 
         // Build streaming metadata for this subagent
         const subagentMetadata: StreamingMetadata = {
@@ -779,6 +880,7 @@ ${subagentDescriptions}`;
           ...(childContextLog && { contextLog: childContextLog }),
           signal,
           model: subagentModel,
+          callSettings,
           allowedTools: subagentDef.allowedTools,
           plugins: subagentDef.plugins,
           // Only pass streaming context if this is a streaming subagent
@@ -837,6 +939,7 @@ ${subagentDescriptions}`;
           // Stream the subagent's response
           const streamResult = await subagent.streamRaw({
             ...childStreamOptions,
+            ...callSettings,
             signal,
             prompt: description,
             maxTokens: (max_turns ?? defaultMaxTurns) * 4096,
@@ -867,6 +970,7 @@ ${subagentDescriptions}`;
           // Non-streaming execution - use generate() as before
           const result = await subagent.generate({
             ...childStreamOptions,
+            ...callSettings,
             signal,
             prompt: description,
             maxTokens: (max_turns ?? defaultMaxTurns) * 4096,

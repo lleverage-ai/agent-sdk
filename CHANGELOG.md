@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SubagentDefinition.reasoning` and `SubagentDefinition.providerOptions`
+  set a subagent's reasoning effort and provider options. The task tool
+  passes them on the subagent's `generate()`/`streamRaw()` call and exposes
+  them to the factory as `SubagentCreateContext.callSettings` (LLE-14248).
+- `SubagentDefinition.inheritCallSettings`: an inheriting subagent runs on
+  the model serving the parent call (after any fallback or hook model
+  change) with the parent call's `reasoning` and `providerOptions`, instead
+  of only the task tool's default model. The definition's own `reasoning` or
+  `providerOptions` replaces the inherited value. Each delegation gets its
+  own copy of the provider options. During `resume()` the parent call is the
+  resume call (its settings, the agent's configured model). Combining it
+  with an explicit model throws a `ConfigurationError` (LLE-14248).
+- `GenerateOptions.reasoning` passes a reasoning effort straight through to
+  the AI SDK's `reasoning` call setting. Unset, nothing is sent, as before.
+  In log mode it is an operational option hooks may change, like
+  `temperature` (LLE-14248).
+- `SubagentDefinition.hidden`: a hidden subagent type is left out of the task
+  tool's description and provider-facing input schema but is still accepted
+  and dispatched under its exact `subagent_type`, so retired types keep
+  resolving for replay and recovery. At least one subagent must stay visible
+  (LLE-14266).
+- `ReasoningEffort` and `SubagentCallSettings` types are exported.
+
+### Changed
+
+- `SubagentCreateContext.callSettings` is always set by the task tool (empty
+  when no settings apply). Definitions without `reasoning`,
+  `providerOptions`, `inheritCallSettings` or `hidden` behave exactly as
+  before, and without hidden types the task tool's input schema is
+  unchanged.
+
 ## [1.0.0-rc.14] - 2026-10-04
 
 Fourteenth release candidate for 1.0.0. Compaction can bound what it keeps
