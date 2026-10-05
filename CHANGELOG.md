@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `TaskManager.getDeliveredTask(taskId)` returns a finished task whose result
+  was already delivered in the current run (identity and status only, no
+  result or error payload), when owned-task mode is enabled. Released with
+  the run's results.
+
+### Fixed
+
+- Owned task IDs stay resolvable for the life of the run (LLE-14245).
+  `task_output` on a task whose result was already delivered, whether read
+  earlier, delivered automatically, or returned inline in the foreground, now
+  returns its status with "Task already finished. Its result was delivered
+  earlier and is not repeated." instead of `Task not found`. This covers
+  `AgentSession`'s automatic delivery too. `kill_task` on such a task now
+  fails with "Task already finished". Results are still delivered once, and
+  the live task set is unchanged.
+
 ## [1.0.0-rc.15] - 2026-10-05
 
 Fifteenth release candidate for 1.0.0. Subagent definitions can set their
