@@ -107,6 +107,8 @@ export class OwnedTasks {
   readonly records = new Map<string, OwnedRecord>();
   private foreground = new Set<string>();
   private ids = new Set<string>();
+  /** Delivered tasks' identities, so their IDs stay resolvable until the run's results are released. */
+  private delivered = new Map<string, BackgroundTask>();
   private deliveries = new Map<string, Promise<Delivery>>();
   private closed = false;
   private drainStartedAt?: number;
@@ -164,7 +166,29 @@ export class OwnedTasks {
     this.store.tasks.delete(id);
     this.ids.delete(id);
     if (!this.records.has(id)) this.store.resources.delete(id);
+    this.retire(task);
     return task;
+  }
+
+  /**
+   * A task of this run whose result was already delivered (consumed in the
+   * background, or returned inline in the foreground). Result and error
+   * payloads are not retained.
+   */
+  deliveredTask(id: string): BackgroundTask | undefined {
+    return this.delivered.get(id);
+  }
+
+  private retire(task: BackgroundTask): void {
+    this.delivered.set(task.id, {
+      id: task.id,
+      subagentType: task.subagentType,
+      description: task.description,
+      status: task.status,
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+      ...(task.completedAt ? { completedAt: task.completedAt } : {}),
+    });
   }
 
   async run(
@@ -302,6 +326,8 @@ export class OwnedTasks {
     const delivered = Promise.race([record.promise, cancelled]).finally(() => {
       controller.signal.removeEventListener("abort", abortListener);
       if (!background) {
+        const settled = this.store.tasks.get(task.id);
+        if (settled) this.retire(settled);
         this.store.tasks.delete(task.id);
         this.foreground.delete(task.id);
         this.ids.delete(task.id);
@@ -461,6 +487,7 @@ export class OwnedTasks {
       this.store.resources.delete(id);
     }
     this.ids.clear();
+    this.delivered.clear();
     this.deliveries.clear();
     this.replayBytes = 0;
     this.scope = undefined;

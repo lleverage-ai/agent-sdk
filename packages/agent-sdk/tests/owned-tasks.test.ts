@@ -6,6 +6,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAgent,
+  createKillTaskTool,
   createTaskOutputTool,
   createTaskTool,
   type GenerateResult,
@@ -1168,5 +1169,131 @@ describe("owned delegation lifecycle (consumer characterisation)", () => {
       expect(f.manager.eventNames()).toHaveLength(0);
     }
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("delivered task IDs stay resolvable for the run (LLE-14245)", () => {
+  const read = (manager: TaskManager, taskId: string, block = false) =>
+    createTaskOutputTool({ taskManager: manager }).execute!(
+      { task_id: taskId, block, timeout: 1_000 },
+      { toolCallId: "out", messages: [], context: undefined },
+    );
+  const kill = (manager: TaskManager, taskId: string) =>
+    createKillTaskTool({ taskManager: manager }).execute!(
+      { task_id: taskId },
+      { toolCallId: "kill", messages: [], context: undefined },
+    );
+  const delivered = (taskId: string) => ({
+    taskId,
+    type: "stub",
+    status: "completed",
+    description: "bounded",
+    message: "Task already finished. Its result was delivered earlier and is not repeated.",
+  });
+
+  it("a background result read by task_output still resolves for task_output and kill_task", async () => {
+    const f = fixture();
+    await f.start();
+    const taskId = f.id();
+    f.work.resolve(answer);
+    await flush();
+
+    expect(await read(f.manager, taskId)).toMatchObject({ status: "completed", result: "result" });
+    const again = await read(f.manager, taskId);
+    expect(again).toMatchObject(delivered(taskId));
+    expect(again).not.toHaveProperty("result");
+    expect(again).not.toHaveProperty("error");
+    expect(await kill(f.manager, taskId)).toEqual({
+      success: false,
+      message: `Failed to kill task ${taskId}: Task already finished`,
+    });
+    // Consume-once is unchanged: the live set no longer holds the task.
+    expect(f.manager.getTask(taskId)).toBeUndefined();
+    expect(f.manager.hasBackgroundTasks()).toBe(false);
+  });
+
+  it("a background result delivered automatically still resolves", async () => {
+    const f = fixture();
+    await f.start();
+    const taskId = f.id();
+    const auto = f.manager.waitForNextCompletion().then((task) => f.manager.consumeTask(task.id));
+    f.work.resolve(answer);
+    await flush();
+    expect((await auto)?.result).toBe("result");
+
+    expect(await read(f.manager, taskId)).toMatchObject(delivered(taskId));
+    expect(await f.manager.killTask(taskId)).toEqual({
+      killed: false,
+      reason: "Task already finished",
+    });
+  });
+
+  it("a blocking task_output whose task is delivered while it waits reports the delivery", async () => {
+    const f = fixture();
+    await f.start();
+    const taskId = f.id();
+    const waiting = read(f.manager, taskId, true);
+    await flush();
+    f.manager.on("taskCompleted", (task) => f.manager.consumeTask(task.id));
+    f.work.resolve(answer);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await waiting).toMatchObject(delivered(taskId));
+  });
+
+  it("a foreground task's returned ID still resolves after it returns", async () => {
+    const f = fixture();
+    const result = f.start(false);
+    await flush();
+    const taskId = f.id();
+    f.work.resolve(answer);
+    await expect(result).resolves.toMatchObject({ success: true, taskId });
+
+    expect(await read(f.manager, taskId)).toMatchObject(delivered(taskId));
+    expect(await f.manager.killTask(taskId)).toEqual({
+      killed: false,
+      reason: "Task already finished",
+    });
+    expect(f.manager.getAllTasks()).toHaveLength(0);
+  });
+
+  it("keeps a killed task's status", async () => {
+    const f = fixture({ cooperative: true });
+    await f.start();
+    const taskId = f.id();
+    expect(await f.manager.killTask(taskId)).toEqual({ killed: true });
+    expect(f.manager.consumeTask(taskId)?.status).toBe("killed");
+
+    expect(await read(f.manager, taskId)).toMatchObject({ ...delivered(taskId), status: "killed" });
+  });
+
+  it.each([
+    ["the run's results are released", (manager: TaskManager) => manager.releaseOwnedTaskResults()],
+    [
+      "a new run begins",
+      (manager: TaskManager) => manager.beginTaskScope({ runId: "next-run", attemptId: "a" }),
+    ],
+  ])("forgets delivered IDs once %s", async (_label, endRun) => {
+    const f = fixture();
+    await f.start();
+    const taskId = f.id();
+    f.work.resolve(answer);
+    await flush();
+    expect(f.manager.consumeTask(taskId)?.result).toBe("result");
+    await f.manager.settleOwnedTasks("final");
+
+    endRun(f.manager);
+
+    expect(f.manager.getDeliveredTask(taskId)).toBeUndefined();
+    expect(await read(f.manager, taskId)).toEqual({
+      error: true,
+      message: `Task not found: ${taskId}`,
+    });
+    expect(await f.manager.killTask(taskId)).toEqual({ killed: false, reason: "Task not found" });
+  });
+
+  it("still reports an ID that never existed as not found", async () => {
+    const f = fixture();
+    expect(await read(f.manager, "noop")).toEqual({ error: true, message: "Task not found: noop" });
+    expect(await f.manager.killTask("noop")).toEqual({ killed: false, reason: "Task not found" });
   });
 });

@@ -1242,12 +1242,33 @@ Parameters:
         return backgroundTasks.get(task_id);
       };
 
+      // A finished task whose result this run already delivered keeps its ID
+      // resolvable; the result itself is delivered once.
+      const deliveredResponse = (id: string) => {
+        const delivered = taskManager?.getDeliveredTask(id);
+        if (!delivered) return undefined;
+        return {
+          taskId: delivered.id,
+          type: delivered.subagentType,
+          status: delivered.status,
+          description: delivered.description,
+          createdAt: delivered.createdAt,
+          ...(delivered.completedAt ? { completedAt: delivered.completedAt } : {}),
+          message: "Task already finished. Its result was delivered earlier and is not repeated.",
+        };
+      };
+
       // Helper to format task response with live output support
       const formatTaskResponse = (task: BackgroundTask) => {
         if (taskManager?.owned && !["pending", "running"].includes(task.status)) {
           const consumed = taskManager.consumeTask(task.id);
           if (!consumed)
-            return { taskId: task.id, message: "Task result already consumed or delivered inline" };
+            return (
+              deliveredResponse(task.id) ?? {
+                taskId: task.id,
+                message: "Task result already consumed or delivered inline",
+              }
+            );
           task = consumed;
         }
         const response: Record<string, unknown> = {
@@ -1301,10 +1322,12 @@ Parameters:
       let task = await loadTask();
 
       if (!task) {
-        return {
-          error: true,
-          message: `Task not found: ${task_id}`,
-        };
+        return (
+          deliveredResponse(task_id) ?? {
+            error: true,
+            message: `Task not found: ${task_id}`,
+          }
+        );
       }
 
       // Helper to cleanup task after observation
@@ -1344,10 +1367,12 @@ Parameters:
         // Reload task status
         task = await loadTask();
         if (!task) {
-          return {
-            error: true,
-            message: `Task disappeared: ${task_id}`,
-          };
+          return (
+            deliveredResponse(task_id) ?? {
+              error: true,
+              message: `Task disappeared: ${task_id}`,
+            }
+          );
         }
       }
 

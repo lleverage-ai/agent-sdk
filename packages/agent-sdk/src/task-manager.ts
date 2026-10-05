@@ -181,6 +181,18 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
   }
 
   /**
+   * A finished task of the current run whose result was already delivered,
+   * kept so its ID still resolves after {@link consumeTask} or an inline
+   * foreground return. Released with the run's results. Result and error
+   * payloads are not retained. Only owned delegations are tracked.
+   * @param taskId - The task ID
+   * @returns The delivered task, or undefined if unknown or not yet delivered
+   */
+  getDeliveredTask(taskId: string): BackgroundTask | undefined {
+    return this.owned?.deliveredTask(taskId);
+  }
+
+  /**
    * Synchronously claim a result shared by manual and automatic delivery.
    * @param taskId - Terminal background task to consume
    * @returns The claimed task, or undefined if unavailable/already consumed/foreground
@@ -382,6 +394,7 @@ export class TaskManager extends EventEmitter<TaskManagerEvents> {
     if (this.owned?.records.has(taskId)) return this.owned.kill(taskId);
     const task = this.tasks.get(taskId);
     if (!task) {
+      if (this.getDeliveredTask(taskId)) return { killed: false, reason: "Task already finished" };
       return { killed: false, reason: "Task not found" };
     }
 
