@@ -1186,6 +1186,174 @@ export function createContextLogStoreConformanceCases(
     },
   );
 
+  define(
+    "a fork starts a child stream from its source manifest's committed path",
+    async ({ store, stream, key, prepare }) => {
+      const source = await prepare(stream(), [user("u1"), assistant("a1"), user("u2")]);
+      // The source stream moves on; the fork still inherits what the
+      // source manifest committed.
+      const moved = await prepare(stream(), [user("u3")]);
+      const child = stream("main", "main/subagent/forker-1");
+      const fork = transition({
+        reason: "fork",
+        parent: {
+          versionId: source.manifest.versionId,
+          inheritedCount: source.manifest.entryCount,
+        },
+        fork: {
+          sourceManifestId: source.manifest.id,
+          toolCallId: "call-1",
+          subagentType: "forker",
+        },
+      });
+      const idempotencyKey = key("fork");
+      const first = await prepare(child, [user("brief")], { transition: fork, idempotencyKey });
+      check(first.head.revision === 1, "the fork is the child stream's first version");
+      same(first.head.stream, child, "the fork's head is on the child stream");
+      same(
+        (await readAll(store, first.head)).map(inputOf),
+        [user("u1"), assistant("a1"), user("u2"), user("brief")],
+        "the child path is the source manifest's path, then its own entries",
+      );
+      const version = await store.readVersion(first.head.versionId);
+      check(version.reason === "fork", "the fork reason is stored");
+      check(version.parentVersionId === source.manifest.versionId, "the parent is the source's");
+      check(version.inheritedCount === 3, "the fork inherits the source manifest's path");
+      same(version.stream, child, "the fork version belongs to the child stream");
+      same(version.fork, fork.fork, "the fork origin round-trips");
+      same(version.core, fork.core, "the fork keeps the source core");
+      same(version.contract, fork.contract, "the fork keeps the source contract");
+      const retried = await prepare(child, [user("brief")], {
+        transition: fork,
+        idempotencyKey,
+        expectedRevision: 0,
+      });
+      check(!retried.created, "a retried fork returns the original prepare");
+      same(retried.manifest, first.manifest, "a retried fork returns the same manifest");
+      same(await store.readHead(stream()), moved.head, "the source stream is unchanged");
+
+      const more = await prepare(child, [user("more")]);
+      same(
+        (await readAll(store, more.head)).map((entry) => entry.key),
+        ["u1", "a1", "u2", "brief", "more"],
+        "the child continues on its own stream",
+      );
+      same(await store.readHead(stream()), moved.head, "the source stream is still unchanged");
+    },
+  );
+
+  define(
+    "a fork is refused unless it starts a new child stream from its source manifest",
+    async ({ store, stream, key, prepare }) => {
+      const source = await prepare(stream(), [user("u1"), assistant("a1"), user("u2")]);
+      const sibling = await prepare(stream("main", "sibling"), [
+        user("s1"),
+        user("s2"),
+        user("s3"),
+      ]);
+      const child = stream("main", "main/subagent/forker-1");
+      const fork = (overrides: Partial<ContextTransition> = {}): ContextTransition =>
+        transition({
+          reason: "fork",
+          parent: {
+            versionId: source.manifest.versionId,
+            inheritedCount: source.manifest.entryCount,
+          },
+          fork: {
+            sourceManifestId: source.manifest.id,
+            toolCallId: "call-1",
+            subagentType: "forker",
+          },
+          ...overrides,
+        });
+      const refused = (target: ContextStreamRef, candidate: ContextTransition) =>
+        rejects(
+          () =>
+            store.prepare({
+              stream: target,
+              expectedRevision: 0,
+              idempotencyKey: key("fork"),
+              transition: candidate,
+              append: [user("brief")],
+              manifest: manifest(),
+            }),
+          "conflict",
+          "invalid_transition",
+        );
+      // Not a child stream of the source on the same thread and branch. A
+      // store that only knows provisioned threads may not find another one.
+      try {
+        await store.prepare({
+          stream: { ...child, threadId: `${child.threadId}-other` },
+          expectedRevision: 0,
+          idempotencyKey: key("fork"),
+          transition: fork(),
+          append: [user("brief")],
+          manifest: manifest(),
+        });
+        fail("a fork onto another thread must be refused");
+      } catch (error) {
+        check(
+          isContextLogError(error, "not_found") ||
+            (isContextLogError(error, "conflict") && error.reason === "invalid_transition"),
+          `a fork onto another thread must be refused as invalid_transition or not_found, got ${String(error)}`,
+        );
+      }
+      await refused(stream("other-branch", "main/subagent/forker-1"), fork());
+      await refused(stream("main", "elsewhere/subagent/forker-1"), fork());
+      await refused(stream("main", "main-copy"), fork());
+      // A source other than the manifest's committed path.
+      const parent = fork().parent!;
+      await refused(child, fork({ parent: { ...parent, inheritedCount: 2 } }));
+      await refused(
+        child,
+        fork({ fork: { ...fork().fork!, sourceManifestId: sibling.manifest.id } }),
+      );
+      await refused(
+        child,
+        fork({ fork: { ...fork().fork!, sourceManifestId: `missing-${randomUUID()}` } }),
+      );
+      // Another core or contract than the source version's.
+      await refused(child, fork({ core: "Another core." }));
+      await refused(child, fork({ contract: { ...CONTRACT, serialisation: "v2" } }));
+      // The fork origin must match the reason.
+      await rejects(
+        () =>
+          store.prepare({
+            stream: child,
+            expectedRevision: 0,
+            idempotencyKey: key("fork"),
+            transition: { ...fork(), fork: undefined },
+            append: [user("brief")],
+            manifest: manifest(),
+          }),
+        "invalid",
+      );
+      await rejects(
+        () =>
+          prepare(stream(), [user("u4")], {
+            transition: transition({
+              reason: "compaction",
+              parent: { versionId: source.head.versionId, inheritedCount: 3 },
+              fork: fork().fork!,
+            }),
+          }),
+        "invalid",
+      );
+      check((await store.readHead(child)) === null, "refused forks write nothing");
+
+      // Only as the child stream's first version.
+      const started = await prepare(child, [user("own")]);
+      await rejects(
+        () => prepare(child, [user("brief")], { transition: fork() }),
+        "conflict",
+        "invalid_transition",
+      );
+      same(await store.readHead(child), started.head, "a refused fork leaves the head unchanged");
+      same(await store.readHead(stream()), source.head, "the source stream is unchanged");
+    },
+  );
+
   define("streams on one branch have independent heads", async ({ store, stream, prepare }) => {
     const main = await prepare(stream(), [user("u1")]);
     const child = await prepare(stream("main", "run-1/subagent/research"), [user("u1")]);

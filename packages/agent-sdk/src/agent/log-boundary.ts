@@ -111,6 +111,17 @@ export interface LogPreviousCall {
 }
 
 /**
+ * The tool definitions and call options a fork's provider calls send, as the
+ * source manifest recorded them (`toolSnapshot` and `callOptions`).
+ *
+ * @internal
+ */
+export interface LogFrozenRequest {
+  toolSnapshot: string;
+  callOptions: string;
+}
+
+/**
  * What a boundary needs from its attempt's plan.
  *
  * @internal
@@ -127,6 +138,12 @@ export interface LogBoundaryPlan {
   outputKeyPrefix: string;
   previousCall: LogPreviousCall | undefined;
   run: LogRunState;
+  /**
+   * A fork's frozen request: every provider call of the attempt sends these
+   * tool definitions and call options instead of its own, so the request is
+   * the source request's, byte for byte, apart from the prompt.
+   */
+  frozenRequest?: LogFrozenRequest;
 }
 
 /**
@@ -236,6 +253,44 @@ export interface LogCallBoundary {
    * the interrupt is resumed.
    */
   observeInterrupt(read: () => LogInterruptMark | undefined): void;
+  /**
+   * The manifest of the step whose tools are running: the dispatched call
+   * whose outputs are not committed yet, or `undefined` between steps. Its
+   * committed input is the start of a fork the step's tools delegate to.
+   */
+  delegatingManifestId(): string | undefined;
+}
+
+/**
+ * Parses a fork's frozen request into the tool definitions and settings its
+ * provider calls send.
+ *
+ * @internal
+ */
+export function parseFrozenRequest(frozen: LogFrozenRequest): {
+  tools: unknown[];
+  settings: Record<string, unknown>;
+} {
+  let tools: unknown;
+  let settings: unknown;
+  try {
+    tools = JSON.parse(frozen.toolSnapshot);
+    settings = JSON.parse(frozen.callOptions);
+  } catch {
+    tools = undefined;
+  }
+  if (
+    !Array.isArray(tools) ||
+    typeof settings !== "object" ||
+    settings === null ||
+    Array.isArray(settings)
+  ) {
+    throw new ContextLogInvalidError(
+      "fork_request_unavailable",
+      "A fork's source manifest recorded tool definitions or call options that are not a JSON array and object",
+    );
+  }
+  return { tools, settings: settings as Record<string, unknown> };
 }
 
 /** Lowercase hexadecimal SHA-256 of a string. @internal */
@@ -558,6 +613,8 @@ async function withRetriedWrite<T>(write: () => Promise<T>): Promise<T> {
 export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundary {
   const { store, admit, plan, onHead } = deps;
   const run = plan.run;
+  // A fork sends its source's tool definitions and settings on every call.
+  const frozen = plan.frozenRequest && parseFrozenRequest(plan.frozenRequest);
 
   // The head as this boundary last observed it, and what the next prepare
   // still has to commit (the run's new input and any transition).
@@ -911,9 +968,31 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       configKey: "model",
     });
   }
+  // Runs after the host request middleware, so the boundary commits and the
+  // provider receives exactly the source's tool definitions and settings.
+  // Only the prompt and the transport options are the call's own.
+  const freezeRequest: NonNullable<LanguageModelMiddleware["transformParams"]> = async ({
+    params,
+  }) => {
+    if (!frozen) return params;
+    const { prompt, abortSignal, headers, includeRawChunks } = params;
+    return {
+      ...(structuredClone(frozen.settings) as Omit<ProviderCallOptions, "prompt">),
+      prompt,
+      tools: structuredClone(frozen.tools) as ProviderCallOptions["tools"],
+      ...("abortSignal" in params && { abortSignal }),
+      ...("headers" in params && { headers }),
+      ...("includeRawChunks" in params && { includeRawChunks }),
+    };
+  };
   const boundaryModel = wrapLanguageModel({
     model: deps.model,
-    middleware: { specificationVersion: "v4", wrapGenerate, wrapStream },
+    middleware: {
+      specificationVersion: "v4",
+      ...(frozen && { transformParams: freezeRequest }),
+      wrapGenerate,
+      wrapStream,
+    },
   });
   boundaryModels.add(boundaryModel);
   // Host request middleware run after the projection and before the
@@ -986,6 +1065,7 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
     observeInterrupt(read) {
       readInterrupt = read;
     },
+    delegatingManifestId: () => open?.manifestId,
     async abandon(cancelled = false) {
       if (closed && !open) return;
       closed = true;

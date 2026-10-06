@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `SubagentDefinition.context: "fork"` starts a log-mode subagent from the
+  committed input of the parent step that issued the `task` call
+  (LLE-14269). The child's stream starts with a new `fork` transition that
+  inherits that step's path across streams. Its first request is that
+  step's request byte for byte (system prompt, tool definitions in order,
+  settings and messages), with the brief appended last as a user message.
+  The child runs its own tools by name, and refuses the parent's tools it
+  can't run instead of removing them. A fork runs on the parent call's model
+  and settings, and fails with a typed error before anything is committed
+  when the source has an unresolved tool call, runs on another model or
+  adapter, or the first request is over the context manager's hard limit.
+  `"brief"` (the default) behaves as before.
+- `ContextForkOrigin`, an optional `fork` field on `ContextTransition` and
+  `ContextVersion`, the `"fork"` transition reason, and
+  `contextStream.forkFrom` on generate calls.
+- `MemoryContextLogStore` and the store conformance suite accept a parent on
+  another stream only for a `fork`. It must be the first version of a child
+  stream (`<source>/subagent/...`) of the source stream on the same thread
+  and branch, and inherit exactly the source manifest's path with its core
+  and contract.
+
+### Migration notes
+
+- Hosts with their own `ContextLogStore` must persist `transition.fork` and
+  return it as `version.fork` from `readVersion` before they offer a fork
+  subagent. Until then, stores that refuse cross-stream parents refuse a
+  fork's first prepare with `invalid_transition`. Nothing changes for
+  existing subagents.
+
 ## [1.0.0-rc.16] - 2026-10-05
 
 Sixteenth release candidate for 1.0.0. In owned-task mode, a task whose

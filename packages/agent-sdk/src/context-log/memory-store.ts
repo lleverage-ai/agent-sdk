@@ -200,6 +200,20 @@ function validateTransition(transition: ContextTransition): void {
     requireString(transition.parent.versionId, "transition.parent.versionId");
     requireCount(transition.parent.inheritedCount, "transition.parent.inheritedCount");
   }
+  if (transition.reason === "fork") {
+    if (transition.parent === null) {
+      throw new ContextLogInvalidError("invalid_field", "A fork transition needs a parent");
+    }
+    requireObject(transition.fork, "transition.fork");
+    requireString(transition.fork!.sourceManifestId, "transition.fork.sourceManifestId");
+    requireString(transition.fork!.toolCallId, "transition.fork.toolCallId");
+    requireString(transition.fork!.subagentType, "transition.fork.subagentType");
+  } else if (transition.fork !== undefined) {
+    throw new ContextLogInvalidError(
+      "invalid_field",
+      'transition.fork is only allowed with reason "fork"',
+    );
+  }
   validateMetadata(transition.metadata, "transition.metadata");
 }
 
@@ -414,10 +428,14 @@ export class MemoryContextLogStore implements ContextLogStore {
       let inheritedCount = 0;
       if (transition.parent) {
         const parent = this.versions.get(transition.parent.versionId);
+        // A version inherits from its own stream id, except a fork, which
+        // starts a child stream from its source stream's committed path.
         if (
           !parent ||
           parent.record.stream.threadId !== stream.threadId ||
-          parent.record.stream.streamId !== stream.streamId ||
+          (transition.fork
+            ? !this.forkAdmissible(parent, stream, transition, head)
+            : parent.record.stream.streamId !== stream.streamId) ||
           transition.parent.inheritedCount > this.fullCount(parent)
         ) {
           throw new ContextLogConflictError("invalid_transition", {
@@ -437,6 +455,13 @@ export class MemoryContextLogStore implements ContextLogStore {
         reason: transition.reason,
         core: transition.core,
         contract: { ...transition.contract },
+        ...(transition.fork !== undefined && {
+          fork: {
+            sourceManifestId: transition.fork.sourceManifestId,
+            toolCallId: transition.fork.toolCallId,
+            subagentType: transition.fork.subagentType,
+          },
+        }),
         ...(transition.metadata !== undefined ? { metadata: clone(transition.metadata) } : {}),
         createdByManifestId: manifestId,
         createdAt: now,
@@ -614,6 +639,37 @@ export class MemoryContextLogStore implements ContextLogStore {
     const stored = this.manifests.get(manifestId);
     if (!stored) throw new ContextLogNotFoundError("manifest", manifestId);
     return stored;
+  }
+
+  /**
+   * Whether a fork transition fits: the stream's first version, on a child
+   * stream (`<source>/subagent/...`) of the parent's stream on the same
+   * branch, inheriting exactly the path the source manifest committed, with
+   * the parent version's core and contract.
+   */
+  private forkAdmissible(
+    parent: StoredVersion,
+    stream: ContextStreamRef,
+    transition: ContextTransition,
+    head: ContextHead | null,
+  ): boolean {
+    const source = parent.record.stream;
+    if (
+      head !== null ||
+      source.branchId !== stream.branchId ||
+      !stream.streamId.startsWith(`${source.streamId}/subagent/`)
+    ) {
+      return false;
+    }
+    const manifest = this.manifests.get(transition.fork!.sourceManifestId)?.record;
+    return (
+      manifest !== undefined &&
+      streamKey(manifest.stream) === streamKey(source) &&
+      manifest.versionId === parent.record.id &&
+      manifest.entryCount === transition.parent!.inheritedCount &&
+      transition.core === parent.record.core &&
+      canonicalContextJson(transition.contract) === canonicalContextJson(parent.record.contract)
+    );
   }
 
   private fullCount(version: StoredVersion): number {

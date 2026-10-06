@@ -62,11 +62,13 @@ import {
   type ContextCoreResolver,
   type ContextEntry,
   type ContextEntryInput,
+  type ContextForkOrigin,
   type ContextHead,
   type ContextHistoryInput,
   type ContextLogCursor,
   type ContextLogOptions,
   type ContextLogStore,
+  type ContextManifest,
   type ContextModelRef,
   type ContextPathRef,
   type ContextRunInputRef,
@@ -88,6 +90,7 @@ import {
   assertTerminalModel,
   createLogCallBoundary,
   type LogCallBoundary,
+  type LogFrozenRequest,
   type LogPreviousCall,
   type LogRunState,
   sha256Hex,
@@ -239,6 +242,11 @@ export interface LogCallPlan {
   run: LogRunState;
   /** The delegation's claim on the stream, moved forward by each of the call's commits. */
   claim?: DelegationStreamClaim;
+  /**
+   * A fork's frozen request: the source manifest's exact tool definitions
+   * and call options, which every provider call of the run sends unchanged.
+   */
+  frozenRequest?: LogFrozenRequest;
   /**
    * The call's options after the PreGenerate hooks, without `prompt` or
    * `messages` (the input is `append`).
@@ -762,6 +770,153 @@ async function assertBranchLineage(
   });
 }
 
+/**
+ * Checks a call's declared fork source: the source manifest, tool call and
+ * subagent type, as non-empty strings. Only field names appear in errors.
+ *
+ * @internal
+ */
+function assertForkSource(from: unknown): ContextForkOrigin {
+  const fail = (detail: string): never => {
+    throw new ValidationError(`contextStream.forkFrom ${detail}`, {
+      fieldErrors: { contextStream: [`forkFrom ${detail}`] },
+    });
+  };
+  if (typeof from !== "object" || from === null) {
+    return fail("must be a fork origin");
+  }
+  const origin = from as Partial<ContextForkOrigin>;
+  for (const field of ["sourceManifestId", "toolCallId", "subagentType"] as const) {
+    const value = origin[field];
+    if (typeof value !== "string" || value.length === 0) {
+      return fail(`${field} must be a non-empty string`);
+    }
+  }
+  return {
+    sourceManifestId: origin.sourceManifestId!,
+    toolCallId: origin.toolCallId!,
+    subagentType: origin.subagentType!,
+  };
+}
+
+/** A fork's source: the delegating step's manifest and its frozen request. @internal */
+interface LogForkSource {
+  manifest: ContextManifest;
+  /** The manifest's path reference, the fork's parent. */
+  ref: ContextPathRef;
+  frozenRequest: LogFrozenRequest;
+}
+
+/**
+ * Reads a fork's source manifest and checks that the call can continue it:
+ * the call's stream is a child stream (`<source>/subagent/...`) of the
+ * manifest's stream on the same thread and branch, the call targets the
+ * manifest's model, and the manifest recorded the exact tool definitions
+ * and call options to freeze.
+ *
+ * @internal
+ */
+async function readForkSource(
+  store: ContextLogStore,
+  stream: ContextStreamRef,
+  from: ContextForkOrigin,
+  target: ContextModelRef,
+  head: ContextHead | null,
+): Promise<LogForkSource> {
+  const manifest = await store.readManifest(from.sourceManifestId);
+  const source = manifest.stream;
+  if (
+    source.threadId !== stream.threadId ||
+    source.branchId !== stream.branchId ||
+    !stream.streamId.startsWith(`${source.streamId}/subagent/`)
+  ) {
+    throw new ContextLogInvalidError(
+      "invalid_fork_source",
+      `A fork's stream must be a child stream ("${source.streamId}/subagent/...") of its source manifest's stream on the same thread and branch`,
+    );
+  }
+  if (manifest.model.provider !== target.provider || manifest.model.modelId !== target.modelId) {
+    throw new ContextLogConflictError("fork_model_mismatch", {
+      head,
+      message: `A fork runs on its source call's model (${manifest.model.provider}/${manifest.model.modelId}), not ${target.provider}/${target.modelId}`,
+    });
+  }
+  if (typeof manifest.toolSnapshot !== "string" || typeof manifest.callOptions !== "string") {
+    throw new ContextLogInvalidError(
+      "fork_request_unavailable",
+      `Manifest ${manifest.id} did not record its tool definitions and call options, so a fork cannot send its request unchanged`,
+    );
+  }
+  return {
+    manifest,
+    ref: {
+      stream: { threadId: source.threadId, branchId: source.branchId, streamId: source.streamId },
+      versionId: manifest.versionId,
+      entryCount: manifest.entryCount,
+    },
+    frozenRequest: { toolSnapshot: manifest.toolSnapshot, callOptions: manifest.callOptions },
+  };
+}
+
+/**
+ * Checks that a fork's source path is protocol-complete: no unresolved
+ * interrupt, and every tool call answered by a result. A step's input is
+ * committed before dispatch and its outputs only after its tools finish, so
+ * the delegating step's input always is; this guards any other source.
+ *
+ * @internal
+ */
+function assertForkablePath(path: readonly ContextEntry[], head: ContextHead | null): void {
+  const unresolved = findUnresolvedInterrupts(path);
+  const unanswered = unansweredToolCalls(path);
+  if (unresolved.length > 0 || unanswered.length > 0) {
+    throw new ContextLogConflictError("fork_source_incomplete", {
+      head,
+      message: `A fork can only start from a path whose tool calls have results; the source has ${unresolved.length} unresolved interrupt(s) and ${unanswered.length} unanswered tool call(s)`,
+    });
+  }
+}
+
+/**
+ * Checks that a stream's head descends from the `fork` transition a call
+ * declares: walking the head's versions back along its own stream, the
+ * version that left it must be that fork, inheriting exactly the source
+ * manifest's path.
+ *
+ * @internal
+ */
+async function assertForkLineage(
+  store: ContextLogStore,
+  stream: ContextStreamRef,
+  head: ContextHead,
+  source: LogForkSource,
+): Promise<void> {
+  const from = source.manifest;
+  let version = await store.readVersion(head.versionId);
+  for (;;) {
+    if (version.reason === "fork") {
+      if (
+        version.fork?.sourceManifestId === from.id &&
+        version.parentVersionId === from.versionId &&
+        version.inheritedCount === from.entryCount
+      ) {
+        return;
+      }
+      break;
+    }
+    if (version.parentVersionId === null) break;
+    const parent = await store.readVersion(version.parentVersionId);
+    if (parent.stream.branchId !== stream.branchId || parent.stream.streamId !== stream.streamId) {
+      break;
+    }
+    version = parent;
+  }
+  throw new ContextLogConflictError("fork_source_mismatch", {
+    head,
+    message: `Stream "${stream.streamId}" already has a head that does not continue the declared fork (manifest ${from.id})`,
+  });
+}
+
 /** Turn a head into a checkpoint cursor. @internal */
 function toCursor(stream: ContextStreamRef, head: ContextHead | null): ContextLogCursor {
   return {
@@ -918,6 +1073,31 @@ export function createLogContextRuntime(
       genOptions.contextStream?.branchFrom === undefined
         ? undefined
         : assertBranchSource(genOptions.contextStream.branchFrom, stream);
+    const forkFrom =
+      genOptions.contextStream?.forkFrom === undefined
+        ? undefined
+        : assertForkSource(genOptions.contextStream.forkFrom);
+    if (forkFrom) {
+      if (branchFrom) {
+        throw new ValidationError("contextStream.forkFrom cannot be combined with branchFrom", {
+          fieldErrors: { contextStream: ["forkFrom cannot be combined with branchFrom"] },
+        });
+      }
+      if (genOptions.contextHistory !== undefined) {
+        throw new ValidationError(
+          "contextHistory cannot be supplied for a fork: its history is the source path",
+          { fieldErrors: { contextHistory: ["not accepted with contextStream.forkFrom"] } },
+        );
+      }
+      // Producer output would follow the brief, so the fork's request would
+      // no longer be the source request plus the brief.
+      if (producers.length > 0) {
+        throw new ConfigurationError(
+          "A fork subagent cannot have context producers: its first request must be the source request with only the brief appended",
+          { configKey: "contextLog.producers" },
+        );
+      }
+    }
     const head = await store.readHead(stream);
     // A delegation only plans on the head it last left its stream at, so a
     // second delivery of the same delegation never appends to the stream.
@@ -934,6 +1114,9 @@ export function createLogContextRuntime(
     let transition: ContextTransition | undefined;
     let path: ContextEntry[] = [];
     let previousCall: LogPreviousCall | undefined;
+    // A fork's source is read once per plan: its frozen request applies to
+    // every call of the run, on a new stream and on a continued one.
+    const fork = forkFrom ? await readForkSource(store, stream, forkFrom, target, head) : undefined;
     if (head) {
       // A run that declared its branch source keeps declaring it on every
       // call; once the branch transition is committed, the head must still
@@ -941,6 +1124,10 @@ export function createLogContextRuntime(
       if (branchFrom && !lineageChecked(run, head.versionId, branchFrom)) {
         await assertBranchLineage(store, stream, head, branchFrom);
         markLineageChecked(run, head.versionId, branchFrom);
+      }
+      if (fork && !lineageChecked(run, head.versionId, fork.ref)) {
+        await assertForkLineage(store, stream, head, fork);
+        markLineageChecked(run, head.versionId, fork.ref);
       }
       const version = await store.readVersion(head.versionId);
       const mismatched = projectionContractMismatches(version.contract, expectedContract);
@@ -1016,6 +1203,30 @@ export function createLogContextRuntime(
         contract = newVersionContract(expectedContract, coreVersion);
         transition = { reason, parent, core, contract: { ...contract } };
       }
+    } else if (fork) {
+      // A fork starts its child stream from the committed input of the
+      // parent step that delegated, under that step's version's core and
+      // contract unchanged: with the source's tools and settings (frozen in
+      // the plan), the first request is the source request plus the brief.
+      const source = await store.readVersion(fork.ref.versionId);
+      const mismatched = projectionContractMismatches(source.contract, expectedContract);
+      if (mismatched.length > 0) {
+        throw new ContextLogConflictError("fork_contract_mismatch", {
+          head,
+          message: `A fork projects its source path under the source version's contract; this call's differs (${mismatched.join(", ")})`,
+        });
+      }
+      path = await readFullPath(store, fork.ref);
+      assertForkablePath(path, head);
+      core = source.core;
+      contract = source.contract;
+      transition = {
+        reason: "fork",
+        parent: { versionId: fork.ref.versionId, inheritedCount: fork.ref.entryCount },
+        core,
+        contract: { ...source.contract },
+        fork: { ...forkFrom! },
+      };
     } else if (branchFrom) {
       // A new branch (a fork, an edited message or a regenerated reply)
       // inherits exactly the declared path of another branch. The branch
@@ -1157,6 +1368,19 @@ export function createLogContextRuntime(
       entries = compaction.entries;
     }
     const messages = await project(core, contract, entries, target);
+    // A fork's first request is never compacted (there is no head to
+    // compact), so it is refused when it is over the context policy's hard
+    // limit rather than sent.
+    if (transition?.reason === "fork" && options.contextManager) {
+      const manager = options.contextManager;
+      const budget = manager.getBudget(messages);
+      if (budget.usage >= manager.policy.hardCapThreshold) {
+        throw new ContextLogConflictError("fork_over_budget", {
+          head,
+          message: `A fork's first request is about ${budget.currentTokens} tokens, over the context policy's hard limit (${Math.floor(budget.effectiveMaxTokens * manager.policy.hardCapThreshold)} of ${budget.effectiveMaxTokens})`,
+        });
+      }
+    }
     // The new input among the entries this prepare appends, as screened. A
     // compaction's summary and retained tail are never new input.
     const runInput: ContextRunInputRef[] = append.flatMap((entry) => {
@@ -1183,6 +1407,7 @@ export function createLogContextRuntime(
       previousCall,
       run,
       ...(claim && { claim }),
+      ...(fork && { frozenRequest: fork.frozenRequest }),
       options: screened.options,
     };
   }
