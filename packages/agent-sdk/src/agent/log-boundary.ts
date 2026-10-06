@@ -968,9 +968,10 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       configKey: "model",
     });
   }
-  // Runs after the host request middleware, so the boundary commits and the
-  // provider receives exactly the source's tool definitions and settings.
-  // Only the prompt and the transport options are the call's own.
+  // Runs before and after the host request middleware, so they see the
+  // source's tool definitions and settings, and the boundary commits and the
+  // provider receives exactly those. Only the prompt and the transport
+  // options are the call's own.
   const freezeRequest: NonNullable<LanguageModelMiddleware["transformParams"]> = async ({
     params,
   }) => {
@@ -1026,12 +1027,19 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
       return result;
     },
   };
+  // A fork's host middleware see the frozen tools and settings too, as the
+  // source call's did: a middleware that shapes the prompt from a setting
+  // then shapes it as it did for the source.
+  const freezeBeforeMiddleware: LanguageModelMiddleware[] = frozen
+    ? [{ specificationVersion: "v4", transformParams: freezeRequest }]
+    : [];
   const model =
     requestMiddleware.length > 0
       ? wrapLanguageModel({
           model: boundaryModel,
           middleware: [
             guardMiddleware,
+            ...freezeBeforeMiddleware,
             ...requestMiddleware.flatMap((middleware) => [isolateRequestMiddleware, middleware]),
           ],
         })

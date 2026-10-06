@@ -11,7 +11,7 @@ import type {
   LanguageModelV3Content,
   LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
-import { jsonSchema, type LanguageModel, tool } from "ai";
+import { jsonSchema, type LanguageModel, type LanguageModelMiddleware, type Tool, tool } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import {
@@ -357,6 +357,107 @@ describe("fork subagents (LLE-14269)", () => {
     const refusal = childPath.find((entry) => entry.kind === "tool_result");
     expect(JSON.stringify(refusal)).toContain("not available to this forked subagent");
     expect(childPath.at(-1)).toMatchObject({ kind: "assistant" });
+  });
+
+  it("lets host request middleware shape the fork's prompt from the source settings", async () => {
+    const store = new MemoryContextLogStore();
+    // A deterministic middleware that writes a setting into the prompt and
+    // leaves the setting as it is.
+    const stamp: LanguageModelMiddleware = {
+      specificationVersion: "v4",
+      transformParams: async ({ params }) => ({
+        ...params,
+        prompt: params.prompt.map((message, index) =>
+          index === 0 && message.role === "system"
+            ? { ...message, content: `${message.content} [max ${params.maxOutputTokens}]` }
+            : message,
+        ),
+      }),
+    };
+    const shared = scriptedModel((request, index) => {
+      if (isChildRequest(request)) return text("Fork result");
+      return [fork("fork-1"), text("All done")][Math.min(index, 1)]!;
+    });
+    const { definition } = forker({
+      contextLog: { mode: "log", store, requestMiddleware: [stamp] },
+    });
+
+    await parentAgent(shared.model, store, [definition], {
+      contextLog: { mode: "log", store, requestMiddleware: [stamp] },
+    }).generate({ prompt: "Look into the build", threadId: THREAD, maxTokens: 777 });
+
+    const [delegating, child] = shared.requests;
+    expect(isChildRequest(child!)).toBe(true);
+    expect(delegating!.prompt[0]).toEqual({
+      role: "system",
+      content: "You are the parent. [max 777]",
+    });
+    expect(JSON.stringify(child!.prompt.slice(0, -1))).toBe(JSON.stringify(delegating!.prompt));
+    expect(JSON.stringify(settingsOf(child!))).toBe(JSON.stringify(settingsOf(delegating!)));
+  });
+
+  it("refuses a tool the child defines without an executor", async () => {
+    const store = new MemoryContextLogStore();
+    const schemaOnly = tool({
+      description: "Echoes its input",
+      inputSchema: jsonSchema<{ value: string }>({
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+      }),
+    });
+    let childCalls = 0;
+    const shared = scriptedModel((request, index) => {
+      if (isChildRequest(request) || childCalls > 0) {
+        childCalls += 1;
+        return childCalls === 1
+          ? call("echo-child", "echo", { value: "x" })
+          : childCalls === 2
+            ? text("Done without it")
+            : text("All done");
+      }
+      return [fork("fork-1"), text("All done")][Math.min(index, 1)]!;
+    });
+    const { definition } = forker({ tools: { echo: schemaOnly } });
+
+    const result = await parentAgent(shared.model, store, [definition]).generate({
+      prompt: "Look into the build",
+      threadId: THREAD,
+    });
+
+    expect(result.status).toBe("complete");
+    const childPath = await readPath(store, childStreamFor("fork-1"));
+    const refusal = childPath.find((entry) => entry.kind === "tool_result");
+    expect(JSON.stringify(refusal)).toContain("not available to this forked subagent");
+    expect(childPath.at(-1)).toMatchObject({ kind: "assistant" });
+    expect((await readSubagentDelegation(store, childStreamFor("fork-1"))).status).toBe(
+      "completed",
+    );
+  });
+
+  it("does not start a fork that lacks a provider tool of the source", async () => {
+    const store = new MemoryContextLogStore();
+    const webSearch = {
+      type: "provider",
+      id: "mock.web_search",
+      args: {},
+      inputSchema: jsonSchema({ type: "object" }),
+    } as unknown as Tool;
+    const shared = scriptedModel((request, index) => {
+      if (isChildRequest(request)) return text("Fork result");
+      return [fork("fork-1"), text("All done")][Math.min(index, 1)]!;
+    });
+    const { definition, contexts } = forker();
+
+    const result = await parentAgent(shared.model, store, [definition], {
+      tools: { echo, web_search: webSearch },
+    }).generate({ prompt: "Look into the build", threadId: THREAD });
+
+    expect(result.status).toBe("complete");
+    expect(contexts).toHaveLength(1);
+    expect(shared.requests.some(isChildRequest)).toBe(false);
+    expect(await store.readHead(childStreamFor("fork-1"))).toBeNull();
+    expect(JSON.stringify(shared.requests[1]!.prompt)).toContain("cannot be refused");
   });
 
   it("starts a background fork from the step that issued it", async () => {

@@ -1101,12 +1101,21 @@ reuse the parent's prompt cache:
   source manifest committed, and keep its core and contract. The child's
   path reads back as the source prefix followed by its own entries.
 - **Request.** The child sends the source manifest's exact tool definitions
-  (`toolSnapshot`) and call options (`callOptions`) on every provider call,
-  applied after the host's request middleware. Its first request is the
-  source request byte for byte, with the brief appended last as a user
-  message. The child's own executors run by name. A tool of the parent's
-  that the child has no executor for stays in the request, and a call to it
-  is refused with a tool error. The child's own system prompt isn't used.
+  (`toolSnapshot`) and call options (`callOptions`) on every provider call.
+  They're applied before the host's request middleware, so the middleware
+  sees what it saw for the source call, and again after it, so the
+  boundary commits exactly those bytes. Its first request is the source
+  request byte for byte, with the brief appended last as a user message.
+  This holds as long as the request middleware are prefix-stable: they
+  must render each message the same way whatever follows it. A middleware
+  that marks the last message, for example, moves that mark onto the
+  brief.
+- **Tools.** The child's own executors run by name. A function tool of the
+  parent's that the child has no executor for stays in the request, and a
+  call to it is refused with a tool error. A provider tool can't be
+  refused, because the provider may run it itself. If the child doesn't
+  define a provider tool of the source, the fork isn't started
+  (`fork_tool_unavailable`). The child's own system prompt isn't used.
 - **Model and settings.** A fork runs on the model serving the parent call,
   as with `inheritCallSettings`, and must not set an explicit `model`.
 - **Factory.** Return a log-mode agent on the delegation's store with the
@@ -1124,6 +1133,7 @@ A fork fails with a typed error before anything is committed:
 | `fork_unavailable` | `ContextLogInvalidError` | The parent call isn't in log mode, or no step is running (for example a `task` call run by `resume()`). |
 | `invalid_fork_source` | `ContextLogInvalidError` | The child stream isn't a child of the source stream on the same thread and branch, for example under a custom `subagentStream`. |
 | `fork_request_unavailable` | `ContextLogInvalidError` | The source manifest didn't record its tool definitions and call options. |
+| `fork_tool_unavailable` | `ContextLogInvalidError` | The source request has a provider tool that the child doesn't define. |
 | `fork_model_mismatch` | `ContextLogConflictError` | The child runs on another model than the source call. |
 | `fork_contract_mismatch` | `ContextLogConflictError` | The child's adapter, adapter version or input capabilities differ from the source version's contract. |
 | `fork_source_incomplete` | `ContextLogConflictError` | The source path has an unresolved interrupt or a tool call without a result. |

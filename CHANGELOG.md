@@ -15,8 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inherits that step's path across streams. Its first request is that
   step's request byte for byte (system prompt, tool definitions in order,
   settings and messages), with the brief appended last as a user message.
-  The child runs its own tools by name, and refuses the parent's tools it
-  can't run instead of removing them. A fork runs on the parent call's model
+  The child runs its own tools by name, and refuses the parent's function
+  tools it can't run instead of removing them. It isn't started when it
+  lacks one of the source's provider tools. A fork runs on the parent call's model
   and settings, and fails with a typed error before anything is committed
   when the source has an unresolved tool call, runs on another model or
   adapter, or the first request is over the context manager's hard limit.

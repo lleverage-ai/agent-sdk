@@ -50,7 +50,7 @@ import type {
 import { jsonSchema, streamText, tool } from "ai";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
 import type { DelegationScope } from "../context-log/delegation.js";
-import { isContextLogError } from "../context-log/errors.js";
+import { ContextLogInvalidError, isContextLogError } from "../context-log/errors.js";
 import { createLogModeRetryGuard, invokeLogModePreGenerateHooks } from "../context-log/hooks.js";
 import type { ContextStreamRef } from "../context-log/types.js";
 import {
@@ -177,11 +177,14 @@ export function createToolExecutionContext(
 }
 
 /**
- * A fork's tools: its own executor for each tool the frozen request defines,
- * matched by name, and a refusal for each one it has none for, so the model
- * sees the source's tools but the child only runs its own. Tools the frozen
- * request does not define are dropped. A provider-executed tool needs no
- * executor and is kept as the child defines it, if it does.
+ * A fork's tools: for each tool the frozen request defines, the child's own
+ * executor of that name, or a refusal when it has none, so the model sees
+ * the source's tools but the child only runs its own. Tools the frozen
+ * request does not define are dropped.
+ *
+ * A provider tool the child does not define fails the fork before anything
+ * is committed: the frozen request would still send it, and the provider
+ * may run it itself, so it cannot be refused.
  *
  * @internal
  */
@@ -197,9 +200,17 @@ export function forkToolSet(tools: ToolSet, frozen: LogFrozenRequest): ToolSet {
     const name = definition?.name;
     if (typeof name !== "string") continue;
     const own = tools[name];
-    if (own) {
+    if (definition.type !== "function") {
+      if (!own) {
+        throw new ContextLogInvalidError(
+          "fork_tool_unavailable",
+          `A fork's source request has the provider tool "${name}", which this subagent does not define; a provider tool cannot be refused, so the fork is not started`,
+        );
+      }
       result[name] = own;
-    } else if (definition.type === "function") {
+    } else if (typeof own?.execute === "function") {
+      result[name] = own;
+    } else {
       const schema =
         typeof definition.inputSchema === "object" && definition.inputSchema !== null
           ? definition.inputSchema
