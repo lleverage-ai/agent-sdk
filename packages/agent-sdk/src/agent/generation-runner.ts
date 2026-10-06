@@ -182,9 +182,10 @@ export function createToolExecutionContext(
  * the source's tools but the child only runs its own. Tools the frozen
  * request does not define are dropped.
  *
- * A provider tool the child does not define fails the fork before anything
- * is committed: the frozen request would still send it, and the provider
- * may run it itself, so it cannot be refused.
+ * A provider tool the child does not define as the same provider tool (same
+ * id) fails the fork before anything is committed: the frozen request would
+ * still send it, and the provider may run it itself, so it cannot be
+ * refused.
  *
  * @internal
  */
@@ -192,6 +193,7 @@ export function forkToolSet(tools: ToolSet, frozen: LogFrozenRequest): ToolSet {
   const definitions = parseFrozenRequest(frozen).tools as Array<{
     type?: string;
     name?: string;
+    id?: string;
     description?: string;
     inputSchema?: unknown;
   }>;
@@ -201,10 +203,14 @@ export function forkToolSet(tools: ToolSet, frozen: LogFrozenRequest): ToolSet {
     if (typeof name !== "string") continue;
     const own = tools[name];
     if (definition.type !== "function") {
-      if (!own) {
+      // Only the same provider tool: a function tool of that name would not
+      // run, as the provider executes the call itself.
+      const sameProviderTool =
+        own?.type === "provider" && (own as { id?: unknown }).id === definition.id;
+      if (!sameProviderTool) {
         throw new ContextLogInvalidError(
           "fork_tool_unavailable",
-          `A fork's source request has the provider tool "${name}", which this subagent does not define; a provider tool cannot be refused, so the fork is not started`,
+          `A fork's source request has the provider tool "${name}", which this subagent does not define as the same provider tool; a provider tool cannot be refused, so the fork is not started`,
         );
       }
       result[name] = own;

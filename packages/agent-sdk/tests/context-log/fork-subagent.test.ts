@@ -435,14 +435,61 @@ describe("fork subagents (LLE-14269)", () => {
     );
   });
 
-  it("does not start a fork that lacks a provider tool of the source", async () => {
-    const store = new MemoryContextLogStore();
-    const webSearch = {
+  const providerTool = (id: string) =>
+    ({
       type: "provider",
-      id: "mock.web_search",
+      id,
       args: {},
       inputSchema: jsonSchema({ type: "object" }),
-    } as unknown as Tool;
+    }) as unknown as Tool;
+
+  it.each([
+    ["lacks", {}],
+    ["defines as a function tool", { web_search: echo }],
+    ["defines as another provider tool", { web_search: providerTool("other.web_search") }],
+  ] as Array<[string, Record<string, Tool>]>)(
+    "does not start a fork that %s a provider tool of the source",
+    async (_label, childTools) => {
+      const store = new MemoryContextLogStore();
+      const shared = scriptedModel((request, index) => {
+        if (isChildRequest(request)) return text("Fork result");
+        return [fork("fork-1"), text("All done")][Math.min(index, 1)]!;
+      });
+      const { definition } = forker({ tools: { echo, ...childTools } });
+
+      await parentAgent(shared.model, store, [definition], {
+        tools: { echo, web_search: providerTool("mock.web_search") },
+      }).generate({ prompt: "Look into the build", threadId: THREAD });
+
+      expect(shared.requests.some(isChildRequest)).toBe(false);
+      expect(await store.readHead(childStreamFor("fork-1"))).toBeNull();
+      expect(JSON.stringify(shared.requests[1]!.prompt)).toContain("cannot be refused");
+    },
+  );
+
+  it("runs a fork that defines the source's provider tool", async () => {
+    const store = new MemoryContextLogStore();
+    const shared = scriptedModel((request, index) => {
+      if (isChildRequest(request)) return text("Fork result");
+      return [fork("fork-1"), text("All done")][Math.min(index, 1)]!;
+    });
+    const webSearch = providerTool("mock.web_search");
+    const { definition } = forker({ tools: { echo, web_search: webSearch } });
+
+    await parentAgent(shared.model, store, [definition], {
+      tools: { echo, web_search: webSearch },
+    }).generate({ prompt: "Look into the build", threadId: THREAD });
+
+    const child = shared.requests.find(isChildRequest)!;
+    expect(JSON.stringify(child.tools)).toBe(JSON.stringify(shared.requests[0]!.tools));
+    expect((await readSubagentDelegation(store, childStreamFor("fork-1"))).status).toBe(
+      "completed",
+    );
+  });
+
+  it("keeps the parent running when a fork cannot start", async () => {
+    const store = new MemoryContextLogStore();
+    const webSearch = providerTool("mock.web_search");
     const shared = scriptedModel((request, index) => {
       if (isChildRequest(request)) return text("Fork result");
       return [fork("fork-1"), text("All done")][Math.min(index, 1)]!;
