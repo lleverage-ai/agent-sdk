@@ -126,6 +126,12 @@ const agent = createAgent({
 });
 ```
 
+Expected failures (timeouts, dropped connections, upstream 429s) should come
+back as data, not as thrown errors. Return `toolFailure(...)`, or wrap a tool
+in `safeTool()` so anything it throws reaches the model as
+`{ success: false, error, code, recoverable }` with no raw message or stack.
+See [Tool Failure Contract](./docs/errors.md#tool-failure-contract).
+
 ### Plugins
 
 Plugins bundle tools, skills, and hooks. Inline plugin tools are exposed as `<plugin>__<tool>`, while tools from external MCP servers use `mcp__<server>__<tool>`.

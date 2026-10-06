@@ -86,6 +86,14 @@ export {
   NEAR_MISS_SUGGESTION_LIMIT,
   suggestNearMissTools,
 } from "./call-tool.js";
+export type {
+  AgentToolResult,
+  SafeToolOptions,
+  ToolFailure,
+  ToolSuccess,
+} from "./result.js";
+// Failure-as-data tool result contract
+export { isToolFailure, safeTool, toolFailure, toolSuccess, toToolFailure } from "./result.js";
 export type { ToolReference } from "./utils.js";
 // Tool utilities (DX helpers)
 export {
