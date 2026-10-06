@@ -47,10 +47,10 @@ import type {
   ToolSet,
   UIMessageStreamWriter,
 } from "ai";
-import { streamText } from "ai";
+import { jsonSchema, streamText, tool } from "ai";
 import type { Checkpoint, Interrupt } from "../checkpointer/types.js";
 import type { DelegationScope } from "../context-log/delegation.js";
-import { isContextLogError } from "../context-log/errors.js";
+import { ContextLogInvalidError, isContextLogError } from "../context-log/errors.js";
 import { createLogModeRetryGuard, invokeLogModePreGenerateHooks } from "../context-log/hooks.js";
 import type { ContextStreamRef } from "../context-log/types.js";
 import {
@@ -92,7 +92,12 @@ import type {
   ToolResultPart,
 } from "../types.js";
 import type { CheckpointRuntime } from "./checkpoint-runtime.js";
-import type { LogCallBoundary, LogModePrepareStep } from "./log-boundary.js";
+import {
+  type LogCallBoundary,
+  type LogFrozenRequest,
+  type LogModePrepareStep,
+  parseFrozenRequest,
+} from "./log-boundary.js";
 import {
   createLogRunState,
   type LogCallPlan,
@@ -141,6 +146,7 @@ export function createToolExecutionContext(
   model: AgentOptions["model"],
   call?: Pick<GenerateOptions, "reasoning" | "providerOptions">,
   logStream?: ContextStreamRef,
+  delegatingStep?: () => string | undefined,
 ): ToolExecutionContext {
   const modelCapabilities = resolveModelInputCapabilities(options, model);
   const contextLog: DelegationScope | undefined =
@@ -151,6 +157,7 @@ export function createToolExecutionContext(
           ...(options.contextLog.subagentStream && {
             subagentStream: options.contextLog.subagentStream,
           }),
+          ...(delegatingStep && { delegatingStep }),
         }
       : undefined;
 
@@ -167,6 +174,65 @@ export function createToolExecutionContext(
       ...(contextLog && { contextLog }),
     },
   };
+}
+
+/**
+ * A fork's tools: for each tool the frozen request defines, the child's own
+ * executor of that name, or a refusal when it has none, so the model sees
+ * the source's tools but the child only runs its own. Tools the frozen
+ * request does not define are dropped.
+ *
+ * A provider tool the child does not define as the same provider tool (same
+ * id) fails the fork before anything is committed: the frozen request would
+ * still send it, and the provider may run it itself, so it cannot be
+ * refused.
+ *
+ * @internal
+ */
+export function forkToolSet(tools: ToolSet, frozen: LogFrozenRequest): ToolSet {
+  const definitions = parseFrozenRequest(frozen).tools as Array<{
+    type?: string;
+    name?: string;
+    id?: string;
+    description?: string;
+    inputSchema?: unknown;
+  }>;
+  const result: ToolSet = {};
+  for (const definition of definitions) {
+    const name = definition?.name;
+    if (typeof name !== "string") continue;
+    const own = tools[name];
+    if (definition.type !== "function") {
+      // Only the same provider tool: a function tool of that name would not
+      // run, as the provider executes the call itself.
+      const sameProviderTool =
+        own?.type === "provider" && (own as { id?: unknown }).id === definition.id;
+      if (!sameProviderTool) {
+        throw new ContextLogInvalidError(
+          "fork_tool_unavailable",
+          `A fork's source request has the provider tool "${name}", which this subagent does not define as the same provider tool; a provider tool cannot be refused, so the fork is not started`,
+        );
+      }
+      result[name] = own;
+    } else if (typeof own?.execute === "function") {
+      result[name] = own;
+    } else {
+      const schema =
+        typeof definition.inputSchema === "object" && definition.inputSchema !== null
+          ? definition.inputSchema
+          : { type: "object" };
+      result[name] = tool({
+        description: definition.description ?? "",
+        inputSchema: jsonSchema<unknown>(schema as Parameters<typeof jsonSchema>[0]),
+        execute: async (_input: unknown): Promise<string> => {
+          throw new Error(
+            `Tool "${name}" is not available to this forked subagent. Continue without it.`,
+          );
+        },
+      });
+    }
+  }
+  return result;
 }
 
 /** @internal */
@@ -794,13 +860,16 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     // A mode that owns a writer (`streamDataResponse`) passes its context
     // explicitly; every other mode uses the caller's request-local one.
     const streamingContext = request?.streamingContext ?? effectiveGenOptions.streamingContext;
-    const activeTools = toolPipeline.buildTools({
+    const builtTools = toolPipeline.buildTools({
       threadId: effectiveGenOptions.threadId,
       signal: effectiveGenOptions.signal,
       telemetry: executionBaseTelemetry,
       signalState,
       streamingContext,
     });
+    // A fork runs the source's tools by name, refusing those it cannot run.
+    const frozenRequest = attempt.logPlan?.frozenRequest;
+    const activeTools = frozenRequest ? forkToolSet(builtTools, frozenRequest) : builtTools;
 
     // Build prompt context and generate system prompt. In log mode the
     // projected messages already carry the version's frozen core.
@@ -824,11 +893,13 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       telemetry: effectiveGenOptions.telemetry ?? effectiveGenOptions.experimental_telemetry,
     };
 
+    const logCall = attempt.logCall;
     const toolExecutionContext = createToolExecutionContext(
       options,
       currentModel,
       effectiveGenOptions,
       attempt.logPlan?.stream,
+      logCall && (() => logCall.delegatingManifestId()),
     );
 
     return { signalState, activeTools, systemPrompt, initialParams, toolExecutionContext };

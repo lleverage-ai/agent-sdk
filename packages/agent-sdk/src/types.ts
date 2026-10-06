@@ -30,6 +30,7 @@ import type { AgentState } from "./backends/state.js";
 import type { BaseCheckpointSaver, Checkpoint, Interrupt } from "./checkpointer/types.js";
 import type { DelegationStreamClaim } from "./context-log/delegation.js";
 import type {
+  ContextForkOrigin,
   ContextLogOptions,
   ContextLogStore,
   ContextPathRef,
@@ -2270,11 +2271,30 @@ export interface GenerateOptions {
    * anything is committed. The reference must be on the same thread and
    * stream id as the call, on another branch.
    *
+   * `forkFrom` declares that the stream is a delegated subagent's fork of
+   * the parent step that delegated to it (see {@link ContextForkOrigin}).
+   * The `task` tool sets it for a `context: "fork"` subagent; a host that
+   * continues the child keeps it. On a stream without a head, the call's
+   * prepare commits a `fork` transition whose version inherits exactly the
+   * path the source manifest committed, under its version's core and
+   * contract, and every provider call of the run sends the source
+   * manifest's tool definitions and settings unchanged (a tool the child
+   * has no executor for is refused when called). Once the stream has a
+   * head, the head must descend from that fork, or the call fails with a
+   * `ContextLogConflictError` (reason `fork_source_mismatch`) before
+   * anything is committed. Cannot be combined with `branchFrom` or with
+   * `contextHistory`.
+   *
    * Rejected when the agent is not in context log mode.
    *
    * @experimental
    */
-  contextStream?: { branchId?: string; streamId?: string; branchFrom?: ContextPathRef };
+  contextStream?: {
+    branchId?: string;
+    streamId?: string;
+    branchFrom?: ContextPathRef;
+    forkFrom?: ContextForkOrigin;
+  };
 
   /**
    * Context log mode only: history the host supplies for the run, committed
@@ -4138,6 +4158,38 @@ export interface SubagentDefinition {
   inheritCallSettings?: boolean;
 
   /**
+   * What the subagent starts from.
+   *
+   * - `"brief"` - Only the delegation brief (the `task` description) as its
+   *   prompt, under its own system prompt and tools
+   * - `"fork"` - Context log mode only: a copy of the parent's conversation
+   *   at the parent step that issued the `task` call. The child's stream
+   *   starts with a `fork` transition (see `ContextForkOrigin`) that
+   *   inherits that step's committed input, under its system prompt
+   *   (core) and contract, and the child sends that step's tool definitions
+   *   and call settings on every call. Its first request is the parent
+   *   step's request byte for byte, with the brief appended last as a user
+   *   message, so it can reuse the parent's prompt cache.
+   *
+   * A fork runs on the model serving the parent call (as with
+   * {@link SubagentDefinition.inheritCallSettings}), so `model` must be
+   * unset or `"inherit"`. Its factory must return a log-mode agent on the
+   * delegation's store with the parent's projection adapter and no context
+   * producers. The agent's own system prompt is not used, its tools run by
+   * name, and a tool of the parent's that the child has no executor for is
+   * refused when called rather than removed from the request. A fork fails
+   * with a typed error before anything is committed when the parent step's
+   * input has an unresolved tool call, when it runs on another model or
+   * adapter, or when its first request is over the context manager's hard
+   * limit. Outside log mode a fork fails with reason `fork_unavailable`.
+   *
+   * @defaultValue "brief"
+   *
+   * @experimental
+   */
+  context?: "brief" | "fork";
+
+  /**
    * Hide this subagent type from the model.
    *
    * A hidden type is left out of the task tool's description and of the
@@ -4296,6 +4348,8 @@ export interface SubagentContextLog {
   stream: ContextStreamRef;
   /** The stream of the parent call that delegated. */
   parentStream: ContextStreamRef;
+  /** Set for a `context: "fork"` subagent: where its stream starts. */
+  fork?: ContextForkOrigin;
 }
 
 /**

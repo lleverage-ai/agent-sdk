@@ -334,6 +334,8 @@ export type ContextEntry = ContextEntryInput & ContextEntryRecord;
  * - `initial` - The first version of a stream
  * - `compaction` - A summary replaced some or all of the history
  * - `branch` - A new branch inherits a prefix of another branch
+ * - `fork` - A delegated subagent's stream starts from the committed input
+ *   of the parent step that delegated to it (see {@link ContextForkOrigin})
  * - `model_change` - The target model changed in a way the history must follow
  * - `adapter_change` - The projection adapter or its contract changed
  * - `core_policy_change` - The frozen core system changed
@@ -352,6 +354,7 @@ export type ContextTransitionReason =
   | "initial"
   | "compaction"
   | "branch"
+  | "fork"
   | "model_change"
   | "adapter_change"
   | "core_policy_change"
@@ -366,10 +369,41 @@ export type ContextTransitionReason =
  * @category Context Log
  */
 export interface ContextVersionParent {
-  /** The version to inherit from. It must belong to the same thread and stream id. */
+  /**
+   * The version to inherit from. It must belong to the same thread and
+   * stream id, except for a `fork` (see {@link ContextForkOrigin}), whose
+   * parent is on the stream the fork's child stream belongs to.
+   */
   versionId: string;
   /** How many leading entries of the parent's full path the new version keeps. May be 0. */
   inheritedCount: number;
+}
+
+/**
+ * Where a `fork` version starts: the parent step whose committed input a
+ * delegated subagent's stream continues.
+ *
+ * A fork lets a delegated subagent start from the parent's conversation
+ * instead of a brief alone. Its stream's first version inherits exactly the
+ * path the delegating step's manifest committed (`parent` is that
+ * manifest's `versionId` and `entryCount`), on the parent's stream, with the
+ * parent version's core and contract unchanged. Stores accept it only on a
+ * child stream of the source stream (`<source stream id>/subagent/...`) on
+ * the same thread and branch, as that stream's first version.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextForkOrigin {
+  /**
+   * The manifest of the parent step that issued the delegating tool call.
+   * Its path reference is the fork's parent.
+   */
+  sourceManifestId: string;
+  /** The delegating tool call. */
+  toolCallId: string;
+  /** The subagent type the parent delegated to, unchanged. */
+  subagentType: string;
 }
 
 /**
@@ -393,6 +427,11 @@ export interface ContextTransition {
    * the adapter id and version. Changing it requires a new version.
    */
   contract: Record<string, string>;
+  /**
+   * Where a `fork` starts. Required when `reason` is `"fork"`, and not
+   * allowed with any other reason.
+   */
+  fork?: ContextForkOrigin;
   /** Host-defined metadata. */
   metadata?: ContextMetadata;
 }
@@ -418,6 +457,8 @@ export interface ContextVersion {
   core: string;
   /** The serialisation contract. */
   contract: Record<string, string>;
+  /** Where a `fork` version starts; set exactly when `reason` is `"fork"`. */
+  fork?: ContextForkOrigin;
   /** Host-defined metadata. */
   metadata?: ContextMetadata;
   /** The manifest whose prepare created the version. */

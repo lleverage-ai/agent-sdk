@@ -448,6 +448,7 @@ async function openDelegationStream(
   scope: DelegationScope,
   toolCallId: string | undefined,
   subagentType: string,
+  forkStep: string | undefined,
 ): Promise<{ contextLog: SubagentContextLog } | { completedText: string }> {
   if (!toolCallId) {
     throw new ContextLogInvalidError(
@@ -466,7 +467,16 @@ async function openDelegationStream(
   if (state.status === "unfinished") {
     throw new DelegationRecoveryRequiredError(stream, state.head);
   }
-  return { contextLog: { store: scope.store, stream, parentStream: scope.stream } };
+  return {
+    contextLog: {
+      store: scope.store,
+      stream,
+      parentStream: scope.stream,
+      ...(forkStep !== undefined && {
+        fork: { sourceManifestId: forkStep, toolCallId, subagentType },
+      }),
+    },
+  };
 }
 
 /**
@@ -576,7 +586,9 @@ function resolveSubagentCall(
   defaultModel: LanguageModel,
   toolOptions: unknown,
 ): { model: LanguageModel; callSettings: SubagentCallSettings } {
-  const parent = definition.inheritCallSettings ? readParentCall(toolOptions) : undefined;
+  // A fork always runs on the parent call's model and settings.
+  const inherit = definition.inheritCallSettings || definition.context === "fork";
+  const parent = inherit ? readParentCall(toolOptions) : undefined;
   const model =
     definition.model && definition.model !== "inherit"
       ? definition.model
@@ -694,6 +706,26 @@ export function createTaskTool(options: TaskToolOptions): Tool {
   // A parent's call settings belong to the parent's model.
   for (const definition of userSubagents) {
     if (
+      definition.context === "fork" &&
+      definition.model !== undefined &&
+      definition.model !== "inherit"
+    ) {
+      throw new ConfigurationError(
+        `Subagent "${definition.type}" is a fork with an explicit model; a fork runs on the parent call's model (model unset or "inherit")`,
+        { configKey: "subagents" },
+      );
+    }
+    if (
+      definition.context !== undefined &&
+      definition.context !== "brief" &&
+      definition.context !== "fork"
+    ) {
+      throw new ConfigurationError(
+        `Subagent "${definition.type}" has an unknown context "${String(definition.context)}"; use "brief" or "fork"`,
+        { configKey: "subagents" },
+      );
+    }
+    if (
       definition.inheritCallSettings &&
       definition.model !== undefined &&
       definition.model !== "inherit"
@@ -806,9 +838,19 @@ ${subagentDescriptions}`;
 
       // Log mode: the parent call's store and stream, if any.
       const delegationScope = readDelegationScope(toolOptions);
+      // A fork starts from the step that issued this call, read now: a
+      // background task starts later, when the parent may be on another step.
+      const isFork = subagentDef.context === "fork";
+      const forkStep = isFork ? delegationScope?.delegatingStep?.() : undefined;
+      if (isFork && forkStep === undefined) {
+        throw new ContextLogInvalidError(
+          "fork_unavailable",
+          `Subagent "${subagent_type}" is a fork, which needs a context log mode parent step to start from`,
+        );
+      }
       const openStream = () =>
         delegationScope
-          ? openDelegationStream(delegationScope, toolOptions?.toolCallId, subagent_type)
+          ? openDelegationStream(delegationScope, toolOptions?.toolCallId, subagent_type, forkStep)
           : Promise.resolve(undefined);
       // Set when the stream was opened before execution started.
       let preOpened: Awaited<ReturnType<typeof openStream>>;
@@ -853,6 +895,7 @@ ${subagentDescriptions}`;
               contextStream: {
                 branchId: childContextLog.stream.branchId,
                 streamId: childContextLog.stream.streamId,
+                ...(childContextLog.fork && { forkFrom: childContextLog.fork }),
               },
               _contextClaim: new DelegationStreamClaim(),
             }

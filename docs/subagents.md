@@ -60,6 +60,23 @@ hook model change) and its calls carry the parent call's `reasoning` and
 replaces the inherited value. `inheritCallSettings` cannot be combined with
 an explicit model.
 
+## Forks
+
+In context log mode, a definition with `context: "fork"` starts the
+subagent as a copy of the parent's conversation at the step that issued the
+`task` call, instead of with the brief alone. The fork's first request is
+that step's request byte for byte (system prompt, tool definitions,
+settings and messages), with the brief appended last, so it can reuse the
+parent's prompt cache. A fork always runs on the parent call's model and
+settings, so `model` must be unset or `"inherit"`. The child runs its own
+tools by name. A parent tool that the child has no executor for stays in
+the request, and calling it returns a tool error. See
+[Forks](./context-log.md#forks) for the log contract and the typed errors.
+
+```typescript
+{ type: "fork", description: "A background copy of this conversation", context: "fork", create }
+```
+
 ## Hidden subagent types
 
 A definition with `hidden: true` is left out of the task tool's description

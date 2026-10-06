@@ -209,6 +209,11 @@ export interface DelegationScope {
   store: ContextLogStore;
   stream: ContextStreamRef;
   subagentStream?: SubagentStreamResolver;
+  /**
+   * The manifest of the parent step whose tools are running, read when a
+   * delegating tool starts: the source of a fork.
+   */
+  delegatingStep?: () => string | undefined;
 }
 
 /**

@@ -1076,6 +1076,73 @@ each call, or it loses this protection. Hosts should still hold one lease
 over the whole delegation, from the tool call to its result, as part of
 their single-writer obligation for streams.
 
+### Forks
+
+A subagent definition with `context: "fork"` starts from the parent's
+conversation rather than from the brief alone. The child is a copy of the
+parent at the step that issued the `task` call, so its first request can
+reuse the parent's prompt cache:
+
+- **Fork point.** The source is the committed input of the parent step that
+  issued the `task` call: that step's manifest, and the path it committed
+  (`versionId` and `entryCount`). A step's input is committed before
+  dispatch and its outputs only after its tools finish, so the source has
+  no unresolved tool calls. The child doesn't see that step's reply or its
+  sibling tool calls. The task tool reads the step when the call starts, so
+  a background fork also starts from it.
+- **Transition.** The child's first prepare commits a `fork` transition on
+  the child stream (`<parent stream>/subagent/<type>-<digest>`, as for any
+  delegation). Its parent is the source manifest's path on the parent's
+  stream, its core and contract are the source version's, unchanged, and
+  it records `fork: { sourceManifestId, toolCallId, subagentType }`
+  (`ContextForkOrigin`). Stores accept a parent on another stream only for
+  this transition. It must be the first version of a child stream of the
+  source stream on the same thread and branch, inherit exactly the path the
+  source manifest committed, and keep its core and contract. The child's
+  path reads back as the source prefix followed by its own entries.
+- **Request.** The child sends the source manifest's exact tool definitions
+  (`toolSnapshot`) and call options (`callOptions`) on every provider call.
+  They're applied before the host's request middleware, so the middleware
+  sees what it saw for the source call, and again after it, so the
+  boundary commits exactly those bytes. Its first request is the source
+  request byte for byte, with the brief appended last as a user message.
+  This holds as long as the request middleware are prefix-stable: they
+  must render each message the same way whatever follows it. A middleware
+  that marks the last message, for example, moves that mark onto the
+  brief.
+- **Tools.** The child's own executors run by name. A function tool of the
+  parent's that the child has no executor for stays in the request, and a
+  call to it is refused with a tool error. A provider tool can't be
+  refused, because the provider may run it itself. If the child doesn't
+  define the same provider tool (same id) under that name, the fork isn't
+  started (`fork_tool_unavailable`). The child's own system prompt isn't used.
+- **Model and settings.** A fork runs on the model serving the parent call,
+  as with `inheritCallSettings`, and must not set an explicit `model`.
+- **Factory.** Return a log-mode agent on the delegation's store with the
+  parent's projection adapter and request middleware (the built-in
+  subagents do) and no context producers. `ctx.contextLog.fork` tells the
+  factory it is building a fork.
+- **Continuing.** The task tool passes `contextStream.forkFrom`. A host that
+  continues the child spreads the same options, and every later call checks
+  that the child's head still descends from that fork.
+
+A fork fails with a typed error before anything is committed:
+
+| Reason | Error | Cause |
+| --- | --- | --- |
+| `fork_unavailable` | `ContextLogInvalidError` | The parent call isn't in log mode, or no step is running (for example a `task` call run by `resume()`). |
+| `invalid_fork_source` | `ContextLogInvalidError` | The child stream isn't a child of the source stream on the same thread and branch, for example under a custom `subagentStream`. |
+| `fork_request_unavailable` | `ContextLogInvalidError` | The source manifest didn't record its tool definitions and call options. |
+| `fork_tool_unavailable` | `ContextLogInvalidError` | The source request has a provider tool that the child doesn't define as the same provider tool. |
+| `fork_model_mismatch` | `ContextLogConflictError` | The child runs on another model than the source call. |
+| `fork_contract_mismatch` | `ContextLogConflictError` | The child's adapter, adapter version or input capabilities differ from the source version's contract. |
+| `fork_source_incomplete` | `ContextLogConflictError` | The source path has an unresolved interrupt or a tool call without a result. |
+| `fork_over_budget` | `ContextLogConflictError` | The first request is at or over the context manager's hard limit (`policy.hardCapThreshold`). A fork's first request can't be compacted, because the child has no head yet. |
+| `fork_source_mismatch` | `ContextLogConflictError` | A continued child's head doesn't descend from the fork it declares. |
+
+Recovery is unchanged: a child stream with a final reply is the result, and
+any other head rejects with `DelegationRecoveryRequiredError`.
+
 ## Hooks in log mode
 
 Hooks never rewrite the log. In log mode they may only:
