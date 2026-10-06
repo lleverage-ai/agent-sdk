@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.17] - 2026-10-06
+
+Seventeenth release candidate for 1.0.0. A log-mode subagent can be a fork
+(`context: "fork"`): it starts from the committed request of the parent step
+that delegated to it, so its first request is that request plus the brief.
+Opt-in; existing subagents behave as before.
+
+### Migration notes
+
+- Hosts with their own `ContextLogStore` must persist `transition.fork` and
+  return it as `version.fork` from `readVersion` before they offer a fork
+  subagent. Until then, stores that refuse cross-stream parents refuse a
+  fork's first prepare with `invalid_transition`. Nothing changes for
+  existing subagents.
+
 ### Added
 
 - `SubagentDefinition.context: "fork"` starts a log-mode subagent from the
@@ -17,8 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   settings and messages), with the brief appended last as a user message.
   The child runs its own tools by name, and refuses the parent's function
   tools it can't run instead of removing them. It isn't started when it
-  lacks one of the source's provider tools. A fork runs on the parent call's model
-  and settings, and fails with a typed error before anything is committed
+  lacks one of the source's provider tools. A fork runs on the parent
+  call's model and settings, and fails with a typed error before anything is committed
   when the source has an unresolved tool call, runs on another model or
   adapter, or the first request is over the context manager's hard limit.
   `"brief"` (the default) behaves as before.
@@ -30,14 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stream (`<source>/subagent/...`) of the source stream on the same thread
   and branch, and inherit exactly the source manifest's path with its core
   and contract.
-
-### Migration notes
-
-- Hosts with their own `ContextLogStore` must persist `transition.fork` and
-  return it as `version.fork` from `readVersion` before they offer a fork
-  subagent. Until then, stores that refuse cross-stream parents refuse a
-  fork's first prepare with `invalid_transition`. Nothing changes for
-  existing subagents.
 
 ## [1.0.0-rc.16] - 2026-10-05
 
@@ -1710,7 +1717,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.16...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.17...HEAD
+[1.0.0-rc.17]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.16...agent-sdk@1.0.0-rc.17
 [1.0.0-rc.16]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.15...agent-sdk@1.0.0-rc.16
 [1.0.0-rc.15]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.14...agent-sdk@1.0.0-rc.15
 [1.0.0-rc.14]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.13...agent-sdk@1.0.0-rc.14
