@@ -278,6 +278,117 @@ const result = await retryIf(
 );
 ```
 
+## Tool Failure Contract
+
+Agent-facing tools return expected failures as data. Thrown errors are
+reserved for unexpected platform or programming bugs.
+
+A dropped connection, a timeout, an upstream 429, a record that does not
+exist: these are normal outcomes the model should reason over (retry, wait,
+ask the user, try something else). Thrown, they reach the model as a raw
+tool error such as `Error: terminated`, with no kind or retry signal to act
+on, and it may relay that text to the user verbatim.
+
+### The shape
+
+```typescript
+type AgentToolResult<T> = ToolSuccess<T> | ToolFailure;
+
+interface ToolSuccess<T> {
+  success: true;
+  data: T;
+  note?: string;
+}
+
+interface ToolFailure {
+  success: false;
+  error: string; // plain language, safe for the model and the user
+  code?: string; // machine-readable kind, e.g. "RATE_LIMIT_ERROR" or "ORDER_NOT_FOUND"
+  recoverable?: boolean; // calling again (as-is or with corrected input) may succeed
+  retryAfterMs?: number; // suggested wait before calling again
+  details?: unknown; // structured, model-safe context
+  note?: string; // guidance, e.g. what to try instead
+}
+```
+
+Tools with their own result shapes can keep them; the common failure fields
+are `success: false` and `error`, with `code`, `recoverable` and `note`
+optional.
+
+### Returning failures
+
+```typescript
+import { type AgentToolResult, toolFailure, toolSuccess } from "@lleverage-ai/agent-sdk";
+
+const getOrder = tool({
+  description: "Look up an order by id",
+  inputSchema: z.object({ id: z.string() }),
+  execute: async ({ id }): Promise<AgentToolResult<Order>> => {
+    const order = await erp.findOrder(id);
+    if (!order) {
+      return toolFailure(`No order with id ${id}.`, {
+        code: "ORDER_NOT_FOUND",
+        recoverable: true,
+        note: "Ask the user to confirm the order number.",
+      });
+    }
+    return toolSuccess(order);
+  },
+});
+```
+
+### Converting thrown errors with `safeTool()`
+
+`safeTool()` wraps a tool so anything its `execute()` throws comes back as a
+`ToolFailure`. Successful outputs pass through unchanged.
+
+```typescript
+import { safeTool } from "@lleverage-ai/agent-sdk";
+
+const agent = createAgent({
+  model,
+  tools: {
+    run_workflow: safeTool(runWorkflow, {
+      onError: (error, { toolCallId }) => logger.error("run_workflow failed", { toolCallId, error }),
+    }),
+  },
+});
+```
+
+The conversion (`toToolFailure()`) never forwards a raw message or stack:
+
+| Thrown | `code` | `recoverable` |
+|--------|--------|---------------|
+| `AgentError` (e.g. `RateLimitError`) | its `code` | its `retryable`; `retryAfterMs` kept; `error` is its `userMessage` |
+| undici `TypeError: terminated`, `ECONNRESET`, `ECONNREFUSED`, `EPIPE`, `UND_ERR_SOCKET` (also in the cause chain) | `NETWORK_ERROR` | `true` |
+| `AbortSignal.timeout()`, `ETIMEDOUT`, undici connect/headers/body timeouts | `TIMEOUT_ERROR` | `true` |
+| Any other value | inferred kind (`RATE_LIMIT_ERROR`, `AUTHENTICATION_ERROR`, ...) or `UNKNOWN_ERROR` | `true` only for network, timeout and rate-limit kinds |
+
+For an `AgentError`, `userMessage` becomes the model-facing `error`, so set
+it when the technical message carries hostnames or other internals. Every
+other value gets a fixed message per kind.
+
+Two things are re-thrown untouched: interrupts (`options.interrupt()`), and
+any error once the call's `abortSignal` has aborted, because a cancelled run
+is not a tool failure. The original error stays in-process for `onError`.
+
+Because a converted failure is a tool *result*, `PostToolUse` hooks see it
+(use `isToolFailure(tool_response)` to count them) and `PostToolUseFailure`
+and `transformToolError` do not. Unwrapped tools keep the thrown-error path
+described below.
+
+### Prompting guidance
+
+Tell the model how to read results, for example in the system prompt:
+
+```text
+Tool results may report failure as data. Before assuming a tool call worked,
+check `success`, `status`, `errors`, `error` or `isError`. If a call failed and
+`recoverable` is true, you may retry (after `retryAfterMs` if given) or adjust
+the input. Otherwise stop and explain the failure to the user in plain
+language. Never paste raw error text.
+```
+
 ## Sanitising Tool Errors for the Model
 
 When a tool fails, the AI SDK turns the error into a tool-error result whose

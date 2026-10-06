@@ -625,6 +625,8 @@ export { TaskManager } from "./task-manager.js";
 export type { OwnedTaskPolicy, OwnedTaskCallbacks, OwnedTaskIdentity, OwnedTaskScope, OwnedTaskUnresolvedReport } from "./owned-tasks.js";
 // Tool types
 export type {
+  // Failure-as-data tool result contract
+  AgentToolResult,
   BashResult,
   BashToolOptions,
   // Call tool types (proxy)
@@ -651,8 +653,11 @@ export type {
   TodoInput,
   TodosChangedData,
   TodoWriteToolOptions,
+  SafeToolOptions,
+  ToolFailure,
   // Tool utilities types
   ToolReference,
+  ToolSuccess,
 } from "./tools/index.js";
 // Core Tools
 export {
@@ -685,6 +690,7 @@ export {
   createWriteTool,
   DEFAULT_SKILL_CONTINUATION_INSTRUCTION,
   getBackgroundTask,
+  isToolFailure,
   listBackgroundTasks,
   // Tool utilities (DX helpers)
   mcpTools,
@@ -693,11 +699,16 @@ export {
   pluginToolsFor,
   recoverFailedTasks,
   recoverRunningTasks,
+  // Failure-as-data tool result contract
+  safeTool,
   // Skill tool (progressive disclosure)
   SkillRegistry,
+  toolFailure,
   toolsFrom,
   toolsFromPlugin,
+  toolSuccess,
   toSkillRuntimeName,
+  toToolFailure,
 } from "./tools/index.js";
 // Skills (tools use AI SDK's tool() directly)
 export { defineSkill } from "./tools.js";

@@ -82,6 +82,10 @@ agent.invalidateCheckpoint(threadId);
 | `createSearchToolsTool(options)` | Create MCP tool search |
 | `createCallToolTool(options)` | Create proxy tool invoker |
 | `suggestNearMissTools(mcpManager, toolName)` | Closest discoverable names for an unknown tool (max `NEAR_MISS_SUGGESTION_LIMIT`) |
+| `safeTool(tool, options?)` | Return thrown errors as a model-safe `ToolFailure` instead of a raw tool error |
+| `toolSuccess(data, note?)` / `toolFailure(error, options?)` | Build an `AgentToolResult` (see [Tool Failure Contract](./errors.md#tool-failure-contract)) |
+| `isToolFailure(value)` | Check whether a tool output is `{ success: false, error }` |
+| `toToolFailure(error)` | Convert any thrown value into a `ToolFailure` |
 
 ### Core Tools
 

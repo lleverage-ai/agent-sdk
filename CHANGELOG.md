@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Failure-as-data contract for agent-facing tools (#131). `AgentToolResult<T>`
+  (`ToolSuccess<T> | ToolFailure`) with `toolSuccess()`, `toolFailure()` and
+  `isToolFailure()`. `ToolFailure` carries a model-safe `error`, a
+  machine-readable `code`, `recoverable`, and optional `retryAfterMs`,
+  `details` and `note`.
+- `safeTool(tool, { onError })` returns anything a tool's `execute()` throws
+  as a `ToolFailure` instead of a raw tool error, so transient failures such as
+  undici's `TypeError: terminated` no longer reach the model as
+  `Error: terminated`. Successful outputs pass through unchanged; interrupts and
+  cancelled runs are re-thrown.
+- `toToolFailure(error)` classifies thrown values: an `AgentError` keeps its
+  `code`, `retryable`, `retryAfterMs` and `userMessage`; Node/undici socket
+  failures become recoverable `NETWORK_ERROR`, timeouts recoverable
+  `TIMEOUT_ERROR`; anything else gets a fixed message per kind and never its
+  own message or stack.
+- `docs/errors.md` documents the contract (expected failures return data,
+  thrown errors are for unexpected bugs) and model prompting guidance.
+
 ## [1.0.0-rc.17] - 2026-10-06
 
 Seventeenth release candidate for 1.0.0. A log-mode subagent can be a fork
