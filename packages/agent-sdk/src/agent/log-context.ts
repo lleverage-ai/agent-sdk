@@ -91,6 +91,7 @@ import {
   createLogCallBoundary,
   type LogCallBoundary,
   type LogFrozenRequest,
+  type LogPendingInput,
   type LogPreviousCall,
   type LogRunState,
   sha256Hex,
@@ -104,6 +105,7 @@ import {
   locateInterruptedCall,
 } from "./log-interrupts.js";
 import { resolveModelInputCapabilities } from "./model-capabilities.js";
+import { createPendingInputSource, pendingInputKey } from "./pending-input.js";
 
 /** Page size for reading a head's path. @internal */
 const PATH_PAGE_SIZE = 500;
@@ -1480,7 +1482,9 @@ export function createLogContextRuntime(
     model: LanguageModel,
     screen: LogInputScreen,
   ): LogCallBoundary {
+    const pendingInput = createLogPendingInput(plan, screen);
     return createLogCallBoundary({
+      ...(pendingInput && { pendingInput }),
       store,
       admit,
       plan,
@@ -1498,14 +1502,15 @@ export function createLogContextRuntime(
       screenOutputs: async (items) => (await screen(plan.options, [...items])).pending,
       // Between tool-loop steps the policy may compact the committed path;
       // the next call's prepare commits the compaction before it is sent.
-      compact: (entries, head) =>
+      // Pending user input taken for the step stays after the compaction.
+      compact: (entries, head, pending) =>
         compactPath({
           stream: plan.stream,
           head,
           core: plan.core,
           contract: plan.contract,
           path: entries,
-          pending: [],
+          pending,
           options: plan.options,
           runId: plan.run.id,
           screenOptions: plan.options,
@@ -1513,6 +1518,47 @@ export function createLogContextRuntime(
           target: plan.target,
         }),
     });
+  }
+
+  /**
+   * The attempt's pending user input as screened `user` entries keyed
+   * `steer:<id>`, or `undefined` when the generation has none.
+   */
+  function createLogPendingInput(
+    plan: LogCallPlan,
+    screen: LogInputScreen,
+  ): LogPendingInput | undefined {
+    const source = createPendingInputSource(plan.options);
+    if (!source) return undefined;
+    return {
+      async take(onPath) {
+        const { fresh, skipped } = await source.take((id) => onPath.has(pendingInputKey(id)));
+        if (skipped.length > 0) await source.committed(skipped, true);
+        if (fresh.length === 0) return { entries: [], ids: [] };
+        assertUserMessages(
+          fresh.map((item) => item.message),
+          "pendingUserInput",
+        );
+        // A copy, as for the run's input: the bytes the log will hold.
+        const items: UserContextEntryInput[] = fresh.map(({ id, message }) => ({
+          kind: "user",
+          key: pendingInputKey(id),
+          message: JSON.parse(JSON.stringify(message)) as UserModelMessage,
+        }));
+        const screened = (await screen(plan.options, items)).pending;
+        if (
+          screened.length !== items.length ||
+          screened.some((entry, index) => entry.kind !== "user" || entry.key !== items[index]!.key)
+        ) {
+          throw new ContextLogInvalidError(
+            "invalid_input",
+            "Input screening must keep each pending user message as a user entry",
+          );
+        }
+        return { entries: screened, ids: fresh.map((item) => item.id) };
+      },
+      committed: (ids) => source.committed(ids),
+    };
   }
 
   async function readInterrupt(

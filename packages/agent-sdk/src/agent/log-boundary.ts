@@ -8,8 +8,10 @@
  *
  * ```
  *   prepareStep (step > 0)   appendOutputs(previous step) → recordOutcome(completed)
+ *                            → take pending user input (screened `user` entries)
  *                            → compact (when the context policy asks)
  *                            → project the next step from committed entries
+ *                              and the pending input
  *   provider call            admit(prepare) → prepare(append, manifest, CAS)
  *                            → admit(dispatch) → markDispatched → provider
  *   complete (after the run) appendOutputs(last step) → recordOutcome(completed)
@@ -25,6 +27,12 @@
  * - A compaction between steps is a declared `compaction` transition that
  *   the next call's prepare commits before the compacted context is sent.
  *   A failed commit fails the step.
+ * - Pending user input (`GenerateOptions.pendingUserInput`) is read only in
+ *   `prepareStep`, never in the provider call, so a retry sends exactly the
+ *   request it retries. Each message is a `user` entry keyed `steer:<id>`
+ *   that the next call's prepare commits (after a compaction's entries when
+ *   the step also compacts); the host hears of it once that commit
+ *   succeeded. An id whose key is already on the path is not delivered again.
  * - Host request middleware (`contextLog.requestMiddleware`) wrap the
  *   boundary, so they run after the projection and the boundary commits the
  *   request they produce: agent → projection → request middleware →
@@ -178,7 +186,30 @@ export interface LogCallBoundaryDeps {
    * Plans a compaction of the committed path at `head` before the next step,
    * or returns `undefined` when the context policy does not ask for one.
    */
-  compact?: (entries: ContextEntryInput[], head: ContextHead) => Promise<LogCompaction | undefined>;
+  compact?: (
+    entries: ContextEntryInput[],
+    head: ContextHead,
+    pending: readonly ContextEntryInput[],
+  ) => Promise<LogCompaction | undefined>;
+  /**
+   * The generation's pending user input, when it has `pendingUserInput`.
+   * `take` reads it before a step after the first and returns the screened
+   * `user` entries to append, keyed `steer:<id>`, skipping ids whose key
+   * `onPath` holds (reported through `committed` straight away).
+   * `committed` reports ids once their entries are committed.
+   */
+  pendingInput?: LogPendingInput;
+}
+
+/**
+ * Pending user input for a log-mode boundary (see
+ * {@link LogCallBoundaryDeps.pendingInput}).
+ *
+ * @internal
+ */
+export interface LogPendingInput {
+  take(onPath: ReadonlySet<string>): Promise<{ entries: ContextEntryInput[]; ids: string[] }>;
+  committed(ids: readonly string[]): Promise<void>;
 }
 
 /**
@@ -663,6 +694,9 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
   // middleware guard tell a response the provider gave from one a host
   // middleware made up without calling it.
   let providerResponses = 0;
+  // Ids of pending user input in `pending.append`, reported to the host
+  // once the prepare that commits them succeeded.
+  let pendingInputIds: string[] = [];
 
   function moveHead(next: ContextHead): void {
     head = next;
@@ -810,6 +844,9 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
     }
     moveHead(prepared.head);
     pending = { transition: undefined, append: [], runInput: [] };
+    const delivered = pendingInputIds;
+    pendingInputIds = [];
+    if (delivered.length > 0) await deps.pendingInput?.committed(delivered);
     // The run's input is in the log now (this prepare committed it, or an
     // earlier one did), so no later attempt appends it again.
     run.inputCommitted = true;
@@ -873,18 +910,33 @@ export function createLogCallBoundary(deps: LogCallBoundaryDeps): LogCallBoundar
     }
     await recordingFailure(() => commitOutputs(responseMessages, false));
     const entries = [...baseEntries, ...committedOutputs];
+    // Input the host queued while the previous step ran, after all of that
+    // step's outputs. Committed by the next call's prepare, like a compaction.
+    const pendingInput = deps.pendingInput;
+    const input = pendingInput
+      ? await recordingFailure(() => pendingInput.take(new Set(entries.map((entry) => entry.key))))
+      : { entries: [], ids: [] };
     const compact = deps.compact;
     const at = head;
     if (compact && at) {
-      const compaction = await recordingFailure(() => compact(entries, at));
+      const compaction = await recordingFailure(() => compact(entries, at, input.entries));
       if (compaction) {
         // Committed by the next call's prepare, before anything is sent.
         // The run's input was committed by the first prepare: none is new.
+        // The compaction appends the pending input after its own entries.
         pending = { transition: compaction.transition, append: compaction.append, runInput: [] };
+        pendingInputIds = input.ids;
         baseEntries = compaction.entries;
         committedOutputs = [];
         return { messages: await deps.project(baseEntries) };
       }
+    }
+    if (input.entries.length > 0) {
+      pending = { ...pending, append: [...pending.append, ...input.entries] };
+      pendingInputIds = input.ids;
+      baseEntries = [...entries, ...input.entries];
+      committedOutputs = [];
+      return { messages: await deps.project(baseEntries) };
     }
     return { messages: await deps.project(entries) };
   };

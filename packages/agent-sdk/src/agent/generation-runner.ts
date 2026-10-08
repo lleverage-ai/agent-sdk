@@ -107,6 +107,7 @@ import {
 import { INTERRUPT_PENDING_REASON } from "./log-interrupts.js";
 import type { MessageRuntime, StreamingCompactionState } from "./messages.js";
 import { projectMessagesForModel, resolveModelInputCapabilities } from "./model-capabilities.js";
+import { createTranscriptPendingInput, type TranscriptPendingInput } from "./pending-input.js";
 import {
   buildStopConditions,
   type GenerateSignalState,
@@ -396,6 +397,12 @@ export interface AttemptContext {
    * calls `abandon` when the attempt fails.
    */
   logCall?: LogCallBoundary;
+  /**
+   * Outside log mode, when the generation has `pendingUserInput`: takes it
+   * between steps and remembers where it was delivered. Log mode delivers
+   * it through `logCall`.
+   */
+  pendingInput?: TranscriptPendingInput;
   /** Thread used for checkpoint persistence and telemetry (the request `threadId`). */
   checkpointThreadId: string | undefined;
   startStep: number;
@@ -493,11 +500,13 @@ export interface GenerationRunner {
   buildModelCallParams(attempt: PreparedAttempt): ModelCallParams;
   /**
    * The `prepareStep` for a streaming attempt: the log-mode step projection
-   * in log mode, otherwise the streaming compaction's own `prepareStep`.
+   * in log mode, otherwise the streaming compaction's own `prepareStep`,
+   * followed by any pending user input, which is appended to the tracked
+   * transcript.
    */
   prepareStepFor(
     attempt: PreparedAttempt,
-    compactionPrepareStep: StreamingCompactionState["prepareStep"],
+    streamingCompaction: StreamingCompactionState,
   ): StreamingCompactionState["prepareStep"] | LogModePrepareStep;
   /** Forward per-request usage, excluding isolated summarisation calls. */
   updateContextUsage(
@@ -567,10 +576,12 @@ export interface ModelCallParams extends RepairToolCallOptions {
   telemetry: GenerateOptions["telemetry"];
   allowSystemInMessages: true;
   /**
-   * Log mode only: commits each step's outputs and projects tool-loop
-   * continuations through the adapter.
+   * Log mode: commits each step's outputs and projects tool-loop
+   * continuations through the adapter. Otherwise set only when the
+   * generation has `pendingUserInput`, to deliver it between steps
+   * (streaming modes replace it with {@link GenerationRunner.prepareStepFor}).
    */
-  prepareStep?: LogModePrepareStep;
+  prepareStep?: LogModePrepareStep | StreamingCompactionState["prepareStep"];
   /** Log mode only: lets the boundary see each finished step. */
   onStepFinish?: (step: { response: { messages: ModelMessage[] } }) => void;
 }
@@ -827,6 +838,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       requestedModel: currentModel,
     });
 
+    // Log mode delivers pending input through the boundary instead.
+    const pendingInput = logPlan ? undefined : createTranscriptPendingInput(attemptOptions);
+
     return {
       effectiveGenOptions: attemptOptions,
       currentModel,
@@ -834,6 +848,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       checkpoint,
       ...(logPlan && { logPlan }),
       ...(logCall && { logCall }),
+      ...(pendingInput && { pendingInput }),
       checkpointThreadId,
       startStep,
       maxSteps,
@@ -922,9 +937,38 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
    */
   function prepareStepFor(
     attempt: PreparedAttempt,
-    compactionPrepareStep: StreamingCompactionState["prepareStep"],
+    streamingCompaction: StreamingCompactionState,
   ): StreamingCompactionState["prepareStep"] | LogModePrepareStep {
-    return attempt.logCall ? attempt.logCall.prepareStep : compactionPrepareStep;
+    if (attempt.logCall) return attempt.logCall.prepareStep;
+    const pendingInput = attempt.pendingInput;
+    if (!pendingInput) return streamingCompaction.prepareStep;
+    return async (step: { messages: ModelMessage[]; stepNumber: number }) => {
+      const compacted = await streamingCompaction.prepareStep(step);
+      if (step.stepNumber === 0) return compacted;
+      // Taken after any compaction, so it lands after the compacted context.
+      const input = await pendingInput.take(step.stepNumber, streamingCompaction.messages);
+      if (input.length === 0) return compacted;
+      streamingCompaction.appendInput(input);
+      await pendingInput.delivered(step.stepNumber, input);
+      return { messages: [...(compacted?.messages ?? step.messages), ...input] };
+    };
+  }
+
+  /**
+   * `generate()` outside log mode: delivers pending user input before each
+   * step after the first. The AI SDK carries the returned messages into
+   * later steps; the checkpoint places them with `pendingInput.byStep`.
+   */
+  function pendingInputPrepareStep(
+    pendingInput: TranscriptPendingInput,
+  ): StreamingCompactionState["prepareStep"] {
+    return async ({ messages, stepNumber }) => {
+      if (stepNumber === 0) return undefined;
+      const input = await pendingInput.take(stepNumber, messages);
+      if (input.length === 0) return undefined;
+      await pendingInput.delivered(stepNumber, input);
+      return { messages: [...messages, ...input] };
+    };
   }
 
   function buildModelCallParams(attempt: PreparedAttempt): ModelCallParams {
@@ -965,6 +1009,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
       ...(attempt.logCall && {
         prepareStep: attempt.logCall.prepareStep,
         onStepFinish: attempt.logCall.onStepFinish,
+      }),
+      ...(attempt.pendingInput && {
+        prepareStep: pendingInputPrepareStep(attempt.pendingInput),
       }),
     };
   }
@@ -1226,7 +1273,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
           });
           const result = streamText({
             ...buildModelCallParams(attempt),
-            prepareStep: prepareStepFor(attempt, streamingCompaction.prepareStep),
+            prepareStep: prepareStepFor(attempt, streamingCompaction),
             onStepFinish: lifecycle.onStepFinish,
             onFinish: async (finishResult) => {
               try {

@@ -826,6 +826,44 @@ describe("log-mode compaction", () => {
   });
 });
 
+describe("log-mode compaction with pending user input", () => {
+  it("keeps input taken in a compacting step after the compacted context", async () => {
+    const store = new MemoryContextLogStore();
+    const { model, requests } = createScriptedModel([thinkThenEcho("c1"), text("done")]);
+    // The first request (core, settings, prompt) stays under the limit; the
+    // second (plus the call, its result and the new input) compacts.
+    const manager = createCompactingManager(4, { keepMessageCount: 1 });
+    const committed = vi.fn();
+
+    await logAgent(model, store, {
+      tools: echoTools,
+      contextManager: manager.contextManager,
+    }).generate({
+      prompt: "go",
+      threadId: THREAD,
+      pendingUserInput: async () => [
+        { id: "d1", message: { role: "user", content: "steered message" } },
+      ],
+      onPendingUserInputCommitted: committed,
+    });
+
+    expect(manager.requests).toHaveLength(1);
+    expect(JSON.stringify(manager.requests[0]!.messages)).not.toContain("steered message");
+    const head = await store.readHead(STREAM);
+    expect((await store.readVersion(head!.versionId)).reason).toBe("compaction");
+    const path = await readPath(store);
+    expect(path[0]!.kind === "assistant" && path[0]!.message.content).toContain("summary 1");
+    expect(path.at(-2)).toMatchObject({ kind: "user", key: "steer:d1" });
+    expect(path.at(-1)!.kind).toBe("assistant");
+    // Sent last, after the compacted context.
+    const last = requests[1]!.prompt.at(-1);
+    expect(last).toMatchObject({ role: "user" });
+    expect(JSON.stringify(last)).toContain("steered message");
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(committed).toHaveBeenCalledWith(["d1"], { alreadyCommitted: [] });
+  });
+});
+
 describe("log-mode compaction with a declared transition", () => {
   it("replaces a core_policy_change with one compaction under the new core and contract", async () => {
     const store = new MemoryContextLogStore();

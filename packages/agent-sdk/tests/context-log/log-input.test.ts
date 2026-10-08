@@ -2,12 +2,14 @@
  * Log mode takes a run's new input as `prompt` or as `input`, an array of
  * user messages. Each message is screened by the PreGenerate hooks and
  * committed as its own `user` entry, in order, before anything is sent.
+ * Input a host queues while the run works (`pendingUserInput`) is committed
+ * the same way between tool-loop steps.
  */
 
 import type { LanguageModelV3CallOptions, LanguageModelV3Content } from "@ai-sdk/provider";
-import { jsonSchema, type LanguageModel, tool, type UserModelMessage } from "ai";
+import { APICallError, jsonSchema, type LanguageModel, tool, type UserModelMessage } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { projectMessagesForModel } from "../../src/agent/model-capabilities.js";
 import {
   type AgentOptions,
@@ -24,6 +26,8 @@ import {
   type HookCallback,
   isContextLogError,
   MemoryContextLogStore,
+  type PendingUserInputCommit,
+  type PendingUserMessage,
   type PreGenerateInput,
   ValidationError,
 } from "../../src/index.js";
@@ -546,5 +550,205 @@ describe("user media projection", () => {
     expect(projectMessagesForModel(messages, { fileInput: false, imageInput: false })).toEqual(
       messages,
     );
+  });
+});
+
+describe("log-mode pending user input between steps", () => {
+  const echo = (onExecute?: (value: string) => void) => ({
+    echo: tool({
+      inputSchema: jsonSchema<{ value: string }>({
+        type: "object",
+        properties: { value: { type: "string" } },
+        required: ["value"],
+      }),
+      execute: async ({ value }) => {
+        onExecute?.(value);
+        return `echo:${value}`;
+      },
+    }),
+  });
+  const echoCall = (id: string): LanguageModelV3Content => ({
+    type: "tool-call",
+    toolCallId: id,
+    toolName: "echo",
+    input: JSON.stringify({ value: id }),
+  });
+  const steer: PendingUserMessage = {
+    id: "d1",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: "also check Q3" },
+        { type: "file", data: PDF, mediaType: "application/pdf", filename: "q3.pdf" },
+      ],
+    },
+  };
+  /** A host queue that keeps every message until told it was committed. */
+  function hostQueue(store: ContextLogStore) {
+    const pending: PendingUserMessage[] = [];
+    const commits: Array<{ ids: string[]; alreadyCommitted: string[]; onPath: boolean }> = [];
+    return {
+      pending,
+      commits,
+      read: async () => [...pending],
+      // The host only drops what it was told about; it may lag behind.
+      onCommitted: async (ids: string[], { alreadyCommitted }: PendingUserInputCommit) => {
+        const path = await readPath(store);
+        commits.push({
+          ids,
+          alreadyCommitted,
+          onPath: [...ids, ...alreadyCommitted].every((id) =>
+            path.some((entry) => entry.key === `steer:${id}`),
+          ),
+        });
+      },
+    };
+  }
+
+  it("delivers input queued while tools run after all their results, committed before dispatch", async () => {
+    const store = new MemoryContextLogStore();
+    const queue = hostQueue(store);
+    const read = vi.fn(queue.read);
+    let requestsAtCommit = -1;
+    const { model, requests } = createScriptedModel([
+      [echoCall("c1"), echoCall("c2")],
+      [echoCall("c3")],
+      text("done"),
+    ]);
+    // The message arrives while the first step's tools run.
+    const tools = echo((value) => {
+      if (value === "c1") queue.pending.push(steer);
+    });
+
+    await logAgent(model, store, { tools }).generate({
+      prompt: "go",
+      threadId: THREAD,
+      pendingUserInput: read,
+      onPendingUserInputCommitted: async (ids, commit) => {
+        requestsAtCommit = requests.length;
+        await queue.onCommitted(ids, commit);
+      },
+    });
+
+    // Read before each step after the first, never for the first.
+    expect(read).toHaveBeenCalledTimes(2);
+    // The next request carries it after both tool results, with its file.
+    const second = requests[1]!.prompt;
+    expect(second.map((message) => message.role)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "tool",
+      "user",
+    ]);
+    const tool = second[3]!;
+    expect(tool.role === "tool" && tool.content.map((part) => part.toolCallId)).toEqual([
+      "c1",
+      "c2",
+    ]);
+    expect(JSON.stringify(second[4])).toContain("also check Q3");
+    expect(JSON.stringify(second[4])).toContain("application/pdf");
+    // It stays in every later step, once.
+    expect(requests[2]!.prompt.slice(0, 5)).toEqual(second);
+    expect(JSON.stringify(requests[2]!.prompt).split("also check Q3")).toHaveLength(2);
+    // Committed as a user entry before the request carrying it was sent.
+    const path = await readPath(store);
+    expect(path.map((entry) => `${entry.kind}:${entry.key.split(":")[0]}`)).toEqual([
+      "user:user",
+      "assistant:output",
+      "tool_result:output",
+      "tool_result:output",
+      "user:steer",
+      "assistant:output",
+      "tool_result:output",
+      "assistant:output",
+    ]);
+    expect(path[4]!.kind === "user" && path[4]!.message).toEqual(steer.message);
+    // Reported once, after the commit, before the request was dispatched,
+    // although the host kept returning it.
+    expect(queue.commits).toEqual([{ ids: ["d1"], alreadyCommitted: [], onPath: true }]);
+    expect(requestsAtCommit).toBe(1);
+  });
+
+  it("never takes new input for a provider retry of the same call", async () => {
+    const store = new MemoryContextLogStore();
+    const queue = hostQueue(store);
+    const read = vi.fn(queue.read);
+    let failed = false;
+    const { model, requests } = createScriptedModel([[echoCall("c1")], text("done")], (index) => {
+      if (index !== 1 || failed) return;
+      failed = true;
+      // A message arrives while the call is in flight, and the call fails.
+      queue.pending.push({ id: "late", message: { role: "user", content: "late" } });
+      throw new APICallError({
+        message: "overloaded",
+        url: "https://provider.test",
+        requestBodyValues: {},
+        statusCode: 529,
+        // Retry at once instead of after the AI SDK's real-time backoff.
+        responseHeaders: { "retry-after-ms": "0" },
+        isRetryable: true,
+      });
+    });
+    queue.pending.push(steer);
+
+    await logAgent(model, store, { tools: echo() }).generate({
+      prompt: "go",
+      threadId: THREAD,
+      pendingUserInput: read,
+      onPendingUserInputCommitted: queue.onCommitted,
+    });
+
+    expect(requests).toHaveLength(3);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(requests[2]!.prompt).toEqual(requests[1]!.prompt);
+    expect(JSON.stringify(requests[2]!.prompt)).not.toContain("late");
+    expect(queue.commits).toEqual([{ ids: ["d1"], alreadyCommitted: [], onPath: true }]);
+  });
+
+  it("does not deliver an id a resumed run already committed, and reports it", async () => {
+    const store = new MemoryContextLogStore();
+    const queue = hostQueue(store);
+    queue.pending.push(steer);
+    const first = createScriptedModel([[echoCall("c1")], text("done")]);
+    await logAgent(first.model, store, { tools: echo() }).generate({
+      prompt: "go",
+      threadId: THREAD,
+      pendingUserInput: queue.read,
+    });
+
+    // The host never heard of the commit and offers the message again.
+    const second = createScriptedModel([[echoCall("c2")], text("done again")]);
+    await logAgent(second.model, store, { tools: echo() }).generate({
+      prompt: "and then?",
+      threadId: THREAD,
+      pendingUserInput: queue.read,
+      onPendingUserInputCommitted: queue.onCommitted,
+    });
+
+    const path = await readPath(store);
+    expect(path.filter((entry) => entry.key === "steer:d1")).toHaveLength(1);
+    expect(JSON.stringify(second.requests[1]!.prompt).split("also check Q3")).toHaveLength(2);
+    expect(queue.commits).toEqual([{ ids: [], alreadyCommitted: ["d1"], onPath: true }]);
+  });
+
+  it("screens pending input with the PreGenerate hooks before commit", async () => {
+    const store = new MemoryContextLogStore();
+    const [inputFilter] = createSecretsFilterHooks();
+    const { model, inputs } = createScriptedModel([[echoCall("c1")], text("done")]);
+
+    await logAgent(model, store, {
+      tools: echo(),
+      hooks: { PreGenerate: [inputFilter] },
+    }).generate({
+      prompt: "go",
+      threadId: THREAD,
+      pendingUserInput: async () => [
+        { id: "s1", message: { role: "user", content: `key ${AWS_KEY}` } },
+      ],
+    });
+
+    expect(inputs()[1]).not.toContain(AWS_KEY);
+    expect(JSON.stringify(await readPath(store))).not.toContain(AWS_KEY);
   });
 });
