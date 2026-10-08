@@ -2165,6 +2165,42 @@ export type ReasoningEffort = NonNullable<CallSettings["reasoning"]>;
 type ProviderOptions = NonNullable<UserModelMessage["providerOptions"]>;
 
 /**
+ * A user message a host delivers to a running generation between tool-loop
+ * steps (see {@link GenerateOptions.pendingUserInput}).
+ *
+ * @category Agent
+ */
+export interface PendingUserMessage {
+  /**
+   * Host identifier of the message, stable across retries and resumed runs
+   * (for example the id of the queued draft it came from). At most 1000
+   * characters, without control characters. It keys the delivery: an id
+   * already in the conversation is never delivered again. It is never sent
+   * to the model in context log mode; outside it, it travels in the
+   * message's provider options (see {@link GenerateOptions.pendingUserInput}).
+   */
+  id: string;
+  /** The message exactly as the model should see it: text, image and file parts. */
+  message: UserModelMessage;
+}
+
+/**
+ * Second argument of {@link GenerateOptions.onPendingUserInputCommitted}.
+ *
+ * @category Agent
+ */
+export interface PendingUserInputCommit {
+  /**
+   * Ids the generation did not deliver because they were already in the
+   * conversation: an earlier attempt or run committed them (in context log
+   * mode, `steer:<id>` is on the path; otherwise the transcript holds a
+   * message tagged with the id). A host releases these as delivered, but
+   * should not announce them as new.
+   */
+  alreadyCommitted: string[];
+}
+
+/**
  * Options for generating a response.
  *
  * @example
@@ -2373,6 +2409,82 @@ export interface GenerateOptions {
   shouldStopAfterStep?: () => boolean;
 
   /**
+   * Reads user messages that arrived while the generation runs, so the
+   * running turn can take them: a message a user sends while the agent is
+   * working reaches the model as a real user message instead of waiting for
+   * the next run.
+   *
+   * Called once before each tool-loop step after the first, after every tool
+   * result of the previous step is settled and before the next model call.
+   * The messages it returns are appended after those tool results, in order,
+   * and stay in every later step. Never called for the first step, nor for a
+   * provider retry of a call: a retry sends exactly the request it retries.
+   * A generation that ends without another step (the model replied without
+   * calling tools, or a stop condition ended the loop) does not call it; the
+   * host decides what to do with input that is still pending, for example
+   * start a follow-up run.
+   *
+   * Return every message that is still pending; the SDK skips ids it
+   * already delivered. Ids that are already in the conversation (a resumed
+   * run, or a host that has not processed the commit callback yet) are not
+   * delivered again, and are reported to
+   * {@link GenerateOptions.onPendingUserInputCommitted} as `alreadyCommitted`
+   * instead. If the function rejects, the generation fails.
+   *
+   * In context log mode each message is screened by the PreGenerate hooks
+   * (secret redaction, guardrails) like the run's input, then committed as
+   * a `user` entry keyed `steer:<id>` before the request that carries it is
+   * sent; a compaction in the same step keeps it after the compacted
+   * context. Messages must be plain JSON, as for {@link GenerateOptions.input}.
+   * A later run recognises an id while its entry is on the path; once a
+   * compaction has summarised it, the host must already have processed the
+   * commit.
+   *
+   * Outside log mode the message is appended to the tracked transcript, so
+   * the checkpoint saved at the end of the run includes it, with its id under
+   * `providerOptions.agentSdk.pendingUserInputId`, which providers ignore;
+   * that is how a resumed run recognises it. A retry or fallback attempt of
+   * the same run starts again from the checkpoint with the messages already
+   * delivered appended. PreGenerate hooks do not see it.
+   *
+   * @experimental
+   *
+   * @example
+   * ```typescript
+   * const stream = await agent.stream({
+   *   threadId,
+   *   prompt,
+   *   pendingUserInput: async () =>
+   *     queue.pending().map((draft) => ({ id: draft.id, message: draft.message })),
+   *   onPendingUserInputCommitted: (ids) => queue.markDelivered(ids),
+   * });
+   * ```
+   */
+  pendingUserInput?: () => Promise<PendingUserMessage[]>;
+
+  /**
+   * Called with the ids of messages from
+   * {@link GenerateOptions.pendingUserInput} once they are part of the
+   * conversation: in context log mode after their entries are committed to
+   * the log, otherwise after they are appended to the tracked transcript.
+   * Either way it is awaited before the model call that carries them is
+   * sent, so a host can record the delivery before that step's output.
+   *
+   * `ids` are the messages this generation delivered, in order.
+   * `commit.alreadyCommitted` are ids it skipped because they were already
+   * in the conversation (see {@link PendingUserInputCommit}); those are
+   * reported in their own call, with `ids` empty, when they are read. Each
+   * id is reported once per attempt. An error the callback throws is
+   * ignored, because the messages are already delivered.
+   *
+   * @experimental
+   */
+  onPendingUserInputCommitted?: (
+    ids: string[],
+    commit: PendingUserInputCommit,
+  ) => void | Promise<void>;
+
+  /**
    * Per-generation instruction layers to expose to the prompt builder.
    *
    * These are appended after any agent-level `instructionLayers`, while still
@@ -2574,6 +2686,14 @@ export interface GenerateOptions {
     lastInputDigest?: string;
     inputCommitted?: boolean;
   };
+
+  /**
+   * Internal, outside context log mode: pending user input the run
+   * delivered, shared by its attempts, so a retry or fallback attempt that
+   * starts again from the checkpoint keeps it. Fresh for every run.
+   * @internal
+   */
+  _pendingInputRun?: { delivered: UserModelMessage[] };
 
   /**
    * Internal, context log mode only: a delegation's claim on its child

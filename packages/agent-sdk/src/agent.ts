@@ -1366,6 +1366,7 @@ export function createAgent(options: AgentOptions): Agent {
                 response.steps,
                 response.text,
                 response.response?.messages,
+                attempt.pendingInput?.byStep,
               );
               const savedCheckpoint = await saveCheckpoint(
                 checkpointThreadId,
@@ -1450,6 +1451,7 @@ export function createAgent(options: AgentOptions): Agent {
               response.steps,
               response.text,
               response.response?.messages,
+              attempt.pendingInput?.byStep,
             );
             await saveCheckpoint(
               checkpointThreadId,
@@ -1489,6 +1491,7 @@ export function createAgent(options: AgentOptions): Agent {
                 response.steps,
                 finalResult.text,
                 response.response?.messages,
+                attempt.pendingInput?.byStep,
               );
 
           let followUpPrompt = await getNextTaskPrompt();
@@ -1781,7 +1784,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Execute stream
           const response = streamText({
             ...runner.buildModelCallParams(attempt),
-            prepareStep: runner.prepareStepFor(attempt, streamingCompaction.prepareStep),
+            prepareStep: runner.prepareStepFor(attempt, streamingCompaction),
             onStepFinish: (stepResult) => {
               // Log mode: the boundary keeps finished steps, so a received
               // reply is still committed if the consumer stops early.
@@ -2198,7 +2201,7 @@ export function createAgent(options: AgentOptions): Agent {
           // Execute stream
           const result = streamText({
             ...runner.buildModelCallParams(attempt),
-            prepareStep: runner.prepareStepFor(attempt, streamingCompaction.prepareStep),
+            prepareStep: runner.prepareStepFor(attempt, streamingCompaction),
             ...runner.createStreamLifecycleCallbacks(attempt, streamingCompaction),
           });
 
@@ -2293,7 +2296,7 @@ export function createAgent(options: AgentOptions): Agent {
               // Execute stream
               const result = streamText({
                 ...runner.buildModelCallParams(attempt),
-                prepareStep: runner.prepareStepFor(attempt, streamingCompaction.prepareStep),
+                prepareStep: runner.prepareStepFor(attempt, streamingCompaction),
                 ...runner.createStreamLifecycleCallbacks(attempt, streamingCompaction),
               });
 

@@ -766,6 +766,8 @@ export type {
   // AI SDK re-exports
   ModelMessage,
   PartialGenerateResult,
+  PendingUserInputCommit,
+  PendingUserMessage,
   PermissionDecision,
   // Permission types
   PermissionMode,

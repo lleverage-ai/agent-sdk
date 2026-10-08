@@ -7,13 +7,27 @@
  * - `options.stop()` for tools and `GenerateOptions.shouldStopAfterStep`
  * - mid-run streaming compaction via `prepareStep`
  * - checkpoints built from every step (not just the final step's response)
+ * - pending user input delivered between steps (`pendingUserInput`)
  */
 
-import { NoSuchToolError, type ToolSet, tool } from "ai";
+import type {
+  LanguageModelV3CallOptions,
+  LanguageModelV3Content,
+  LanguageModelV3StreamPart,
+} from "@ai-sdk/provider";
+import {
+  APICallError,
+  jsonSchema,
+  type LanguageModel,
+  NoSuchToolError,
+  type ToolSet,
+  tool,
+} from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgent, definePlugin } from "../src/index.js";
-import type { StreamPart } from "../src/types.js";
+import type { PendingUserInputCommit, PendingUserMessage, StreamPart } from "../src/types.js";
 import { createMockModel, resetMocks } from "./setup.js";
 
 vi.mock("ai", async (importOriginal) => {
@@ -636,5 +650,317 @@ describe("checkpoint transcript from every step", () => {
       step1Tool,
       step2Assistant,
     ]);
+  });
+});
+
+describe("pending user input between steps (outside log mode)", () => {
+  const usage = {
+    inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+    outputTokens: { total: 5, text: 5, reasoning: 0 },
+  };
+  const echoCall = (id: string): LanguageModelV3Content => ({
+    type: "tool-call",
+    toolCallId: id,
+    toolName: "echo",
+    input: JSON.stringify({ value: id }),
+  });
+  const steer: PendingUserMessage = {
+    id: "d1",
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: "also check Q3" },
+        { type: "image", image: "aGVsbG8=", mediaType: "image/png" },
+      ],
+    },
+  };
+  const tagged = {
+    ...steer.message,
+    providerOptions: { agentSdk: { pendingUserInputId: "d1" } },
+  };
+
+  /** A model that answers each call with the next reply, by generate or stream. */
+  function scriptedModel(replies: LanguageModelV3Content[][]) {
+    const requests: LanguageModelV3CallOptions[] = [];
+    const next = (request: LanguageModelV3CallOptions) => {
+      requests.push(request);
+      const content = replies[Math.min(requests.length - 1, replies.length - 1)]!;
+      const finishReason = content.some((part) => part.type === "tool-call")
+        ? { unified: "tool-calls" as const, raw: "tool_calls" }
+        : { unified: "stop" as const, raw: "stop" };
+      return { content, finishReason };
+    };
+    const model = new MockLanguageModelV3({
+      doGenerate: async (request) => ({ ...next(request), usage, warnings: [] }),
+      doStream: async (request) => {
+        const { content, finishReason } = next(request);
+        const parts: LanguageModelV3StreamPart[] = [{ type: "stream-start", warnings: [] }];
+        for (const part of content) {
+          if (part.type === "text") {
+            parts.push(
+              { type: "text-start", id: "t" },
+              { type: "text-delta", id: "t", delta: part.text },
+              { type: "text-end", id: "t" },
+            );
+          } else {
+            parts.push(part as LanguageModelV3StreamPart);
+          }
+        }
+        parts.push({ type: "finish", finishReason, usage });
+        return {
+          stream: new ReadableStream({
+            start(controller) {
+              for (const part of parts) controller.enqueue(part);
+              controller.close();
+            },
+          }),
+        };
+      },
+    });
+    return { model: model as LanguageModel, requests };
+  }
+
+  async function setup() {
+    const actual = await vi.importActual<typeof import("ai")>("ai");
+    vi.mocked(generateText).mockImplementation(actual.generateText);
+    vi.mocked(streamText).mockImplementation(actual.streamText);
+    const { MemorySaver } = await import("../src/checkpointer/memory-saver.js");
+    const pending: PendingUserMessage[] = [];
+    const committed = vi.fn();
+    const tools = {
+      echo: tool({
+        inputSchema: jsonSchema<{ value: string }>({
+          type: "object",
+          properties: { value: { type: "string" } },
+          required: ["value"],
+        }),
+        // The message arrives while the first step's tools run.
+        execute: async ({ value }: { value: string }) => {
+          if (value === "c1") pending.push(steer);
+          return `echo:${value}`;
+        },
+      }),
+    };
+    return {
+      checkpointer: new MemorySaver(),
+      tools,
+      pending,
+      committed,
+      // The host keeps returning the message; the SDK delivers it once.
+      options: {
+        pendingUserInput: async () => [...pending],
+        onPendingUserInputCommitted: committed,
+      },
+    };
+  }
+
+  beforeEach(() => resetMocks());
+  afterEach(() => {
+    vi.mocked(generateText).mockReset();
+    vi.mocked(streamText).mockReset();
+  });
+
+  for (const mode of ["generate", "stream"] as const) {
+    it(`${mode}() sends it after every tool result and keeps it in later steps and the checkpoint`, async () => {
+      const { checkpointer, tools, options, committed } = await setup();
+      const { model, requests } = scriptedModel([
+        [echoCall("c1"), echoCall("c2")],
+        [echoCall("c3")],
+        [{ type: "text", text: "done" }],
+      ]);
+      const agent = createAgent({ model, tools, checkpointer });
+
+      const genOptions = { prompt: "go", threadId: "t1", ...options };
+      if (mode === "generate") {
+        await agent.generate(genOptions);
+      } else {
+        for await (const _ of agent.stream(genOptions)) {
+          // consume
+        }
+      }
+
+      const roles = (index: number) => requests[index]!.prompt.map((message) => message.role);
+      expect(roles(0)).toEqual(["system", "user"]);
+      expect(roles(1)).toEqual(["system", "user", "assistant", "tool", "user"]);
+      const second = requests[1]!.prompt;
+      const toolMessage = second[3]!;
+      expect(toolMessage.role === "tool" && toolMessage.content.length).toBe(2);
+      expect(JSON.stringify(second[4])).toContain("also check Q3");
+      expect(JSON.stringify(second[4])).toContain("image/png");
+      expect(requests[2]!.prompt.slice(0, 5)).toEqual(second);
+      expect(JSON.stringify(requests[2]!.prompt).split("also check Q3")).toHaveLength(2);
+
+      const checkpoint = await checkpointer.load("t1");
+      expect(checkpoint?.messages.map((message) => message.role)).toEqual([
+        "user",
+        "assistant",
+        "tool",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+      ]);
+      expect(checkpoint?.messages[3]).toEqual(tagged);
+      expect(committed).toHaveBeenCalledTimes(1);
+      expect(committed).toHaveBeenCalledWith(["d1"], { alreadyCommitted: [] });
+    });
+  }
+
+  it("does not deliver an id the checkpoint already holds, and reports it", async () => {
+    const { checkpointer, tools, options, committed } = await setup();
+    const first = scriptedModel([[echoCall("c1")], [{ type: "text", text: "done" }]]);
+    const agent = createAgent({ model: first.model, tools, checkpointer });
+    await agent.generate({ prompt: "go", threadId: "t1", ...options });
+    expect(committed).toHaveBeenCalledTimes(1);
+
+    // A resumed run: the host never processed the commit and offers it again.
+    const second = scriptedModel([[echoCall("c2")], [{ type: "text", text: "done" }]]);
+    await createAgent({ model: second.model, tools, checkpointer }).generate({
+      prompt: "and then?",
+      threadId: "t1",
+      ...options,
+    });
+
+    expect(JSON.stringify(second.requests[1]!.prompt).split("also check Q3")).toHaveLength(2);
+    const checkpoint = await checkpointer.load("t1");
+    expect(checkpoint?.messages.filter((message) => message.role === "user")).toHaveLength(3);
+    expect(committed).toHaveBeenCalledTimes(2);
+    expect(committed).toHaveBeenLastCalledWith([], { alreadyCommitted: ["d1"] });
+  });
+
+  it("keeps delivered input in a fallback attempt after the host dropped it", async () => {
+    const { checkpointer, tools, pending, committed } = await setup();
+    const primary = scriptedModel([[echoCall("c1")]]);
+    const fail = () => {
+      throw new APICallError({
+        message: "overloaded",
+        url: "https://provider.test",
+        requestBodyValues: {},
+        statusCode: 529,
+        // Retry at once instead of after the AI SDK's real-time backoff.
+        responseHeaders: { "retry-after-ms": "0" },
+        isRetryable: true,
+      });
+    };
+    let calls = 0;
+    const failing = new MockLanguageModelV3({
+      doGenerate: async (request) => {
+        calls += 1;
+        if (calls > 1) fail();
+        return primary.model.doGenerate(request);
+      },
+    });
+    const fallback = scriptedModel([[{ type: "text", text: "done" }]]);
+
+    await createAgent({
+      model: failing as LanguageModel,
+      fallbackModel: fallback.model,
+      tools,
+      checkpointer,
+    }).generate({
+      prompt: "go",
+      threadId: "t1",
+      pendingUserInput: async () => [...pending],
+      // The host drops what it was told about.
+      onPendingUserInputCommitted: async (ids, commit) => {
+        committed(ids, commit);
+        pending.splice(0, pending.length, ...pending.filter((item) => !ids.includes(item.id)));
+      },
+    });
+
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(fallback.requests[0]!.prompt.map((message) => message.role)).toEqual([
+      "system",
+      "user",
+      "user",
+    ]);
+    expect(JSON.stringify(fallback.requests[0]!.prompt[2])).toContain("also check Q3");
+    const checkpoint = await checkpointer.load("t1");
+    expect(checkpoint?.messages).toEqual([
+      { role: "user", content: "go" },
+      tagged,
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ]);
+  });
+
+  it("keeps delivered input when a failure hook retries with fresh options", async () => {
+    const { checkpointer, tools, pending, committed } = await setup();
+    let calls = 0;
+    const replies = scriptedModel([[echoCall("c1")], [{ type: "text", text: "done" }]]);
+    const model = new MockLanguageModelV3({
+      doGenerate: async (request) => {
+        calls += 1;
+        if (calls === 2) throw new Error("socket hang up");
+        return replies.model.doGenerate(request);
+      },
+    });
+    const pendingOptions = {
+      pendingUserInput: async () => [...pending],
+      // The host drops what it was told about.
+      onPendingUserInputCommitted: async (ids: string[], commit: PendingUserInputCommit) => {
+        committed(ids, commit);
+        pending.splice(0, pending.length, ...pending.filter((item) => !ids.includes(item.id)));
+      },
+    };
+    // Rebuilt from the host's own request, without the SDK's internal fields.
+    const retryWithFreshOptions = vi.fn(async () => ({
+      hookSpecificOutput: {
+        hookEventName: "PostGenerateFailure" as const,
+        retry: true,
+        retryDelayMs: 0,
+        updatedInput: { prompt: "go", threadId: "t1", ...pendingOptions },
+      },
+    }));
+
+    await createAgent({
+      model: model as LanguageModel,
+      tools,
+      checkpointer,
+      hooks: { PostGenerateFailure: [retryWithFreshOptions] },
+    }).generate({ prompt: "go", threadId: "t1", ...pendingOptions });
+
+    expect(retryWithFreshOptions).toHaveBeenCalledTimes(1);
+    expect(committed).toHaveBeenCalledTimes(1);
+    const checkpoint = await checkpointer.load("t1");
+    expect(checkpoint?.messages).toEqual([
+      { role: "user", content: "go" },
+      tagged,
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ]);
+  });
+
+  it("streamDataResponse() delivers it in a background follow-up turn", async () => {
+    const { tools, options, committed } = await setup();
+    const { createBackgroundTask } = await import("../src/task-store/types.js");
+    const { model, requests } = scriptedModel([
+      [{ type: "text", text: "initial" }],
+      [echoCall("c1")],
+      [{ type: "text", text: "done" }],
+    ]);
+    const agent = createAgent({ model, tools });
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-follow-up",
+        subagentType: "researcher",
+        description: "Summarise findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    const response = await agent.streamDataResponse({ prompt: "go", ...options });
+    await response.text();
+
+    expect(requests).toHaveLength(3);
+    expect(requests[2]!.prompt.at(-1)?.role).toBe("user");
+    expect(JSON.stringify(requests[2]!.prompt.at(-1))).toContain("also check Q3");
+    expect(committed).toHaveBeenCalledWith(["d1"], { alreadyCommitted: [] });
+  });
+
+  it("changes nothing when the options are absent", async () => {
+    mockGenerateOnce();
+    await createAgent({ model: createMockModel() }).generate({ prompt: "go" });
+    expect(lastGenerateArgs().prepareStep).toBeUndefined();
   });
 });

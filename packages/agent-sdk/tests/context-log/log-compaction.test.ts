@@ -826,6 +826,78 @@ describe("log-mode compaction", () => {
   });
 });
 
+describe("log-mode compaction with pending user input", () => {
+  it("keeps input taken in a compacting step after the compacted context", async () => {
+    const store = new MemoryContextLogStore();
+    const { model, requests } = createScriptedModel([thinkThenEcho("c1"), text("done")]);
+    // The first request (core, settings, prompt) stays under the limit; the
+    // second (plus the call, its result and the new input) compacts.
+    const manager = createCompactingManager(4, { keepMessageCount: 1 });
+    const committed = vi.fn();
+
+    await logAgent(model, store, {
+      tools: echoTools,
+      contextManager: manager.contextManager,
+    }).generate({
+      prompt: "go",
+      threadId: THREAD,
+      pendingUserInput: async () => [
+        { id: "d1", message: { role: "user", content: "steered message" } },
+      ],
+      onPendingUserInputCommitted: committed,
+    });
+
+    expect(manager.requests).toHaveLength(1);
+    expect(JSON.stringify(manager.requests[0]!.messages)).not.toContain("steered message");
+    const head = await store.readHead(STREAM);
+    expect((await store.readVersion(head!.versionId)).reason).toBe("compaction");
+    const path = await readPath(store);
+    expect(path[0]!.kind === "assistant" && path[0]!.message.content).toContain("summary 1");
+    expect(path.at(-2)).toMatchObject({ kind: "user", key: "steer:d1" });
+    expect(path.at(-1)!.kind).toBe("assistant");
+    // Sent last, after the compacted context.
+    const last = requests[1]!.prompt.at(-1);
+    expect(last).toMatchObject({ role: "user" });
+    expect(JSON.stringify(last)).toContain("steered message");
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(committed).toHaveBeenCalledWith(["d1"], { alreadyCommitted: [] });
+  });
+  it("does not deliver an already-committed id again once a compaction summarised it", async () => {
+    const store = new MemoryContextLogStore();
+    // A host that never processes the commit and keeps offering the message.
+    const pendingUserInput = async () => [
+      { id: "d1", message: { role: "user" as const, content: "steered message" } },
+    ];
+    // Runs up to 9 view messages without compacting: the second run's first
+    // continuation (10) compacts and summarises the committed message away.
+    const manager = createCompactingManager(9, { keepMessageCount: 1 });
+    const first = createScriptedModel([thinkThenEcho("c1"), text("done")]);
+    await logAgent(first.model, store, {
+      tools: echoTools,
+      contextManager: manager.contextManager,
+    }).generate({ prompt: "go", threadId: THREAD, pendingUserInput });
+    expect(manager.requests).toHaveLength(0);
+
+    const committed = vi.fn();
+    const second = createScriptedModel([thinkThenEcho("c2"), thinkThenEcho("c3"), text("end")]);
+    await logAgent(second.model, store, {
+      tools: echoTools,
+      contextManager: manager.contextManager,
+    }).generate({
+      prompt: "again",
+      threadId: THREAD,
+      pendingUserInput,
+      onPendingUserInputCommitted: committed,
+    });
+
+    expect(manager.requests).toHaveLength(1);
+    expect(JSON.stringify(second.requests[2]!.prompt)).not.toContain("steered message");
+    expect((await readPath(store)).some((entry) => entry.key === "steer:d1")).toBe(false);
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(committed).toHaveBeenCalledWith([], { alreadyCommitted: ["d1"] });
+  });
+});
+
 describe("log-mode compaction with a declared transition", () => {
   it("replaces a core_policy_change with one compaction under the new core and contract", async () => {
     const store = new MemoryContextLogStore();

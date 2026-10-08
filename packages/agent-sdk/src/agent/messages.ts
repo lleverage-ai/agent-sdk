@@ -80,6 +80,10 @@ export function appendResponseMessages(
  * messages; fall back to `fallbackResponseMessages` (the top-level
  * `response.messages`) and finally to the assistant text.
  *
+ * `deliveredBefore` holds pending user input delivered between steps, by the
+ * number of the step it was sent with: it is placed before that step's
+ * response messages, after the previous step's tool results.
+ *
  * @internal
  */
 export function buildMessagesFromStepResponses(
@@ -87,10 +91,12 @@ export function buildMessagesFromStepResponses(
   steps: Array<{ text?: string; response?: { messages?: unknown[] } }>,
   fallbackAssistantText?: string,
   fallbackResponseMessages?: unknown[],
+  deliveredBefore?: ReadonlyMap<number, readonly ModelMessage[]>,
 ): ModelMessage[] {
-  const stepResponseMessages = steps.flatMap((step) =>
-    responseMessagesToModelMessages(step.response?.messages),
-  );
+  const stepResponseMessages = steps.flatMap((step, index) => [
+    ...(index > 0 ? (deliveredBefore?.get(index) ?? []) : []),
+    ...responseMessagesToModelMessages(step.response?.messages),
+  ]);
   if (stepResponseMessages.length > 0) {
     return [...baseMessages, ...stepResponseMessages];
   }
@@ -151,6 +157,11 @@ export interface StreamingCompactionState {
     steps: Array<{ text?: string; response?: { messages?: unknown[] } }>,
     fallbackAssistantText?: string,
   ): ModelMessage[];
+  /**
+   * Append pending user input delivered before the next step, after the
+   * previous step's response messages.
+   */
+  appendInput(messages: readonly ModelMessage[]): void;
   /** A copy of the current transcript. */
   readonly messages: ModelMessage[];
 }
@@ -365,6 +376,9 @@ export function createMessageRuntime(deps: MessageRuntimeDeps): MessageRuntime {
           return [...currentMessages];
         }
         return buildMessagesFromStepResponses(currentMessages, steps, fallbackAssistantText);
+      },
+      appendInput(messages: readonly ModelMessage[]): void {
+        currentMessages = [...currentMessages, ...messages];
       },
       get messages(): ModelMessage[] {
         return [...currentMessages];

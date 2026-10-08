@@ -50,6 +50,12 @@ const result = await agent.generate({
   threadId?: string,
   tools?: Record<string, Tool>,
   shouldStopAfterStep?: () => boolean, // cooperative pause at a step boundary
+  // Experimental: user messages that arrive while the run works
+  pendingUserInput?: () => Promise<PendingUserMessage[]>,
+  onPendingUserInputCommitted?: (
+    ids: string[],
+    commit: { alreadyCommitted: string[] },
+  ) => void | Promise<void>,
 });
 // Every mode saves the thread's checkpoint once, when the call returns normally.
 
@@ -70,6 +76,60 @@ const stream = await agent.streamRaw(options);
 agent.invalidateCheckpoint(threadId);
 
 ```
+
+### Pending user input between steps
+
+`pendingUserInput` lets a host hand a running generation the messages a user
+sent while it works (`generate()`, `stream()`, `streamRaw()` and
+`streamDataResponse()`):
+
+```typescript
+interface PendingUserMessage {
+  id: string;               // stable host id, for example the queued draft's id
+  message: UserModelMessage; // text, image and file parts
+}
+
+interface PendingUserInputCommit {
+  alreadyCommitted: string[]; // skipped: an earlier attempt or run committed them
+}
+
+const stream = await agent.stream({
+  threadId,
+  prompt,
+  pendingUserInput: async () => queue.pending(),
+  onPendingUserInputCommitted: async (ids, { alreadyCommitted }) => {
+    await queue.markDelivered(ids); // delivered by this run, in order
+    await queue.release(alreadyCommitted); // already in the conversation
+  },
+});
+```
+
+- It is read before every tool-loop step after the first, once all of the
+  previous step's tool results are in. The messages are appended after those
+  results, as user messages, and stay in every later step.
+- It is never read for the first step or for a provider retry: a retry sends
+  exactly the request it retries.
+- Return everything still pending. An id the SDK already delivered, or one
+  already in the conversation (a resumed run), is not delivered again. Ids
+  skipped because they were already in the conversation are reported in
+  `commit.alreadyCommitted`, in a call of their own with `ids` empty, when
+  they are read.
+- A run that ends without another step doesn't read it, so input that arrives
+  during the final reply stays with the host (for example for a follow-up run).
+- Context log mode: each message is screened by the PreGenerate hooks and
+  committed as a `user` entry keyed `steer:<id>` before the request carrying
+  it is sent; a compaction in the same step keeps it after the compacted
+  context. `onPendingUserInputCommitted` runs after that commit and is
+  awaited before the request is dispatched. A later run recognises an id
+  while its entry is on the path; once a compaction has summarised it, the
+  host must already have processed the commit.
+- Outside log mode: the message is appended to the tracked transcript (so the
+  checkpoint saved at the end of the run includes it), tagged with its id under
+  `providerOptions.agentSdk.pendingUserInputId`, and the callback runs after
+  the append, awaited before the model call. A retry or fallback attempt of
+  the run starts again from the checkpoint with the delivered messages
+  appended. PreGenerate hooks don't see it.
+- The callback reports each id once per attempt; errors it throws are ignored.
 
 ## Tools
 

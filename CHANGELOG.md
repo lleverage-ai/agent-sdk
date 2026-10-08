@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `GenerateOptions.pendingUserInput` and
+  `GenerateOptions.onPendingUserInputCommitted` (experimental, LLE-14609)
+  deliver user messages that arrive while a run works to the running turn,
+  between tool-loop steps: after all of a step's tool results and before the
+  next model call, as real user messages with their text, image and file
+  parts. They are read only in `prepareStep` for steps after the first, never
+  for a provider retry. In context log mode each message is screened by the
+  PreGenerate hooks and committed as a `user` entry keyed `steer:<id>` by the
+  next call's prepare (after a compaction's entries when the step also
+  compacts); an id already on the path is not delivered again. Outside log
+  mode the message is appended to the tracked transcript and checkpoint,
+  tagged with `providerOptions.agentSdk.pendingUserInputId`, which a resumed
+  run uses to skip it. The callback reports each delivered id once, after the
+  commit or append and before the model call that carries it, and reports
+  ids skipped as already in the conversation in `commit.alreadyCommitted`.
+  Works with `generate()`, `stream()`, `streamRaw()` and
+  `streamDataResponse()`; nothing changes when the options are absent.
+- `PendingUserMessage` and `PendingUserInputCommit` type exports.
+
 ## [1.0.0-rc.17] - 2026-10-06
 
 Seventeenth release candidate for 1.0.0. A log-mode subagent can be a fork
