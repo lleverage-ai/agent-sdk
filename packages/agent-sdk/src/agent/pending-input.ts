@@ -87,6 +87,9 @@ export function createPendingInputSource(
         if (seen.has(id) || taken.has(id)) return;
         seen.add(id);
         if (isDelivered(id)) {
+          // Never fresh later in the attempt, even once a compaction took
+          // its entry off the path.
+          taken.add(id);
           if (!reported.has(id)) skipped.push(id);
           return;
         }
@@ -185,13 +188,46 @@ export interface TranscriptPendingInput {
 }
 
 /**
+ * Messages a run delivered outside log mode, shared by its attempts: a
+ * retry or fallback attempt starts from the checkpoint again, so it
+ * re-appends them (see {@link withDeliveredInput}) instead of losing input
+ * the host was already told about.
+ *
+ * @internal
+ */
+export interface TranscriptPendingInputRun {
+  delivered: UserModelMessage[];
+}
+
+/**
+ * `messages` followed by the run's delivered input that they do not hold
+ * yet (by id), for an attempt after the first.
+ *
+ * @internal
+ */
+export function withDeliveredInput(
+  messages: ModelMessage[],
+  run: TranscriptPendingInputRun | undefined,
+): ModelMessage[] {
+  if (!run || run.delivered.length === 0) return messages;
+  const present = new Set(messages.flatMap((message) => deliveredInputId(message) ?? []));
+  const missing = run.delivered.filter((message) => {
+    const id = deliveredInputId(message);
+    return id === undefined || !present.has(id);
+  });
+  return missing.length > 0 ? [...messages, ...missing] : messages;
+}
+
+/**
  * Creates the attempt's transcript pending input, or `undefined` when the
- * generation has no `pendingUserInput`.
+ * generation has no `pendingUserInput`. Delivered messages are also recorded
+ * in `run`, when given.
  *
  * @internal
  */
 export function createTranscriptPendingInput(
   options: Pick<GenerateOptions, "pendingUserInput" | "onPendingUserInputCommitted">,
+  run?: TranscriptPendingInputRun,
 ): TranscriptPendingInput | undefined {
   const source = createPendingInputSource(options);
   if (!source) return undefined;
@@ -211,6 +247,7 @@ export function createTranscriptPendingInput(
     async delivered(stepNumber, messages) {
       if (messages.length === 0) return;
       byStep.set(stepNumber, [...(byStep.get(stepNumber) ?? []), ...messages]);
+      run?.delivered.push(...messages);
       const ids = messages.flatMap((message) => deliveredInputId(message) ?? []);
       await source.committed(ids);
     },

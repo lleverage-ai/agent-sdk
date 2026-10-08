@@ -107,7 +107,11 @@ import {
 import { INTERRUPT_PENDING_REASON } from "./log-interrupts.js";
 import type { MessageRuntime, StreamingCompactionState } from "./messages.js";
 import { projectMessagesForModel, resolveModelInputCapabilities } from "./model-capabilities.js";
-import { createTranscriptPendingInput, type TranscriptPendingInput } from "./pending-input.js";
+import {
+  createTranscriptPendingInput,
+  type TranscriptPendingInput,
+  withDeliveredInput,
+} from "./pending-input.js";
 import {
   buildStopConditions,
   type GenerateSignalState,
@@ -706,7 +710,12 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     }
     // A snapshot belongs to one run. Follow-up generations spread the previous
     // run's options after its checkpoint was saved, so never reuse one.
-    const { _checkpointSnapshot: _previousRunSnapshot, ...freshOptions } = requestedOptions;
+    // Nor the previous run's delivered pending input.
+    const {
+      _checkpointSnapshot: _previousRunSnapshot,
+      _pendingInputRun: _previousPendingInput,
+      ...freshOptions
+    } = requestedOptions;
     // One checkpoint load serves the fallback decision, the run id and (via
     // `_checkpointSnapshot`) message assembly, so they cannot disagree.
     const { options: genOptions, loaded } = await resolveHistoryFallback(freshOptions);
@@ -726,6 +735,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         ...preGenResult.effectiveOptions,
         _runId: runId,
         ...(loaded && { _checkpointSnapshot: loaded }),
+        // Fresh for every run, including a follow-up that spreads the
+        // previous run's options; shared by the run's retries.
+        ...(preGenResult.effectiveOptions.pendingUserInput && {
+          _pendingInputRun: { delivered: [] },
+        }),
       },
       cachedResult: preGenResult.cachedResult,
     };
@@ -815,9 +829,15 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     effectiveGenOptions: GenerateOptions,
     currentModel: LanguageModel,
   ): Promise<AttemptContext> {
-    const { messages, checkpoint, logPlan, logCall } = logContext
+    const built = logContext
       ? await buildLogModeMessages(effectiveGenOptions, currentModel, logContext)
       : { ...(await buildMessages(effectiveGenOptions)), logPlan: undefined, logCall: undefined };
+    const { checkpoint, logPlan, logCall } = built;
+    // Outside log mode, a retry or fallback attempt starts from the
+    // checkpoint again: keep the input an earlier attempt delivered.
+    const messages = logPlan
+      ? built.messages
+      : withDeliveredInput(built.messages, effectiveGenOptions._pendingInputRun);
     const maxSteps = options.maxSteps ?? 10;
     const startStep = checkpoint?.step ?? 0;
     const checkpointThreadId = effectiveGenOptions.threadId;
@@ -839,7 +859,9 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     });
 
     // Log mode delivers pending input through the boundary instead.
-    const pendingInput = logPlan ? undefined : createTranscriptPendingInput(attemptOptions);
+    const pendingInput = logPlan
+      ? undefined
+      : createTranscriptPendingInput(attemptOptions, attemptOptions._pendingInputRun);
 
     return {
       effectiveGenOptions: attemptOptions,
@@ -940,9 +962,19 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
     streamingCompaction: StreamingCompactionState,
   ): StreamingCompactionState["prepareStep"] | LogModePrepareStep {
     if (attempt.logCall) return attempt.logCall.prepareStep;
-    const pendingInput = attempt.pendingInput;
+    return streamingPrepareStep(streamingCompaction, attempt.pendingInput);
+  }
+
+  /**
+   * A streaming tool loop's `prepareStep` outside log mode: the compaction's
+   * own, then any pending user input, appended to the tracked transcript.
+   */
+  function streamingPrepareStep(
+    streamingCompaction: StreamingCompactionState,
+    pendingInput: TranscriptPendingInput | undefined,
+  ): StreamingCompactionState["prepareStep"] {
     if (!pendingInput) return streamingCompaction.prepareStep;
-    return async (step: { messages: ModelMessage[]; stepNumber: number }) => {
+    return async (step) => {
       const compacted = await streamingCompaction.prepareStep(step);
       if (step.stepNumber === 0) return compacted;
       // Taken after any compaction, so it lands after the compacted context.
@@ -1410,7 +1442,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
             activeFollowUpTools as ToolSet,
             toolExecutionContext,
           ),
-          prepareStep: compaction.prepareStep,
+          // The follow-up's transcript holds what the run delivered so far.
+          prepareStep: streamingPrepareStep(
+            compaction,
+            createTranscriptPendingInput(requestOptions),
+          ),
           onStepFinish: (stepResult) => {
             compaction.appendStep(stepResult);
           },

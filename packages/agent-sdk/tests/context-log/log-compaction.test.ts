@@ -862,6 +862,40 @@ describe("log-mode compaction with pending user input", () => {
     expect(committed).toHaveBeenCalledTimes(1);
     expect(committed).toHaveBeenCalledWith(["d1"], { alreadyCommitted: [] });
   });
+  it("does not deliver an already-committed id again once a compaction summarised it", async () => {
+    const store = new MemoryContextLogStore();
+    // A host that never processes the commit and keeps offering the message.
+    const pendingUserInput = async () => [
+      { id: "d1", message: { role: "user" as const, content: "steered message" } },
+    ];
+    // Runs up to 9 view messages without compacting: the second run's first
+    // continuation (10) compacts and summarises the committed message away.
+    const manager = createCompactingManager(9, { keepMessageCount: 1 });
+    const first = createScriptedModel([thinkThenEcho("c1"), text("done")]);
+    await logAgent(first.model, store, {
+      tools: echoTools,
+      contextManager: manager.contextManager,
+    }).generate({ prompt: "go", threadId: THREAD, pendingUserInput });
+    expect(manager.requests).toHaveLength(0);
+
+    const committed = vi.fn();
+    const second = createScriptedModel([thinkThenEcho("c2"), thinkThenEcho("c3"), text("end")]);
+    await logAgent(second.model, store, {
+      tools: echoTools,
+      contextManager: manager.contextManager,
+    }).generate({
+      prompt: "again",
+      threadId: THREAD,
+      pendingUserInput,
+      onPendingUserInputCommitted: committed,
+    });
+
+    expect(manager.requests).toHaveLength(1);
+    expect(JSON.stringify(second.requests[2]!.prompt)).not.toContain("steered message");
+    expect((await readPath(store)).some((entry) => entry.key === "steer:d1")).toBe(false);
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(committed).toHaveBeenCalledWith([], { alreadyCommitted: ["d1"] });
+  });
 });
 
 describe("log-mode compaction with a declared transition", () => {

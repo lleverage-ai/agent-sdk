@@ -120,11 +120,15 @@ const stream = await agent.stream({
   committed as a `user` entry keyed `steer:<id>` before the request carrying
   it is sent; a compaction in the same step keeps it after the compacted
   context. `onPendingUserInputCommitted` runs after that commit and is
-  awaited before the request is dispatched.
+  awaited before the request is dispatched. A later run recognises an id
+  while its entry is on the path; once a compaction has summarised it, the
+  host must already have processed the commit.
 - Outside log mode: the message is appended to the tracked transcript (so the
   checkpoint saved at the end of the run includes it), tagged with its id under
   `providerOptions.agentSdk.pendingUserInputId`, and the callback runs after
-  the append, awaited before the model call. PreGenerate hooks don't see it.
+  the append, awaited before the model call. A retry or fallback attempt of
+  the run starts again from the checkpoint with the delivered messages
+  appended. PreGenerate hooks don't see it.
 - The callback reports each id once per attempt; errors it throws are ignored.
 
 ## Tools

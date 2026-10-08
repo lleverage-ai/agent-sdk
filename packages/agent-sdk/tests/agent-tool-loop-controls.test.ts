@@ -15,7 +15,14 @@ import type {
   LanguageModelV3Content,
   LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
-import { jsonSchema, type LanguageModel, NoSuchToolError, type ToolSet, tool } from "ai";
+import {
+  APICallError,
+  jsonSchema,
+  type LanguageModel,
+  NoSuchToolError,
+  type ToolSet,
+  tool,
+} from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
@@ -819,6 +826,90 @@ describe("pending user input between steps (outside log mode)", () => {
     expect(checkpoint?.messages.filter((message) => message.role === "user")).toHaveLength(3);
     expect(committed).toHaveBeenCalledTimes(2);
     expect(committed).toHaveBeenLastCalledWith([], { alreadyCommitted: ["d1"] });
+  });
+
+  it("keeps delivered input in a fallback attempt after the host dropped it", async () => {
+    const { checkpointer, tools, pending, committed } = await setup();
+    const primary = scriptedModel([[echoCall("c1")]]);
+    const fail = () => {
+      throw new APICallError({
+        message: "overloaded",
+        url: "https://provider.test",
+        requestBodyValues: {},
+        statusCode: 529,
+        // Retry at once instead of after the AI SDK's real-time backoff.
+        responseHeaders: { "retry-after-ms": "0" },
+        isRetryable: true,
+      });
+    };
+    let calls = 0;
+    const failing = new MockLanguageModelV3({
+      doGenerate: async (request) => {
+        calls += 1;
+        if (calls > 1) fail();
+        return primary.model.doGenerate(request);
+      },
+    });
+    const fallback = scriptedModel([[{ type: "text", text: "done" }]]);
+
+    await createAgent({
+      model: failing as LanguageModel,
+      fallbackModel: fallback.model,
+      tools,
+      checkpointer,
+    }).generate({
+      prompt: "go",
+      threadId: "t1",
+      pendingUserInput: async () => [...pending],
+      // The host drops what it was told about.
+      onPendingUserInputCommitted: async (ids, commit) => {
+        committed(ids, commit);
+        pending.splice(0, pending.length, ...pending.filter((item) => !ids.includes(item.id)));
+      },
+    });
+
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(fallback.requests[0]!.prompt.map((message) => message.role)).toEqual([
+      "system",
+      "user",
+      "user",
+    ]);
+    expect(JSON.stringify(fallback.requests[0]!.prompt[2])).toContain("also check Q3");
+    const checkpoint = await checkpointer.load("t1");
+    expect(checkpoint?.messages).toEqual([
+      { role: "user", content: "go" },
+      tagged,
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ]);
+  });
+
+  it("streamDataResponse() delivers it in a background follow-up turn", async () => {
+    const { tools, options, committed } = await setup();
+    const { createBackgroundTask } = await import("../src/task-store/types.js");
+    const { model, requests } = scriptedModel([
+      [{ type: "text", text: "initial" }],
+      [echoCall("c1")],
+      [{ type: "text", text: "done" }],
+    ]);
+    const agent = createAgent({ model, tools });
+    agent.taskManager.registerTask(
+      createBackgroundTask({
+        id: "task-follow-up",
+        subagentType: "researcher",
+        description: "Summarise findings",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        result: "Task complete",
+      }),
+    );
+
+    const response = await agent.streamDataResponse({ prompt: "go", ...options });
+    await response.text();
+
+    expect(requests).toHaveLength(3);
+    expect(requests[2]!.prompt.at(-1)?.role).toBe("user");
+    expect(JSON.stringify(requests[2]!.prompt.at(-1))).toContain("also check Q3");
+    expect(committed).toHaveBeenCalledWith(["d1"], { alreadyCommitted: [] });
   });
 
   it("changes nothing when the options are absent", async () => {

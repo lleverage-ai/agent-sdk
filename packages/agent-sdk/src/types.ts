@@ -2436,11 +2436,16 @@ export interface GenerateOptions {
    * a `user` entry keyed `steer:<id>` before the request that carries it is
    * sent; a compaction in the same step keeps it after the compacted
    * context. Messages must be plain JSON, as for {@link GenerateOptions.input}.
+   * A later run recognises an id while its entry is on the path; once a
+   * compaction has summarised it, the host must already have processed the
+   * commit.
    *
    * Outside log mode the message is appended to the tracked transcript, so
    * the checkpoint saved at the end of the run includes it, with its id under
    * `providerOptions.agentSdk.pendingUserInputId`, which providers ignore;
-   * that is how a resumed run recognises it. PreGenerate hooks do not see it.
+   * that is how a resumed run recognises it. A retry or fallback attempt of
+   * the same run starts again from the checkpoint with the messages already
+   * delivered appended. PreGenerate hooks do not see it.
    *
    * @experimental
    *
@@ -2681,6 +2686,14 @@ export interface GenerateOptions {
     lastInputDigest?: string;
     inputCommitted?: boolean;
   };
+
+  /**
+   * Internal, outside context log mode: pending user input the run
+   * delivered, shared by its attempts, so a retry or fallback attempt that
+   * starts again from the checkpoint keeps it. Fresh for every run.
+   * @internal
+   */
+  _pendingInputRun?: { delivered: UserModelMessage[] };
 
   /**
    * Internal, context log mode only: a delegation's claim on its child
