@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.18] - 2026-10-08
+
+Eighteenth release candidate for 1.0.0. A host can deliver user messages
+that arrive while a run works to the running turn, between tool-loop steps
+(`pendingUserInput`). Opt-in; nothing changes without the options.
+
 ### Added
 
 - `GenerateOptions.pendingUserInput` and
@@ -1738,7 +1744,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.17...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.18...HEAD
+[1.0.0-rc.18]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.17...agent-sdk@1.0.0-rc.18
 [1.0.0-rc.17]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.16...agent-sdk@1.0.0-rc.17
 [1.0.0-rc.16]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.15...agent-sdk@1.0.0-rc.16
 [1.0.0-rc.15]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.14...agent-sdk@1.0.0-rc.15
