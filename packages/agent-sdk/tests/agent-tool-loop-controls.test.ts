@@ -27,7 +27,7 @@ import { MockLanguageModelV3 } from "ai/test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { createAgent, definePlugin } from "../src/index.js";
-import type { PendingUserMessage, StreamPart } from "../src/types.js";
+import type { PendingUserInputCommit, PendingUserMessage, StreamPart } from "../src/types.js";
 import { createMockModel, resetMocks } from "./setup.js";
 
 vi.mock("ai", async (importOriginal) => {
@@ -875,6 +875,52 @@ describe("pending user input between steps (outside log mode)", () => {
       "user",
     ]);
     expect(JSON.stringify(fallback.requests[0]!.prompt[2])).toContain("also check Q3");
+    const checkpoint = await checkpointer.load("t1");
+    expect(checkpoint?.messages).toEqual([
+      { role: "user", content: "go" },
+      tagged,
+      { role: "assistant", content: [{ type: "text", text: "done" }] },
+    ]);
+  });
+
+  it("keeps delivered input when a failure hook retries with fresh options", async () => {
+    const { checkpointer, tools, pending, committed } = await setup();
+    let calls = 0;
+    const replies = scriptedModel([[echoCall("c1")], [{ type: "text", text: "done" }]]);
+    const model = new MockLanguageModelV3({
+      doGenerate: async (request) => {
+        calls += 1;
+        if (calls === 2) throw new Error("socket hang up");
+        return replies.model.doGenerate(request);
+      },
+    });
+    const pendingOptions = {
+      pendingUserInput: async () => [...pending],
+      // The host drops what it was told about.
+      onPendingUserInputCommitted: async (ids: string[], commit: PendingUserInputCommit) => {
+        committed(ids, commit);
+        pending.splice(0, pending.length, ...pending.filter((item) => !ids.includes(item.id)));
+      },
+    };
+    // Rebuilt from the host's own request, without the SDK's internal fields.
+    const retryWithFreshOptions = vi.fn(async () => ({
+      hookSpecificOutput: {
+        hookEventName: "PostGenerateFailure" as const,
+        retry: true,
+        retryDelayMs: 0,
+        updatedInput: { prompt: "go", threadId: "t1", ...pendingOptions },
+      },
+    }));
+
+    await createAgent({
+      model: model as LanguageModel,
+      tools,
+      checkpointer,
+      hooks: { PostGenerateFailure: [retryWithFreshOptions] },
+    }).generate({ prompt: "go", threadId: "t1", ...pendingOptions });
+
+    expect(retryWithFreshOptions).toHaveBeenCalledTimes(1);
+    expect(committed).toHaveBeenCalledTimes(1);
     const checkpoint = await checkpointer.load("t1");
     expect(checkpoint?.messages).toEqual([
       { role: "user", content: "go" },

@@ -1602,6 +1602,11 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
           ...(effectiveGenOptions._contextClaim && {
             _contextClaim: effectiveGenOptions._contextClaim,
           }),
+          // Outside log mode: the input the run already delivered is the
+          // run's, whatever options a hook or recovery handler returned.
+          ...(effectiveGenOptions._pendingInputRun && {
+            _pendingInputRun: effectiveGenOptions._pendingInputRun,
+          }),
         };
       }
       // Update retry state

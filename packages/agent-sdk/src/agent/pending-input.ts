@@ -235,19 +235,24 @@ export function createTranscriptPendingInput(
 
   return {
     async take(_stepNumber, transcript) {
-      const inTranscript = new Set<string>();
-      for (const message of transcript) {
+      // In the conversation: the transcript's tagged messages, and what the
+      // run delivered, which a compaction may have summarised away since.
+      const inConversation = new Set<string>();
+      for (const message of [...transcript, ...(run?.delivered ?? [])]) {
         const id = deliveredInputId(message);
-        if (id !== undefined) inTranscript.add(id);
+        if (id !== undefined) inConversation.add(id);
       }
-      const { fresh, skipped } = await source.take((id) => inTranscript.has(id));
+      const { fresh, skipped } = await source.take((id) => inConversation.has(id));
       if (skipped.length > 0) await source.committed(skipped, true);
       return fresh.map(tagDeliveredInput);
     },
     async delivered(stepNumber, messages) {
       if (messages.length === 0) return;
       byStep.set(stepNumber, [...(byStep.get(stepNumber) ?? []), ...messages]);
-      run?.delivered.push(...messages);
+      if (run) {
+        const known = new Set(run.delivered.map(deliveredInputId));
+        run.delivered.push(...messages.filter((message) => !known.has(deliveredInputId(message))));
+      }
       const ids = messages.flatMap((message) => deliveredInputId(message) ?? []);
       await source.committed(ids);
     },
