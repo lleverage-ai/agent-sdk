@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `search_tools` with `includeSchema` (proxy mode) shows each parameter's
+  shape on its `Parameters:` line (LLE-14640): enum values inline
+  (`valueType: "ENUM"|"NUMBER"`), `const` as its literal, nullable fields as
+  `T|null`, array item types (`workflowIds?: string[]`,
+  `channels: ("email"|"slack")[]`) and one level of nested object keys
+  (`filters?: { workflowId?: string, status?: "OPEN"|"CLOSED" }`). Each
+  property is capped at 300 bytes and the line at 600; over either, a
+  property prints its bare type (`object`, `array`) as before, widest first,
+  so large unions stay short.
+
 ## [1.0.0-rc.18] - 2026-10-08
 
 Eighteenth release candidate for 1.0.0. A host can deliver user messages

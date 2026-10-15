@@ -208,25 +208,149 @@ function formatToolResult(t: MCPToolMetadata, manager: MCPManager, includeSchema
 }
 
 /**
- * Format a JSON Schema as a compact parameter description.
+ * Maximum UTF-8 bytes for one property in a `Parameters:` line. A property
+ * whose full shape is longer falls back to its bare type (`object`, `array`).
+ * @internal
+ */
+const MAX_PROPERTY_BYTES = 300;
+
+/**
+ * Maximum UTF-8 bytes for one tool's whole `Parameters:` line. Over it, the
+ * widest properties fall back to their bare type until the line fits.
+ * @internal
+ */
+const MAX_PARAMETERS_BYTES = 600;
+
+/**
+ * Object nesting whose keys are shown: the top-level properties are depth 0,
+ * so objects among them list their keys and objects inside those print as
+ * `object`.
+ * @internal
+ */
+const MAX_OBJECT_DEPTH = 1;
+
+const utf8 = new TextEncoder();
+
+function byteLength(text: string): number {
+  return utf8.encode(text).length;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Format a JSON Schema as a compact parameter description, such as
+ * `{ valueType: "ENUM"|"NUMBER", unit?: string, ids?: string[] }`.
+ *
+ * Enum values and `const` print as literals, nullable fields as `T|null`,
+ * arrays with their item type and objects with one level of keys. Each
+ * property stays within {@link MAX_PROPERTY_BYTES} and the line within
+ * {@link MAX_PARAMETERS_BYTES}; over either, a property prints its bare type.
  * @internal
  */
 function formatSchemaCompact(schema: unknown): string {
-  if (!schema || typeof schema !== "object") return "";
-  const s = schema as Record<string, unknown>;
-  const properties = s.properties as Record<string, Record<string, unknown>> | undefined;
-  if (!properties || Object.keys(properties).length === 0) {
-    return "";
+  if (!isRecord(schema) || !isRecord(schema.properties)) return "";
+  const properties = Object.entries(schema.properties);
+  if (properties.length === 0) return "";
+
+  const required = requiredKeys(schema);
+  const entries = properties.map(([name, prop]) => {
+    const key = `${name}${required.has(name) ? "" : "?"}`;
+    const bare = `${key}: ${formatBareType(prop)}`;
+    const full = `${key}: ${formatType(prop, 0)}`;
+    return { bare, text: byteLength(full) <= MAX_PROPERTY_BYTES ? full : bare };
+  });
+
+  const render = () => `{ ${entries.map((entry) => entry.text).join(", ")} }`;
+  let line = render();
+  while (byteLength(line) > MAX_PARAMETERS_BYTES) {
+    let widest: (typeof entries)[number] | undefined;
+    let saving = 0;
+    for (const entry of entries) {
+      const entrySaving = byteLength(entry.text) - byteLength(entry.bare);
+      if (entrySaving > saving) {
+        saving = entrySaving;
+        widest = entry;
+      }
+    }
+    if (!widest) break;
+    widest.text = widest.bare;
+    line = render();
   }
+  return line;
+}
 
-  const required = new Set((s.required as string[]) ?? []);
-  const parts: string[] = [];
+function requiredKeys(schema: Record<string, unknown>): Set<string> {
+  return new Set(
+    Array.isArray(schema.required)
+      ? schema.required.filter((key): key is string => typeof key === "string")
+      : [],
+  );
+}
 
-  for (const [name, prop] of Object.entries(properties)) {
-    const type = (prop.type as string) ?? "unknown";
-    const optional = required.has(name) ? "" : "?";
-    parts.push(`${name}${optional}: ${type}`);
+function typeNames(prop: Record<string, unknown>): string[] {
+  if (typeof prop.type === "string") return [prop.type];
+  if (Array.isArray(prop.type)) {
+    return prop.type.filter((name): name is string => typeof name === "string");
   }
+  return [];
+}
 
-  return `{ ${parts.join(", ")} }`;
+/** The type a property printed before shapes were shown: `object`, `string|null`. */
+function formatBareType(prop: unknown): string {
+  if (!isRecord(prop)) return "unknown";
+  const names = typeNames(prop);
+  return names.length > 0 ? names.join("|") : "unknown";
+}
+
+function formatType(prop: unknown, depth: number): string {
+  return formatTypeVariants(prop, depth).join("|");
+}
+
+/** The union members of a property's type, each printed on its own. */
+function formatTypeVariants(prop: unknown, depth: number): string[] {
+  if (!isRecord(prop)) return ["unknown"];
+  if ("const" in prop) return [formatLiteral(prop.const)];
+  if (Array.isArray(prop.enum) && prop.enum.length > 0) {
+    return unique(prop.enum.map(formatLiteral));
+  }
+  const variants = Array.isArray(prop.anyOf)
+    ? prop.anyOf
+    : Array.isArray(prop.oneOf)
+      ? prop.oneOf
+      : undefined;
+  if (variants && variants.length > 0) {
+    return unique(variants.flatMap((variant) => formatTypeVariants(variant, depth)));
+  }
+  const names = typeNames(prop);
+  if (names.length === 0) return ["unknown"];
+  return unique(names.map((name) => formatNamedType(name, prop, depth)));
+}
+
+function formatNamedType(name: string, prop: Record<string, unknown>, depth: number): string {
+  if (name === "array") {
+    if (!isRecord(prop.items)) return "array";
+    const items = formatTypeVariants(prop.items, depth);
+    return items.length > 1 ? `(${items.join("|")})[]` : `${items[0]}[]`;
+  }
+  if (name === "object") {
+    if (depth >= MAX_OBJECT_DEPTH || !isRecord(prop.properties)) return "object";
+    const properties = Object.entries(prop.properties);
+    if (properties.length === 0) return "object";
+    const required = requiredKeys(prop);
+    const keys = properties.map(
+      ([key, child]) => `${key}${required.has(key) ? "" : "?"}: ${formatType(child, depth + 1)}`,
+    );
+    return `{ ${keys.join(", ")} }`;
+  }
+  return name;
+}
+
+function formatLiteral(value: unknown): string {
+  return JSON.stringify(value) ?? "unknown";
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }
