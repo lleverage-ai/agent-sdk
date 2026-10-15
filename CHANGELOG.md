@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.19] - 2026-10-15
+
+Nineteenth release candidate for 1.0.0. In proxy mode, `search_tools`
+shows each parameter's enum values, array item types and nested object keys
+on its `Parameters:` line, so the model can call a tool correctly without
+guessing its input shape.
+
 ### Changed
 
 - `search_tools` with `includeSchema` (proxy mode) shows each parameter's
@@ -1758,7 +1765,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.18...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.19...HEAD
+[1.0.0-rc.19]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.18...agent-sdk@1.0.0-rc.19
 [1.0.0-rc.18]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.17...agent-sdk@1.0.0-rc.18
 [1.0.0-rc.17]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.16...agent-sdk@1.0.0-rc.17
 [1.0.0-rc.16]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.15...agent-sdk@1.0.0-rc.16
