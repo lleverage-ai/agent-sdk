@@ -151,7 +151,7 @@ describe("createSearchToolsTool", () => {
       });
 
       expect(await parametersFor(manager, "update-request-view")).toBe(
-        '{ viewId: string, filters?: { workflowId?: string, status?: "OPEN"|"CLOSED", range?: object } }',
+        '{ viewId: string, filters?: { workflowId?: string, status?: "OPEN"|"CLOSED", range?: {…} } }',
       );
     });
 
@@ -255,7 +255,7 @@ describe("createSearchToolsTool", () => {
       );
     });
 
-    it("falls back to the bare type for an oversized union (edit-workflow-draft)", async () => {
+    it("falls back to a marked bare type for an oversized union (edit-workflow-draft)", async () => {
       const operation = (op: string) =>
         z.object({
           op: z.literal(op),
@@ -286,7 +286,7 @@ describe("createSearchToolsTool", () => {
       });
 
       expect(await parametersFor(manager, "edit-workflow-draft")).toBe(
-        '{ workflowId: string, mode?: "draft"|"live", operations: array }',
+        '{ workflowId: string, mode?: "draft"|"live", operations: {…}[] }',
       );
     });
 
@@ -310,7 +310,7 @@ describe("createSearchToolsTool", () => {
       const line = await parametersFor(manager, "wide");
       expect(bytes(`Parameters: ${line}`)).toBeLessThanOrEqual(600);
       expect(line).toContain('small: "a"|"b"');
-      expect(line).toContain("second: string");
+      expect(line).toContain("second: string…");
       expect(line).toContain('first: "first_value_0"|');
     });
 
@@ -375,6 +375,304 @@ describe("createSearchToolsTool", () => {
       expect(await parametersFor(manager, "plain")).toBe(
         "{ id: string, count?: number, options?: object }",
       );
+    });
+  });
+
+  describe("path drill-down with includeSchema", () => {
+    const execOptions = {
+      toolCallId: "test",
+      messages: [],
+      abortSignal: undefined as unknown as AbortSignal,
+    };
+    const bytes = (text: string) => new TextEncoder().encode(text).length;
+
+    const ids = (description?: string) => {
+      const schema = z.array(z.string().min(1).max(200));
+      return (description ? schema.describe(description) : schema).optional();
+    };
+
+    // Modelled on lleverage's update-request-view input: 23 filter keys, too
+    // wide for the 300-byte property budget of the Parameters line.
+    const requestFilters = z
+      .object({
+        status: z
+          .array(z.enum(["PENDING", "COMPLETED", "CANCELLED", "SUPERSEDED", "FAILED"]))
+          .optional(),
+        type: z.array(z.enum(["APPROVAL", "INPUT"])).optional(),
+        workflowId: ids("Workflow ids: any workflow in the project"),
+        decision: ids("Recorded decision labels of resolved approvals"),
+        decisionPending: z
+          .boolean()
+          .optional()
+          .describe("Only approvals still awaiting a decision"),
+        titleContains: z.string().max(200).optional(),
+        titleNotContains: z.string().max(200).optional(),
+        assigneeId: ids('Assigned user ids; "me" is you'),
+        assigneeRoles: z.array(z.enum(["OWNER", "BUILDER", "OPERATOR", "MEMBER"])).optional(),
+        createdById: ids(),
+        mentionedId: ids('Users mentioned in a comment; "me" is you'),
+        personalStatus: z.enum(["PENDING", "MENTIONED", "RESPONDED"]).optional(),
+        hideResponded: z.boolean().optional(),
+        hideCompleted: z.boolean().optional(),
+        includeArchived: z.boolean().optional(),
+        dateRange: z
+          .object({
+            preset: z.enum(["last24h", "last7d", "last30d", "custom", "all"]).optional(),
+            startDate: z.string().optional(),
+            endDate: z.string().optional(),
+          })
+          .optional()
+          .describe("Created within"),
+        relatedTableId: z.string().max(200).optional(),
+        relatedRecordId: z.string().max(200).optional(),
+        relatedRecordFilters: z.string().max(4000).optional(),
+        advanced: z
+          .object({
+            logicalOperator: z.enum(["AND", "OR"]),
+            conditions: z
+              .array(
+                z.object({
+                  field: z.string().min(1).describe("status, type, title or metric:<metricId>"),
+                  operator: z.enum(["equals", "not_equals", "contains", "is_before", "is_after"]),
+                  value: z.unknown().optional(),
+                }),
+              )
+              .min(1)
+              .max(20),
+          })
+          .optional(),
+        metricFilters: z.record(z.string(), z.unknown()).optional(),
+        sortField: z
+          .string()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("createdAt, priority or slaDeadline"),
+        sortDirection: z.enum(["asc", "desc"]).optional(),
+      })
+      .describe("The view's filters");
+
+    const createManager = () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("lleverage", {
+        "update-request-view": tool({
+          description: "Updates a saved request view",
+          inputSchema: z.object({
+            viewId: z.string().min(1).describe("The saved view's id"),
+            title: z.string().min(1).max(100).optional(),
+            filters: requestFilters.optional(),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+      return manager;
+    };
+
+    const drill = async (manager: MCPManager, query: string, path: string) => {
+      const searchTool = createSearchToolsTool({ manager, includeSchema: true });
+      return (await searchTool.execute!({ query, path }, execOptions)) as string;
+    };
+
+    const toolName = "lleverage__update-request-view";
+
+    it("marks the cut filters object in the Parameters line", async () => {
+      const searchTool = createSearchToolsTool({ manager: createManager(), includeSchema: true });
+      const result = (await searchTool.execute!(
+        { query: "update-request-view" },
+        execOptions,
+      )) as string;
+
+      expect(result).toContain("Parameters: { viewId: string, title?: string, filters?: {…} }");
+    });
+
+    it("returns every filters key with its values and descriptions (update-request-view)", async () => {
+      const result = await drill(createManager(), toolName, "filters");
+      const lines = result.split("\n");
+
+      expect(lines[0]).toBe(`Schema of filters in ${toolName}:`);
+      expect(lines[1]).toBe("filters?: object — The view's filters");
+      const keys = lines
+        .filter((line) => /^ {2}[A-Za-z]/.test(line))
+        .map((line) => line.trim().split(/\??:/)[0]);
+      expect(keys).toEqual(Object.keys(requestFilters.shape));
+      expect(result).toContain(
+        '  status?: ("PENDING"|"COMPLETED"|"CANCELLED"|"SUPERSEDED"|"FAILED")[]',
+      );
+      expect(result).toContain('  assigneeId?: string[] — Assigned user ids; "me" is you');
+      expect(result).toContain("  titleContains?: string (at most 200 chars)");
+      expect(result).toContain("  dateRange?: object — Created within\n    preset?: ");
+      expect(result).toContain(
+        "    conditions: object[] (1–20 items)\n      field: string (non-empty) — status",
+      );
+      expect(result).toContain("  metricFilters?: object\n    [key: string]: any");
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+    });
+
+    it("returns only the asked-for key for a nested path (filters.status)", async () => {
+      const result = await drill(createManager(), toolName, "filters.status");
+
+      expect(result).toBe(
+        `Schema of filters.status in ${toolName}:\n` +
+          'filters.status?: ("PENDING"|"COMPLETED"|"CANCELLED"|"SUPERSEDED"|"FAILED")[]',
+      );
+    });
+
+    it("walks through arrays to a key of their items (filters.advanced.conditions.operator)", async () => {
+      const result = await drill(createManager(), toolName, "filters.advanced.conditions.operator");
+
+      expect(result.split("\n")[1]).toBe(
+        'filters.advanced.conditions.operator: "equals"|"not_equals"|"contains"|"is_before"|"is_after"',
+      );
+      expect(
+        await drill(createManager(), toolName, "filters.advanced.conditions[].field"),
+      ).toContain(
+        "filters.advanced.conditions[].field: string (non-empty) — status, type, title or metric:<metricId>",
+      );
+    });
+
+    it("returns the whole input for an empty path", async () => {
+      const result = await drill(createManager(), toolName, "");
+
+      expect(result.split("\n").slice(0, 3)).toEqual([
+        `Arguments of ${toolName}:`,
+        "viewId: string (non-empty) — The saved view's id",
+        "title?: string (1–100 chars)",
+      ]);
+      expect(result).toContain("\n  status?: ");
+    });
+
+    it("names the keys that exist when the path is unknown", async () => {
+      const result = await drill(createManager(), toolName, "filters.advanced.nope");
+
+      expect(result).toBe(
+        `Error: No argument "nope" at "filters.advanced" in ${toolName}. Keys there: logicalOperator, conditions.`,
+      );
+    });
+
+    it("names the closest tools when the query is not an exact tool name", async () => {
+      const result = await drill(createManager(), "update-request-view", "filters");
+
+      expect(result).toContain('Error: No tool named "update-request-view"');
+      expect(result).toContain(`\`${toolName}\``);
+    });
+
+    it("lists each member of a union and marks nullable objects", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("draft", {
+        edit: tool({
+          description: "Edits a draft",
+          inputSchema: z.object({
+            operations: z.array(
+              z.discriminatedUnion("op", [
+                z.object({ op: z.literal("rename"), name: z.string().describe("New name") }),
+                z.object({ op: z.literal("disable") }),
+              ]),
+            ),
+            position: z.object({ x: z.number(), y: z.number() }).nullable(),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "draft__edit", "")).toBe(
+        [
+          "Arguments of draft__edit:",
+          "operations: object[]",
+          "  - object",
+          '    op: "rename"',
+          "    name: string — New name",
+          "  - object",
+          '    op: "disable"',
+          "position: object|null",
+          "  x: number",
+          "  y: number",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "draft__edit", "operations.name")).toContain(
+        "operations.name: string — New name",
+      );
+    });
+
+    it("stops at a recursive schema instead of looping", async () => {
+      interface TreeNode {
+        label: string;
+        children?: TreeNode[];
+      }
+      const node: z.ZodType<TreeNode> = z.lazy(() =>
+        z.object({ label: z.string(), children: z.array(node).optional() }),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: z.object({ root: node }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const result = await drill(manager, "tree__save", "root");
+      expect(result).toBe(
+        [
+          "Schema of root in tree__save:",
+          "root: object",
+          "  label: string",
+          "  children?: object[]",
+          '    items: same shape as "root" (recursive)',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "tree__save", "root.children.children.label")).toContain(
+        "root.children.children.label: string",
+      );
+      expect(bytes(result)).toBeLessThan(500);
+    });
+
+    it("stays within 4000 bytes and names narrower paths when an argument is too big", async () => {
+      const section = (n: number) =>
+        z.object(
+          Object.fromEntries(
+            Array.from({ length: 12 }, (_, i) => [
+              `field_${n}_${i}`,
+              z
+                .string()
+                .describe("A field with a description long enough to fill the budget quickly"),
+            ]),
+          ),
+        );
+      const manager = new MCPManager();
+      manager.registerPluginTools("big", {
+        configure: tool({
+          description: "Configures a lot",
+          inputSchema: z.object({
+            config: z.object(
+              Object.fromEntries(Array.from({ length: 8 }, (_, n) => [`section_${n}`, section(n)])),
+            ),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const result = await drill(manager, "big__configure", "config");
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+      expect(result).toMatch(
+        /\n…\d+ more line\(s\) left out to stay within 4000 bytes\. Ask for a narrower path, such as "config\.section_\d"/,
+      );
+      expect(await drill(manager, "big__configure", "config.section_7")).toContain(
+        "field_7_11: string",
+      );
+    });
+
+    it("offers path only when schemas are shown", () => {
+      const manager = createManager();
+      const withSchema = createSearchToolsTool({ manager, includeSchema: true });
+      const withoutSchema = createSearchToolsTool({ manager, enableLoad: true });
+
+      expect(withSchema.description).toContain("path");
+      expect(Object.keys((withSchema.inputSchema as z.ZodObject).shape)).toEqual(["query", "path"]);
+      expect(withoutSchema.description).not.toContain("path");
+      expect(Object.keys((withoutSchema.inputSchema as z.ZodObject).shape)).toEqual([
+        "query",
+        "load",
+      ]);
     });
   });
 });

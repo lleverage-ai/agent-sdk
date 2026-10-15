@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `search_tools` with `includeSchema` (proxy mode) takes an optional `path`
+  (LLE-15702). With `query` set to an exact tool name and `path` to a dotted
+  argument path (`filters`, `filters.status`, `steps[].name`; arrays are
+  walked through), it returns that argument's full schema instead of
+  searching: one key per line, any depth, with types, enum values, required
+  markers, constraints and descriptions, within 4,000 bytes. An empty path
+  returns the whole input. An unknown tool names the closest tools; an
+  unknown key names the keys at the deepest level reached. Recursive `$ref`s
+  point back at the path that already shows them. Adds about 270 bytes to the
+  `search_tools` definition; nothing changes without `includeSchema`.
+
+### Changed
+
+- The `Parameters:` line marks where it cut a shape (LLE-15702): a property
+  that falls back to its bare type prints `{…}` for an object with keys
+  (`{…}[]` for an array of them) and `string…` for an enum, instead of
+  `object`, `array` and `string`; a nested object past the first level prints
+  `{…}` instead of `object`. Objects without named keys (records) still
+  print `object`. The 300- and 600-byte budgets are unchanged.
+
 ## [1.0.0-rc.19] - 2026-10-15
 
 Nineteenth release candidate for 1.0.0. In proxy mode, `search_tools`
