@@ -200,23 +200,29 @@ function formatToolResult(t: MCPToolMetadata, manager: MCPManager, includeSchema
   if (includeSchema && t.inputSchema) {
     const schemaStr = formatSchemaCompact(t.inputSchema);
     if (schemaStr) {
-      line += `\n  Parameters: ${schemaStr}`;
+      line += `\n  ${PARAMETERS_PREFIX}${schemaStr}`;
     }
   }
 
   return line;
 }
 
+/** @internal */
+const PARAMETERS_PREFIX = "Parameters: ";
+
 /**
  * Maximum UTF-8 bytes for one property in a `Parameters:` line. A property
- * whose full shape is longer falls back to its bare type (`object`, `array`).
+ * whose full shape is longer falls back to its bare type (`object`, `array`),
+ * and a bare entry still longer (a very long name) is cut short with `…`.
  * @internal
  */
 const MAX_PROPERTY_BYTES = 300;
 
 /**
- * Maximum UTF-8 bytes for one tool's whole `Parameters:` line. Over it, the
- * widest properties fall back to their bare type until the line fits.
+ * Maximum UTF-8 bytes for one tool's whole `Parameters:` line, prefix
+ * included. Over it, the widest properties fall back to their bare type; if
+ * the bare entries still don't fit, the last ones (optional first) are left
+ * out and counted as `…N more`.
  * @internal
  */
 const MAX_PARAMETERS_BYTES = 600;
@@ -235,6 +241,21 @@ function byteLength(text: string): number {
   return utf8.encode(text).length;
 }
 
+/** Cut `text` to at most `max` UTF-8 bytes, ending in `…` when cut. */
+function truncateBytes(text: string, max: number): string {
+  if (byteLength(text) <= max) return text;
+  const ellipsis = "…";
+  let out = "";
+  let size = byteLength(ellipsis);
+  for (const char of text) {
+    const charSize = byteLength(char);
+    if (size + charSize > max) break;
+    out += char;
+    size += charSize;
+  }
+  return out + ellipsis;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -246,7 +267,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Enum values and `const` print as literals, nullable fields as `T|null`,
  * arrays with their item type and objects with one level of keys. Each
  * property stays within {@link MAX_PROPERTY_BYTES} and the line within
- * {@link MAX_PARAMETERS_BYTES}; over either, a property prints its bare type.
+ * {@link MAX_PARAMETERS_BYTES}: over either, a property prints its bare type,
+ * and entries that still don't fit are cut short or left out.
  * @internal
  */
 function formatSchemaCompact(schema: unknown): string {
@@ -254,17 +276,30 @@ function formatSchemaCompact(schema: unknown): string {
   const properties = Object.entries(schema.properties);
   if (properties.length === 0) return "";
 
+  const budget = MAX_PARAMETERS_BYTES - byteLength(PARAMETERS_PREFIX);
   const required = requiredKeys(schema);
   const entries = properties.map(([name, prop]) => {
     const key = `${name}${required.has(name) ? "" : "?"}`;
-    const bare = `${key}: ${formatBareType(prop)}`;
+    const bare = truncateBytes(`${key}: ${formatBareType(prop)}`, MAX_PROPERTY_BYTES);
     const full = `${key}: ${formatType(prop, 0)}`;
-    return { bare, text: byteLength(full) <= MAX_PROPERTY_BYTES ? full : bare };
+    return {
+      bare,
+      text: byteLength(full) <= MAX_PROPERTY_BYTES ? full : bare,
+      required: required.has(name),
+      shown: true,
+    };
   });
 
-  const render = () => `{ ${entries.map((entry) => entry.text).join(", ")} }`;
+  const render = () => {
+    const shown = entries.filter((entry) => entry.shown).map((entry) => entry.text);
+    const omitted = entries.length - shown.length;
+    if (omitted > 0) shown.push(`…${omitted} more`);
+    return `{ ${shown.join(", ")} }`;
+  };
+
+  // First fall back the property whose shape costs the most bytes.
   let line = render();
-  while (byteLength(line) > MAX_PARAMETERS_BYTES) {
+  while (byteLength(line) > budget) {
     let widest: (typeof entries)[number] | undefined;
     let saving = 0;
     for (const entry of entries) {
@@ -276,6 +311,22 @@ function formatSchemaCompact(schema: unknown): string {
     }
     if (!widest) break;
     widest.text = widest.bare;
+    line = render();
+  }
+
+  // Bare types alone are too long: leave out the last entries, optional first.
+  while (byteLength(line) > budget) {
+    let last: (typeof entries)[number] | undefined;
+    for (let i = entries.length - 1; i >= 0 && !last; i--) {
+      const entry = entries[i];
+      if (entry?.shown && !entry.required) last = entry;
+    }
+    for (let i = entries.length - 1; i >= 0 && !last; i--) {
+      const entry = entries[i];
+      if (entry?.shown) last = entry;
+    }
+    if (!last) break;
+    last.shown = false;
     line = render();
   }
   return line;

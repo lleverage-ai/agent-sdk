@@ -308,10 +308,54 @@ describe("createSearchToolsTool", () => {
       });
 
       const line = await parametersFor(manager, "wide");
-      expect(bytes(line)).toBeLessThanOrEqual(600);
+      expect(bytes(`Parameters: ${line}`)).toBeLessThanOrEqual(600);
       expect(line).toContain('small: "a"|"b"');
       expect(line).toContain("second: string");
       expect(line).toContain('first: "first_value_0"|');
+    });
+
+    it("leaves out the last entries, optional first, when bare types alone are too long", async () => {
+      const fields = Object.fromEntries(
+        Array.from({ length: 40 }, (_, i) => [`field_${String(i).padStart(2, "0")}`, z.string()]),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("many", {
+        fill: tool({
+          description: "Fills a long form",
+          inputSchema: z.object({
+            ...fields,
+            extra: z.string().optional(),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const line = await parametersFor(manager, "many");
+      expect(bytes(`Parameters: ${line}`)).toBeLessThanOrEqual(600);
+      expect(line).toMatch(/^\{ field_00: string, .*, …\d+ more \}$/);
+      expect(line).not.toContain("extra");
+    });
+
+    it("cuts a property short when even its bare entry is over the property budget", async () => {
+      const longName = `x${"é".repeat(200)}`;
+      const manager = new MCPManager();
+      manager.registerPluginTools("longname", {
+        run: tool({
+          description: "Has one very long parameter name",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { [longName]: { type: "string" }, id: { type: "string" } },
+            required: [longName, "id"],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const line = await parametersFor(manager, "longname");
+      const [longEntry] = line.slice(2, -2).split(", ");
+      expect(bytes(longEntry!)).toBeLessThanOrEqual(300);
+      expect(longEntry).toMatch(/^xé+…$/);
+      expect(line).toContain(", id: string }");
     });
 
     it("still prints bare types for properties without shapes", async () => {
