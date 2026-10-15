@@ -588,8 +588,9 @@ describe("createSearchToolsTool", () => {
           "  y: number",
         ].join("\n"),
       );
+      // Only one member has name, so it is optional across the union.
       expect(await drill(manager, "draft__edit", "operations.name")).toContain(
-        "operations.name: string — New name",
+        "operations.name?: string — New name",
       );
     });
 
@@ -654,11 +655,207 @@ describe("createSearchToolsTool", () => {
       const result = await drill(manager, "big__configure", "config");
       expect(bytes(result)).toBeLessThanOrEqual(4000);
       expect(result).toMatch(
-        /\n…\d+ more line\(s\) left out to stay within 4000 bytes\. Ask for a narrower path, such as "config\.section_\d"/,
+        /\n…cut here to stay within 4000 bytes\. Ask for a narrower path, such as "config\.section_\d"\.$/,
       );
       expect(await drill(manager, "big__configure", "config.section_7")).toContain(
         "field_7_11: string",
       );
+    });
+
+    it("keeps the footer within 4000 bytes when the paths are long and multibyte", async () => {
+      const longKey = (i: number) => `${"é".repeat(150)}_${i}`;
+      const field = { type: "string", description: "A described field to fill the budget" };
+      const manager = new MCPManager();
+      manager.registerPluginTools("wide", {
+        configure: tool({
+          description: "Configures a lot",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: Object.fromEntries(
+              Array.from({ length: 30 }, (_, i) => [
+                longKey(i),
+                { type: "object", properties: { a: field, b: field, c: field } },
+              ]),
+            ),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const result = await drill(manager, "wide__configure", "");
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+      expect(result).toMatch(
+        /\n…cut here to stay within 4000 bytes\. Ask for a narrower path, such as "é+…"\.$/,
+      );
+    });
+
+    it("keeps the annotations of array items and of scalar union members", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("people", {
+        invite: tool({
+          description: "Invites someone",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              who: {
+                description: "Who to invite",
+                anyOf: [
+                  { type: "string", pattern: "^usr_", description: "An existing user id" },
+                  { type: "string", format: "email", description: "An address to invite" },
+                ],
+              },
+              ids: {
+                type: "array",
+                description: "User ids",
+                items: { type: "string", minLength: 1, maxLength: 200 },
+              },
+              tags: { type: "array", items: { type: "string", enum: ["a", "b"] } },
+            },
+            required: ["who"],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "people__invite", "")).toBe(
+        [
+          "Arguments of people__invite:",
+          "who: one of — Who to invite",
+          "  - string (pattern ^usr_) — An existing user id",
+          "  - string (email) — An address to invite",
+          "ids?: string[] — User ids",
+          "  items: string (1–200 chars)",
+          'tags?: ("a"|"b")[]',
+        ].join("\n"),
+      );
+      expect(await drill(createManager(), toolName, "filters")).toContain(
+        '  assigneeId?: string[] — Assigned user ids; "me" is you\n    items: string (1–200 chars)',
+      );
+    });
+
+    it("lists the alternatives of a whole input that is a union", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("acl", {
+        grant: tool({
+          description: "Grants access",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            oneOf: [
+              {
+                type: "object",
+                properties: { kind: { const: "user" }, userId: { type: "string" } },
+                required: ["kind", "userId"],
+              },
+              {
+                type: "object",
+                properties: { kind: { const: "group" }, groupId: { type: "string" } },
+                required: ["kind", "groupId"],
+              },
+            ],
+          }),
+          execute: async () => "ok",
+        }),
+        ping: tool({
+          description: "Takes nothing",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "acl__grant", "")).toBe(
+        [
+          "Arguments of acl__grant:",
+          "one of:",
+          "  - object",
+          '    kind: "user"',
+          "    userId: string",
+          "  - object",
+          '    kind: "group"',
+          "    groupId: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "acl__grant", "kind")).toBe(
+        'Schema of kind in acl__grant:\nkind: "user"|"group"',
+      );
+      expect(await drill(manager, "acl__ping", "")).toBe("acl__ping takes no arguments.");
+    });
+
+    it("keeps allOf restrictions together, required when any of them requires it", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("strict", {
+        set: tool({
+          description: "Sets a status",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            allOf: [
+              {
+                properties: { status: { type: "string", enum: ["PENDING", "COMPLETED"] } },
+                required: ["status"],
+              },
+              {
+                properties: {
+                  status: { type: "string", enum: ["COMPLETED", "FAILED"] },
+                  note: { type: "string" },
+                },
+              },
+            ],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "strict__set", "status")).toBe(
+        [
+          "Schema of status in strict__set:",
+          "status: all of",
+          '  - "PENDING"|"COMPLETED"',
+          '  - "COMPLETED"|"FAILED"',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "strict__set", "note")).toBe(
+        "Schema of note in strict__set:\nnote?: string",
+      );
+    });
+
+    it("bounds the work on shared $refs that describe exponentially many paths", async () => {
+      const depth = 30;
+      const defs = Object.fromEntries(
+        Array.from({ length: depth }, (_, i) => [
+          `D${i}`,
+          i === depth - 1
+            ? { type: "string" }
+            : {
+                type: "object",
+                properties: {
+                  left: { $ref: `#/$defs/D${i + 1}` },
+                  right: { $ref: `#/$defs/D${i + 1}` },
+                },
+              },
+        ]),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("dag", {
+        walk: tool({
+          description: "Walks a DAG",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { root: { $ref: "#/$defs/D0" } },
+            $defs: defs,
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      const result = await drill(manager, "dag__walk", "root");
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+      expect(result).toContain("\n…cut here to stay within 4000 bytes.");
+      const nested = await drill(manager, "dag__walk", "root.right.left.right.left");
+      expect(nested).toMatch(
+        /^Schema of root\.right\.left\.right\.left in dag__walk:\nroot\.right\.left\.right\.left\?: object\n {2}left\?: object\n/,
+      );
+      expect(bytes(nested)).toBeLessThanOrEqual(4000);
     });
 
     it("offers path only when schemas are shown", () => {
