@@ -893,8 +893,11 @@ describe("createSearchToolsTool", () => {
       const result = await drill(manager, "dag__nest", "root.value");
       expect(Date.now() - started).toBeLessThan(2000);
       expect(bytes(result)).toBeLessThanOrEqual(4000);
-      expect(result).toMatch(/^Schema of root\.value in dag__nest:\nroot\.value\?: all of\n/);
-      expect(result).toContain("  - string");
+      // Every allOf member is a string, so they fold into one line with all their descriptions.
+      expect(result).toMatch(
+        /^Schema of root\.value in dag__nest:\nroot\.value\?: string — 28; 27; /,
+      );
+      expect(result).toMatch(/; 1; 0$/);
     });
 
     it("keeps annotations below composed and nullable array items", async () => {
@@ -945,9 +948,142 @@ describe("createSearchToolsTool", () => {
           "    - string (email) — Invitation address",
           "names?: (string|null)[]",
           "  items: string|null (non-empty)",
-          "code?: all of (or null)",
-          "  - string (at least 3 chars)",
-          "  - string (pattern ^[A-Z]+$)",
+          // Restrictions of the same type all apply to the one string.
+          "code?: string|null (at least 3 chars, pattern ^[A-Z]+$)",
+        ].join("\n"),
+      );
+    });
+
+    it("keeps a nullable wrapper's own annotations next to its member's", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("mail", {
+        send: tool({
+          description: "Sends mail",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              codes: {
+                type: "array",
+                items: { minLength: 3, anyOf: [{ type: "string" }, { type: "null" }] },
+              },
+              to: {
+                description: "Recipient or null",
+                anyOf: [{ type: "string", description: "Existing user" }, { type: "null" }],
+              },
+              cc: {
+                default: null,
+                anyOf: [{ anyOf: [{ type: "string", maxLength: 50 }, { type: "null" }] }],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "mail__send", "")).toBe(
+        [
+          "Arguments of mail__send:",
+          "codes?: (string|null)[]",
+          "  items: string|null (at least 3 chars)",
+          "to?: string|null — Recipient or null; Existing user",
+          "cc?: string|null (default null, at most 50 chars)",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "mail__send", "to")).toBe(
+        "Schema of to in mail__send:\nto?: string|null — Recipient or null; Existing user",
+      );
+    });
+
+    it("shows a value's union and its allOf restrictions together", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("ids", {
+        set: tool({
+          description: "Sets an id",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              id: {
+                anyOf: [
+                  { type: "string", pattern: "^usr_", description: "A user id" },
+                  { type: "string", format: "email", description: "An address" },
+                ],
+                allOf: [{ minLength: 5 }, { type: "string", maxLength: 100 }],
+              },
+              kind: {
+                type: "string",
+                anyOf: [{ const: "user" }, { const: "group" }],
+                allOf: [{ enum: ["user", "group", "team"] }],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "ids__set", "")).toBe(
+        [
+          "Arguments of ids__set:",
+          // Restrictions on the same string join its line; the alternatives list below it.
+          "id?: string (at least 5 chars, at most 100 chars)",
+          "  one of:",
+          "    - string (pattern ^usr_) — A user id",
+          "    - string (email) — An address",
+          // Literals that the string type hides are listed, and so is a restriction of another type.
+          "kind?: string",
+          "  one of:",
+          '    - "user"',
+          '    - "group"',
+          "  all of:",
+          '    - "user"|"group"|"team"',
+        ].join("\n"),
+      );
+    });
+
+    it("lists the alternatives of a whole input that is a union inside allOf", async () => {
+      const manager = new MCPManager();
+      const alternatives = {
+        oneOf: [
+          { type: "object", properties: { userId: { type: "string" } }, required: ["userId"] },
+          { type: "object", properties: { groupId: { type: "string" } }, required: ["groupId"] },
+        ],
+      };
+      manager.registerPluginTools("acl", {
+        wrapped: tool({
+          description: "A union inside allOf",
+          inputSchema: jsonSchema<Record<string, unknown>>({ allOf: [alternatives] }),
+          execute: async () => "ok",
+        }),
+        typed: tool({
+          description: "A typed object around a union inside allOf",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { note: { type: "string" } },
+            allOf: [{ $ref: "#/$defs/Who" }],
+            $defs: { Who: alternatives },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "acl__wrapped", "")).toBe(
+        [
+          "Arguments of acl__wrapped:",
+          "one of:",
+          "  - object",
+          "    userId: string",
+          "  - object",
+          "    groupId: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "acl__typed", "")).toBe(
+        [
+          "Arguments of acl__typed:",
+          "note?: string",
+          "one of:",
+          "  - object",
+          "    userId: string",
+          "  - object",
+          "    groupId: string",
         ].join("\n"),
       );
     });
@@ -1046,6 +1182,25 @@ describe("createSearchToolsTool", () => {
       expect(country).toContain('"Country number 89"');
       expect(country).not.toContain("…");
       expect(await drill(manager, "geo__set", "marker")).toContain(JSON.stringify(longConst));
+
+      // A result that needs no footer may use the whole budget.
+      for (const value of ["x".repeat(3900), "é".repeat(1950)]) {
+        const fits = new MCPManager();
+        fits.registerPluginTools("geo", {
+          mark: tool({
+            description: "Sets a marker",
+            inputSchema: jsonSchema<Record<string, unknown>>({
+              type: "object",
+              properties: { marker: { const: value } },
+            }),
+            execute: async () => "ok",
+          }),
+        });
+        const marker = await drill(fits, "geo__mark", "marker");
+        expect(marker).toBe(`Schema of marker in geo__mark:\nmarker?: ${JSON.stringify(value)}`);
+        expect(bytes(marker)).toBeGreaterThan(3900);
+        expect(bytes(marker)).toBeLessThanOrEqual(4000);
+      }
 
       const everything = await drill(manager, "geo__set", "everything");
       expect(bytes(everything)).toBeLessThanOrEqual(4000);

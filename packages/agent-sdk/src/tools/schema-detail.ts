@@ -7,6 +7,12 @@
  * constraint and description, one key per line, to any depth, within
  * {@link MAX_DETAIL_BYTES}.
  *
+ * Every node renders through one view ({@link gather}): what applies to the
+ * value at once (the node, its `allOf` members of the same type and a
+ * nullable wrapper's one member) is folded into one line and one body, so
+ * their constraints, descriptions, keys and alternatives all appear; only
+ * alternatives and restrictions that the line's type can't show are listed.
+ *
  * Schemas come from plugins and external MCP servers, so every walk is
  * bounded: helpers are memoised per schema node and rendering stops at
  * {@link MAX_RENDER_STEPS} nodes, even when shared `$ref`s describe
@@ -17,9 +23,10 @@
 
 /**
  * Maximum UTF-8 bytes for one drill-down result, heading and footer
- * included. Rendering stops when the next line would not fit, and the result
- * says so and names a narrower path to ask for. Lines and literals are never
- * cut short: a line is shown whole or not at all.
+ * included. A result that fits uses all of it. Otherwise rendering stops at
+ * the first line that doesn't fit, lines are dropped from the end until the
+ * footer fits too, and the footer names a narrower path to ask for. Lines and
+ * literals are never cut short: a line is shown whole or not at all.
  * @internal
  */
 export const MAX_DETAIL_BYTES = 4000;
@@ -31,9 +38,6 @@ export const MAX_DETAIL_BYTES = 4000;
  * @internal
  */
 export const MAX_RENDER_STEPS = 2000;
-
-/** Bytes kept free for the footer while lines are added. */
-const FOOTER_RESERVE = 300;
 
 /** Longest `pattern` printed; longer ones (generated date regexes) add nothing. */
 const MAX_PATTERN_BYTES = 80;
@@ -137,12 +141,13 @@ export function formatSchemaDetail(
   }
 
   if (segments.length === 0) {
-    const node = deref(doc, inputSchema).schema;
+    const { schema: node, ref } = deref(doc, inputSchema);
     if (!isRecord(node)) {
       return { ok: false, error: `${toolName} has no input schema to show.` };
     }
     const ctx = createContext(`Arguments of ${toolName}:`, segments, "the whole input");
-    renderChildren(doc, node, 0, [], new Map(), ctx);
+    const refs = withRef(new Map([["#", ""]]), ref, []);
+    renderBody(doc, gather(doc, node, refs, [], ctx), 0, [], ctx, false);
     if (ctx.lines.length === 0 && !ctx.cut) {
       return { ok: true, text: `${toolName} takes no arguments.` };
     }
@@ -266,7 +271,7 @@ function hasDeepAnnotations(doc: Doc, schema: unknown): boolean {
     node,
     false,
     () =>
-      annotate(node) !== "" ||
+      hasNotes(annotations(node)) ||
       (isRecord(node.items) && hasDeepAnnotations(doc, node.items)) ||
       [...unionOf(node), ...allOf(node)].some((member) => hasDeepAnnotations(doc, member)),
   );
@@ -413,13 +418,19 @@ function availableKeys(doc: Doc, schema: unknown, seen: Set<unknown>): string[] 
 // ---------------------------------------------------------------------------
 // Rendering
 
+/** One rendered line, with the argument path it belongs to. */
+interface Line {
+  text: string;
+  path: string[];
+}
+
 interface RenderContext {
   heading: string;
   /** The requested path's segments, for the footer's narrower-path hint. */
   requested: string[];
   /** The requested argument as the footer names it. */
   subject: string;
-  lines: string[];
+  lines: Line[];
   bytes: number;
   steps: number;
   /** Where rendering stopped, when it did. */
@@ -441,15 +452,19 @@ function step(ctx: RenderContext, path: string[]): boolean {
   return true;
 }
 
-/** Adds a whole line if it fits the output budget; otherwise records the cut. */
-function emit(ctx: RenderContext, line: string, path: string[]): boolean {
+/**
+ * Adds a whole line if it fits the output budget; otherwise records the cut.
+ * The whole budget is available: room for a footer is only made in
+ * {@link finish}, and only when something was cut.
+ */
+function emit(ctx: RenderContext, text: string, path: string[]): boolean {
   if (ctx.cut) return false;
-  const size = byteLength(line) + 1;
-  if (ctx.bytes + size > MAX_DETAIL_BYTES - FOOTER_RESERVE) {
+  const size = byteLength(text) + 1;
+  if (ctx.bytes + size > MAX_DETAIL_BYTES) {
     ctx.cut = path;
     return false;
   }
-  ctx.lines.push(line);
+  ctx.lines.push({ text, path });
   ctx.bytes += size;
   return true;
 }
@@ -480,17 +495,152 @@ function headLine(label: string, head: string, depth: number): string {
   return label === "-" ? `${indent(depth)}- ${head}` : `${indent(depth)}${label}: ${head}`;
 }
 
-/** How a nullable or one-member union wrapper passes itself on to its member. */
-interface Wrapper {
+/**
+ * Everything that applies to one value, gathered from a schema node and the
+ * parts of it that fold into the node's line: `allOf` members whose type is
+ * the node's own (or that have none), and the one member of a nullable or
+ * one-member union. Their constraints and descriptions join the line; their
+ * keys, array items, alternatives and remaining restrictions join the body.
+ * Nothing a folded part carries is dropped, which is what keeps every
+ * annotation visible whatever wraps it.
+ */
+interface View {
+  root: Record<string, unknown>;
+  /** `$ref`s being expanded, including those folded into this view. */
+  refs: Refs;
+  /** The root's one-line type. */
+  head: string;
   nullable: boolean;
-  description?: unknown;
+  /** True when the root or a folded part has a type, enum or const of its own. */
+  typed: boolean;
+  constraints: string[];
+  descriptions: string[];
+  /** Nodes whose keys are listed in the body. */
+  keyed: Record<string, unknown>[];
+  /** Item schemas of the array, from every folded part. */
+  items: unknown[];
+  /** Union alternatives the line's type can't show, one list per union. */
+  groups: unknown[][];
+  /** `allOf` members of another type, or recursive, listed under `all of`. */
+  restrictions: unknown[];
+}
+
+function gather(
+  doc: Doc,
+  root: Record<string, unknown>,
+  refs: Refs,
+  path: string[],
+  ctx: RenderContext,
+): View {
+  const view: View = {
+    root,
+    refs,
+    head: typeHead(doc, root),
+    nullable: false,
+    typed: false,
+    constraints: [],
+    descriptions: [],
+    keyed: [],
+    items: [],
+    groups: [],
+    restrictions: [],
+  };
+  // Each node folds once, so a shared definition reached twice costs nothing.
+  const folded = new Set<object>();
+  const foldIn = (inner: { schema: Record<string, unknown>; ref?: string }) => {
+    view.refs = withRef(view.refs, inner.ref, path);
+    fold(inner.schema);
+  };
+  const fold = (node: Record<string, unknown>): void => {
+    if (folded.has(node) || !step(ctx, path)) return;
+    folded.add(node);
+    if (hasOwnType(node)) view.typed = true;
+    const notes = annotations(node);
+    addUnique(view.constraints, notes.constraints);
+    addUnique(view.descriptions, notes.descriptions);
+    if (hasOwnKeys(node)) view.keyed.push(node);
+    if (isRecord(node.items)) view.items.push(node.items);
+
+    const head = typeHead(doc, node);
+    const variants = unionOf(node);
+    const members = nonNullMembers(doc, node);
+    if (members.length < variants.length) view.nullable = true;
+    if (members.length === 1) {
+      // One alternative besides null applies whenever the value isn't null.
+      const ownHead = hasOwnType(node) ? stripNull(head) : undefined;
+      const inner = foldable(doc, members[0], view.refs, ownHead);
+      if (inner) foldIn(inner);
+      else view.groups.push(members);
+    } else if (members.length > 1 && listsAlternatives(doc, node, members)) {
+      view.groups.push(members);
+    }
+
+    for (const member of allOf(node)) {
+      if (!isRecord(deref(doc, member).schema)) continue;
+      const inner = foldable(doc, member, view.refs, head);
+      if (inner) foldIn(inner);
+      else view.restrictions.push(member);
+    }
+  };
+  fold(root);
+  return view;
 }
 
 /**
- * Renders `label: <type> (constraints) — description`, then what is inside
- * it one level deeper: keys, union members that differ in shape or
- * annotations, or the restrictions of an `allOf`.
+ * A member that folds into its owner's line: not a recursive reference, and
+ * with no type of its own or the type `head` already shows. With `head`
+ * undefined, any type folds (the owner's type is the member's).
  */
+function foldable(
+  doc: Doc,
+  member: unknown,
+  refs: Refs,
+  head: string | undefined,
+): { schema: Record<string, unknown>; ref?: string } | undefined {
+  const { schema, ref } = deref(doc, member);
+  if (!isRecord(schema) || (ref && refs.has(ref))) return undefined;
+  if (head !== undefined) {
+    const own = typeHead(doc, schema);
+    if (own !== "any" && own !== head) return undefined;
+  }
+  return { schema, ref };
+}
+
+/**
+ * True when a union's members carry more than the line's type shows: keys,
+ * constraints or descriptions, or literals a typed owner's type hides.
+ */
+function listsAlternatives(doc: Doc, node: Record<string, unknown>, members: unknown[]): boolean {
+  if (members.some((member) => hasChildren(doc, member) || hasDeepAnnotations(doc, member))) {
+    return true;
+  }
+  if (!hasOwnType(node)) return false;
+  const alternatives = stripNull(unionHead(doc, node));
+  return alternatives !== "any" && alternatives !== stripNull(typeHead(doc, node));
+}
+
+/**
+ * Lists the alternatives or restrictions directly under the line when they
+ * are all there is to the value, so the line can say `one of` / `all of`
+ * instead of a type. Not when the value has a type of its own, which the
+ * line must keep showing.
+ */
+function compactForm(view: View): "one of" | "all of" | undefined {
+  if (view.typed || view.keyed.length > 0 || view.items.length > 0) return undefined;
+  if (view.groups.length === 1 && view.restrictions.length === 0) return "one of";
+  if (view.groups.length === 0 && view.restrictions.length > 0) return "all of";
+  return undefined;
+}
+
+function hasNotes(notes: { constraints: string[]; descriptions: string[] }): boolean {
+  return notes.constraints.length > 0 || notes.descriptions.length > 0;
+}
+
+function addUnique(target: string[], values: string[]): void {
+  for (const value of values) if (!target.includes(value)) target.push(value);
+}
+
+/** Renders a schema node: its line, then its body one level deeper. */
 function renderNode(
   doc: Doc,
   schema: unknown,
@@ -499,7 +649,6 @@ function renderNode(
   path: string[],
   refs: Refs,
   ctx: RenderContext,
-  wrapper?: Wrapper,
 ): void {
   if (!step(ctx, path)) return;
   const { schema: node, ref } = deref(doc, schema);
@@ -507,137 +656,154 @@ function renderNode(
     emit(ctx, headLine(label, recursive(refs, ref), depth), path);
     return;
   }
-  const inner = withRef(refs, ref, path);
   if (!isRecord(node)) {
-    emit(ctx, headLine(label, wrapper?.nullable ? "any|null" : "any", depth), path);
+    emit(ctx, headLine(label, "any", depth), path);
     return;
   }
-  const notes = annotate(node, wrapper?.description);
+  renderView(doc, gather(doc, node, withRef(refs, ref, path), path, ctx), label, depth, path, ctx);
+}
 
-  if (!hasOwnKeys(node)) {
-    const variants = unionOf(node);
-    const members = nonNullMembers(doc, node);
-    const nullable = Boolean(wrapper?.nullable) || members.length < variants.length;
-
-    // A nullable (or one-member) union renders as its one member, marked nullable.
-    if (variants.length > 0 && members.length === 1) {
-      const description = node.description ?? wrapper?.description;
-      renderNode(doc, members[0], label, depth, path, inner, ctx, { nullable, description });
-      return;
-    }
-
-    // Members that differ in more than their type are listed one by one.
-    if (
-      members.length > 1 &&
-      members.some((member) => hasChildren(doc, member) || hasDeepAnnotations(doc, member))
-    ) {
-      const head = `one of${nullable ? " (or null)" : ""}${notes}`;
-      if (!emit(ctx, headLine(label, head, depth), path)) return;
-      for (const member of members) renderNode(doc, member, "-", depth + 1, path, inner, ctx);
-      return;
-    }
-
-    // Restrictions that all apply, unless they are plain objects whose keys merge.
-    const conjuncts = allOf(node);
-    if (
-      conjuncts.length > 0 &&
-      conjuncts.some((member) => !hasChildren(doc, member) || hasDeepAnnotations(doc, member))
-    ) {
-      const head = `all of${nullable ? " (or null)" : ""}${notes}`;
-      if (!emit(ctx, headLine(label, head, depth), path)) return;
-      for (const member of conjuncts) renderNode(doc, member, "-", depth + 1, path, inner, ctx);
-      return;
-    }
-  }
-
-  const head = `${typeHead(doc, node)}${wrapper?.nullable ? "|null" : ""}${notes}`;
-  if (!emit(ctx, headLine(label, head, depth), path)) return;
-  renderChildren(doc, node, depth + 1, path, inner, ctx);
+/** `label: <type> (constraints) — descriptions`, then the body. */
+function renderView(
+  doc: Doc,
+  view: View,
+  label: string,
+  depth: number,
+  path: string[],
+  ctx: RenderContext,
+): void {
+  const compact = compactForm(view);
+  const head = compact ? `${compact}${view.nullable ? " (or null)" : ""}` : lineHead(view);
+  if (!emit(ctx, headLine(label, `${head}${formatNotes(view)}`, depth), path)) return;
+  renderBody(doc, view, depth + 1, path, ctx, compact !== undefined);
 }
 
 /**
- * Lists what is inside a node at `depth`: an array's items (their keys, or
- * an `items:` line when the items are composed or annotated), the keys of the
- * node and of its object `allOf` members, and union members that have keys.
+ * What is inside a value, at `depth`: its array items, its keys, the
+ * alternatives the line's type can't show (`one of`) and restrictions of
+ * another type (`all of`). When `compact`, the line already says `one of` or
+ * `all of`, and the members list without a heading of their own.
  */
-function renderChildren(
+function renderBody(
   doc: Doc,
-  node: Record<string, unknown>,
+  view: View,
+  depth: number,
+  path: string[],
+  ctx: RenderContext,
+  compact: boolean,
+): void {
+  for (const items of view.items) renderItems(doc, items, depth, path, view.refs, ctx);
+  for (const owner of view.keyed) renderKeys(doc, view.root, owner, depth, path, view.refs, ctx);
+  for (const members of view.groups) {
+    renderList(doc, "one of:", members, depth, path, view.refs, ctx, compact);
+  }
+  if (view.restrictions.length > 0) {
+    renderList(doc, "all of:", view.restrictions, depth, path, view.refs, ctx, compact);
+  }
+}
+
+function renderList(
+  doc: Doc,
+  title: string,
+  members: unknown[],
   depth: number,
   path: string[],
   refs: Refs,
   ctx: RenderContext,
-  owners: readonly unknown[] = [],
+  compact: boolean,
 ): void {
-  if (!step(ctx, path)) return;
-  let target = node;
-  let inner = refs;
-  while (isRecord(target.items)) {
-    const items = deref(doc, target.items);
-    if (items.ref && inner.has(items.ref)) {
-      emit(ctx, `${indent(depth)}items: ${recursive(inner, items.ref)}`, path);
-      return;
-    }
-    const itemNode = items.schema;
-    if (!isRecord(itemNode)) return;
-    if (!hasOwnKeys(itemNode)) {
-      const members = nonNullMembers(doc, itemNode);
-      const plain = !hasDeepAnnotations(doc, itemNode) && allOf(itemNode).length === 0;
-      // Plain object alternatives (a discriminated union) list straight under the array.
-      if (plain && members.length > 1 && members.some((member) => hasChildren(doc, member))) {
-        inner = withRef(inner, items.ref, path);
-        for (const member of members) renderNode(doc, member, "-", depth, path, inner, ctx);
-        return;
-      }
-      // Composed or annotated items get their own line, so nothing in them is lost.
-      if (!plain || members.length > 0) {
-        renderNode(doc, target.items, "items", depth, path, inner, ctx);
-        return;
-      }
-    } else if (hasDeepAnnotations(doc, itemNode)) {
-      renderNode(doc, target.items, "items", depth, path, inner, ctx);
-      return;
-    }
-    inner = withRef(inner, items.ref, path);
-    target = itemNode;
-  }
-
-  // Object members of an allOf all apply: their keys are listed together, and
-  // a key is required when this node or any enclosing allOf requires it.
-  const scope = [...owners, target];
-  for (const member of allOf(target)) {
-    const resolved = deref(doc, member);
-    if (!isRecord(resolved.schema) || (resolved.ref && inner.has(resolved.ref))) continue;
-    if (!hasOwnKeys(resolved.schema)) continue;
-    const memberRefs = withRef(inner, resolved.ref, path);
-    renderChildren(doc, resolved.schema, depth, path, memberRefs, ctx, scope);
-  }
-
-  if (isRecord(target.properties)) {
-    for (const [key, child] of Object.entries(target.properties)) {
-      const required = scope.some((owner) => requiresKey(doc, owner, key, new Map()));
-      const label = `${key}${required ? "" : "?"}`;
-      renderNode(doc, child, label, depth, [...path, key], inner, ctx);
-    }
-  }
-  if (isRecord(target.additionalProperties)) {
-    const valuePath = [...path, "*"];
-    renderNode(doc, target.additionalProperties, "[key: string]", depth, valuePath, inner, ctx);
-  }
-
-  // Alternatives next to the node's own keys (or of a whole input) with keys of their own.
-  const members = nonNullMembers(doc, target);
-  if (members.some((member) => hasChildren(doc, member))) {
-    if (!emit(ctx, `${indent(depth)}one of:`, path)) return;
-    for (const member of members) renderNode(doc, member, "-", depth + 1, path, inner, ctx);
-  }
+  if (!compact && !emit(ctx, `${indent(depth)}${title}`, path)) return;
+  const at = compact ? depth : depth + 1;
+  for (const member of members) renderNode(doc, member, "-", at, path, refs, ctx);
 }
 
 /**
- * One-line type: literals for enums and const, `T[]` for arrays, `object`
- * for objects. Memoised per node, so a definition shared by sibling branches
- * prints the same everywhere; only a node still being worked out (a cycle)
- * prints `any`. Capped at {@link MAX_DETAIL_BYTES}, which no line can exceed.
+ * Lists an array's items at `depth`. The array's `T[]` already shows their
+ * type, so their keys list straight under it, and so do the members of a
+ * union of objects (a discriminated union). Items that carry constraints or
+ * descriptions, or are only scalar alternatives or restrictions, get an
+ * `items:` line of their own.
+ */
+function renderItems(
+  doc: Doc,
+  items: unknown,
+  depth: number,
+  path: string[],
+  refs: Refs,
+  ctx: RenderContext,
+): void {
+  if (!step(ctx, path)) return;
+  const { schema: node, ref } = deref(doc, items);
+  if (ref && refs.has(ref)) {
+    emit(ctx, `${indent(depth)}items: ${recursive(refs, ref)}`, path);
+    return;
+  }
+  if (!isRecord(node)) return;
+  const view = gather(doc, node, withRef(refs, ref, path), path, ctx);
+  const compact = compactForm(view);
+  const objects = compact === "one of" && view.groups.flat().every((m) => hasChildren(doc, m));
+  if (hasNotes(view) || (compact !== undefined && !objects)) {
+    renderView(doc, view, "items", depth, path, ctx);
+    return;
+  }
+  renderBody(doc, view, depth, path, ctx, objects);
+}
+
+/**
+ * Lists the keys `owner` declares. A key is required when the value's root
+ * requires it: in its own `required`, in any `allOf` member's, or in every
+ * alternative's.
+ */
+function renderKeys(
+  doc: Doc,
+  root: Record<string, unknown>,
+  owner: Record<string, unknown>,
+  depth: number,
+  path: string[],
+  refs: Refs,
+  ctx: RenderContext,
+): void {
+  if (isRecord(owner.properties)) {
+    for (const [key, child] of Object.entries(owner.properties)) {
+      const required = requiresKey(doc, root, key, new Map());
+      renderNode(doc, child, `${key}${required ? "" : "?"}`, depth, [...path, key], refs, ctx);
+    }
+  }
+  if (isRecord(owner.additionalProperties)) {
+    const valuePath = [...path, "*"];
+    renderNode(doc, owner.additionalProperties, "[key: string]", depth, valuePath, refs, ctx);
+  }
+}
+
+/** The line's type, marked `|null` when a folded union allows null. */
+function lineHead(view: View): string {
+  const head = view.head;
+  if (!view.nullable || /(^|\|)null(\||$)/.test(head)) return head;
+  return head.includes("&") ? `(${head})|null` : `${head}|null`;
+}
+
+function hasOwnType(node: Record<string, unknown>): boolean {
+  return (
+    "const" in node ||
+    Array.isArray(node.enum) ||
+    typeof node.type === "string" ||
+    Array.isArray(node.type)
+  );
+}
+
+/** A type without its `null` alternative. */
+function stripNull(head: string): string {
+  const parts = head.split("|").filter((part) => part !== "null");
+  return parts.length > 0 ? parts.join("|") : head;
+}
+
+/**
+ * One-line type: literals for enums and const, the `type` keyword (`T[]` for
+ * arrays), the alternatives of a union, the shared type of `allOf` members
+ * (`A&B` when they differ), `object` for keys. Memoised per node, so a
+ * definition shared by sibling branches prints the same everywhere; only a
+ * node still being worked out (a cycle) prints `any`. Capped at
+ * {@link MAX_DETAIL_BYTES}, which no line can exceed.
  */
 function typeHead(doc: Doc, node: Record<string, unknown>): string {
   return memo(doc.heads, node, "any", () =>
@@ -645,18 +811,20 @@ function typeHead(doc: Doc, node: Record<string, unknown>): string {
   );
 }
 
+function headOf(doc: Doc, schema: unknown): string {
+  const node = deref(doc, schema).schema;
+  return isRecord(node) ? typeHead(doc, node) : "any";
+}
+
+/** The distinct types of a node's union members, joined with `|`. */
+function unionHead(doc: Doc, node: Record<string, unknown>): string {
+  return [...new Set(unionOf(node).map((member) => headOf(doc, member)))].join("|");
+}
+
 function computeTypeHead(doc: Doc, node: Record<string, unknown>): string {
   if ("const" in node) return formatLiteral(node.const);
   if (Array.isArray(node.enum) && node.enum.length > 0) {
     return [...new Set(node.enum.map(formatLiteral))].join("|");
-  }
-  const variants = unionOf(node);
-  if (variants.length > 0 && !hasOwnKeys(node)) {
-    const heads = variants.map((variant) => {
-      const resolved = deref(doc, variant).schema;
-      return isRecord(resolved) ? typeHead(doc, resolved) : "any";
-    });
-    return [...new Set(heads)].join("|");
   }
   const names =
     typeof node.type === "string"
@@ -664,26 +832,34 @@ function computeTypeHead(doc: Doc, node: Record<string, unknown>): string {
       : Array.isArray(node.type)
         ? node.type.filter((name): name is string => typeof name === "string")
         : [];
-  if (names.length === 0) {
-    if (hasOwnKeys(node) || allOf(node).length > 0 || variants.length > 0) return "object";
-    return "any";
+  if (names.length > 0) {
+    return names
+      .map((name) => {
+        if (name !== "array") return name;
+        const items = deref(doc, node.items).schema;
+        if (!isRecord(items)) return "array";
+        const head = typeHead(doc, items);
+        return /[|&]/.test(head) ? `(${head})[]` : `${head}[]`;
+      })
+      .join("|");
   }
-  return names
-    .map((name) => {
-      if (name !== "array") return name;
-      const items = deref(doc, node.items).schema;
-      if (!isRecord(items)) return "array";
-      const head = typeHead(doc, items);
-      return head.includes("|") ? `(${head})[]` : `${head}[]`;
-    })
-    .join("|");
+  if (hasOwnKeys(node)) return "object";
+  if (unionOf(node).length > 0) return unionHead(doc, node);
+  const conjuncts = [...new Set(allOf(node).map((member) => headOf(doc, member)))].filter(
+    (head) => head !== "any",
+  );
+  if (conjuncts.length === 1) return conjuncts[0] as string;
+  if (conjuncts.length > 1) {
+    return conjuncts.map((head) => (head.includes("|") ? `(${head})` : head)).join("&");
+  }
+  return "any";
 }
 
-/**
- * ` (constraints) — description` for a node, each part only when present.
- * `fallbackDescription` is a wrapper's description, used when the node has none.
- */
-function annotate(node: Record<string, unknown>, fallbackDescription?: unknown): string {
+/** A node's own constraints and description, each only when present. */
+function annotations(node: Record<string, unknown>): {
+  constraints: string[];
+  descriptions: string[];
+} {
   const notes: string[] = [];
   const range = (min: unknown, max: unknown, unit: string) => {
     const lo = typeof min === "number" && min > 0 ? min : undefined;
@@ -722,14 +898,17 @@ function annotate(node: Record<string, unknown>, fallbackDescription?: unknown):
   }
   if ("default" in node) notes.push(`default ${formatLiteral(node.default)}`);
 
-  let out = notes.length > 0 ? ` (${notes.join(", ")})` : "";
-  const description =
+  const descriptions =
     typeof node.description === "string" && node.description.trim()
-      ? node.description
-      : fallbackDescription;
-  if (typeof description === "string" && description.trim()) {
-    out += ` — ${description.trim().replace(/\s*\n\s*/g, " ")}`;
-  }
+      ? [node.description.trim().replace(/\s*\n\s*/g, " ")]
+      : [];
+  return { constraints: notes, descriptions };
+}
+
+/** ` (constraints) — descriptions`, each part only when present. */
+function formatNotes(view: View): string {
+  let out = view.constraints.length > 0 ? ` (${view.constraints.join(", ")})` : "";
+  if (view.descriptions.length > 0) out += ` — ${view.descriptions.join("; ")}`;
   return out;
 }
 
@@ -743,31 +922,33 @@ function indent(depth: number): string {
 
 /**
  * Joins the heading and lines. When rendering stopped early, adds a footer
- * that says so and names the narrower path where it stopped, and checks the
- * whole result against {@link MAX_DETAIL_BYTES}, dropping lines from the end
- * if needed.
+ * that says so and names a narrower path, dropping lines from the end until
+ * the whole result, footer included, fits {@link MAX_DETAIL_BYTES}. The hint
+ * follows the first line left out.
  */
 function finish(ctx: RenderContext): string {
-  if (!ctx.cut) return [ctx.heading, ...ctx.lines].join("\n");
-
-  let footer: string;
-  if (ctx.lines.length === 0) {
-    footer = `…${ctx.subject} is too long to show within ${MAX_DETAIL_BYTES} bytes.`;
-  } else {
-    // The key just below the requested path that holds the cut.
-    const rest = ctx.cut.slice(ctx.requested.length).filter((key) => key !== "*");
-    const narrower = rest.length > 0 ? showPath([...ctx.requested, rest[0] as string]) : "";
-    const hint = narrower
-      ? ` Ask for a narrower path, such as "${truncateBytes(narrower, MAX_HINT_BYTES)}".`
-      : "";
-    footer = `…cut here to stay within ${MAX_DETAIL_BYTES} bytes.${hint}`;
-  }
+  const join = (lines: Line[], footer?: string) =>
+    [ctx.heading, ...lines.map((line) => line.text), ...(footer ? [footer] : [])].join("\n");
+  if (!ctx.cut) return join(ctx.lines);
 
   const lines = [...ctx.lines];
-  let text = [ctx.heading, ...lines, footer].join("\n");
-  while (byteLength(text) > MAX_DETAIL_BYTES && lines.length > 0) {
-    lines.pop();
-    text = [ctx.heading, ...lines, footer].join("\n");
+  let cut = ctx.cut;
+  for (;;) {
+    const text = join(lines, footer(ctx, cut, lines.length === 0));
+    if (byteLength(text) <= MAX_DETAIL_BYTES || lines.length === 0) {
+      return truncateBytes(text, MAX_DETAIL_BYTES);
+    }
+    cut = (lines.pop() as Line).path;
   }
-  return truncateBytes(text, MAX_DETAIL_BYTES);
+}
+
+function footer(ctx: RenderContext, cut: string[], empty: boolean): string {
+  if (empty) return `…${ctx.subject} is too long to show within ${MAX_DETAIL_BYTES} bytes.`;
+  // The key just below the requested path that holds the cut.
+  const rest = cut.slice(ctx.requested.length).filter((key) => key !== "*");
+  const narrower = rest.length > 0 ? showPath([...ctx.requested, rest[0] as string]) : "";
+  const hint = narrower
+    ? ` Ask for a narrower path, such as "${truncateBytes(narrower, MAX_HINT_BYTES)}".`
+    : "";
+  return `…cut here to stay within ${MAX_DETAIL_BYTES} bytes.${hint}`;
 }
