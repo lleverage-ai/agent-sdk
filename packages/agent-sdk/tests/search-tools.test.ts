@@ -858,6 +858,202 @@ describe("createSearchToolsTool", () => {
       expect(bytes(nested)).toBeLessThanOrEqual(4000);
     });
 
+    it("bounds the work on shared $refs in allOf when resolving a path", async () => {
+      const depth = 30;
+      const defs = Object.fromEntries(
+        Array.from({ length: depth }, (_, i) => [
+          `D${i}`,
+          i === depth - 1
+            ? { type: "object", properties: { value: { type: "string" } } }
+            : {
+                allOf: [
+                  { $ref: `#/$defs/D${i + 1}` },
+                  {
+                    allOf: [{ $ref: `#/$defs/D${i + 1}` }],
+                    properties: { value: { description: String(i) } },
+                  },
+                ],
+              },
+        ]),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("dag", {
+        nest: tool({
+          description: "Nests a DAG",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { root: { $ref: "#/$defs/D0" } },
+            $defs: defs,
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      const result = await drill(manager, "dag__nest", "root.value");
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+      expect(result).toMatch(/^Schema of root\.value in dag__nest:\nroot\.value\?: all of\n/);
+      expect(result).toContain("  - string");
+    });
+
+    it("keeps annotations below composed and nullable array items", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("people", {
+        invite: tool({
+          description: "Invites people",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              who: {
+                type: "array",
+                items: {
+                  anyOf: [
+                    { type: "string", pattern: "^usr_", description: "Existing user" },
+                    { type: "string", format: "email", description: "Invitation address" },
+                  ],
+                },
+              },
+              names: {
+                type: "array",
+                items: { anyOf: [{ type: "string", minLength: 1 }, { type: "null" }] },
+              },
+              code: {
+                anyOf: [
+                  {
+                    allOf: [
+                      { type: "string", minLength: 3 },
+                      { type: "string", pattern: "^[A-Z]+$" },
+                    ],
+                  },
+                  { type: "null" },
+                ],
+              },
+            },
+            required: ["who"],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "people__invite", "")).toBe(
+        [
+          "Arguments of people__invite:",
+          "who: string[]",
+          "  items: one of",
+          "    - string (pattern ^usr_) — Existing user",
+          "    - string (email) — Invitation address",
+          "names?: (string|null)[]",
+          "  items: string|null (non-empty)",
+          "code?: all of (or null)",
+          "  - string (at least 3 chars)",
+          "  - string (pattern ^[A-Z]+$)",
+        ].join("\n"),
+      );
+    });
+
+    it("marks a key required when required sits in a different allOf member", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("split", {
+        apart: tool({
+          description: "Required in its own member",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            allOf: [{ properties: { status: { type: "string" } } }, { required: ["status"] }],
+          }),
+          execute: async () => "ok",
+        }),
+        outside: tool({
+          description: "Required on the enclosing node",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            required: ["status"],
+            allOf: [{ properties: { status: { type: "string" } } }],
+          }),
+          execute: async () => "ok",
+        }),
+        either: tool({
+          description: "Required in only one alternative",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { status: { type: "string" } },
+            anyOf: [{ required: ["status"] }, { required: ["note"] }],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      for (const name of ["split__apart", "split__outside"]) {
+        expect(await drill(manager, name, "status")).toBe(
+          `Schema of status in ${name}:\nstatus: string`,
+        );
+      }
+      expect(await drill(manager, "split__either", "status")).toBe(
+        "Schema of status in split__either:\nstatus?: string",
+      );
+      for (const name of ["split__apart", "split__outside"]) {
+        expect(await drill(manager, name, "")).toBe(`Arguments of ${name}:\nstatus: string`);
+      }
+      expect(await drill(manager, "split__either", "")).toBe(
+        "Arguments of split__either:\nstatus?: string",
+      );
+    });
+
+    it("gives a shared definition the same type in sibling branches", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("ids", {
+        pick: tool({
+          description: "Picks one or more ids",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              id: {
+                anyOf: [{ $ref: "#/$defs/Id" }, { type: "array", items: { $ref: "#/$defs/Id" } }],
+              },
+            },
+            $defs: { Id: { type: "string" } },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "ids__pick", "id")).toBe(
+        "Schema of id in ids__pick:\nid?: string|string[]",
+      );
+    });
+
+    it("shows long enums and literals whole when they fit", async () => {
+      const countries = Array.from({ length: 150 }, (_, i) => `Country number ${i}`);
+      const longConst = "x".repeat(200);
+      const manager = new MCPManager();
+      manager.registerPluginTools("geo", {
+        set: tool({
+          description: "Sets a country",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              country: { type: "string", enum: countries.slice(0, 90) },
+              marker: { const: longConst },
+              everything: { type: "string", enum: countries.concat(countries.map((c) => `${c}!`)) },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const country = await drill(manager, "geo__set", "country");
+      expect(bytes(country)).toBeGreaterThan(1500);
+      expect(country).toContain('"Country number 89"');
+      expect(country).not.toContain("…");
+      expect(await drill(manager, "geo__set", "marker")).toContain(JSON.stringify(longConst));
+
+      const everything = await drill(manager, "geo__set", "everything");
+      expect(bytes(everything)).toBeLessThanOrEqual(4000);
+      expect(everything).toBe(
+        'Schema of everything in geo__set:\n…"everything" is too long to show within 4000 bytes.',
+      );
+    });
+
     it("offers path only when schemas are shown", () => {
       const manager = createManager();
       const withSchema = createSearchToolsTool({ manager, includeSchema: true });

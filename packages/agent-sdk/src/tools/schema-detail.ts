@@ -7,19 +7,25 @@
  * constraint and description, one key per line, to any depth, within
  * {@link MAX_DETAIL_BYTES}.
  *
+ * Schemas come from plugins and external MCP servers, so every walk is
+ * bounded: helpers are memoised per schema node and rendering stops at
+ * {@link MAX_RENDER_STEPS} nodes, even when shared `$ref`s describe
+ * exponentially many paths.
+ *
  * @packageDocumentation
  */
 
 /**
  * Maximum UTF-8 bytes for one drill-down result, heading and footer
  * included. Rendering stops when the next line would not fit, and the result
- * names a narrower path to ask for.
+ * says so and names a narrower path to ask for. Lines and literals are never
+ * cut short: a line is shown whole or not at all.
  * @internal
  */
 export const MAX_DETAIL_BYTES = 4000;
 
 /**
- * Maximum schema nodes visited for one drill-down. Shared `$ref`s can
+ * Maximum schema nodes rendered for one drill-down. Shared `$ref`s can
  * describe exponentially many paths, so rendering stops here even when the
  * output is still short.
  * @internal
@@ -29,14 +35,8 @@ export const MAX_RENDER_STEPS = 2000;
 /** Bytes kept free for the footer while lines are added. */
 const FOOTER_RESERVE = 300;
 
-/** Longest single line; a longer description or enum is cut with `…`. */
-const MAX_LINE_BYTES = 1000;
-
 /** Longest `pattern` printed; longer ones (generated date regexes) add nothing. */
 const MAX_PATTERN_BYTES = 80;
-
-/** Longest `const` or `default` literal printed in full. */
-const MAX_LITERAL_BYTES = 80;
 
 /** Longest path named in the footer. */
 const MAX_HINT_BYTES = 150;
@@ -107,23 +107,23 @@ export function formatSchemaDetail(
   inputSchema: unknown,
   path: string,
 ): SchemaDetailResult {
-  const root = inputSchema;
+  const doc = createDoc(inputSchema);
   const segments = parseArgumentPath(path);
   const shown = showPath(segments);
 
-  let current: Candidate | undefined = { schema: root, required: true };
+  let current: Candidate = { schema: inputSchema, required: true };
   const walked: string[] = [];
   for (const segment of segments) {
-    const next: Candidate | undefined =
+    const next =
       segment === "[]"
-        ? resolveItems(root, current.schema, new Map())
-        : resolveKey(root, current.schema, segment, new Map());
+        ? resolveItems(doc, current.schema, new Map())
+        : resolveKey(doc, current.schema, segment, new Map(), new Map());
     if (!next) {
       const at = walked.length > 0 ? `"${showPath(walked)}"` : "the top level";
       if (segment === "[]") {
         return { ok: false, error: `${at} in ${toolName} is not an array.` };
       }
-      const keys = availableKeys(root, current.schema, new Set());
+      const keys = availableKeys(doc, current.schema, new Set());
       return {
         ok: false,
         error:
@@ -137,30 +137,53 @@ export function formatSchemaDetail(
   }
 
   if (segments.length === 0) {
-    const heading = `Arguments of ${toolName}:`;
-    const node = deref(root, root).schema;
+    const node = deref(doc, inputSchema).schema;
     if (!isRecord(node)) {
       return { ok: false, error: `${toolName} has no input schema to show.` };
     }
-    const ctx = createContext(heading, segments);
-    renderChildren(root, node, 0, [], new Map(), ctx);
+    const ctx = createContext(`Arguments of ${toolName}:`, segments, "the whole input");
+    renderChildren(doc, node, 0, [], new Map(), ctx);
     if (ctx.lines.length === 0 && !ctx.cut) {
       return { ok: true, text: `${toolName} takes no arguments.` };
     }
     return { ok: true, text: finish(ctx) };
   }
 
-  const ctx = createContext(`Schema of ${shown} in ${toolName}:`, segments);
+  const ctx = createContext(`Schema of ${shown} in ${toolName}:`, segments, `"${shown}"`);
   const label = `${shown}${current.required ? "" : "?"}`;
-  renderNode(root, current.schema, label, 0, segments, new Map(), ctx);
+  renderNode(doc, current.schema, label, 0, segments, new Map(), ctx);
   return { ok: true, text: finish(ctx) };
 }
 
 // ---------------------------------------------------------------------------
-// Schema helpers
+// Schema helpers, memoised per schema node
+
+/** One input schema with the caches its walks share. */
+interface Doc {
+  root: unknown;
+  heads: Map<object, string>;
+  children: Map<object, boolean>;
+  annotated: Map<object, boolean>;
+}
+
+function createDoc(root: unknown): Doc {
+  return { root, heads: new Map(), children: new Map(), annotated: new Map() };
+}
+
+/**
+ * Runs `compute` once per schema node. While it runs, the node answers
+ * `pending`, which also ends a cycle.
+ */
+function memo<T>(cache: Map<object, T>, node: object, pending: T, compute: () => T): T {
+  if (cache.has(node)) return cache.get(node) as T;
+  cache.set(node, pending);
+  const value = compute();
+  cache.set(node, value);
+  return value;
+}
 
 /** Follows a local `$ref` (`#`, `#/$defs/X`, `#/definitions/X`). */
-function deref(root: unknown, schema: unknown): { schema: unknown; ref?: string } {
+function deref(doc: Doc, schema: unknown): { schema: unknown; ref?: string } {
   const seen = new Set<string>();
   let node = schema;
   let ref: string | undefined;
@@ -168,7 +191,7 @@ function deref(root: unknown, schema: unknown): { schema: unknown; ref?: string 
     if (seen.has(node.$ref)) return { schema: {}, ref: node.$ref };
     seen.add(node.$ref);
     ref = node.$ref;
-    node = resolvePointer(root, node.$ref);
+    node = resolvePointer(doc.root, node.$ref);
   }
   return { schema: node, ref };
 }
@@ -198,9 +221,13 @@ function allOf(node: Record<string, unknown>): unknown[] {
   return Array.isArray(node.allOf) ? node.allOf : [];
 }
 
-function isNullSchema(root: unknown, schema: unknown): boolean {
-  const node = deref(root, schema).schema;
+function isNullSchema(doc: Doc, schema: unknown): boolean {
+  const node = deref(doc, schema).schema;
   return isRecord(node) && node.type === "null";
+}
+
+function nonNullMembers(doc: Doc, node: Record<string, unknown>): unknown[] {
+  return unionOf(node).filter((member) => !isNullSchema(doc, member));
 }
 
 /** True when the node itself names keys (properties or a record value schema). */
@@ -212,19 +239,37 @@ function hasOwnKeys(node: Record<string, unknown>): boolean {
 }
 
 /** True when a schema has keys (directly or through array items or members) to list. */
-function hasChildren(root: unknown, schema: unknown, seen: Set<unknown> = new Set()): boolean {
-  const node = deref(root, schema).schema;
-  if (!isRecord(node) || seen.has(node)) return false;
-  seen.add(node);
-  if (hasOwnKeys(node)) return true;
-  if (isRecord(node.items)) return hasChildren(root, node.items, seen);
-  return [...unionOf(node), ...allOf(node)].some((member) => hasChildren(root, member, seen));
+function hasChildren(doc: Doc, schema: unknown): boolean {
+  const node = deref(doc, schema).schema;
+  if (!isRecord(node)) return false;
+  return memo(
+    doc.children,
+    node,
+    false,
+    () =>
+      hasOwnKeys(node) ||
+      (isRecord(node.items) && hasChildren(doc, node.items)) ||
+      [...unionOf(node), ...allOf(node)].some((member) => hasChildren(doc, member)),
+  );
 }
 
-/** True when a schema carries constraints or a description of its own. */
-function hasAnnotations(root: unknown, schema: unknown): boolean {
-  const node = deref(root, schema).schema;
-  return isRecord(node) && annotate(node) !== "";
+/**
+ * True when a schema, or anything it is composed of (union and `allOf`
+ * members, array items), carries constraints or a description. Keys are not
+ * looked into: they get lines of their own.
+ */
+function hasDeepAnnotations(doc: Doc, schema: unknown): boolean {
+  const node = deref(doc, schema).schema;
+  if (!isRecord(node)) return false;
+  return memo(
+    doc.annotated,
+    node,
+    false,
+    () =>
+      annotate(node) !== "" ||
+      (isRecord(node.items) && hasDeepAnnotations(doc, node.items)) ||
+      [...unionOf(node), ...allOf(node)].some((member) => hasDeepAnnotations(doc, member)),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -235,119 +280,116 @@ interface Candidate {
   required: boolean;
 }
 
-/**
- * Results per schema node, so shared `$ref`s are resolved once (`null` while
- * in progress, which also ends a cycle).
- */
+/** Results per schema node (`null` while in progress, which ends a cycle). */
 type Memo = Map<object, Candidate | null | undefined>;
 
 function memoised(
-  root: unknown,
+  doc: Doc,
   schema: unknown,
-  memo: Memo,
+  cache: Memo,
   resolve: (node: Record<string, unknown>) => Candidate | undefined,
 ): Candidate | undefined {
-  const node = deref(root, schema).schema;
+  const node = deref(doc, schema).schema;
   if (!isRecord(node)) return undefined;
-  if (memo.has(node)) return memo.get(node) ?? undefined;
-  memo.set(node, null);
-  const result = resolve(node);
-  memo.set(node, result);
-  return result;
+  return memo(cache, node, null, () => resolve(node)) ?? undefined;
 }
 
 /**
- * The schema a key has at `schema`. Matches in `allOf` members (and the node's
- * own properties) all apply, so they combine as `allOf` and the key is
- * required if any of them requires it. Matches in `anyOf`/`oneOf` members are
- * alternatives: they combine as `anyOf`, required only if every member
- * requires it. Arrays are walked through to their items.
+ * The schema a key has at `schema`. Its declarations in the node's own
+ * properties, array items and `allOf` members all apply, so they combine as
+ * `allOf`; declarations in `anyOf`/`oneOf` members are alternatives and
+ * combine as `anyOf`. Whether the key is required is worked out separately,
+ * since `required` can sit in a different member from the declaration.
  */
 function resolveKey(
-  root: unknown,
+  doc: Doc,
   schema: unknown,
   key: string,
-  memo: Memo,
+  cache: Memo,
+  requiredCache: Map<object, boolean>,
 ): Candidate | undefined {
-  return memoised(root, schema, memo, (node) => resolveKeyIn(root, node, key, memo));
+  return memoised(doc, schema, cache, (node) => {
+    const conjuncts: Candidate[] = [];
+    if (isRecord(node.properties) && Object.hasOwn(node.properties, key)) {
+      conjuncts.push({ schema: node.properties[key], required: false });
+    }
+    if (isRecord(node.items)) {
+      const fromItems = resolveKey(doc, node.items, key, cache, requiredCache);
+      if (fromItems) conjuncts.push(fromItems);
+    }
+    for (const member of allOf(node)) {
+      const fromMember = resolveKey(doc, member, key, cache, requiredCache);
+      if (fromMember) conjuncts.push(fromMember);
+    }
+    const members = nonNullMembers(doc, node);
+    const alternatives = members
+      .map((member) => resolveKey(doc, member, key, cache, requiredCache))
+      .filter((candidate): candidate is Candidate => candidate !== undefined);
+    if (alternatives.length > 0) {
+      const combined = combine(alternatives, "anyOf");
+      if (alternatives.length < members.length) combined.required = false;
+      conjuncts.push(combined);
+    }
+    if (conjuncts.length === 0 && isRecord(node.additionalProperties)) {
+      conjuncts.push({ schema: node.additionalProperties, required: false });
+    }
+    if (conjuncts.length === 0) return undefined;
+    const combined = combine(conjuncts, "allOf");
+    combined.required ||= requiresKey(doc, node, key, requiredCache);
+    return combined;
+  });
 }
 
-function resolveKeyIn(
-  root: unknown,
-  node: Record<string, unknown>,
-  key: string,
-  memo: Memo,
-): Candidate | undefined {
-  const conjuncts: Candidate[] = [];
-  if (isRecord(node.properties) && Object.hasOwn(node.properties, key)) {
-    const required = Array.isArray(node.required) && node.required.includes(key);
-    conjuncts.push({ schema: node.properties[key], required });
-  }
-  if (isRecord(node.items)) {
-    const fromItems = resolveKey(root, node.items, key, memo);
-    if (fromItems) conjuncts.push(fromItems);
-  }
-  for (const member of allOf(node)) {
-    const fromMember = resolveKey(root, member, key, memo);
-    if (fromMember) conjuncts.push(fromMember);
-  }
-  const members = unionOf(node).filter((member) => !isNullSchema(root, member));
-  const alternatives = members
-    .map((member) => resolveKey(root, member, key, memo))
-    .filter((candidate): candidate is Candidate => candidate !== undefined);
-  if (alternatives.length > 0) {
-    const combined = combine(alternatives, "anyOf");
-    if (alternatives.length < members.length) combined.required = false;
-    conjuncts.push(combined);
-  }
-  if (conjuncts.length === 0 && isRecord(node.additionalProperties)) {
-    conjuncts.push({ schema: node.additionalProperties, required: false });
-  }
-  return conjuncts.length > 0 ? combine(conjuncts, "allOf") : undefined;
+/**
+ * True when an object schema requires `key`: in its own `required`, in any
+ * `allOf` member's, or in every one of its union members'.
+ */
+function requiresKey(doc: Doc, schema: unknown, key: string, cache: Map<object, boolean>): boolean {
+  const node = deref(doc, schema).schema;
+  if (!isRecord(node)) return false;
+  return memo(cache, node, false, () => {
+    if (Array.isArray(node.required) && node.required.includes(key)) return true;
+    if (allOf(node).some((member) => requiresKey(doc, member, key, cache))) return true;
+    const members = nonNullMembers(doc, node);
+    return members.length > 0 && members.every((member) => requiresKey(doc, member, key, cache));
+  });
 }
 
 /** The item schema of an array at `schema`, combined across members as for keys. */
-function resolveItems(root: unknown, schema: unknown, memo: Memo): Candidate | undefined {
-  return memoised(root, schema, memo, (node) => resolveItemsIn(root, node, memo));
-}
-
-function resolveItemsIn(
-  root: unknown,
-  node: Record<string, unknown>,
-  memo: Memo,
-): Candidate | undefined {
-  const conjuncts: Candidate[] = [];
-  if (isRecord(node.items)) conjuncts.push({ schema: node.items, required: true });
-  for (const member of allOf(node)) {
-    const fromMember = resolveItems(root, member, memo);
-    if (fromMember) conjuncts.push(fromMember);
-  }
-  const alternatives = unionOf(node)
-    .map((member) => resolveItems(root, member, memo))
-    .filter((candidate): candidate is Candidate => candidate !== undefined);
-  if (alternatives.length > 0) conjuncts.push(combine(alternatives, "anyOf"));
-  return conjuncts.length > 0 ? combine(conjuncts, "allOf") : undefined;
-}
-
-function combine(candidates: Candidate[], operator: "allOf" | "anyOf"): Candidate {
-  const distinct: Candidate[] = [];
-  const keys = new Set<string>();
-  for (const candidate of candidates) {
-    const key = JSON.stringify(candidate.schema) ?? "";
-    if (keys.has(key)) {
-      // The same schema twice: in allOf any requirement holds, in anyOf all must.
-      const twin = distinct.find((d) => (JSON.stringify(d.schema) ?? "") === key);
-      if (twin) {
-        twin.required =
-          operator === "allOf"
-            ? twin.required || candidate.required
-            : twin.required && candidate.required;
-      }
-      continue;
+function resolveItems(doc: Doc, schema: unknown, cache: Memo): Candidate | undefined {
+  return memoised(doc, schema, cache, (node) => {
+    const conjuncts: Candidate[] = [];
+    if (isRecord(node.items)) conjuncts.push({ schema: node.items, required: true });
+    for (const member of allOf(node)) {
+      const fromMember = resolveItems(doc, member, cache);
+      if (fromMember) conjuncts.push(fromMember);
     }
-    keys.add(key);
-    distinct.push({ ...candidate });
+    const alternatives = nonNullMembers(doc, node)
+      .map((member) => resolveItems(doc, member, cache))
+      .filter((candidate): candidate is Candidate => candidate !== undefined);
+    if (alternatives.length > 0) conjuncts.push(combine(alternatives, "anyOf"));
+    return conjuncts.length > 0 ? combine(conjuncts, "allOf") : undefined;
+  });
+}
+
+/**
+ * Combines candidates under one operator, merging the same schema object
+ * (shared through memoisation or a `$ref`) instead of comparing serialised
+ * schemas, which could expand a shared graph exponentially.
+ */
+function combine(candidates: Candidate[], operator: "allOf" | "anyOf"): Candidate {
+  const bySchema = new Map<unknown, Candidate>();
+  for (const candidate of candidates) {
+    const twin = bySchema.get(candidate.schema);
+    if (!twin) {
+      bySchema.set(candidate.schema, { ...candidate });
+    } else if (operator === "allOf") {
+      twin.required ||= candidate.required;
+    } else {
+      twin.required &&= candidate.required;
+    }
   }
+  const distinct = [...bySchema.values()];
   if (distinct.length === 1) return distinct[0] as Candidate;
   const required =
     operator === "allOf"
@@ -356,14 +398,14 @@ function combine(candidates: Candidate[], operator: "allOf" | "anyOf"): Candidat
   return { schema: { [operator]: distinct.map((candidate) => candidate.schema) }, required };
 }
 
-function availableKeys(root: unknown, schema: unknown, seen: Set<unknown>): string[] {
-  const node = deref(root, schema).schema;
+function availableKeys(doc: Doc, schema: unknown, seen: Set<unknown>): string[] {
+  const node = deref(doc, schema).schema;
   if (!isRecord(node) || seen.has(node)) return [];
   seen.add(node);
   const keys = isRecord(node.properties) ? Object.keys(node.properties) : [];
-  if (isRecord(node.items)) keys.push(...availableKeys(root, node.items, seen));
+  if (isRecord(node.items)) keys.push(...availableKeys(doc, node.items, seen));
   for (const member of [...unionOf(node), ...allOf(node)]) {
-    keys.push(...availableKeys(root, member, seen));
+    keys.push(...availableKeys(doc, member, seen));
   }
   return [...new Set(keys)];
 }
@@ -375,6 +417,8 @@ interface RenderContext {
   heading: string;
   /** The requested path's segments, for the footer's narrower-path hint. */
   requested: string[];
+  /** The requested argument as the footer names it. */
+  subject: string;
   lines: string[];
   bytes: number;
   steps: number;
@@ -382,8 +426,8 @@ interface RenderContext {
   cut?: string[];
 }
 
-function createContext(heading: string, requested: string[]): RenderContext {
-  return { heading, requested, lines: [], bytes: byteLength(heading), steps: 0 };
+function createContext(heading: string, requested: string[], subject: string): RenderContext {
+  return { heading, requested, subject, lines: [], bytes: byteLength(heading), steps: 0 };
 }
 
 /** Counts one rendering step; false (and the cut recorded) once a budget is spent. */
@@ -397,10 +441,9 @@ function step(ctx: RenderContext, path: string[]): boolean {
   return true;
 }
 
-/** Adds a line if it fits the output budget; otherwise records the cut. */
-function emit(ctx: RenderContext, text: string, path: string[]): boolean {
+/** Adds a whole line if it fits the output budget; otherwise records the cut. */
+function emit(ctx: RenderContext, line: string, path: string[]): boolean {
   if (ctx.cut) return false;
-  const line = truncateBytes(text, MAX_LINE_BYTES);
   const size = byteLength(line) + 1;
   if (ctx.bytes + size > MAX_DETAIL_BYTES - FOOTER_RESERVE) {
     ctx.cut = path;
@@ -437,181 +480,172 @@ function headLine(label: string, head: string, depth: number): string {
   return label === "-" ? `${indent(depth)}- ${head}` : `${indent(depth)}${label}: ${head}`;
 }
 
+/** How a nullable or one-member union wrapper passes itself on to its member. */
+interface Wrapper {
+  nullable: boolean;
+  description?: unknown;
+}
+
 /**
  * Renders `label: <type> (constraints) — description`, then what is inside
  * it one level deeper: keys, union members that differ in shape or
  * annotations, or the restrictions of an `allOf`.
  */
 function renderNode(
-  root: unknown,
+  doc: Doc,
   schema: unknown,
   label: string,
   depth: number,
   path: string[],
   refs: Refs,
   ctx: RenderContext,
+  wrapper?: Wrapper,
 ): void {
   if (!step(ctx, path)) return;
-  const { schema: node, ref } = deref(root, schema);
+  const { schema: node, ref } = deref(doc, schema);
   if (ref && refs.has(ref)) {
     emit(ctx, headLine(label, recursive(refs, ref), depth), path);
     return;
   }
-  let inner = withRef(refs, ref, path);
+  const inner = withRef(refs, ref, path);
   if (!isRecord(node)) {
-    emit(ctx, headLine(label, "any", depth), path);
+    emit(ctx, headLine(label, wrapper?.nullable ? "any|null" : "any", depth), path);
     return;
   }
+  const notes = annotate(node, wrapper?.description);
 
   if (!hasOwnKeys(node)) {
     const variants = unionOf(node);
-    const members = variants.filter((variant) => !isNullSchema(root, variant));
-    const nullable = members.length < variants.length;
+    const members = nonNullMembers(doc, node);
+    const nullable = Boolean(wrapper?.nullable) || members.length < variants.length;
 
-    // A nullable (or one-member) union prints as its one member, `|null` added.
+    // A nullable (or one-member) union renders as its one member, marked nullable.
     if (variants.length > 0 && members.length === 1) {
-      const only = deref(root, members[0]);
-      if (only.ref && inner.has(only.ref)) {
-        emit(ctx, headLine(label, recursive(inner, only.ref), depth), path);
-        return;
-      }
-      if (isRecord(only.schema)) {
-        inner = withRef(inner, only.ref, path);
-        const merged = {
-          ...only.schema,
-          description: only.schema.description ?? node.description,
-        };
-        const head = `${typeHead(root, merged)}${nullable ? "|null" : ""}${annotate(merged)}`;
-        if (!emit(ctx, headLine(label, head, depth), path)) return;
-        renderChildren(root, merged, depth + 1, path, inner, ctx);
-        return;
-      }
+      const description = node.description ?? wrapper?.description;
+      renderNode(doc, members[0], label, depth, path, inner, ctx, { nullable, description });
+      return;
     }
 
     // Members that differ in more than their type are listed one by one.
     if (
       members.length > 1 &&
-      members.some((member) => hasChildren(root, member) || hasAnnotations(root, member))
+      members.some((member) => hasChildren(doc, member) || hasDeepAnnotations(doc, member))
     ) {
-      const head = `one of${nullable ? " (or null)" : ""}${annotate(node)}`;
+      const head = `one of${nullable ? " (or null)" : ""}${notes}`;
       if (!emit(ctx, headLine(label, head, depth), path)) return;
-      for (const member of members) renderNode(root, member, "-", depth + 1, path, inner, ctx);
+      for (const member of members) renderNode(doc, member, "-", depth + 1, path, inner, ctx);
       return;
     }
 
-    // Restrictions that all apply, when some are not plain objects with keys.
+    // Restrictions that all apply, unless they are plain objects whose keys merge.
     const conjuncts = allOf(node);
     if (
       conjuncts.length > 0 &&
-      conjuncts.some((member) => !hasChildren(root, member) || hasAnnotations(root, member))
+      conjuncts.some((member) => !hasChildren(doc, member) || hasDeepAnnotations(doc, member))
     ) {
-      const head = `all of${annotate(node)}`;
+      const head = `all of${nullable ? " (or null)" : ""}${notes}`;
       if (!emit(ctx, headLine(label, head, depth), path)) return;
-      for (const member of conjuncts) renderNode(root, member, "-", depth + 1, path, inner, ctx);
+      for (const member of conjuncts) renderNode(doc, member, "-", depth + 1, path, inner, ctx);
       return;
     }
   }
 
-  const head = `${typeHead(root, node)}${annotate(node)}`;
+  const head = `${typeHead(doc, node)}${wrapper?.nullable ? "|null" : ""}${notes}`;
   if (!emit(ctx, headLine(label, head, depth), path)) return;
-  renderChildren(root, node, depth + 1, path, inner, ctx);
+  renderChildren(doc, node, depth + 1, path, inner, ctx);
 }
 
 /**
- * Lists what is inside a node at `depth`: an array's items (their keys, or an
- * `items:` line when the items carry annotations of their own), the keys of
- * the node and its `allOf` members, and union members that have keys.
+ * Lists what is inside a node at `depth`: an array's items (their keys, or
+ * an `items:` line when the items are composed or annotated), the keys of the
+ * node and of its object `allOf` members, and union members that have keys.
  */
 function renderChildren(
-  root: unknown,
+  doc: Doc,
   node: Record<string, unknown>,
   depth: number,
   path: string[],
   refs: Refs,
   ctx: RenderContext,
+  owners: readonly unknown[] = [],
 ): void {
   if (!step(ctx, path)) return;
   let target = node;
   let inner = refs;
   while (isRecord(target.items)) {
-    const items = deref(root, target.items);
+    const items = deref(doc, target.items);
     if (items.ref && inner.has(items.ref)) {
       emit(ctx, `${indent(depth)}items: ${recursive(inner, items.ref)}`, path);
       return;
     }
-    if (!isRecord(items.schema)) return;
-    const members = unionOf(items.schema).filter((member) => !isNullSchema(root, member));
-    const listsMembers =
-      !hasOwnKeys(items.schema) &&
-      members.length > 1 &&
-      members.some((member) => hasChildren(root, member));
-    // Annotated items get their own line, so their constraints aren't lost.
-    if (hasAnnotations(root, items.schema) || (allOf(items.schema).length > 0 && !listsMembers)) {
-      renderNode(root, target.items, "items", depth, path, inner, ctx);
+    const itemNode = items.schema;
+    if (!isRecord(itemNode)) return;
+    if (!hasOwnKeys(itemNode)) {
+      const members = nonNullMembers(doc, itemNode);
+      const plain = !hasDeepAnnotations(doc, itemNode) && allOf(itemNode).length === 0;
+      // Plain object alternatives (a discriminated union) list straight under the array.
+      if (plain && members.length > 1 && members.some((member) => hasChildren(doc, member))) {
+        inner = withRef(inner, items.ref, path);
+        for (const member of members) renderNode(doc, member, "-", depth, path, inner, ctx);
+        return;
+      }
+      // Composed or annotated items get their own line, so nothing in them is lost.
+      if (!plain || members.length > 0) {
+        renderNode(doc, target.items, "items", depth, path, inner, ctx);
+        return;
+      }
+    } else if (hasDeepAnnotations(doc, itemNode)) {
+      renderNode(doc, target.items, "items", depth, path, inner, ctx);
       return;
     }
     inner = withRef(inner, items.ref, path);
-    target = items.schema;
-    if (listsMembers) {
-      for (const member of members) renderNode(root, member, "-", depth, path, inner, ctx);
-      return;
-    }
-    if (!hasOwnKeys(target) && members.length === 1) {
-      const only = deref(root, members[0]);
-      if (!isRecord(only.schema)) return;
-      if (only.ref && inner.has(only.ref)) {
-        emit(ctx, `${indent(depth)}items: ${recursive(inner, only.ref)}`, path);
-        return;
-      }
-      inner = withRef(inner, only.ref, path);
-      target = only.schema;
-    }
-    if (!hasChildren(root, target) && !isRecord(target.items)) return;
+    target = itemNode;
   }
 
-  // Object members of an allOf all apply: their keys are listed together.
+  // Object members of an allOf all apply: their keys are listed together, and
+  // a key is required when this node or any enclosing allOf requires it.
+  const scope = [...owners, target];
   for (const member of allOf(target)) {
-    const resolved = deref(root, member);
+    const resolved = deref(doc, member);
     if (!isRecord(resolved.schema) || (resolved.ref && inner.has(resolved.ref))) continue;
     if (!hasOwnKeys(resolved.schema)) continue;
-    renderChildren(root, resolved.schema, depth, path, withRef(inner, resolved.ref, path), ctx);
+    const memberRefs = withRef(inner, resolved.ref, path);
+    renderChildren(doc, resolved.schema, depth, path, memberRefs, ctx, scope);
   }
 
-  const required = new Set(
-    Array.isArray(target.required)
-      ? target.required.filter((key): key is string => typeof key === "string")
-      : [],
-  );
   if (isRecord(target.properties)) {
     for (const [key, child] of Object.entries(target.properties)) {
-      const label = `${key}${required.has(key) ? "" : "?"}`;
-      renderNode(root, child, label, depth, [...path, key], inner, ctx);
+      const required = scope.some((owner) => requiresKey(doc, owner, key, new Map()));
+      const label = `${key}${required ? "" : "?"}`;
+      renderNode(doc, child, label, depth, [...path, key], inner, ctx);
     }
   }
   if (isRecord(target.additionalProperties)) {
-    renderNode(
-      root,
-      target.additionalProperties,
-      "[key: string]",
-      depth,
-      [...path, "*"],
-      inner,
-      ctx,
-    );
+    const valuePath = [...path, "*"];
+    renderNode(doc, target.additionalProperties, "[key: string]", depth, valuePath, inner, ctx);
   }
 
   // Alternatives next to the node's own keys (or of a whole input) with keys of their own.
-  const members = unionOf(target).filter((member) => !isNullSchema(root, member));
-  if (members.some((member) => hasChildren(root, member))) {
+  const members = nonNullMembers(doc, target);
+  if (members.some((member) => hasChildren(doc, member))) {
     if (!emit(ctx, `${indent(depth)}one of:`, path)) return;
-    for (const member of members) renderNode(root, member, "-", depth + 1, path, inner, ctx);
+    for (const member of members) renderNode(doc, member, "-", depth + 1, path, inner, ctx);
   }
 }
 
-/** One-line type: literals for enums and const, `T[]` for arrays, `object` for objects. */
-function typeHead(root: unknown, node: Record<string, unknown>, seen = new Set<unknown>()): string {
-  if (seen.has(node)) return "any";
-  seen.add(node);
+/**
+ * One-line type: literals for enums and const, `T[]` for arrays, `object`
+ * for objects. Memoised per node, so a definition shared by sibling branches
+ * prints the same everywhere; only a node still being worked out (a cycle)
+ * prints `any`. Capped at {@link MAX_DETAIL_BYTES}, which no line can exceed.
+ */
+function typeHead(doc: Doc, node: Record<string, unknown>): string {
+  return memo(doc.heads, node, "any", () =>
+    truncateBytes(computeTypeHead(doc, node), MAX_DETAIL_BYTES),
+  );
+}
+
+function computeTypeHead(doc: Doc, node: Record<string, unknown>): string {
   if ("const" in node) return formatLiteral(node.const);
   if (Array.isArray(node.enum) && node.enum.length > 0) {
     return [...new Set(node.enum.map(formatLiteral))].join("|");
@@ -619,8 +653,8 @@ function typeHead(root: unknown, node: Record<string, unknown>, seen = new Set<u
   const variants = unionOf(node);
   if (variants.length > 0 && !hasOwnKeys(node)) {
     const heads = variants.map((variant) => {
-      const resolved = deref(root, variant).schema;
-      return isRecord(resolved) ? typeHead(root, resolved, seen) : "any";
+      const resolved = deref(doc, variant).schema;
+      return isRecord(resolved) ? typeHead(doc, resolved) : "any";
     });
     return [...new Set(heads)].join("|");
   }
@@ -637,16 +671,19 @@ function typeHead(root: unknown, node: Record<string, unknown>, seen = new Set<u
   return names
     .map((name) => {
       if (name !== "array") return name;
-      const items = deref(root, node.items).schema;
+      const items = deref(doc, node.items).schema;
       if (!isRecord(items)) return "array";
-      const head = typeHead(root, items, seen);
+      const head = typeHead(doc, items);
       return head.includes("|") ? `(${head})[]` : `${head}[]`;
     })
     .join("|");
 }
 
-/** ` (constraints) — description` for a node, each part only when present. */
-function annotate(node: Record<string, unknown>): string {
+/**
+ * ` (constraints) — description` for a node, each part only when present.
+ * `fallbackDescription` is a wrapper's description, used when the node has none.
+ */
+function annotate(node: Record<string, unknown>, fallbackDescription?: unknown): string {
   const notes: string[] = [];
   const range = (min: unknown, max: unknown, unit: string) => {
     const lo = typeof min === "number" && min > 0 ? min : undefined;
@@ -686,14 +723,18 @@ function annotate(node: Record<string, unknown>): string {
   if ("default" in node) notes.push(`default ${formatLiteral(node.default)}`);
 
   let out = notes.length > 0 ? ` (${notes.join(", ")})` : "";
-  if (typeof node.description === "string" && node.description.trim()) {
-    out += ` — ${node.description.trim().replace(/\s*\n\s*/g, " ")}`;
+  const description =
+    typeof node.description === "string" && node.description.trim()
+      ? node.description
+      : fallbackDescription;
+  if (typeof description === "string" && description.trim()) {
+    out += ` — ${description.trim().replace(/\s*\n\s*/g, " ")}`;
   }
   return out;
 }
 
 function formatLiteral(value: unknown): string {
-  return truncateBytes(JSON.stringify(value) ?? "unknown", MAX_LITERAL_BYTES);
+  return JSON.stringify(value) ?? "unknown";
 }
 
 function indent(depth: number): string {
@@ -702,19 +743,25 @@ function indent(depth: number): string {
 
 /**
  * Joins the heading and lines. When rendering stopped early, adds a footer
- * naming the narrower path where it stopped, and checks the whole result
- * against {@link MAX_DETAIL_BYTES}, dropping lines from the end if needed.
+ * that says so and names the narrower path where it stopped, and checks the
+ * whole result against {@link MAX_DETAIL_BYTES}, dropping lines from the end
+ * if needed.
  */
 function finish(ctx: RenderContext): string {
   if (!ctx.cut) return [ctx.heading, ...ctx.lines].join("\n");
 
-  // The key just below the requested path that holds the cut.
-  const rest = ctx.cut.slice(ctx.requested.length).filter((key) => key !== "*");
-  const narrower = rest.length > 0 ? showPath([...ctx.requested, rest[0] as string]) : "";
-  const hint = narrower
-    ? ` Ask for a narrower path, such as "${truncateBytes(narrower, MAX_HINT_BYTES)}".`
-    : "";
-  const footer = `…cut here to stay within ${MAX_DETAIL_BYTES} bytes.${hint}`;
+  let footer: string;
+  if (ctx.lines.length === 0) {
+    footer = `…${ctx.subject} is too long to show within ${MAX_DETAIL_BYTES} bytes.`;
+  } else {
+    // The key just below the requested path that holds the cut.
+    const rest = ctx.cut.slice(ctx.requested.length).filter((key) => key !== "*");
+    const narrower = rest.length > 0 ? showPath([...ctx.requested, rest[0] as string]) : "";
+    const hint = narrower
+      ? ` Ask for a narrower path, such as "${truncateBytes(narrower, MAX_HINT_BYTES)}".`
+      : "";
+    footer = `…cut here to stay within ${MAX_DETAIL_BYTES} bytes.${hint}`;
+  }
 
   const lines = [...ctx.lines];
   let text = [ctx.heading, ...lines, footer].join("\n");

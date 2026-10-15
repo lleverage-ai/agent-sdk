@@ -14,10 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   argument path (`filters`, `filters.status`, `steps[].name`; arrays are
   walked through), it returns that argument's full schema instead of
   searching: one key per line, any depth, with types, enum values, required
-  markers, constraints and descriptions, within 4,000 bytes. An empty path
-  returns the whole input. An unknown tool names the closest tools; an
-  unknown key names the keys at the deepest level reached. Recursive `$ref`s
-  point back at the path that already shows them. Adds about 270 bytes to the
+  markers, constraints and descriptions. Union members that differ in shape
+  or annotations are listed under `one of`, `allOf` restrictions under
+  `all of`, and annotated array items on an `items:` line. Rendering stops at
+  4,000 bytes or 2,000 schema nodes, whichever comes first, and names a
+  narrower path to ask for; lines and enum values are never cut short. A key
+  is required if any `allOf` member requires it. An empty path returns the whole input. An
+  unknown tool names the closest tools; an unknown key names the keys at the
+  deepest level reached. Recursive `$ref`s point back at the path that
+  already shows them. Adds about 270 bytes to the
   `search_tools` definition; nothing changes without `includeSchema`.
 
 ### Changed
