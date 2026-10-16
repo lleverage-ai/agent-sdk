@@ -1396,6 +1396,141 @@ describe("createSearchToolsTool", () => {
       expect(Date.now() - started).toBeLessThan(2000);
     });
 
+    it("lists the keys declared beside a recursive $ref and marks only the target recursive", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            $ref: "#/$defs/Node",
+            $defs: {
+              Node: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  child: {
+                    $ref: "#/$defs/Node",
+                    properties: { extra: { type: "string" } },
+                    required: ["extra"],
+                  },
+                  kids: {
+                    type: "array",
+                    items: {
+                      $ref: "#/$defs/Node",
+                      properties: { rank: { type: "integer" } },
+                      required: ["rank"],
+                    },
+                  },
+                },
+                required: ["name"],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "tree__save", "")).toBe(
+        [
+          "Arguments of tree__save:",
+          "name: string",
+          "child?: object",
+          "  extra: string",
+          "  all of:",
+          "    - same shape as the whole input (recursive)",
+          "kids?: object[]",
+          "  rank: integer",
+          "  all of:",
+          "    - same shape as the whole input (recursive)",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "tree__save", "child.child.extra")).toBe(
+        "Schema of child.child.extra in tree__save:\nchild.child.extra: string",
+      );
+      expect(await drill(manager, "tree__save", "kids[].kids[].name")).toBe(
+        "Schema of kids[].kids[].name in tree__save:\nkids[].kids[].name: string",
+      );
+      expect(await drill(manager, "tree__save", "child.nope")).toContain(
+        "Keys there: extra, name, child, kids.",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("expands a finite definition reused by a key declared beside its $ref", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("org", {
+        save: tool({
+          description: "Saves an owner",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              owner: {
+                $ref: "#/$defs/Person",
+                description: "Who owns it",
+                properties: { manager: { $ref: "#/$defs/Person" } },
+              },
+            },
+            $defs: {
+              Person: {
+                type: "object",
+                properties: { name: { type: "string" } },
+                required: ["name"],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "org__save", "")).toBe(
+        [
+          "Arguments of org__save:",
+          "owner?: object — Who owns it",
+          "  manager?: object",
+          "    name: string",
+          "  name: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "org__save", "owner.manager.name")).toBe(
+        "Schema of owner.manager.name in org__save:\nowner.manager.name: string",
+      );
+    });
+
+    it("stops at a $ref back to a node whose $ref has sibling keys", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("loop", {
+        save: tool({
+          description: "Saves a loop",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              child: { $ref: "#", properties: { again: { $ref: "#/properties/child" } } },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "loop__save", "")).toBe(
+        [
+          "Arguments of loop__save:",
+          "child?: object",
+          "  again?: object",
+          '    again?: same shape as "child.again" (recursive)',
+          "    all of:",
+          "      - same shape as the whole input (recursive)",
+          "  all of:",
+          "    - same shape as the whole input (recursive)",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "loop__save", "child.again.again.child.again")).toContain(
+        "child.again.again.child.again?: object",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
     it("lists the alternatives of a whole input that is a union inside allOf", async () => {
       const manager = new MCPManager();
       const alternatives = {

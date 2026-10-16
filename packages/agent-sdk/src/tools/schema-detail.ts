@@ -172,6 +172,8 @@ interface Doc {
   nulls: Map<object, boolean>;
   /** A `$ref` node with sibling keywords, as one node: see {@link withSiblings}. */
   merged: Map<object, Record<string, unknown>>;
+  /** Target parts of merged nodes that carry their `$ref`, with that `$ref`. */
+  parts: Map<object, string>;
 }
 
 function createDoc(root: unknown): Doc {
@@ -182,6 +184,7 @@ function createDoc(root: unknown): Doc {
     annotated: new Map(),
     nulls: new Map(),
     merged: new Map(),
+    parts: new Map(),
   };
 }
 
@@ -199,23 +202,34 @@ function memo<T>(cache: Map<object, T>, node: object, pending: T, compute: () =>
 
 /**
  * Follows a local `$ref` (`#`, `#/$defs/X`, `#/definitions/X`). A `$ref`
- * with sibling keywords resolves to its {@link withSiblings} node.
+ * with sibling keywords resolves to its {@link withSiblings} node. When the
+ * siblings declare structure of their own, that structure isn't part of the
+ * target, so the `$ref` is reported by the target part alone: the siblings'
+ * keys aren't marked recursive, and a recursive target becomes an `all of`
+ * restriction beside them.
  */
 function deref(doc: Doc, schema: unknown): { schema: unknown; ref?: string; siblings?: true } {
   const seen = new Set<string>();
   let node = schema;
-  let ref: string | undefined;
+  let ref = isRecord(schema) ? doc.parts.get(schema) : undefined;
   while (isRecord(node) && typeof node.$ref === "string") {
     if (seen.has(node.$ref)) return { schema: {}, ref: node.$ref };
     seen.add(node.$ref);
-    ref = node.$ref;
     const target = resolvePointer(doc.root, node.$ref);
     if (hasSiblings(node)) {
-      return { schema: withSiblings(doc, node, target), ref, siblings: true };
+      const shaped = hasShape(node);
+      const merged = withSiblings(doc, node, target, shaped);
+      return { schema: merged, ref: shaped ? ref : node.$ref, siblings: true };
     }
+    ref = node.$ref;
     node = target;
   }
   return { schema: node, ref };
+}
+
+/** True when a node declares keys, items or members of its own. */
+function hasShape(node: Record<string, unknown>): boolean {
+  return hasOwnKeys(node) || "items" in node || unionOf(node).length > 0 || allOf(node).length > 0;
 }
 
 /** Keywords beside a `$ref` that don't describe the value. */
@@ -231,20 +245,23 @@ function hasSiblings(node: Record<string, unknown>): boolean {
  * target, so the target becomes one more `allOf` part. The sibling
  * `description` and `default` replace the target's, as Zod's own `.describe()`
  * and `.default()` do. Built once per node, so memoisation still holds.
+ * When `shaped`, the target part is a copy that carries the `$ref`.
  */
 function withSiblings(
   doc: Doc,
   node: Record<string, unknown>,
   target: unknown,
+  shaped: boolean,
 ): Record<string, unknown> {
   const cached = doc.merged.get(node);
   if (cached) return cached;
-  const { $ref: _, ...siblings } = node;
+  const { $ref: ref, ...siblings } = node;
   let part = target;
   if (isRecord(target)) {
     const replaced = ["description", "default"].filter((key) => key in siblings && key in target);
-    if (replaced.length > 0) {
+    if (replaced.length > 0 || shaped) {
       part = Object.fromEntries(Object.entries(target).filter(([key]) => !replaced.includes(key)));
+      if (shaped) doc.parts.set(part as object, ref as string);
     }
   }
   const merged = { ...siblings, allOf: [...allOf(node), part] };

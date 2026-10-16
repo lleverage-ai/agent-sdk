@@ -32,7 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elsewhere is shown in full. Keywords beside a `$ref` (Zod v4's
   `{ "description": …, "$ref": … }`) apply together with its target, for
   rendering and path resolution; their `description` and `default` replace
-  the target's. Adds about 270 bytes to the
+  the target's. Keys declared beside a `$ref` are listed with the target's,
+  and only the target counts towards recursion. Adds about 270 bytes to the
   `search_tools` definition; nothing changes without `includeSchema`.
 
 ### Changed
