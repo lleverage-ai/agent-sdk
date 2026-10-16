@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.20] - 2026-10-16
+
+Twentieth release candidate for 1.0.0. In proxy mode, `search_tools` takes
+an optional `path` that returns one tool argument's full schema at any
+depth, and the `Parameters:` line marks where it cut a shape, so the model
+can ask for the part it needs instead of guessing.
+
 ### Added
 
 - `search_tools` with `includeSchema` (proxy mode) takes an optional `path`
@@ -1803,7 +1810,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.19...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.20...HEAD
+[1.0.0-rc.20]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.19...agent-sdk@1.0.0-rc.20
 [1.0.0-rc.19]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.18...agent-sdk@1.0.0-rc.19
 [1.0.0-rc.18]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.17...agent-sdk@1.0.0-rc.18
 [1.0.0-rc.17]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.16...agent-sdk@1.0.0-rc.17
