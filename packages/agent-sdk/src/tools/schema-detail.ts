@@ -146,8 +146,8 @@ export function formatSchemaDetail(
       return { ok: false, error: `${toolName} has no input schema to show.` };
     }
     const ctx = createContext(`Arguments of ${toolName}:`, segments, "the whole input");
-    const refs = withRef(new Map([["#", ""]]), ref, []);
-    renderBody(doc, gather(doc, node, refs, [], ctx), 0, [], ctx, false);
+    const refs = withRef(new Map([["#", { at: "" }]]), ref, []);
+    renderBody(doc, gather(doc, node, refs, [], [], ctx), 0, [], ctx, false);
     if (ctx.lines.length === 0 && !ctx.cut) {
       return { ok: true, text: `${toolName} takes no arguments.` };
     }
@@ -469,11 +469,25 @@ function emit(ctx: RenderContext, text: string, path: string[]): boolean {
   return true;
 }
 
-/** `$ref`s being expanded, each with the argument path where it was first shown. */
-type Refs = ReadonlyMap<string, string>;
+/**
+ * Where a `$ref` being expanded is shown: the argument path, and whether it is
+ * only part of the value there (an `allOf` member folded into it).
+ */
+interface Shown {
+  at: string;
+  part?: boolean;
+}
 
-function withRef(refs: Refs, ref: string | undefined, path: string[]): Refs {
-  return ref && !refs.has(ref) ? new Map([...refs, [ref, showPath(path)]]) : refs;
+/**
+ * The `$ref`s on the current branch's expansion ancestry. Each branch carries
+ * its own: a `$ref` folded into one `allOf` member is an ancestor of what that
+ * member declares, not of the value's other keys.
+ */
+type Refs = ReadonlyMap<string, Shown>;
+
+function withRef(refs: Refs, ref: string | undefined, path: string[], part?: boolean): Refs {
+  if (!ref || refs.has(ref)) return refs;
+  return new Map([...refs, [ref, { at: showPath(path), ...(part ? { part } : {}) }]]);
 }
 
 /** A path as the model would type it back: `filters.advanced`, `steps[]`. */
@@ -486,8 +500,11 @@ function showPath(path: string[]): string {
 
 /** Points a recursive `$ref` back at the path that already shows its shape. */
 function recursive(refs: Refs, ref: string): string {
-  const at = refs.get(ref);
-  return `same shape as ${at ? `"${at}"` : "the whole input"} (recursive)`;
+  const shown = refs.get(ref);
+  const where = shown?.at ? `"${shown.at}"` : "the whole input";
+  if (!shown?.part) return `same shape as ${where} (recursive)`;
+  const name = ref.split("/").pop() || ref;
+  return `same shape as ${name}, part of ${where} (recursive)`;
 }
 
 /** `label: head`, or `- head` for a member of `one of` / `all of`. */
@@ -503,38 +520,56 @@ function headLine(label: string, head: string, depth: number): string {
  * keys, array items, alternatives and remaining restrictions join the body.
  * Nothing a folded part carries is dropped, which is what keeps every
  * annotation visible whatever wraps it.
+ *
+ * Everything in the body keeps the `$ref` ancestry of the part it came from,
+ * so a `$ref` folded in through one member never makes another part look
+ * recursive.
  */
 interface View {
   root: Record<string, unknown>;
-  /** `$ref`s being expanded, including those folded into this view. */
-  refs: Refs;
+  /**
+   * Roots of the enclosing values this one is a restriction or alternative
+   * of: their `required` applies to this value's keys too.
+   */
+  scope: Record<string, unknown>[];
   /** The root's one-line type. */
   head: string;
   nullable: boolean;
-  /** True when the root or a folded part has a type, enum or const of its own. */
+  /**
+   * True when the line's type says something the body doesn't: the root or a
+   * folded part has a type, enum or const, or a union of literals is shown
+   * only in the type.
+   */
   typed: boolean;
   constraints: string[];
   descriptions: string[];
   /** Nodes whose keys are listed in the body. */
-  keyed: Record<string, unknown>[];
+  keyed: Part<Record<string, unknown>>[];
   /** Item schemas of the array, from every folded part. */
-  items: unknown[];
+  items: Part<unknown>[];
   /** Union alternatives the line's type can't show, one list per union. */
-  groups: unknown[][];
+  groups: Part<unknown[]>[];
   /** `allOf` members of another type, or recursive, listed under `all of`. */
-  restrictions: unknown[];
+  restrictions: Part<unknown>[];
+}
+
+/** Something listed in a view's body, with the `$ref` ancestry it came from. */
+interface Part<T> {
+  value: T;
+  refs: Refs;
 }
 
 function gather(
   doc: Doc,
   root: Record<string, unknown>,
   refs: Refs,
+  scope: Record<string, unknown>[],
   path: string[],
   ctx: RenderContext,
 ): View {
   const view: View = {
     root,
-    refs,
+    scope,
     head: typeHead(doc, root),
     nullable: false,
     typed: false,
@@ -547,42 +582,47 @@ function gather(
   };
   // Each node folds once, so a shared definition reached twice costs nothing.
   const folded = new Set<object>();
-  const foldIn = (inner: { schema: Record<string, unknown>; ref?: string }) => {
-    view.refs = withRef(view.refs, inner.ref, path);
-    fold(inner.schema);
-  };
-  const fold = (node: Record<string, unknown>): void => {
+  const fold = (node: Record<string, unknown>, refs: Refs): void => {
     if (folded.has(node) || !step(ctx, path)) return;
     folded.add(node);
     if (hasOwnType(node)) view.typed = true;
     const notes = annotations(node);
     addUnique(view.constraints, notes.constraints);
     addUnique(view.descriptions, notes.descriptions);
-    if (hasOwnKeys(node)) view.keyed.push(node);
-    if (isRecord(node.items)) view.items.push(node.items);
+    if (hasOwnKeys(node)) view.keyed.push({ value: node, refs });
+    if (isRecord(node.items)) view.items.push({ value: node.items, refs });
 
     const head = typeHead(doc, node);
     const variants = unionOf(node);
     const members = nonNullMembers(doc, node);
     if (members.length < variants.length) view.nullable = true;
+    // What a null alternative means ("clears the value") is said on the line.
+    for (const variant of variants) {
+      const resolved = deref(doc, variant).schema;
+      if (!isRecord(resolved) || !isNullSchema(doc, resolved)) continue;
+      const nullNotes = annotations(resolved).descriptions.map((text) => `null: ${text}`);
+      addUnique(view.descriptions, nullNotes);
+    }
     if (members.length === 1) {
       // One alternative besides null applies whenever the value isn't null.
       const ownHead = hasOwnType(node) ? stripNull(head) : undefined;
-      const inner = foldable(doc, members[0], view.refs, ownHead);
-      if (inner) foldIn(inner);
-      else view.groups.push(members);
-    } else if (members.length > 1 && listsAlternatives(doc, node, members)) {
-      view.groups.push(members);
+      const inner = foldable(doc, members[0], refs, ownHead);
+      if (inner) fold(inner.schema, withRef(refs, inner.ref, path));
+      else view.groups.push({ value: members, refs });
+    } else if (members.length > 1) {
+      if (listsAlternatives(doc, node, members)) view.groups.push({ value: members, refs });
+      // Otherwise the line's type is the only place the alternatives show.
+      else view.typed = true;
     }
 
     for (const member of allOf(node)) {
       if (!isRecord(deref(doc, member).schema)) continue;
-      const inner = foldable(doc, member, view.refs, head);
-      if (inner) foldIn(inner);
-      else view.restrictions.push(member);
+      const inner = foldable(doc, member, refs, head);
+      if (inner) fold(inner.schema, withRef(refs, inner.ref, path, true));
+      else view.restrictions.push({ value: member, refs });
     }
   };
-  fold(root);
+  fold(root, refs);
   return view;
 }
 
@@ -640,7 +680,10 @@ function addUnique(target: string[], values: string[]): void {
   for (const value of values) if (!target.includes(value)) target.push(value);
 }
 
-/** Renders a schema node: its line, then its body one level deeper. */
+/**
+ * Renders a schema node: its line, then its body one level deeper. `scope`
+ * holds the enclosing values it is a restriction or alternative of.
+ */
 function renderNode(
   doc: Doc,
   schema: unknown,
@@ -649,6 +692,7 @@ function renderNode(
   path: string[],
   refs: Refs,
   ctx: RenderContext,
+  scope: Record<string, unknown>[] = [],
 ): void {
   if (!step(ctx, path)) return;
   const { schema: node, ref } = deref(doc, schema);
@@ -660,7 +704,8 @@ function renderNode(
     emit(ctx, headLine(label, "any", depth), path);
     return;
   }
-  renderView(doc, gather(doc, node, withRef(refs, ref, path), path, ctx), label, depth, path, ctx);
+  const view = gather(doc, node, withRef(refs, ref, path), scope, path, ctx);
+  renderView(doc, view, label, depth, path, ctx);
 }
 
 /** `label: <type> (constraints) — descriptions`, then the body. */
@@ -692,29 +737,41 @@ function renderBody(
   ctx: RenderContext,
   compact: boolean,
 ): void {
-  for (const items of view.items) renderItems(doc, items, depth, path, view.refs, ctx);
-  for (const owner of view.keyed) renderKeys(doc, view.root, owner, depth, path, view.refs, ctx);
-  for (const members of view.groups) {
-    renderList(doc, "one of:", members, depth, path, view.refs, ctx, compact);
+  const owners = [...view.scope, view.root];
+  for (const items of view.items) renderItems(doc, items.value, depth, path, items.refs, ctx);
+  for (const owner of view.keyed) {
+    renderKeys(doc, owners, owner.value, depth, path, owner.refs, ctx);
+  }
+  for (const group of view.groups) {
+    renderList(doc, "one of:", [group], depth, path, owners, ctx, compact);
   }
   if (view.restrictions.length > 0) {
-    renderList(doc, "all of:", view.restrictions, depth, path, view.refs, ctx, compact);
+    const members = view.restrictions.map((part) => ({ value: [part.value], refs: part.refs }));
+    renderList(doc, "all of:", members, depth, path, owners, ctx, compact);
   }
 }
 
+/**
+ * Lists members under `title`. They are alternatives or restrictions of the
+ * same value, so the requirements of `owners` apply to their keys too.
+ */
 function renderList(
   doc: Doc,
   title: string,
-  members: unknown[],
+  parts: Part<unknown[]>[],
   depth: number,
   path: string[],
-  refs: Refs,
+  owners: Record<string, unknown>[],
   ctx: RenderContext,
   compact: boolean,
 ): void {
   if (!compact && !emit(ctx, `${indent(depth)}${title}`, path)) return;
   const at = compact ? depth : depth + 1;
-  for (const member of members) renderNode(doc, member, "-", at, path, refs, ctx);
+  for (const part of parts) {
+    for (const member of part.value) {
+      renderNode(doc, member, "-", at, path, part.refs, ctx, owners);
+    }
+  }
 }
 
 /**
@@ -739,9 +796,11 @@ function renderItems(
     return;
   }
   if (!isRecord(node)) return;
-  const view = gather(doc, node, withRef(refs, ref, path), path, ctx);
+  const view = gather(doc, node, withRef(refs, ref, path), [], path, ctx);
   const compact = compactForm(view);
-  const objects = compact === "one of" && view.groups.flat().every((m) => hasChildren(doc, m));
+  const objects =
+    compact === "one of" &&
+    view.groups.every((group) => group.value.every((member) => hasChildren(doc, member)));
   if (hasNotes(view) || (compact !== undefined && !objects)) {
     renderView(doc, view, "items", depth, path, ctx);
     return;
@@ -751,12 +810,12 @@ function renderItems(
 
 /**
  * Lists the keys `owner` declares. A key is required when the value's root
- * requires it: in its own `required`, in any `allOf` member's, or in every
- * alternative's.
+ * or an enclosing value it restricts (`owners`) requires it: in its own
+ * `required`, in any `allOf` member's, or in every alternative's.
  */
 function renderKeys(
   doc: Doc,
-  root: Record<string, unknown>,
+  owners: Record<string, unknown>[],
   owner: Record<string, unknown>,
   depth: number,
   path: string[],
@@ -765,7 +824,7 @@ function renderKeys(
 ): void {
   if (isRecord(owner.properties)) {
     for (const [key, child] of Object.entries(owner.properties)) {
-      const required = requiresKey(doc, root, key, new Map());
+      const required = owners.some((root) => requiresKey(doc, root, key, new Map()));
       renderNode(doc, child, `${key}${required ? "" : "?"}`, depth, [...path, key], refs, ctx);
     }
   }

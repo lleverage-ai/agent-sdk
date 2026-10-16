@@ -22,10 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   line. A result that fits 4,000 bytes is shown whole; otherwise rendering
   stops at 4,000 bytes or 2,000 schema nodes and names a narrower path to ask
   for. Lines and enum values are never cut short. A key is required if any
-  `allOf` member requires it. An empty path returns the whole input. An
-  unknown tool names the closest tools; an unknown key names the keys at the
-  deepest level reached. Recursive `$ref`s point back at the path that
-  already shows them. Adds about 270 bytes to the
+  `allOf` member or enclosing value requires it. A described `null`
+  alternative keeps its description. An empty path returns the whole input.
+  An unknown tool names the closest tools; an unknown key names the keys at
+  the deepest level reached. A `$ref` on the branch's own expansion path
+  points back at the path that already shows it; a definition reused
+  elsewhere is shown in full. Adds about 270 bytes to the
   `search_tools` definition; nothing changes without `includeSchema`.
 
 ### Changed

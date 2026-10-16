@@ -1039,6 +1039,147 @@ describe("createSearchToolsTool", () => {
       );
     });
 
+    it("treats only a branch's own ancestry as recursive, not a $ref folded in beside it", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("refs", {
+        shared: tool({
+          description: "Inherits Base and reuses it in a property",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            allOf: [{ $ref: "#/$defs/Base" }],
+            properties: { previous: { $ref: "#/$defs/Base" } },
+            $defs: { Base: { type: "object", properties: { name: { type: "string" } } } },
+          }),
+          execute: async () => "ok",
+        }),
+        chain: tool({
+          description: "Inherits a recursive Node",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            allOf: [{ $ref: "#/$defs/Node" }],
+            properties: { id: { type: "string" } },
+            $defs: {
+              Node: { type: "object", properties: { next: { $ref: "#/$defs/Node" } } },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "refs__shared", "")).toBe(
+        [
+          "Arguments of refs__shared:",
+          "previous?: object",
+          "  name?: string",
+          "name?: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "refs__chain", "")).toBe(
+        [
+          "Arguments of refs__chain:",
+          "id?: string",
+          "next?: same shape as Node, part of the whole input (recursive)",
+        ].join("\n"),
+      );
+    });
+
+    it("keeps the enclosing required on keys of an allOf member listed on its own", async () => {
+      const manager = new MCPManager();
+      const member = (nullable: object) => ({
+        type: "object",
+        required: ["userId"],
+        allOf: [nullable],
+      });
+      manager.registerPluginTools("req", {
+        typed: tool({
+          description: "Nullable through type",
+          inputSchema: jsonSchema<Record<string, unknown>>(
+            member({ type: ["object", "null"], properties: { userId: { type: "string" } } }),
+          ),
+          execute: async () => "ok",
+        }),
+        union: tool({
+          description: "Nullable through anyOf",
+          inputSchema: jsonSchema<Record<string, unknown>>(
+            member({
+              anyOf: [
+                { type: "object", properties: { userId: { type: "string" } } },
+                { type: "null" },
+              ],
+            }),
+          ),
+          execute: async () => "ok",
+        }),
+      });
+
+      for (const name of ["req__typed", "req__union"]) {
+        expect(await drill(manager, name, "")).toBe(
+          [`Arguments of ${name}:`, "all of:", "  - object|null", "    userId: string"].join("\n"),
+        );
+        expect(await drill(manager, name, "userId")).toBe(
+          `Schema of userId in ${name}:\nuserId: string`,
+        );
+      }
+    });
+
+    it("keeps literal alternatives next to a restriction of another type", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("kinds", {
+        set: tool({
+          description: "Sets a kind",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              kind: { anyOf: [{ const: "a" }, { const: "b" }], allOf: [{ type: "string" }] },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "kinds__set", "kind")).toBe(
+        ["Schema of kind in kinds__set:", 'kind?: "a"|"b"', "  all of:", "    - string"].join("\n"),
+      );
+    });
+
+    it("says what a described null alternative means", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("task", {
+        update: tool({
+          description: "Updates a task",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              due: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { type: "null", description: "Clears the due date" },
+                ],
+              },
+              owner: {
+                anyOf: [
+                  { type: "string", description: "A user id" },
+                  { type: "number" },
+                  { type: "null", description: "Unassigns it" },
+                ],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "task__update", "")).toBe(
+        [
+          "Arguments of task__update:",
+          "due?: string|null (date) — null: Clears the due date",
+          "owner?: one of (or null) — null: Unassigns it",
+          "  - string — A user id",
+          "  - number",
+        ].join("\n"),
+      );
+    });
+
     it("lists the alternatives of a whole input that is a union inside allOf", async () => {
       const manager = new MCPManager();
       const alternatives = {
