@@ -1180,6 +1180,44 @@ describe("createSearchToolsTool", () => {
       );
     });
 
+    it("keeps a null alternative's default and allOf description", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("task", {
+        update: tool({
+          description: "Updates a task",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            $defs: {
+              Clear: { type: "null", allOf: [{ description: "Clears the label" }] },
+            },
+            properties: {
+              due: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { type: "null", default: null, allOf: [{ description: "Clears the due date" }] },
+                ],
+              },
+              label: { anyOf: [{ type: "string" }, { $ref: "#/$defs/Clear" }] },
+              note: { anyOf: [{ type: "string" }, { type: "null", default: null }] },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "task__update", "")).toBe(
+        [
+          "Arguments of task__update:",
+          "due?: string|null (date) — null (default null): Clears the due date",
+          "label?: string|null — null: Clears the label",
+          "note?: string|null — null (default null)",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "task__update", "due")).toContain(
+        "null (default null): Clears the due date",
+      );
+    });
+
     it("lists the alternatives of a whole input that is a union inside allOf", async () => {
       const manager = new MCPManager();
       const alternatives = {

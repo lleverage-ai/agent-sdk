@@ -598,10 +598,9 @@ function gather(
     if (members.length < variants.length) view.nullable = true;
     // What a null alternative means ("clears the value") is said on the line.
     for (const variant of variants) {
-      const resolved = deref(doc, variant).schema;
-      if (!isRecord(resolved) || !isNullSchema(doc, resolved)) continue;
-      const nullNotes = annotations(resolved).descriptions.map((text) => `null: ${text}`);
-      addUnique(view.descriptions, nullNotes);
+      if (!isNullSchema(doc, variant)) continue;
+      const note = nullNote(doc, variant);
+      if (note) addUnique(view.descriptions, [note]);
     }
     if (members.length === 1) {
       // One alternative besides null applies whenever the value isn't null.
@@ -624,6 +623,32 @@ function gather(
   };
   fold(root, refs);
   return view;
+}
+
+/**
+ * What a `null` alternative says about itself, as one note for the line:
+ * `null (default null): Clears the due date`. Its own constraints and
+ * description and those of its `allOf` parts all count, so nothing a null
+ * member carries is dropped. Undefined when it carries nothing.
+ */
+function nullNote(doc: Doc, member: unknown): string | undefined {
+  const notes = { constraints: [] as string[], descriptions: [] as string[] };
+  const seen = new Set<object>();
+  const collect = (schema: unknown): void => {
+    const node = deref(doc, schema).schema;
+    if (!isRecord(node) || seen.has(node)) return;
+    seen.add(node);
+    const own = annotations(node);
+    addUnique(notes.constraints, own.constraints);
+    addUnique(notes.descriptions, own.descriptions);
+    for (const part of allOf(node)) collect(part);
+  };
+  collect(member);
+  if (!hasNotes(notes)) return undefined;
+  let note = "null";
+  if (notes.constraints.length > 0) note += ` (${notes.constraints.join(", ")})`;
+  if (notes.descriptions.length > 0) note += `: ${notes.descriptions.join("; ")}`;
+  return note;
 }
 
 /**
