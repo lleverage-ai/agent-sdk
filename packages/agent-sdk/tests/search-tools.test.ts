@@ -900,6 +900,35 @@ describe("createSearchToolsTool", () => {
       expect(result).toMatch(/; 1; 0$/);
     });
 
+    it("classifies a shared null-only union DAG once per definition", async () => {
+      const depth = 30;
+      const defs = Object.fromEntries(
+        Array.from({ length: depth }, (_, i) => [
+          `D${i}`,
+          i === depth - 1
+            ? { type: "null", description: "Clears it" }
+            : { anyOf: [{ $ref: `#/$defs/D${i + 1}` }, { $ref: `#/$defs/D${i + 1}` }] },
+        ]),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("dag", {
+        clear: tool({
+          description: "Clears through a DAG",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { value: { anyOf: [{ type: "string" }, { $ref: "#/$defs/D0" }] } },
+            $defs: defs,
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      const result = await drill(manager, "dag__clear", "value");
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(result).toBe("Schema of value in dag__clear:\nvalue?: string|null — null: Clears it");
+    });
+
     it("keeps annotations below composed and nullable array items", async () => {
       const manager = new MCPManager();
       manager.registerPluginTools("people", {

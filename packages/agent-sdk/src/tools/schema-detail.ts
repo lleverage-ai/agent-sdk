@@ -169,10 +169,17 @@ interface Doc {
   heads: Map<object, string>;
   children: Map<object, boolean>;
   annotated: Map<object, boolean>;
+  nulls: Map<object, boolean>;
 }
 
 function createDoc(root: unknown): Doc {
-  return { root, heads: new Map(), children: new Map(), annotated: new Map() };
+  return {
+    root,
+    heads: new Map(),
+    children: new Map(),
+    annotated: new Map(),
+    nulls: new Map(),
+  };
 }
 
 /**
@@ -229,17 +236,18 @@ function allOf(node: Record<string, unknown>): unknown[] {
 /**
  * True for `{ type: "null" }`, and for an untyped wrapper whose union members
  * are all null (`{ anyOf: [{ type: "null", … }] }`), which is null too.
+ * Memoised per node, so a shared definition is classified once; a cycle
+ * counts as not null.
  */
-function isNullSchema(doc: Doc, schema: unknown, seen = new Set<object>()): boolean {
+function isNullSchema(doc: Doc, schema: unknown): boolean {
   const node = deref(doc, schema).schema;
-  if (!isRecord(node) || seen.has(node)) return false;
-  if (node.type === "null") return true;
-  if (hasOwnType(node) || hasOwnKeys(node)) return false;
-  const members = unionOf(node);
-  seen.add(node);
-  const allNull = members.length > 0 && members.every((m) => isNullSchema(doc, m, seen));
-  seen.delete(node);
-  return allNull;
+  if (!isRecord(node)) return false;
+  return memo(doc.nulls, node, false, () => {
+    if (node.type === "null") return true;
+    if (hasOwnType(node) || hasOwnKeys(node)) return false;
+    const members = unionOf(node);
+    return members.length > 0 && members.every((member) => isNullSchema(doc, member));
+  });
 }
 
 function nonNullMembers(doc: Doc, node: Record<string, unknown>): unknown[] {
