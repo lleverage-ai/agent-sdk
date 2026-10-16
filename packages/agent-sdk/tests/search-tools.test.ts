@@ -1531,6 +1531,104 @@ describe("createSearchToolsTool", () => {
       expect(Date.now() - started).toBeLessThan(2000);
     });
 
+    it("stops at $refs with sibling keys that loop through each other or themselves", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("loop", {
+        save: tool({
+          description: "Saves a loop",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              pair: { $ref: "#/$defs/A" },
+              self: { $ref: "#/properties/self", properties: { label: { type: "string" } } },
+            },
+            $defs: {
+              A: { $ref: "#/$defs/B", properties: { a: { type: "string" } } },
+              B: { $ref: "#/$defs/A", properties: { b: { type: "string" } } },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "loop__save", "")).toBe(
+        [
+          "Arguments of loop__save:",
+          "pair?: object",
+          "  a?: string",
+          "  b?: string",
+          "  all of:",
+          '    - same shape as "pair" (recursive)',
+          "self?: object",
+          "  label?: string",
+          "  all of:",
+          '    - same shape as "self" (recursive)',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "loop__save", "pair.b")).toBe(
+        "Schema of pair.b in loop__save:\npair.b?: string",
+      );
+      expect(await drill(manager, "loop__save", "self.label")).toBe(
+        "Schema of self.label in loop__save:\nself.label?: string",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("classifies a nullable $ref to a looping union with sibling keys", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("loop", {
+        save: tool({
+          description: "Saves a loop",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { value: { anyOf: [{ type: "null" }, { $ref: "#/$defs/A" }] } },
+            $defs: {
+              A: {
+                $ref: "#/$defs/B",
+                anyOf: [
+                  { type: "string" },
+                  { type: "object", properties: { a: { type: "string" } } },
+                ],
+              },
+              B: {
+                $ref: "#/$defs/A",
+                anyOf: [
+                  { type: "number" },
+                  { type: "object", properties: { b: { type: "string" } } },
+                ],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "loop__save", "value")).toBe(
+        [
+          "Schema of value in loop__save:",
+          "value?: null|string|object",
+          "  one of:",
+          "    - string",
+          "    - object",
+          "      a?: string",
+          "  all of:",
+          "    - number|object",
+          "      one of:",
+          "        - number",
+          "        - object",
+          "          b?: string",
+          "      all of:",
+          '        - same shape as "value" (recursive)',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "loop__save", "value.a")).toBe(
+        "Schema of value.a in loop__save:\nvalue.a?: string",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
     it("lists the alternatives of a whole input that is a union inside allOf", async () => {
       const manager = new MCPManager();
       const alternatives = {

@@ -172,8 +172,10 @@ interface Doc {
   nulls: Map<object, boolean>;
   /** A `$ref` node with sibling keywords, as one node: see {@link withSiblings}. */
   merged: Map<object, Record<string, unknown>>;
-  /** Target parts of merged nodes that carry their `$ref`, with that `$ref`. */
-  parts: Map<object, string>;
+  /** Target parts of merged nodes that carry their `$ref`, with that `$ref` and the target copied. */
+  parts: Map<object, { ref: string; source: object }>;
+  /** The target part made from a target, per `$ref` and replaced keys: one copy each, so cycles end. */
+  copies: Map<object, Map<string, Record<string, unknown>>>;
 }
 
 function createDoc(root: unknown): Doc {
@@ -185,6 +187,7 @@ function createDoc(root: unknown): Doc {
     nulls: new Map(),
     merged: new Map(),
     parts: new Map(),
+    copies: new Map(),
   };
 }
 
@@ -206,12 +209,13 @@ function memo<T>(cache: Map<object, T>, node: object, pending: T, compute: () =>
  * siblings declare structure of their own, that structure isn't part of the
  * target, so the `$ref` is reported by the target part alone: the siblings'
  * keys aren't marked recursive, and a recursive target becomes an `all of`
- * restriction beside them.
+ * restriction beside them. A node whose `$ref` points at itself is the
+ * exception: its siblings are part of the target, so it reports the `$ref`.
  */
 function deref(doc: Doc, schema: unknown): { schema: unknown; ref?: string; siblings?: true } {
   const seen = new Set<string>();
   let node = schema;
-  let ref = isRecord(schema) ? doc.parts.get(schema) : undefined;
+  let ref = isRecord(schema) ? doc.parts.get(schema)?.ref : undefined;
   while (isRecord(node) && typeof node.$ref === "string") {
     if (seen.has(node.$ref)) return { schema: {}, ref: node.$ref };
     seen.add(node.$ref);
@@ -219,7 +223,8 @@ function deref(doc: Doc, schema: unknown): { schema: unknown; ref?: string; sibl
     if (hasSiblings(node)) {
       const shaped = hasShape(node);
       const merged = withSiblings(doc, node, target, shaped);
-      return { schema: merged, ref: shaped ? ref : node.$ref, siblings: true };
+      const own = target === (doc.parts.get(node)?.source ?? node);
+      return { schema: merged, ref: shaped && !own ? ref : node.$ref, siblings: true };
     }
     ref = node.$ref;
     node = target;
@@ -260,13 +265,35 @@ function withSiblings(
   if (isRecord(target)) {
     const replaced = ["description", "default"].filter((key) => key in siblings && key in target);
     if (replaced.length > 0 || shaped) {
-      part = Object.fromEntries(Object.entries(target).filter(([key]) => !replaced.includes(key)));
-      if (shaped) doc.parts.set(part as object, ref as string);
+      part = targetCopy(doc, target, shaped ? (ref as string) : "", replaced);
     }
   }
   const merged = { ...siblings, allOf: [...allOf(node), part] };
   doc.merged.set(node, merged);
   return merged;
+}
+
+/**
+ * A copy of `target` without the `replaced` keys, carrying `ref` when it is
+ * set. The same target always gives the same copy, so dereferencing a copy
+ * whose own `$ref` has structural siblings reaches nodes already seen, and the
+ * per-node caches end the cycle.
+ */
+function targetCopy(
+  doc: Doc,
+  target: Record<string, unknown>,
+  ref: string,
+  replaced: string[],
+): Record<string, unknown> {
+  const key = `${ref} ${replaced.join(",")}`;
+  const byKey = doc.copies.get(target) ?? new Map<string, Record<string, unknown>>();
+  doc.copies.set(target, byKey);
+  const cached = byKey.get(key);
+  if (cached) return cached;
+  const copy = Object.fromEntries(Object.entries(target).filter(([k]) => !replaced.includes(k)));
+  if (ref) doc.parts.set(copy, { ref, source: target });
+  byKey.set(key, copy);
+  return copy;
 }
 
 function resolvePointer(root: unknown, ref: string): unknown {
