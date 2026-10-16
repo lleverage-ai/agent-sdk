@@ -1108,9 +1108,22 @@ function formatNotes(notes: { constraints: string[]; descriptions: string[] }): 
   return out;
 }
 
-/** The notes a recursive `$ref`'s own sibling keywords add to its line. */
+/**
+ * The notes a recursive `$ref`'s own sibling keywords add to its line,
+ * including the keys it requires and the literals it allows, which the line
+ * has no body to show.
+ */
 function ownNotes(node: unknown): string {
-  return isRecord(node) ? formatNotes(annotations(node)) : "";
+  if (!isRecord(node)) return "";
+  const notes = annotations(node);
+  if (Array.isArray(node.required) && node.required.length > 0) {
+    notes.constraints.push(`requires ${node.required.join(", ")}`);
+  }
+  if ("const" in node) notes.constraints.push(`= ${formatLiteral(node.const)}`);
+  else if (Array.isArray(node.enum) && node.enum.length > 0) {
+    notes.constraints.push(`one of ${[...new Set(node.enum.map(formatLiteral))].join("|")}`);
+  }
+  return formatNotes(notes);
 }
 
 function formatLiteral(value: unknown): string {

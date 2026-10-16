@@ -1396,6 +1396,43 @@ describe("createSearchToolsTool", () => {
       expect(Date.now() - started).toBeLessThan(2000);
     });
 
+    it("keeps required, const and enum written beside a recursive $ref on its line", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            $ref: "#/$defs/Node",
+            $defs: {
+              Node: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  req: { $ref: "#/$defs/Node", required: ["name"] },
+                  lit: { $ref: "#/$defs/Node", const: { name: "x" } },
+                  en: { $ref: "#/$defs/Node", enum: [{ name: "a" }, { name: "b" }] },
+                  kids: { type: "array", items: { $ref: "#/$defs/Node", required: ["name"] } },
+                },
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "tree__save", "")).toBe(
+        [
+          "Arguments of tree__save:",
+          "name?: string",
+          "req?: same shape as the whole input (recursive) (requires name)",
+          'lit?: same shape as the whole input (recursive) (= {"name":"x"})',
+          'en?: same shape as the whole input (recursive) (one of {"name":"a"}|{"name":"b"})',
+          "kids?: object[]",
+          "  items: same shape as the whole input (recursive) (requires name)",
+        ].join("\n"),
+      );
+    });
+
     it("lists the keys declared beside a recursive $ref and marks only the target recursive", async () => {
       const manager = new MCPManager();
       manager.registerPluginTools("tree", {
