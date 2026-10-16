@@ -1180,7 +1180,7 @@ describe("createSearchToolsTool", () => {
       );
     });
 
-    it("keeps a null alternative's default and allOf description", async () => {
+    it("keeps a null alternative's default and description from allOf and a one-member union", async () => {
       const manager = new MCPManager();
       manager.registerPluginTools("task", {
         update: tool({
@@ -1199,6 +1199,30 @@ describe("createSearchToolsTool", () => {
               },
               label: { anyOf: [{ type: "string" }, { $ref: "#/$defs/Clear" }] },
               note: { anyOf: [{ type: "string" }, { type: "null", default: null }] },
+              start: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { type: "null", anyOf: [{ default: null, description: "Starts now" }] },
+                ],
+              },
+              end: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { type: "null", oneOf: [{ default: null, description: "Never ends" }] },
+                ],
+              },
+              remind: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { anyOf: [{ type: "null", default: null, description: "No reminder" }] },
+                ],
+              },
+              snooze: {
+                anyOf: [
+                  { type: "number" },
+                  { default: null, description: "Not snoozed", oneOf: [{ type: "null" }] },
+                ],
+              },
             },
           }),
           execute: async () => "ok",
@@ -1211,6 +1235,10 @@ describe("createSearchToolsTool", () => {
           "due?: string|null (date) — null (default null): Clears the due date",
           "label?: string|null — null: Clears the label",
           "note?: string|null — null (default null)",
+          "start?: string|null (date) — null (default null): Starts now",
+          "end?: string|null (date) — null (default null): Never ends",
+          "remind?: string|null (date) — null (default null): No reminder",
+          "snooze?: number|null — null (default null): Not snoozed",
         ].join("\n"),
       );
       expect(await drill(manager, "task__update", "due")).toContain(

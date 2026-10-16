@@ -226,9 +226,20 @@ function allOf(node: Record<string, unknown>): unknown[] {
   return Array.isArray(node.allOf) ? node.allOf : [];
 }
 
-function isNullSchema(doc: Doc, schema: unknown): boolean {
+/**
+ * True for `{ type: "null" }`, and for an untyped wrapper whose union members
+ * are all null (`{ anyOf: [{ type: "null", … }] }`), which is null too.
+ */
+function isNullSchema(doc: Doc, schema: unknown, seen = new Set<object>()): boolean {
   const node = deref(doc, schema).schema;
-  return isRecord(node) && node.type === "null";
+  if (!isRecord(node) || seen.has(node)) return false;
+  if (node.type === "null") return true;
+  if (hasOwnType(node) || hasOwnKeys(node)) return false;
+  const members = unionOf(node);
+  seen.add(node);
+  const allNull = members.length > 0 && members.every((m) => isNullSchema(doc, m, seen));
+  seen.delete(node);
+  return allNull;
 }
 
 function nonNullMembers(doc: Doc, node: Record<string, unknown>): unknown[] {
@@ -628,8 +639,9 @@ function gather(
 /**
  * What a `null` alternative says about itself, as one note for the line:
  * `null (default null): Clears the due date`. Its own constraints and
- * description and those of its `allOf` parts all count, so nothing a null
- * member carries is dropped. Undefined when it carries nothing.
+ * description and those of its `allOf` parts and union members all count (a
+ * union inside a null member can only narrow null), so nothing a null member
+ * carries is dropped. Undefined when it carries nothing.
  */
 function nullNote(doc: Doc, member: unknown): string | undefined {
   const notes = { constraints: [] as string[], descriptions: [] as string[] };
@@ -641,7 +653,7 @@ function nullNote(doc: Doc, member: unknown): string | undefined {
     const own = annotations(node);
     addUnique(notes.constraints, own.constraints);
     addUnique(notes.descriptions, own.descriptions);
-    for (const part of allOf(node)) collect(part);
+    for (const part of [...allOf(node), ...unionOf(node)]) collect(part);
   };
   collect(member);
   if (!hasNotes(notes)) return undefined;
