@@ -1275,6 +1275,127 @@ describe("createSearchToolsTool", () => {
       );
     });
 
+    it("keeps the keywords beside a $ref that Zod v4 emits for a reused schema", async () => {
+      const Id = z.string().min(1).meta({ id: "Id", description: "Identifier of a user" });
+      const Owner = z.object({ id: Id.describe("Owner id") }).meta({ id: "Owner" });
+      // Zod's default (draft 2020-12) output, as an MCP server would send it:
+      // `{ "description": "The assignee", "$ref": "#/$defs/Id" }`.
+      const input = z.toJSONSchema(
+        z.object({
+          assignee: Id.describe("The assignee"),
+          reviewer: Id.max(20).default("x"),
+          plain: Id,
+          owner: Owner.describe("Who owns it"),
+        }),
+      );
+      expect(input.properties?.assignee).toEqual({
+        description: "The assignee",
+        $ref: "#/$defs/Id",
+      });
+      const manager = new MCPManager();
+      manager.registerPluginTools("zodref", {
+        assign: tool({
+          description: "Assigns a task",
+          inputSchema: jsonSchema<Record<string, unknown>>(input as Record<string, unknown>),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "zodref__assign", "")).toBe(
+        [
+          "Arguments of zodref__assign:",
+          "assignee: string (non-empty) — The assignee",
+          'reviewer: string (at most 20 chars, default "x", non-empty) — Identifier of a user',
+          "plain: string (non-empty) — Identifier of a user",
+          "owner: object — Who owns it",
+          "  id: string (non-empty) — Owner id",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "zodref__assign", "owner.id")).toBe(
+        "Schema of owner.id in zodref__assign:\nowner.id: string (non-empty) — Owner id",
+      );
+    });
+
+    it("resolves a nested path through $refs with sibling keywords", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("nested", {
+        update: tool({
+          description: "Updates a view",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { view: { description: "The view", $ref: "#/$defs/View" } },
+            required: ["view"],
+            $defs: {
+              View: {
+                type: "object",
+                properties: { filters: { description: "Its filters", $ref: "#/$defs/Filters" } },
+              },
+              Filters: {
+                type: "object",
+                description: "Filters of a view",
+                properties: { status: { type: "string" } },
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "nested__update", "view.filters")).toBe(
+        [
+          "Schema of view.filters in nested__update:",
+          "view.filters?: object — Its filters",
+          "  status?: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "nested__update", "view.filters.status")).toBe(
+        "Schema of view.filters.status in nested__update:\nview.filters.status?: string",
+      );
+      expect(await drill(manager, "nested__update", "view.nope")).toContain(
+        'No argument "nope" at "view" in nested__update. Keys there: filters.',
+      );
+    });
+
+    it("keeps a recursive $ref's sibling keywords without expanding it again", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            $ref: "#/$defs/Node",
+            $defs: {
+              Node: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  child: { description: "The child", $ref: "#/$defs/Node" },
+                  kids: { type: "array", items: { description: "A kid", $ref: "#/$defs/Node" } },
+                },
+                required: ["name"],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "tree__save", "child")).toBe(
+        [
+          "Schema of child in tree__save:",
+          "child?: object — The child",
+          "  name: string",
+          '  child?: same shape as "child" (recursive) — The child',
+          "  kids?: object[]",
+          '    items: same shape as "child" (recursive) — A kid',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "tree__save", "child.child.kids[].child.name")).toBe(
+        "Schema of child.child.kids[].child.name in tree__save:\nchild.child.kids[].child.name: string",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
     it("lists the alternatives of a whole input that is a union inside allOf", async () => {
       const manager = new MCPManager();
       const alternatives = {

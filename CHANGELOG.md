@@ -29,7 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   An unknown tool names the closest tools; an unknown key names the keys at
   the deepest level reached. A `$ref` on the branch's own expansion path
   points back at the path that already shows it; a definition reused
-  elsewhere is shown in full. Adds about 270 bytes to the
+  elsewhere is shown in full. Keywords beside a `$ref` (Zod v4's
+  `{ "description": …, "$ref": … }`) apply together with its target, for
+  rendering and path resolution; their `description` and `default` replace
+  the target's. Adds about 270 bytes to the
   `search_tools` definition; nothing changes without `includeSchema`.
 
 ### Changed

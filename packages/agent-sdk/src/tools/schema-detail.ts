@@ -170,6 +170,8 @@ interface Doc {
   children: Map<object, boolean>;
   annotated: Map<object, boolean>;
   nulls: Map<object, boolean>;
+  /** A `$ref` node with sibling keywords, as one node: see {@link withSiblings}. */
+  merged: Map<object, Record<string, unknown>>;
 }
 
 function createDoc(root: unknown): Doc {
@@ -179,6 +181,7 @@ function createDoc(root: unknown): Doc {
     children: new Map(),
     annotated: new Map(),
     nulls: new Map(),
+    merged: new Map(),
   };
 }
 
@@ -194,8 +197,11 @@ function memo<T>(cache: Map<object, T>, node: object, pending: T, compute: () =>
   return value;
 }
 
-/** Follows a local `$ref` (`#`, `#/$defs/X`, `#/definitions/X`). */
-function deref(doc: Doc, schema: unknown): { schema: unknown; ref?: string } {
+/**
+ * Follows a local `$ref` (`#`, `#/$defs/X`, `#/definitions/X`). A `$ref`
+ * with sibling keywords resolves to its {@link withSiblings} node.
+ */
+function deref(doc: Doc, schema: unknown): { schema: unknown; ref?: string; siblings?: true } {
   const seen = new Set<string>();
   let node = schema;
   let ref: string | undefined;
@@ -203,9 +209,47 @@ function deref(doc: Doc, schema: unknown): { schema: unknown; ref?: string } {
     if (seen.has(node.$ref)) return { schema: {}, ref: node.$ref };
     seen.add(node.$ref);
     ref = node.$ref;
-    node = resolvePointer(doc.root, node.$ref);
+    const target = resolvePointer(doc.root, node.$ref);
+    if (hasSiblings(node)) {
+      return { schema: withSiblings(doc, node, target), ref, siblings: true };
+    }
+    node = target;
   }
   return { schema: node, ref };
+}
+
+/** Keywords beside a `$ref` that don't describe the value. */
+const REF_METADATA = new Set(["$ref", "$schema", "$id", "$defs", "definitions", "$comment"]);
+
+function hasSiblings(node: Record<string, unknown>): boolean {
+  return Object.keys(node).some((key) => !REF_METADATA.has(key));
+}
+
+/**
+ * A `$ref` node with sibling keywords (`{ description, $ref }`, as Zod v4
+ * emits), as one node: since draft 2019-09 the siblings apply alongside the
+ * target, so the target becomes one more `allOf` part. The sibling
+ * `description` and `default` replace the target's, as Zod's own `.describe()`
+ * and `.default()` do. Built once per node, so memoisation still holds.
+ */
+function withSiblings(
+  doc: Doc,
+  node: Record<string, unknown>,
+  target: unknown,
+): Record<string, unknown> {
+  const cached = doc.merged.get(node);
+  if (cached) return cached;
+  const { $ref: _, ...siblings } = node;
+  let part = target;
+  if (isRecord(target)) {
+    const replaced = ["description", "default"].filter((key) => key in siblings && key in target);
+    if (replaced.length > 0) {
+      part = Object.fromEntries(Object.entries(target).filter(([key]) => !replaced.includes(key)));
+    }
+  }
+  const merged = { ...siblings, allOf: [...allOf(node), part] };
+  doc.merged.set(node, merged);
+  return merged;
 }
 
 function resolvePointer(root: unknown, ref: string): unknown {
@@ -246,7 +290,9 @@ function isNullSchema(doc: Doc, schema: unknown): boolean {
     if (node.type === "null") return true;
     if (hasOwnType(node) || hasOwnKeys(node)) return false;
     const members = unionOf(node);
-    return members.length > 0 && members.every((member) => isNullSchema(doc, member));
+    if (members.length > 0 && members.every((member) => isNullSchema(doc, member))) return true;
+    // A described `$ref` to null (see withSiblings) is null too.
+    return allOf(node).some((member) => isNullSchema(doc, member));
   });
 }
 
@@ -740,9 +786,10 @@ function renderNode(
   scope: Record<string, unknown>[] = [],
 ): void {
   if (!step(ctx, path)) return;
-  const { schema: node, ref } = deref(doc, schema);
+  const { schema: node, ref, siblings } = deref(doc, schema);
   if (ref && refs.has(ref)) {
-    emit(ctx, headLine(label, recursive(refs, ref), depth), path);
+    const notes = siblings ? ownNotes(node) : "";
+    emit(ctx, headLine(label, `${recursive(refs, ref)}${notes}`, depth), path);
     return;
   }
   if (!isRecord(node)) {
@@ -835,9 +882,10 @@ function renderItems(
   ctx: RenderContext,
 ): void {
   if (!step(ctx, path)) return;
-  const { schema: node, ref } = deref(doc, items);
+  const { schema: node, ref, siblings } = deref(doc, items);
   if (ref && refs.has(ref)) {
-    emit(ctx, `${indent(depth)}items: ${recursive(refs, ref)}`, path);
+    const notes = siblings ? ownNotes(node) : "";
+    emit(ctx, `${indent(depth)}items: ${recursive(refs, ref)}${notes}`, path);
     return;
   }
   if (!isRecord(node)) return;
@@ -1010,10 +1058,15 @@ function annotations(node: Record<string, unknown>): {
 }
 
 /** ` (constraints) — descriptions`, each part only when present. */
-function formatNotes(view: View): string {
-  let out = view.constraints.length > 0 ? ` (${view.constraints.join(", ")})` : "";
-  if (view.descriptions.length > 0) out += ` — ${view.descriptions.join("; ")}`;
+function formatNotes(notes: { constraints: string[]; descriptions: string[] }): string {
+  let out = notes.constraints.length > 0 ? ` (${notes.constraints.join(", ")})` : "";
+  if (notes.descriptions.length > 0) out += ` — ${notes.descriptions.join("; ")}`;
   return out;
+}
+
+/** The notes a recursive `$ref`'s own sibling keywords add to its line. */
+function ownNotes(node: unknown): string {
+  return isRecord(node) ? formatNotes(annotations(node)) : "";
 }
 
 function formatLiteral(value: unknown): string {
