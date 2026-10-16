@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `search_tools` with `includeSchema` (proxy mode) takes an optional `path`
+  (LLE-15702). With `query` set to an exact tool name and `path` to a dotted
+  argument path (`filters`, `filters.status`, `steps[].name`; arrays are
+  walked through), it returns that argument's full schema instead of
+  searching: one key per line, any depth, with types, enum values, required
+  markers, constraints and descriptions. What applies to a value at once (its
+  `allOf` members of the same type, a nullable wrapper's member) joins its
+  line, so their constraints and descriptions all show; union members that
+  carry more than the line's type are listed under `one of`, `allOf` members
+  of another type under `all of`, and annotated array items on an `items:`
+  line. A result that fits 4,000 bytes is shown whole; otherwise rendering
+  stops at 4,000 bytes or 2,000 schema nodes and names a narrower path to ask
+  for. Lines and enum values are never cut short. A key is required if any
+  `allOf` member or enclosing value requires it. An annotated `null`
+  alternative keeps its description, default and the annotations of its
+  `allOf` parts and one-member union on the line (`null (default null): Clears
+  it`), also when it is wrapped in a union of only `null`. An empty path returns the whole input.
+  An unknown tool names the closest tools; an unknown key names the keys at
+  the deepest level reached. A `$ref` on the branch's own expansion path
+  points back at the path that already shows it; a definition reused
+  elsewhere is shown in full. Keywords beside a `$ref` (Zod v4's
+  `{ "description": …, "$ref": … }`) apply together with its target, for
+  rendering and path resolution; their `description` and `default` replace
+  the target's. Keys declared beside a `$ref` are listed with the target's,
+  and only the target counts towards recursion. Adds about 270 bytes to the
+  `search_tools` definition; nothing changes without `includeSchema`.
+
+### Changed
+
+- The `Parameters:` line marks where it cut a shape (LLE-15702): a property
+  that falls back to its bare type prints `{…}` for an object with keys
+  (`{…}[]` for an array of them) and `string…` for an enum, instead of
+  `object`, `array` and `string`; a nested object past the first level prints
+  `{…}` instead of `object`. Objects without named keys (records) still
+  print `object`. The 300- and 600-byte budgets are unchanged.
+
 ## [1.0.0-rc.19] - 2026-10-15
 
 Nineteenth release candidate for 1.0.0. In proxy mode, `search_tools`

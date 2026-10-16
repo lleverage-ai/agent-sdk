@@ -70,6 +70,32 @@ Behavior:
 - Inline plugin tools use `<plugin>__<tool>`
 - External MCP tools use `mcp__<server>__<tool>`
 
+### Argument schemas in proxy mode
+
+In proxy mode each `search_tools` result carries a one-line `Parameters:`
+summary: enum values, array item types and one level of object keys, capped
+at 300 bytes per parameter and 600 per tool, without descriptions. Where it
+cuts a shape for length it says so: `{…}` is an object whose keys were left
+out, `{…}[]` an array of them and `string…` an enum.
+
+To see one argument in full, the model calls `search_tools` with the exact
+tool name as `query` and a dotted `path`:
+
+```text
+search_tools({ query: "lleverage__update-request-view", path: "filters.status" })
+
+Schema of filters.status in lleverage__update-request-view:
+filters.status?: ("PENDING"|"COMPLETED"|"CANCELLED"|"SUPERSEDED"|"FAILED")[]
+```
+
+The result lists the argument's keys one per line, to any depth, with types,
+enum values, required markers (`?` marks optional), constraints and
+descriptions, within 4,000 bytes; over that it names narrower paths to ask
+for. Arrays are walked through (`conditions.operator` or
+`conditions[].operator`), an empty path returns the whole input, an unknown
+tool names the closest tools and an unknown key names the keys that exist.
+`path` is only offered when `search_tools` shows schemas (proxy mode).
+
 Per-plugin control:
 
 ```typescript

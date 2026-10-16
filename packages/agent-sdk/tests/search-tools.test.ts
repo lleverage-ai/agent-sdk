@@ -151,7 +151,7 @@ describe("createSearchToolsTool", () => {
       });
 
       expect(await parametersFor(manager, "update-request-view")).toBe(
-        '{ viewId: string, filters?: { workflowId?: string, status?: "OPEN"|"CLOSED", range?: object } }',
+        '{ viewId: string, filters?: { workflowId?: string, status?: "OPEN"|"CLOSED", range?: {…} } }',
       );
     });
 
@@ -255,7 +255,7 @@ describe("createSearchToolsTool", () => {
       );
     });
 
-    it("falls back to the bare type for an oversized union (edit-workflow-draft)", async () => {
+    it("falls back to a marked bare type for an oversized union (edit-workflow-draft)", async () => {
       const operation = (op: string) =>
         z.object({
           op: z.literal(op),
@@ -286,7 +286,7 @@ describe("createSearchToolsTool", () => {
       });
 
       expect(await parametersFor(manager, "edit-workflow-draft")).toBe(
-        '{ workflowId: string, mode?: "draft"|"live", operations: array }',
+        '{ workflowId: string, mode?: "draft"|"live", operations: {…}[] }',
       );
     });
 
@@ -310,7 +310,7 @@ describe("createSearchToolsTool", () => {
       const line = await parametersFor(manager, "wide");
       expect(bytes(`Parameters: ${line}`)).toBeLessThanOrEqual(600);
       expect(line).toContain('small: "a"|"b"');
-      expect(line).toContain("second: string");
+      expect(line).toContain("second: string…");
       expect(line).toContain('first: "first_value_0"|');
     });
 
@@ -375,6 +375,1479 @@ describe("createSearchToolsTool", () => {
       expect(await parametersFor(manager, "plain")).toBe(
         "{ id: string, count?: number, options?: object }",
       );
+    });
+  });
+
+  describe("path drill-down with includeSchema", () => {
+    const execOptions = {
+      toolCallId: "test",
+      messages: [],
+      abortSignal: undefined as unknown as AbortSignal,
+    };
+    const bytes = (text: string) => new TextEncoder().encode(text).length;
+
+    const ids = (description?: string) => {
+      const schema = z.array(z.string().min(1).max(200));
+      return (description ? schema.describe(description) : schema).optional();
+    };
+
+    // Modelled on lleverage's update-request-view input: 23 filter keys, too
+    // wide for the 300-byte property budget of the Parameters line.
+    const requestFilters = z
+      .object({
+        status: z
+          .array(z.enum(["PENDING", "COMPLETED", "CANCELLED", "SUPERSEDED", "FAILED"]))
+          .optional(),
+        type: z.array(z.enum(["APPROVAL", "INPUT"])).optional(),
+        workflowId: ids("Workflow ids: any workflow in the project"),
+        decision: ids("Recorded decision labels of resolved approvals"),
+        decisionPending: z
+          .boolean()
+          .optional()
+          .describe("Only approvals still awaiting a decision"),
+        titleContains: z.string().max(200).optional(),
+        titleNotContains: z.string().max(200).optional(),
+        assigneeId: ids('Assigned user ids; "me" is you'),
+        assigneeRoles: z.array(z.enum(["OWNER", "BUILDER", "OPERATOR", "MEMBER"])).optional(),
+        createdById: ids(),
+        mentionedId: ids('Users mentioned in a comment; "me" is you'),
+        personalStatus: z.enum(["PENDING", "MENTIONED", "RESPONDED"]).optional(),
+        hideResponded: z.boolean().optional(),
+        hideCompleted: z.boolean().optional(),
+        includeArchived: z.boolean().optional(),
+        dateRange: z
+          .object({
+            preset: z.enum(["last24h", "last7d", "last30d", "custom", "all"]).optional(),
+            startDate: z.string().optional(),
+            endDate: z.string().optional(),
+          })
+          .optional()
+          .describe("Created within"),
+        relatedTableId: z.string().max(200).optional(),
+        relatedRecordId: z.string().max(200).optional(),
+        relatedRecordFilters: z.string().max(4000).optional(),
+        advanced: z
+          .object({
+            logicalOperator: z.enum(["AND", "OR"]),
+            conditions: z
+              .array(
+                z.object({
+                  field: z.string().min(1).describe("status, type, title or metric:<metricId>"),
+                  operator: z.enum(["equals", "not_equals", "contains", "is_before", "is_after"]),
+                  value: z.unknown().optional(),
+                }),
+              )
+              .min(1)
+              .max(20),
+          })
+          .optional(),
+        metricFilters: z.record(z.string(), z.unknown()).optional(),
+        sortField: z
+          .string()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("createdAt, priority or slaDeadline"),
+        sortDirection: z.enum(["asc", "desc"]).optional(),
+      })
+      .describe("The view's filters");
+
+    const createManager = () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("lleverage", {
+        "update-request-view": tool({
+          description: "Updates a saved request view",
+          inputSchema: z.object({
+            viewId: z.string().min(1).describe("The saved view's id"),
+            title: z.string().min(1).max(100).optional(),
+            filters: requestFilters.optional(),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+      return manager;
+    };
+
+    const drill = async (manager: MCPManager, query: string, path: string) => {
+      const searchTool = createSearchToolsTool({ manager, includeSchema: true });
+      return (await searchTool.execute!({ query, path }, execOptions)) as string;
+    };
+
+    const toolName = "lleverage__update-request-view";
+
+    it("marks the cut filters object in the Parameters line", async () => {
+      const searchTool = createSearchToolsTool({ manager: createManager(), includeSchema: true });
+      const result = (await searchTool.execute!(
+        { query: "update-request-view" },
+        execOptions,
+      )) as string;
+
+      expect(result).toContain("Parameters: { viewId: string, title?: string, filters?: {…} }");
+    });
+
+    it("returns every filters key with its values and descriptions (update-request-view)", async () => {
+      const result = await drill(createManager(), toolName, "filters");
+      const lines = result.split("\n");
+
+      expect(lines[0]).toBe(`Schema of filters in ${toolName}:`);
+      expect(lines[1]).toBe("filters?: object — The view's filters");
+      const keys = lines
+        .filter((line) => /^ {2}[A-Za-z]/.test(line))
+        .map((line) => line.trim().split(/\??:/)[0]);
+      expect(keys).toEqual(Object.keys(requestFilters.shape));
+      expect(result).toContain(
+        '  status?: ("PENDING"|"COMPLETED"|"CANCELLED"|"SUPERSEDED"|"FAILED")[]',
+      );
+      expect(result).toContain('  assigneeId?: string[] — Assigned user ids; "me" is you');
+      expect(result).toContain("  titleContains?: string (at most 200 chars)");
+      expect(result).toContain("  dateRange?: object — Created within\n    preset?: ");
+      expect(result).toContain(
+        "    conditions: object[] (1–20 items)\n      field: string (non-empty) — status",
+      );
+      expect(result).toContain("  metricFilters?: object\n    [key: string]: any");
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+    });
+
+    it("returns only the asked-for key for a nested path (filters.status)", async () => {
+      const result = await drill(createManager(), toolName, "filters.status");
+
+      expect(result).toBe(
+        `Schema of filters.status in ${toolName}:\n` +
+          'filters.status?: ("PENDING"|"COMPLETED"|"CANCELLED"|"SUPERSEDED"|"FAILED")[]',
+      );
+    });
+
+    it("walks through arrays to a key of their items (filters.advanced.conditions.operator)", async () => {
+      const result = await drill(createManager(), toolName, "filters.advanced.conditions.operator");
+
+      expect(result.split("\n")[1]).toBe(
+        'filters.advanced.conditions.operator: "equals"|"not_equals"|"contains"|"is_before"|"is_after"',
+      );
+      expect(
+        await drill(createManager(), toolName, "filters.advanced.conditions[].field"),
+      ).toContain(
+        "filters.advanced.conditions[].field: string (non-empty) — status, type, title or metric:<metricId>",
+      );
+    });
+
+    it("returns the whole input for an empty path", async () => {
+      const result = await drill(createManager(), toolName, "");
+
+      expect(result.split("\n").slice(0, 3)).toEqual([
+        `Arguments of ${toolName}:`,
+        "viewId: string (non-empty) — The saved view's id",
+        "title?: string (1–100 chars)",
+      ]);
+      expect(result).toContain("\n  status?: ");
+    });
+
+    it("names the keys that exist when the path is unknown", async () => {
+      const result = await drill(createManager(), toolName, "filters.advanced.nope");
+
+      expect(result).toBe(
+        `Error: No argument "nope" at "filters.advanced" in ${toolName}. Keys there: logicalOperator, conditions.`,
+      );
+    });
+
+    it("names the closest tools when the query is not an exact tool name", async () => {
+      const result = await drill(createManager(), "update-request-view", "filters");
+
+      expect(result).toContain('Error: No tool named "update-request-view"');
+      expect(result).toContain(`\`${toolName}\``);
+    });
+
+    it("lists each member of a union and marks nullable objects", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("draft", {
+        edit: tool({
+          description: "Edits a draft",
+          inputSchema: z.object({
+            operations: z.array(
+              z.discriminatedUnion("op", [
+                z.object({ op: z.literal("rename"), name: z.string().describe("New name") }),
+                z.object({ op: z.literal("disable") }),
+              ]),
+            ),
+            position: z.object({ x: z.number(), y: z.number() }).nullable(),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "draft__edit", "")).toBe(
+        [
+          "Arguments of draft__edit:",
+          "operations: object[]",
+          "  - object",
+          '    op: "rename"',
+          "    name: string — New name",
+          "  - object",
+          '    op: "disable"',
+          "position: object|null",
+          "  x: number",
+          "  y: number",
+        ].join("\n"),
+      );
+      // Only one member has name, so it is optional across the union.
+      expect(await drill(manager, "draft__edit", "operations.name")).toContain(
+        "operations.name?: string — New name",
+      );
+    });
+
+    it("stops at a recursive schema instead of looping", async () => {
+      interface TreeNode {
+        label: string;
+        children?: TreeNode[];
+      }
+      const node: z.ZodType<TreeNode> = z.lazy(() =>
+        z.object({ label: z.string(), children: z.array(node).optional() }),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: z.object({ root: node }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const result = await drill(manager, "tree__save", "root");
+      expect(result).toBe(
+        [
+          "Schema of root in tree__save:",
+          "root: object",
+          "  label: string",
+          "  children?: object[]",
+          '    items: same shape as "root" (recursive)',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "tree__save", "root.children.children.label")).toContain(
+        "root.children.children.label: string",
+      );
+      expect(bytes(result)).toBeLessThan(500);
+    });
+
+    it("stays within 4000 bytes and names narrower paths when an argument is too big", async () => {
+      const section = (n: number) =>
+        z.object(
+          Object.fromEntries(
+            Array.from({ length: 12 }, (_, i) => [
+              `field_${n}_${i}`,
+              z
+                .string()
+                .describe("A field with a description long enough to fill the budget quickly"),
+            ]),
+          ),
+        );
+      const manager = new MCPManager();
+      manager.registerPluginTools("big", {
+        configure: tool({
+          description: "Configures a lot",
+          inputSchema: z.object({
+            config: z.object(
+              Object.fromEntries(Array.from({ length: 8 }, (_, n) => [`section_${n}`, section(n)])),
+            ),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const result = await drill(manager, "big__configure", "config");
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+      expect(result).toMatch(
+        /\n…cut here to stay within 4000 bytes\. Ask for a narrower path, such as "config\.section_\d"\.$/,
+      );
+      expect(await drill(manager, "big__configure", "config.section_7")).toContain(
+        "field_7_11: string",
+      );
+    });
+
+    it("keeps the footer within 4000 bytes when the paths are long and multibyte", async () => {
+      const longKey = (i: number) => `${"é".repeat(150)}_${i}`;
+      const field = { type: "string", description: "A described field to fill the budget" };
+      const manager = new MCPManager();
+      manager.registerPluginTools("wide", {
+        configure: tool({
+          description: "Configures a lot",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: Object.fromEntries(
+              Array.from({ length: 30 }, (_, i) => [
+                longKey(i),
+                { type: "object", properties: { a: field, b: field, c: field } },
+              ]),
+            ),
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const result = await drill(manager, "wide__configure", "");
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+      expect(result).toMatch(
+        /\n…cut here to stay within 4000 bytes\. Ask for a narrower path, such as "é+…"\.$/,
+      );
+    });
+
+    it("keeps the annotations of array items and of scalar union members", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("people", {
+        invite: tool({
+          description: "Invites someone",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              who: {
+                description: "Who to invite",
+                anyOf: [
+                  { type: "string", pattern: "^usr_", description: "An existing user id" },
+                  { type: "string", format: "email", description: "An address to invite" },
+                ],
+              },
+              ids: {
+                type: "array",
+                description: "User ids",
+                items: { type: "string", minLength: 1, maxLength: 200 },
+              },
+              tags: { type: "array", items: { type: "string", enum: ["a", "b"] } },
+            },
+            required: ["who"],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "people__invite", "")).toBe(
+        [
+          "Arguments of people__invite:",
+          "who: one of — Who to invite",
+          "  - string (pattern ^usr_) — An existing user id",
+          "  - string (email) — An address to invite",
+          "ids?: string[] — User ids",
+          "  items: string (1–200 chars)",
+          'tags?: ("a"|"b")[]',
+        ].join("\n"),
+      );
+      expect(await drill(createManager(), toolName, "filters")).toContain(
+        '  assigneeId?: string[] — Assigned user ids; "me" is you\n    items: string (1–200 chars)',
+      );
+    });
+
+    it("lists the alternatives of a whole input that is a union", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("acl", {
+        grant: tool({
+          description: "Grants access",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            oneOf: [
+              {
+                type: "object",
+                properties: { kind: { const: "user" }, userId: { type: "string" } },
+                required: ["kind", "userId"],
+              },
+              {
+                type: "object",
+                properties: { kind: { const: "group" }, groupId: { type: "string" } },
+                required: ["kind", "groupId"],
+              },
+            ],
+          }),
+          execute: async () => "ok",
+        }),
+        ping: tool({
+          description: "Takes nothing",
+          inputSchema: z.object({}),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "acl__grant", "")).toBe(
+        [
+          "Arguments of acl__grant:",
+          "one of:",
+          "  - object",
+          '    kind: "user"',
+          "    userId: string",
+          "  - object",
+          '    kind: "group"',
+          "    groupId: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "acl__grant", "kind")).toBe(
+        'Schema of kind in acl__grant:\nkind: "user"|"group"',
+      );
+      expect(await drill(manager, "acl__ping", "")).toBe("acl__ping takes no arguments.");
+    });
+
+    it("keeps allOf restrictions together, required when any of them requires it", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("strict", {
+        set: tool({
+          description: "Sets a status",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            allOf: [
+              {
+                properties: { status: { type: "string", enum: ["PENDING", "COMPLETED"] } },
+                required: ["status"],
+              },
+              {
+                properties: {
+                  status: { type: "string", enum: ["COMPLETED", "FAILED"] },
+                  note: { type: "string" },
+                },
+              },
+            ],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "strict__set", "status")).toBe(
+        [
+          "Schema of status in strict__set:",
+          "status: all of",
+          '  - "PENDING"|"COMPLETED"',
+          '  - "COMPLETED"|"FAILED"',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "strict__set", "note")).toBe(
+        "Schema of note in strict__set:\nnote?: string",
+      );
+    });
+
+    it("bounds the work on shared $refs that describe exponentially many paths", async () => {
+      const depth = 30;
+      const defs = Object.fromEntries(
+        Array.from({ length: depth }, (_, i) => [
+          `D${i}`,
+          i === depth - 1
+            ? { type: "string" }
+            : {
+                type: "object",
+                properties: {
+                  left: { $ref: `#/$defs/D${i + 1}` },
+                  right: { $ref: `#/$defs/D${i + 1}` },
+                },
+              },
+        ]),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("dag", {
+        walk: tool({
+          description: "Walks a DAG",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { root: { $ref: "#/$defs/D0" } },
+            $defs: defs,
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      const result = await drill(manager, "dag__walk", "root");
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+      expect(result).toContain("\n…cut here to stay within 4000 bytes.");
+      const nested = await drill(manager, "dag__walk", "root.right.left.right.left");
+      expect(nested).toMatch(
+        /^Schema of root\.right\.left\.right\.left in dag__walk:\nroot\.right\.left\.right\.left\?: object\n {2}left\?: object\n/,
+      );
+      expect(bytes(nested)).toBeLessThanOrEqual(4000);
+    });
+
+    it("bounds the work on shared $refs in allOf when resolving a path", async () => {
+      const depth = 30;
+      const defs = Object.fromEntries(
+        Array.from({ length: depth }, (_, i) => [
+          `D${i}`,
+          i === depth - 1
+            ? { type: "object", properties: { value: { type: "string" } } }
+            : {
+                allOf: [
+                  { $ref: `#/$defs/D${i + 1}` },
+                  {
+                    allOf: [{ $ref: `#/$defs/D${i + 1}` }],
+                    properties: { value: { description: String(i) } },
+                  },
+                ],
+              },
+        ]),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("dag", {
+        nest: tool({
+          description: "Nests a DAG",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { root: { $ref: "#/$defs/D0" } },
+            $defs: defs,
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      const result = await drill(manager, "dag__nest", "root.value");
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(bytes(result)).toBeLessThanOrEqual(4000);
+      // Every allOf member is a string, so they fold into one line with all their descriptions.
+      expect(result).toMatch(
+        /^Schema of root\.value in dag__nest:\nroot\.value\?: string — 28; 27; /,
+      );
+      expect(result).toMatch(/; 1; 0$/);
+    });
+
+    it("classifies a shared null-only union DAG once per definition", async () => {
+      const depth = 30;
+      const defs = Object.fromEntries(
+        Array.from({ length: depth }, (_, i) => [
+          `D${i}`,
+          i === depth - 1
+            ? { type: "null", description: "Clears it" }
+            : { anyOf: [{ $ref: `#/$defs/D${i + 1}` }, { $ref: `#/$defs/D${i + 1}` }] },
+        ]),
+      );
+      const manager = new MCPManager();
+      manager.registerPluginTools("dag", {
+        clear: tool({
+          description: "Clears through a DAG",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { value: { anyOf: [{ type: "string" }, { $ref: "#/$defs/D0" }] } },
+            $defs: defs,
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      const result = await drill(manager, "dag__clear", "value");
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(result).toBe("Schema of value in dag__clear:\nvalue?: string|null — null: Clears it");
+    });
+
+    it("keeps annotations below composed and nullable array items", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("people", {
+        invite: tool({
+          description: "Invites people",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              who: {
+                type: "array",
+                items: {
+                  anyOf: [
+                    { type: "string", pattern: "^usr_", description: "Existing user" },
+                    { type: "string", format: "email", description: "Invitation address" },
+                  ],
+                },
+              },
+              names: {
+                type: "array",
+                items: { anyOf: [{ type: "string", minLength: 1 }, { type: "null" }] },
+              },
+              code: {
+                anyOf: [
+                  {
+                    allOf: [
+                      { type: "string", minLength: 3 },
+                      { type: "string", pattern: "^[A-Z]+$" },
+                    ],
+                  },
+                  { type: "null" },
+                ],
+              },
+            },
+            required: ["who"],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "people__invite", "")).toBe(
+        [
+          "Arguments of people__invite:",
+          "who: string[]",
+          "  items: one of",
+          "    - string (pattern ^usr_) — Existing user",
+          "    - string (email) — Invitation address",
+          "names?: (string|null)[]",
+          "  items: string|null (non-empty)",
+          // Restrictions of the same type all apply to the one string.
+          "code?: string|null (at least 3 chars, pattern ^[A-Z]+$)",
+        ].join("\n"),
+      );
+    });
+
+    it("keeps a nullable wrapper's own annotations next to its member's", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("mail", {
+        send: tool({
+          description: "Sends mail",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              codes: {
+                type: "array",
+                items: { minLength: 3, anyOf: [{ type: "string" }, { type: "null" }] },
+              },
+              to: {
+                description: "Recipient or null",
+                anyOf: [{ type: "string", description: "Existing user" }, { type: "null" }],
+              },
+              cc: {
+                default: null,
+                anyOf: [{ anyOf: [{ type: "string", maxLength: 50 }, { type: "null" }] }],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "mail__send", "")).toBe(
+        [
+          "Arguments of mail__send:",
+          "codes?: (string|null)[]",
+          "  items: string|null (at least 3 chars)",
+          "to?: string|null — Recipient or null; Existing user",
+          "cc?: string|null (default null, at most 50 chars)",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "mail__send", "to")).toBe(
+        "Schema of to in mail__send:\nto?: string|null — Recipient or null; Existing user",
+      );
+    });
+
+    it("shows a value's union and its allOf restrictions together", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("ids", {
+        set: tool({
+          description: "Sets an id",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              id: {
+                anyOf: [
+                  { type: "string", pattern: "^usr_", description: "A user id" },
+                  { type: "string", format: "email", description: "An address" },
+                ],
+                allOf: [{ minLength: 5 }, { type: "string", maxLength: 100 }],
+              },
+              kind: {
+                type: "string",
+                anyOf: [{ const: "user" }, { const: "group" }],
+                allOf: [{ enum: ["user", "group", "team"] }],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "ids__set", "")).toBe(
+        [
+          "Arguments of ids__set:",
+          // Restrictions on the same string join its line; the alternatives list below it.
+          "id?: string (at least 5 chars, at most 100 chars)",
+          "  one of:",
+          "    - string (pattern ^usr_) — A user id",
+          "    - string (email) — An address",
+          // Literals that the string type hides are listed, and so is a restriction of another type.
+          "kind?: string",
+          "  one of:",
+          '    - "user"',
+          '    - "group"',
+          "  all of:",
+          '    - "user"|"group"|"team"',
+        ].join("\n"),
+      );
+    });
+
+    it("treats only a branch's own ancestry as recursive, not a $ref folded in beside it", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("refs", {
+        shared: tool({
+          description: "Inherits Base and reuses it in a property",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            allOf: [{ $ref: "#/$defs/Base" }],
+            properties: { previous: { $ref: "#/$defs/Base" } },
+            $defs: { Base: { type: "object", properties: { name: { type: "string" } } } },
+          }),
+          execute: async () => "ok",
+        }),
+        chain: tool({
+          description: "Inherits a recursive Node",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            allOf: [{ $ref: "#/$defs/Node" }],
+            properties: { id: { type: "string" } },
+            $defs: {
+              Node: { type: "object", properties: { next: { $ref: "#/$defs/Node" } } },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "refs__shared", "")).toBe(
+        [
+          "Arguments of refs__shared:",
+          "previous?: object",
+          "  name?: string",
+          "name?: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "refs__chain", "")).toBe(
+        [
+          "Arguments of refs__chain:",
+          "id?: string",
+          "next?: same shape as Node, part of the whole input (recursive)",
+        ].join("\n"),
+      );
+    });
+
+    it("keeps the enclosing required on keys of an allOf member listed on its own", async () => {
+      const manager = new MCPManager();
+      const member = (nullable: object) => ({
+        type: "object",
+        required: ["userId"],
+        allOf: [nullable],
+      });
+      manager.registerPluginTools("req", {
+        typed: tool({
+          description: "Nullable through type",
+          inputSchema: jsonSchema<Record<string, unknown>>(
+            member({ type: ["object", "null"], properties: { userId: { type: "string" } } }),
+          ),
+          execute: async () => "ok",
+        }),
+        union: tool({
+          description: "Nullable through anyOf",
+          inputSchema: jsonSchema<Record<string, unknown>>(
+            member({
+              anyOf: [
+                { type: "object", properties: { userId: { type: "string" } } },
+                { type: "null" },
+              ],
+            }),
+          ),
+          execute: async () => "ok",
+        }),
+      });
+
+      for (const name of ["req__typed", "req__union"]) {
+        expect(await drill(manager, name, "")).toBe(
+          [`Arguments of ${name}:`, "all of:", "  - object|null", "    userId: string"].join("\n"),
+        );
+        expect(await drill(manager, name, "userId")).toBe(
+          `Schema of userId in ${name}:\nuserId: string`,
+        );
+      }
+    });
+
+    it("keeps literal alternatives next to a restriction of another type", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("kinds", {
+        set: tool({
+          description: "Sets a kind",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              kind: { anyOf: [{ const: "a" }, { const: "b" }], allOf: [{ type: "string" }] },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "kinds__set", "kind")).toBe(
+        ["Schema of kind in kinds__set:", 'kind?: "a"|"b"', "  all of:", "    - string"].join("\n"),
+      );
+    });
+
+    it("says what a described null alternative means", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("task", {
+        update: tool({
+          description: "Updates a task",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              due: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { type: "null", description: "Clears the due date" },
+                ],
+              },
+              owner: {
+                anyOf: [
+                  { type: "string", description: "A user id" },
+                  { type: "number" },
+                  { type: "null", description: "Unassigns it" },
+                ],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "task__update", "")).toBe(
+        [
+          "Arguments of task__update:",
+          "due?: string|null (date) — null: Clears the due date",
+          "owner?: one of (or null) — null: Unassigns it",
+          "  - string — A user id",
+          "  - number",
+        ].join("\n"),
+      );
+    });
+
+    it("keeps a null alternative's default and description from allOf and a one-member union", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("task", {
+        update: tool({
+          description: "Updates a task",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            $defs: {
+              Clear: { type: "null", allOf: [{ description: "Clears the label" }] },
+            },
+            properties: {
+              due: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { type: "null", default: null, allOf: [{ description: "Clears the due date" }] },
+                ],
+              },
+              label: { anyOf: [{ type: "string" }, { $ref: "#/$defs/Clear" }] },
+              note: { anyOf: [{ type: "string" }, { type: "null", default: null }] },
+              start: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { type: "null", anyOf: [{ default: null, description: "Starts now" }] },
+                ],
+              },
+              end: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { type: "null", oneOf: [{ default: null, description: "Never ends" }] },
+                ],
+              },
+              remind: {
+                anyOf: [
+                  { type: "string", format: "date" },
+                  { anyOf: [{ type: "null", default: null, description: "No reminder" }] },
+                ],
+              },
+              snooze: {
+                anyOf: [
+                  { type: "number" },
+                  { default: null, description: "Not snoozed", oneOf: [{ type: "null" }] },
+                ],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "task__update", "")).toBe(
+        [
+          "Arguments of task__update:",
+          "due?: string|null (date) — null (default null): Clears the due date",
+          "label?: string|null — null: Clears the label",
+          "note?: string|null — null (default null)",
+          "start?: string|null (date) — null (default null): Starts now",
+          "end?: string|null (date) — null (default null): Never ends",
+          "remind?: string|null (date) — null (default null): No reminder",
+          "snooze?: number|null — null (default null): Not snoozed",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "task__update", "due")).toContain(
+        "null (default null): Clears the due date",
+      );
+    });
+
+    it("keeps the keywords beside a $ref that Zod v4 emits for a reused schema", async () => {
+      const Id = z.string().min(1).meta({ id: "Id", description: "Identifier of a user" });
+      const Owner = z.object({ id: Id.describe("Owner id") }).meta({ id: "Owner" });
+      // Zod's default (draft 2020-12) output, as an MCP server would send it:
+      // `{ "description": "The assignee", "$ref": "#/$defs/Id" }`.
+      const input = z.toJSONSchema(
+        z.object({
+          assignee: Id.describe("The assignee"),
+          reviewer: Id.max(20).default("x"),
+          plain: Id,
+          owner: Owner.describe("Who owns it"),
+        }),
+      );
+      expect(input.properties?.assignee).toEqual({
+        description: "The assignee",
+        $ref: "#/$defs/Id",
+      });
+      const manager = new MCPManager();
+      manager.registerPluginTools("zodref", {
+        assign: tool({
+          description: "Assigns a task",
+          inputSchema: jsonSchema<Record<string, unknown>>(input as Record<string, unknown>),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "zodref__assign", "")).toBe(
+        [
+          "Arguments of zodref__assign:",
+          "assignee: string (non-empty) — The assignee",
+          'reviewer: string (at most 20 chars, default "x", non-empty) — Identifier of a user',
+          "plain: string (non-empty) — Identifier of a user",
+          "owner: object — Who owns it",
+          "  id: string (non-empty) — Owner id",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "zodref__assign", "owner.id")).toBe(
+        "Schema of owner.id in zodref__assign:\nowner.id: string (non-empty) — Owner id",
+      );
+    });
+
+    it("resolves a nested path through $refs with sibling keywords", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("nested", {
+        update: tool({
+          description: "Updates a view",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { view: { description: "The view", $ref: "#/$defs/View" } },
+            required: ["view"],
+            $defs: {
+              View: {
+                type: "object",
+                properties: { filters: { description: "Its filters", $ref: "#/$defs/Filters" } },
+              },
+              Filters: {
+                type: "object",
+                description: "Filters of a view",
+                properties: { status: { type: "string" } },
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "nested__update", "view.filters")).toBe(
+        [
+          "Schema of view.filters in nested__update:",
+          "view.filters?: object — Its filters",
+          "  status?: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "nested__update", "view.filters.status")).toBe(
+        "Schema of view.filters.status in nested__update:\nview.filters.status?: string",
+      );
+      expect(await drill(manager, "nested__update", "view.nope")).toContain(
+        'No argument "nope" at "view" in nested__update. Keys there: filters.',
+      );
+    });
+
+    it("keeps a recursive $ref's sibling keywords without expanding it again", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            $ref: "#/$defs/Node",
+            $defs: {
+              Node: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  child: { description: "The child", $ref: "#/$defs/Node" },
+                  kids: { type: "array", items: { description: "A kid", $ref: "#/$defs/Node" } },
+                },
+                required: ["name"],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "tree__save", "child")).toBe(
+        [
+          "Schema of child in tree__save:",
+          "child?: object — The child",
+          "  name: string",
+          '  child?: same shape as "child" (recursive) — The child',
+          "  kids?: object[]",
+          '    items: same shape as "child" (recursive) — A kid',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "tree__save", "child.child.kids[].child.name")).toBe(
+        "Schema of child.child.kids[].child.name in tree__save:\nchild.child.kids[].child.name: string",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("keeps required, const and enum written beside a recursive $ref on its line", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            $ref: "#/$defs/Node",
+            $defs: {
+              Node: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  req: { $ref: "#/$defs/Node", required: ["name"] },
+                  lit: { $ref: "#/$defs/Node", const: { name: "x" } },
+                  en: { $ref: "#/$defs/Node", enum: [{ name: "a" }, { name: "b" }] },
+                  kids: { type: "array", items: { $ref: "#/$defs/Node", required: ["name"] } },
+                },
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "tree__save", "")).toBe(
+        [
+          "Arguments of tree__save:",
+          "name?: string",
+          "req?: same shape as the whole input (recursive) (requires name)",
+          'lit?: same shape as the whole input (recursive) (= {"name":"x"})',
+          'en?: same shape as the whole input (recursive) (one of {"name":"a"}|{"name":"b"})',
+          "kids?: object[]",
+          "  items: same shape as the whole input (recursive) (requires name)",
+        ].join("\n"),
+      );
+    });
+
+    it("lists the keys declared beside a recursive $ref and marks only the target recursive", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            $ref: "#/$defs/Node",
+            $defs: {
+              Node: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  child: {
+                    $ref: "#/$defs/Node",
+                    properties: { extra: { type: "string" } },
+                    required: ["extra"],
+                  },
+                  kids: {
+                    type: "array",
+                    items: {
+                      $ref: "#/$defs/Node",
+                      properties: { rank: { type: "integer" } },
+                      required: ["rank"],
+                    },
+                  },
+                },
+                required: ["name"],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "tree__save", "")).toBe(
+        [
+          "Arguments of tree__save:",
+          "name: string",
+          "child?: object",
+          "  extra: string",
+          "  all of:",
+          "    - same shape as the whole input (recursive)",
+          "kids?: object[]",
+          "  rank: integer",
+          "  all of:",
+          "    - same shape as the whole input (recursive)",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "tree__save", "child.child.extra")).toBe(
+        "Schema of child.child.extra in tree__save:\nchild.child.extra: string",
+      );
+      expect(await drill(manager, "tree__save", "kids[].kids[].name")).toBe(
+        "Schema of kids[].kids[].name in tree__save:\nkids[].kids[].name: string",
+      );
+      expect(await drill(manager, "tree__save", "child.nope")).toContain(
+        "Keys there: extra, name, child, kids.",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("expands a finite definition reused by a key declared beside its $ref", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("org", {
+        save: tool({
+          description: "Saves an owner",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              owner: {
+                $ref: "#/$defs/Person",
+                description: "Who owns it",
+                properties: { manager: { $ref: "#/$defs/Person" } },
+              },
+            },
+            $defs: {
+              Person: {
+                type: "object",
+                properties: { name: { type: "string" } },
+                required: ["name"],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "org__save", "")).toBe(
+        [
+          "Arguments of org__save:",
+          "owner?: object — Who owns it",
+          "  manager?: object",
+          "    name: string",
+          "  name: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "org__save", "owner.manager.name")).toBe(
+        "Schema of owner.manager.name in org__save:\nowner.manager.name: string",
+      );
+    });
+
+    it("stops at a $ref back to a node whose $ref has sibling keys", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("loop", {
+        save: tool({
+          description: "Saves a loop",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              child: { $ref: "#", properties: { again: { $ref: "#/properties/child" } } },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "loop__save", "")).toBe(
+        [
+          "Arguments of loop__save:",
+          "child?: object",
+          "  again?: object",
+          '    again?: same shape as "child.again" (recursive)',
+          "    all of:",
+          "      - same shape as the whole input (recursive)",
+          "  all of:",
+          "    - same shape as the whole input (recursive)",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "loop__save", "child.again.again.child.again")).toContain(
+        "child.again.again.child.again?: object",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("stops at $refs with sibling keys that loop through each other or themselves", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("loop", {
+        save: tool({
+          description: "Saves a loop",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              pair: { $ref: "#/$defs/A" },
+              self: { $ref: "#/properties/self", properties: { label: { type: "string" } } },
+            },
+            $defs: {
+              A: { $ref: "#/$defs/B", properties: { a: { type: "string" } } },
+              B: { $ref: "#/$defs/A", properties: { b: { type: "string" } } },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "loop__save", "")).toBe(
+        [
+          "Arguments of loop__save:",
+          "pair?: object",
+          "  a?: string",
+          "  b?: string",
+          "  all of:",
+          '    - same shape as "pair" (recursive)',
+          "self?: object",
+          "  label?: string",
+          "  all of:",
+          '    - same shape as "self" (recursive)',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "loop__save", "pair.b")).toBe(
+        "Schema of pair.b in loop__save:\npair.b?: string",
+      );
+      expect(await drill(manager, "loop__save", "self.label")).toBe(
+        "Schema of self.label in loop__save:\nself.label?: string",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("classifies a nullable $ref to a looping union with sibling keys", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("loop", {
+        save: tool({
+          description: "Saves a loop",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { value: { anyOf: [{ type: "null" }, { $ref: "#/$defs/A" }] } },
+            $defs: {
+              A: {
+                $ref: "#/$defs/B",
+                anyOf: [
+                  { type: "string" },
+                  { type: "object", properties: { a: { type: "string" } } },
+                ],
+              },
+              B: {
+                $ref: "#/$defs/A",
+                anyOf: [
+                  { type: "number" },
+                  { type: "object", properties: { b: { type: "string" } } },
+                ],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const started = Date.now();
+      expect(await drill(manager, "loop__save", "value")).toBe(
+        [
+          "Schema of value in loop__save:",
+          "value?: null|string|object",
+          "  one of:",
+          "    - string",
+          "    - object",
+          "      a?: string",
+          "  all of:",
+          "    - number|object",
+          "      one of:",
+          "        - number",
+          "        - object",
+          "          b?: string",
+          "      all of:",
+          '        - same shape as "value" (recursive)',
+        ].join("\n"),
+      );
+      expect(await drill(manager, "loop__save", "value.a")).toBe(
+        "Schema of value.a in loop__save:\nvalue.a?: string",
+      );
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+
+    it("lists the alternatives of a whole input that is a union inside allOf", async () => {
+      const manager = new MCPManager();
+      const alternatives = {
+        oneOf: [
+          { type: "object", properties: { userId: { type: "string" } }, required: ["userId"] },
+          { type: "object", properties: { groupId: { type: "string" } }, required: ["groupId"] },
+        ],
+      };
+      manager.registerPluginTools("acl", {
+        wrapped: tool({
+          description: "A union inside allOf",
+          inputSchema: jsonSchema<Record<string, unknown>>({ allOf: [alternatives] }),
+          execute: async () => "ok",
+        }),
+        typed: tool({
+          description: "A typed object around a union inside allOf",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { note: { type: "string" } },
+            allOf: [{ $ref: "#/$defs/Who" }],
+            $defs: { Who: alternatives },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "acl__wrapped", "")).toBe(
+        [
+          "Arguments of acl__wrapped:",
+          "one of:",
+          "  - object",
+          "    userId: string",
+          "  - object",
+          "    groupId: string",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "acl__typed", "")).toBe(
+        [
+          "Arguments of acl__typed:",
+          "note?: string",
+          "one of:",
+          "  - object",
+          "    userId: string",
+          "  - object",
+          "    groupId: string",
+        ].join("\n"),
+      );
+    });
+
+    it("marks a key required when required sits in a different allOf member", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("split", {
+        apart: tool({
+          description: "Required in its own member",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            allOf: [{ properties: { status: { type: "string" } } }, { required: ["status"] }],
+          }),
+          execute: async () => "ok",
+        }),
+        outside: tool({
+          description: "Required on the enclosing node",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            required: ["status"],
+            allOf: [{ properties: { status: { type: "string" } } }],
+          }),
+          execute: async () => "ok",
+        }),
+        either: tool({
+          description: "Required in only one alternative",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: { status: { type: "string" } },
+            anyOf: [{ required: ["status"] }, { required: ["note"] }],
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      for (const name of ["split__apart", "split__outside"]) {
+        expect(await drill(manager, name, "status")).toBe(
+          `Schema of status in ${name}:\nstatus: string`,
+        );
+      }
+      expect(await drill(manager, "split__either", "status")).toBe(
+        "Schema of status in split__either:\nstatus?: string",
+      );
+      for (const name of ["split__apart", "split__outside"]) {
+        expect(await drill(manager, name, "")).toBe(`Arguments of ${name}:\nstatus: string`);
+      }
+      expect(await drill(manager, "split__either", "")).toBe(
+        "Arguments of split__either:\nstatus?: string",
+      );
+    });
+
+    it("gives a shared definition the same type in sibling branches", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("ids", {
+        pick: tool({
+          description: "Picks one or more ids",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              id: {
+                anyOf: [{ $ref: "#/$defs/Id" }, { type: "array", items: { $ref: "#/$defs/Id" } }],
+              },
+            },
+            $defs: { Id: { type: "string" } },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "ids__pick", "id")).toBe(
+        "Schema of id in ids__pick:\nid?: string|string[]",
+      );
+    });
+
+    it("shows long enums and literals whole when they fit", async () => {
+      const countries = Array.from({ length: 150 }, (_, i) => `Country number ${i}`);
+      const longConst = "x".repeat(200);
+      const manager = new MCPManager();
+      manager.registerPluginTools("geo", {
+        set: tool({
+          description: "Sets a country",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            type: "object",
+            properties: {
+              country: { type: "string", enum: countries.slice(0, 90) },
+              marker: { const: longConst },
+              everything: { type: "string", enum: countries.concat(countries.map((c) => `${c}!`)) },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      const country = await drill(manager, "geo__set", "country");
+      expect(bytes(country)).toBeGreaterThan(1500);
+      expect(country).toContain('"Country number 89"');
+      expect(country).not.toContain("…");
+      expect(await drill(manager, "geo__set", "marker")).toContain(JSON.stringify(longConst));
+
+      // A result that needs no footer may use the whole budget.
+      for (const value of ["x".repeat(3900), "é".repeat(1950)]) {
+        const fits = new MCPManager();
+        fits.registerPluginTools("geo", {
+          mark: tool({
+            description: "Sets a marker",
+            inputSchema: jsonSchema<Record<string, unknown>>({
+              type: "object",
+              properties: { marker: { const: value } },
+            }),
+            execute: async () => "ok",
+          }),
+        });
+        const marker = await drill(fits, "geo__mark", "marker");
+        expect(marker).toBe(`Schema of marker in geo__mark:\nmarker?: ${JSON.stringify(value)}`);
+        expect(bytes(marker)).toBeGreaterThan(3900);
+        expect(bytes(marker)).toBeLessThanOrEqual(4000);
+      }
+
+      const everything = await drill(manager, "geo__set", "everything");
+      expect(bytes(everything)).toBeLessThanOrEqual(4000);
+      expect(everything).toBe(
+        'Schema of everything in geo__set:\n…"everything" is too long to show within 4000 bytes.',
+      );
+    });
+
+    it("offers path only when schemas are shown", () => {
+      const manager = createManager();
+      const withSchema = createSearchToolsTool({ manager, includeSchema: true });
+      const withoutSchema = createSearchToolsTool({ manager, enableLoad: true });
+
+      expect(withSchema.description).toContain("path");
+      expect(Object.keys((withSchema.inputSchema as z.ZodObject).shape)).toEqual(["query", "path"]);
+      expect(withoutSchema.description).not.toContain("path");
+      expect(Object.keys((withoutSchema.inputSchema as z.ZodObject).shape)).toEqual([
+        "query",
+        "load",
+      ]);
     });
   });
 });
