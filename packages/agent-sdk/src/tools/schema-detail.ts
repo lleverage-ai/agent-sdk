@@ -832,7 +832,7 @@ function renderNode(
   if (!step(ctx, path)) return;
   const { schema: node, ref, siblings } = deref(doc, schema);
   if (ref && refs.has(ref)) {
-    const notes = siblings ? ownNotes(node) : "";
+    const notes = recursiveNotes(doc, node, siblings === true, scope);
     emit(ctx, headLine(label, `${recursive(refs, ref)}${notes}`, depth), path);
     return;
   }
@@ -928,7 +928,7 @@ function renderItems(
   if (!step(ctx, path)) return;
   const { schema: node, ref, siblings } = deref(doc, items);
   if (ref && refs.has(ref)) {
-    const notes = siblings ? ownNotes(node) : "";
+    const notes = recursiveNotes(doc, node, siblings === true, []);
     emit(ctx, `${indent(depth)}items: ${recursive(refs, ref)}${notes}`, path);
     return;
   }
@@ -1109,21 +1109,83 @@ function formatNotes(notes: { constraints: string[]; descriptions: string[] }): 
 }
 
 /**
- * The notes a recursive `$ref`'s own sibling keywords add to its line,
- * including the keys it requires and the literals it allows, which the line
- * has no body to show.
+ * The notes on a recursive `$ref`'s line, which has no body to show them in.
+ * With `siblings`, the `$ref`'s own sibling keywords add theirs: a `type`
+ * narrower than the target's, the keys they require and the literals they
+ * allow. The enclosing values the `$ref` is a restriction or alternative of
+ * (`owners`) add the target's keys they require that they don't list
+ * themselves, as when a `$ref` beside its own `properties` requires a key
+ * only the target declares.
  */
-function ownNotes(node: unknown): string {
+function recursiveNotes(
+  doc: Doc,
+  node: unknown,
+  siblings: boolean,
+  owners: Record<string, unknown>[],
+): string {
   if (!isRecord(node)) return "";
-  const notes = annotations(node);
-  if (Array.isArray(node.required) && node.required.length > 0) {
-    notes.constraints.push(`requires ${node.required.join(", ")}`);
+  const notes = siblings ? annotations(node) : { constraints: [], descriptions: [] };
+  const narrowed = siblings ? narrowedType(doc, node) : undefined;
+  if (narrowed) notes.constraints.unshift(`type ${narrowed}`);
+  const required: string[] = [];
+  if (siblings && Array.isArray(node.required)) {
+    addUnique(
+      required,
+      node.required.filter((key): key is string => typeof key === "string"),
+    );
   }
+  addUnique(required, inheritedRequired(doc, node, owners));
+  if (required.length > 0) notes.constraints.push(`requires ${required.join(", ")}`);
+  if (!siblings) return formatNotes(notes);
   if ("const" in node) notes.constraints.push(`= ${formatLiteral(node.const)}`);
   else if (Array.isArray(node.enum) && node.enum.length > 0) {
     notes.constraints.push(`one of ${[...new Set(node.enum.map(formatLiteral))].join("|")}`);
   }
   return formatNotes(notes);
+}
+
+/**
+ * The `type` written beside a `$ref` (see {@link withSiblings}, whose last
+ * `allOf` part is the target), when it names other types than the target's:
+ * `{ $ref: Node, type: "object" }` for a `Node` of `object|null`.
+ */
+function narrowedType(doc: Doc, node: Record<string, unknown>): string | undefined {
+  const own = typeNames(node);
+  if (!own) return undefined;
+  const target = deref(doc, allOf(node).at(-1)).schema;
+  const theirs = isRecord(target) ? typeNames(target) : undefined;
+  const same = theirs?.length === own.length && own.every((name) => theirs.includes(name));
+  return same ? undefined : own.join("|");
+}
+
+/** The types a node's `type` keyword names, or `object` for keys alone. */
+function typeNames(node: Record<string, unknown>): string[] | undefined {
+  if (typeof node.type === "string") return [node.type];
+  if (Array.isArray(node.type)) {
+    return node.type.filter((name): name is string => typeof name === "string");
+  }
+  return hasOwnKeys(node) ? ["object"] : undefined;
+}
+
+/**
+ * The keys a recursive target (`node`) declares that an enclosing value
+ * requires without listing them itself. The target's own `required` is left
+ * out: its `same shape as` line already stands for it.
+ */
+function inheritedRequired(
+  doc: Doc,
+  node: Record<string, unknown>,
+  owners: Record<string, unknown>[],
+): string[] {
+  if (owners.length === 0) return [];
+  const listed = new Set(
+    owners.flatMap((owner) => (isRecord(owner.properties) ? Object.keys(owner.properties) : [])),
+  );
+  return availableKeys(doc, node, new Set()).filter(
+    (key) =>
+      !listed.has(key) &&
+      owners.some((owner) => requiresKey(doc, owner, key, new Map([[node, false]]))),
+  );
 }
 
 function formatLiteral(value: unknown): string {
