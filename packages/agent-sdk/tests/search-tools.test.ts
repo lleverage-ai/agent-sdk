@@ -1590,7 +1590,13 @@ describe("createSearchToolsTool", () => {
                     type: "array",
                     items: { $ref: "#/$defs/Node", type: "object", required: ["name"] },
                   },
+                  loose: { $ref: "#/$defs/Loose" },
                 },
+              },
+              // Keys don't make a target object-only: here a union also allows null.
+              Loose: {
+                properties: { again: { $ref: "#/$defs/Loose", type: "object" } },
+                anyOf: [{ type: "object" }, { type: "null" }],
               },
             },
           }),
@@ -1615,6 +1621,8 @@ describe("createSearchToolsTool", () => {
           "same?: same shape as the whole input (recursive) — Same",
           "bareKids?: object[]",
           "  items: same shape as the whole input (recursive) (type object, requires name)",
+          "loose?: object|null",
+          '  again?: same shape as "loose" (recursive) (type object)',
         ].join("\n"),
       );
     });

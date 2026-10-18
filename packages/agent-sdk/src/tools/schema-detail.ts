@@ -1146,8 +1146,10 @@ function recursiveNotes(
 
 /**
  * The `type` written beside a `$ref` (see {@link withSiblings}, whose last
- * `allOf` part is the target), when it names other types than the target's:
- * `{ $ref: Node, type: "object" }` for a `Node` of `object|null`.
+ * `allOf` part is the target), unless the target's own `type` names the same
+ * types: `{ $ref: Node, type: "object" }` for a `Node` of `object|null`. A
+ * target without a `type` keyword can hold other types (keys and union
+ * members don't restrict it to objects), so the note stays.
  */
 function narrowedType(doc: Doc, node: Record<string, unknown>): string | undefined {
   const own = typeNames(node);
@@ -1158,13 +1160,13 @@ function narrowedType(doc: Doc, node: Record<string, unknown>): string | undefin
   return same ? undefined : own.join("|");
 }
 
-/** The types a node's `type` keyword names, or `object` for keys alone. */
+/** The types a node's `type` keyword names. */
 function typeNames(node: Record<string, unknown>): string[] | undefined {
   if (typeof node.type === "string") return [node.type];
   if (Array.isArray(node.type)) {
     return node.type.filter((name): name is string => typeof name === "string");
   }
-  return hasOwnKeys(node) ? ["object"] : undefined;
+  return undefined;
 }
 
 /**
