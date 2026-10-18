@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `search_tools` `path` detail keeps two restrictions written beside a
+  recursive `$ref` (LLE-15708). When the `$ref` also declares its own
+  properties, keys it requires that only the target declares now show on the
+  `same shape as … (recursive)` line (`(requires name)`), for properties and
+  array items. A `type` beside a recursive `$ref` that is narrower than the
+  target's now shows on that line too (`(type object)`).
+
 ## [1.0.0-rc.20] - 2026-10-16
 
 Twentieth release candidate for 1.0.0. In proxy mode, `search_tools` takes

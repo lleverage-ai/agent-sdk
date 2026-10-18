@@ -1494,6 +1494,139 @@ describe("createSearchToolsTool", () => {
       expect(Date.now() - started).toBeLessThan(2000);
     });
 
+    it("shows keys required beside a recursive $ref that only its target declares", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            $ref: "#/$defs/Node",
+            $defs: {
+              Node: {
+                type: "object",
+                properties: {
+                  name: { type: "string" },
+                  child: {
+                    $ref: "#/$defs/Node",
+                    properties: { extra: { type: "string" } },
+                    required: ["name", "extra"],
+                  },
+                  kids: {
+                    type: "array",
+                    items: {
+                      $ref: "#/$defs/Node",
+                      properties: { rank: { type: "integer" } },
+                      required: ["rank", "name"],
+                    },
+                  },
+                },
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      expect(await drill(manager, "tree__save", "")).toBe(
+        [
+          "Arguments of tree__save:",
+          "name?: string",
+          "child?: object",
+          "  extra: string",
+          "  all of:",
+          "    - same shape as the whole input (recursive) (requires name)",
+          "kids?: object[]",
+          "  rank: integer",
+          "  all of:",
+          "    - same shape as the whole input (recursive) (requires name)",
+        ].join("\n"),
+      );
+      expect(await drill(manager, "tree__save", "child")).toBe(
+        [
+          "Schema of child in tree__save:",
+          "child?: object",
+          "  extra: string",
+          "  name: string",
+          "  child?: object",
+          "    extra: string",
+          "    all of:",
+          '      - same shape as Node, part of "child" (recursive) (requires name)',
+          "  kids?: object[]",
+          "    rank: integer",
+          "    all of:",
+          '      - same shape as Node, part of "child" (recursive) (requires name)',
+        ].join("\n"),
+      );
+    });
+
+    it("shows a type narrowed beside a recursive $ref", async () => {
+      const manager = new MCPManager();
+      manager.registerPluginTools("tree", {
+        save: tool({
+          description: "Saves a tree",
+          inputSchema: jsonSchema<Record<string, unknown>>({
+            $ref: "#/$defs/Node",
+            $defs: {
+              Node: {
+                type: ["object", "null"],
+                properties: {
+                  name: { type: "string" },
+                  child: {
+                    $ref: "#/$defs/Node",
+                    type: "object",
+                    properties: { extra: { type: "string" } },
+                  },
+                  kids: {
+                    type: "array",
+                    items: {
+                      $ref: "#/$defs/Node",
+                      type: "object",
+                      properties: { rank: { type: "integer" } },
+                    },
+                  },
+                  bare: { $ref: "#/$defs/Node", type: "object" },
+                  same: { $ref: "#/$defs/Node", type: ["null", "object"], description: "Same" },
+                  bareKids: {
+                    type: "array",
+                    items: { $ref: "#/$defs/Node", type: "object", required: ["name"] },
+                  },
+                  loose: { $ref: "#/$defs/Loose" },
+                },
+              },
+              // Keys don't make a target object-only: here a union also allows null.
+              Loose: {
+                properties: { again: { $ref: "#/$defs/Loose", type: "object" } },
+                anyOf: [{ type: "object" }, { type: "null" }],
+              },
+            },
+          }),
+          execute: async () => "ok",
+        }),
+      });
+
+      // Beside its own properties, the narrowed type is the line's own type.
+      expect(await drill(manager, "tree__save", "")).toBe(
+        [
+          "Arguments of tree__save:",
+          "name?: string",
+          "child?: object",
+          "  extra?: string",
+          "  all of:",
+          "    - same shape as the whole input (recursive)",
+          "kids?: object[]",
+          "  rank?: integer",
+          "  all of:",
+          "    - same shape as the whole input (recursive)",
+          "bare?: same shape as the whole input (recursive) (type object)",
+          "same?: same shape as the whole input (recursive) — Same",
+          "bareKids?: object[]",
+          "  items: same shape as the whole input (recursive) (type object, requires name)",
+          "loose?: object|null",
+          '  again?: same shape as "loose" (recursive) (type object)',
+        ].join("\n"),
+      );
+    });
+
     it("expands a finite definition reused by a key declared beside its $ref", async () => {
       const manager = new MCPManager();
       manager.registerPluginTools("org", {
