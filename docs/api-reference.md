@@ -36,6 +36,7 @@ const agent = createAgent({
   mcpEagerLoad?: boolean,
   toolSearch?: ToolSearchOptions,
   transformToolError?: (error: unknown, ctx: { toolName: string }) => unknown,
+  wrapToolCall?: (call: ToolCallWrapperCall, run: () => Promise<unknown>) => Promise<unknown>,
   repairDiscoveredToolCalls?: boolean, // default true
 });
 ```
@@ -320,6 +321,40 @@ interface AgentHooks {
 before the compaction check. It fires on the first load of a thread and again
 after `invalidateCheckpoint(threadId)`. See
 [Persistence](./persistence.md#checkpoint-hooks).
+
+### Per-call wrapper
+
+`wrapToolCall(call, run)` wraps every tool call outside the hooks. The SDK calls
+it synchronously as soon as the AI SDK calls a tool's `execute()`, before the
+workflow gate, `PreToolUse` hooks, permission checks and the tool body, with
+`call.toolName`, `call.toolCallId` (the hooks' `toolUseId`) and `call.input`
+(before any hook rewrites it). `run()` runs the rest of the pipeline once and
+settles with the call's result or its rejection, unchanged. Calls reach the
+wrapper in the order the AI SDK starts them, however long a hook takes, so a
+host can keep its own order, for example making a same-step `read` wait for
+the `bash` sent before it:
+
+```typescript
+let tail: Promise<unknown> = Promise.resolve();
+const agent = createAgent({
+  model,
+  wrapToolCall: (_call, run) => {
+    const result = tail.then(run, run); // one call at a time, in call order
+    tail = result.catch(() => undefined);
+    return result;
+  },
+});
+```
+
+A host may hold a call before calling `run()`. If the generation's signal or
+the call's abort signal is aborted by then, `run()` rejects with the abort
+reason and the call never starts, with or without a workflow gate.
+
+Rethrow what `run()` rejects with, so interrupts (`InterruptSignal`) still end
+the step and `transformToolError` still applies; a `finally` in the wrapper
+runs for every call, interrupted or not. It applies to the tools every
+generation mode hands the AI SDK, not to `getActiveTools()` or direct calls,
+and subagents don't inherit it.
 
 ## Checkpointing
 

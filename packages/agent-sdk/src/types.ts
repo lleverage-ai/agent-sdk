@@ -241,6 +241,52 @@ export interface ExtendedToolExecutionOptions extends ToolExecutionOptions<unkno
  */
 export type ToolErrorTransform = (error: unknown, context: { toolName: string }) => unknown;
 
+/**
+ * One tool call as {@link AgentOptions.wrapToolCall} sees it.
+ *
+ * @see {@link ToolCallWrapper}
+ * @category Types
+ */
+export interface ToolCallWrapperCall {
+  /** The name the model called the tool by (for proxied tools, `call_tool`). */
+  toolName: string;
+  /** The AI SDK's ID for this call, the same `toolUseId` the tool hooks receive. */
+  toolCallId: string;
+  /** The call's input, before any `PreToolUse` hook rewrites it. */
+  input: unknown;
+}
+
+/**
+ * Per-call wrapper around the rest of the tool pipeline.
+ *
+ * Called once per tool call, synchronously, as soon as the AI SDK calls the
+ * tool's `execute()`, before the workflow gate, every `PreToolUse` hook,
+ * permission checks and the tool itself. `run()` starts all of those and
+ * settles with the call's result or rejection. Return what `run()` returns,
+ * or a promise of it: the wrapper's result is the call's result.
+ *
+ * Call `run()` once. Further calls return the same promise, so the tool body
+ * never runs twice. A wrapper that never calls `run()` never runs the tool.
+ * If the generation's signal or the call's abort signal was aborted by the
+ * time `run()` is called, it rejects with the abort reason and nothing inside
+ * the wrapper runs, so a call cancelled while the host held it can't start.
+ *
+ * `run()` rejects with whatever the inner layers throw, `InterruptSignal`
+ * included, unchanged; rethrow it (for example from a `try`/`finally`) so the
+ * SDK can turn an interrupt into its placeholder result.
+ *
+ * @param call - The tool call being executed
+ * @param run - Runs the rest of the pipeline for this call
+ * @returns The call's result
+ *
+ * @see {@link AgentOptions.wrapToolCall}
+ * @category Types
+ */
+export type ToolCallWrapper = (
+  call: ToolCallWrapperCall,
+  run: () => Promise<unknown>,
+) => Promise<unknown>;
+
 // =============================================================================
 // Streaming Types
 // =============================================================================
@@ -564,6 +610,47 @@ export interface AgentOptions {
    * @defaultValue undefined (errors are surfaced unchanged)
    */
   transformToolError?: ToolErrorTransform;
+
+  /**
+   * Optional per-call wrapper around the rest of the tool pipeline.
+   *
+   * The SDK calls it once for every tool call in a generation, synchronously,
+   * as soon as the AI SDK calls the tool's `execute()` and before the workflow
+   * gate, `PreToolUse` hooks, permission checks or the tool's own body run.
+   * Calls therefore reach the wrapper in the order the AI SDK starts them,
+   * however long their hooks take. A host can use that to keep its own
+   * per-call order, such as running a step's sandbox calls in the order the
+   * model sent them, or to hold a resource for the whole call.
+   *
+   * The wrapper must call `run()` and return its result. A call whose
+   * generation or own abort signal is cancelled before `run()` is called
+   * rejects without starting. `run()` rejects with whatever the inner layers
+   * throw, `InterruptSignal` included, unchanged, so
+   * a `finally` in the wrapper always runs; rethrow the rejection so the SDK's
+   * interrupt and `transformToolError` handling still apply.
+   *
+   * Applies to the tool set every generation mode hands the AI SDK (including
+   * `task`, `task_output`, `call_tool` and MCP tools), not to tools called
+   * directly or through `getActiveTools()`. Subagents don't inherit it.
+   *
+   * @example
+   * ```typescript
+   * let tail: Promise<unknown> = Promise.resolve();
+   * const agent = createAgent({
+   *   model,
+   *   // Run tool calls one at a time, in the order the AI SDK started them.
+   *   wrapToolCall: (_call, run) => {
+   *     const result = tail.then(run, run);
+   *     tail = result.catch(() => undefined);
+   *     return result;
+   *   },
+   * });
+   * ```
+   *
+   * @defaultValue undefined (the tool set is unchanged)
+   * @see {@link ToolCallWrapper}
+   */
+  wrapToolCall?: ToolCallWrapper;
 
   /**
    * Optional fail-closed host authorisation before any tool hook, permission
