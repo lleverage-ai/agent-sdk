@@ -13,6 +13,10 @@
  *               the call's result, as the tool pipeline returned it
  * ```
  *
+ * In both keys `<id>` is the interrupt id's key segment
+ * (`interruptEntryKeySegment`), digested when the id is long or has
+ * characters a host store cannot keep.
+ *
  * The AI SDK drops approval parts that are not provider-executed before a
  * request reaches the provider, and merges adjacent tool messages, so the
  * resumed stream projects to the same provider input as a run that was
@@ -88,18 +92,13 @@ export function findUnresolvedInterrupts(
 }
 
 /**
- * Keys of a resume's entries. They include the interrupt's creation time, so
- * each round of a tool that interrupts again during a resume has its own.
+ * Keys of a resume's entries (see `../context-log/interrupt-keys.ts`): the
+ * interrupt's id, digested when it is long or has characters a host store
+ * cannot keep, and its creation time.
  *
  * @internal
  */
-export function interruptEntryKeys(interrupt: Pick<Interrupt, "id" | "createdAt">): {
-  resolution: string;
-  result: string;
-} {
-  const base = `interrupt:${interrupt.id}:${interrupt.createdAt}`;
-  return { resolution: `${base}:resolution`, result: `${base}:result` };
-}
+export { interruptEntryKeys } from "../context-log/interrupt-keys.js";
 
 /**
  * Where an interrupted tool call sits on a path.

@@ -33,6 +33,7 @@ import {
   createMessageProjectionAdapter,
   createSecretsFilterHooks,
   type GenerateResult,
+  interruptEntryKeys,
   isContextLogError,
   MemoryContextLogStore,
   type ProjectionAdapter,
@@ -441,6 +442,66 @@ describe("log-mode resume", () => {
       expect(checkpoint?.messages).toEqual([]);
     },
   );
+
+  it("resumes an interrupt minted from a 26k-character Gemini tool call id (LLE-16135)", async () => {
+    // A store that refuses entry keys as lleverage's agent-service does:
+    // letters, digits and ._:@/%!~*'()-, at most 1024 characters.
+    class HostRuleStore extends MemoryContextLogStore {
+      override async appendOutputs(
+        request: ContextAppendOutputsRequest,
+      ): Promise<ContextAppendOutputsResult> {
+        for (const item of request.items) {
+          if (
+            item.key.length > 1024 ||
+            !/^[A-Za-z0-9_-][A-Za-z0-9._:@/%!~*'()-]*$/.test(item.key)
+          ) {
+            throw new Error(`refused entry key of ${item.key.length} characters`);
+          }
+        }
+        return super.appendOutputs(request);
+      }
+    }
+    const signature = Buffer.alloc(19_501);
+    for (let index = 0; index < signature.length; index++) {
+      signature[index] = (index * 7 + 251) % 256;
+    }
+    const callId = `call_901458__thought__${signature.toString("base64")}`;
+    expect(callId.length).toBeGreaterThan(26_000);
+    expect(callId).toMatch(/\+/);
+    expect(callId).toMatch(/=$/);
+
+    const store = new HostRuleStore();
+    const checkpointer = new MemorySaver();
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([toolCalls([callId, "ask", { question: "Name?" }])]).model, store, {
+        tools: askTools(),
+        checkpointer,
+      }).generate({ prompt: "go", threadId: THREAD }),
+    );
+    expect(interrupt.id).toBe(`int_${callId}`);
+
+    const runs: string[] = [];
+    const result = await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: askTools(runs),
+      checkpointer,
+    }).resume(THREAD, interrupt.id, "Alice");
+    expect(result.status).toBe("complete");
+    expect(runs).toEqual(["Alice"]);
+
+    const keys = interruptEntryKeys(interrupt);
+    expect(keys.resolution.length).toBeLessThan(200);
+    const path = await readPath(store);
+    expect(path.map((entry) => entry.key).slice(2, 4)).toEqual([keys.resolution, keys.result]);
+    expect(path[2]!.message.content).toEqual([
+      {
+        type: "tool-approval-response",
+        approvalId: interrupt.id,
+        approved: true,
+        reason: '{"answer":"Alice"}',
+      },
+    ]);
+    expect((await checkpointer.load(THREAD))?.pendingInterrupt).toBeUndefined();
+  });
 
   it("runs the approved tool through the tool pipeline and its hooks", async () => {
     const store = new MemoryContextLogStore();

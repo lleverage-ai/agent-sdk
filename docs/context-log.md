@@ -886,7 +886,14 @@ otherwise the resolution and a custom answer would reach the model.
 Both entries are outputs of the interrupted call (`appendOutputs` on its
 manifest, which still owns the head), so they pass the `PreGenerate` hooks
 before commit like any other output. Their keys are
-`interrupt:<id>:<createdAt>:resolution` and `interrupt:<id>:<createdAt>:result`.
+`interrupt:<id>:<createdAt>:resolution` and `interrupt:<id>:<createdAt>:result`,
+where `<id>` is the interrupt id's key segment
+(`interruptEntryKeySegment`): the id itself when it has at most 256
+characters, all letters, digits or `._:@/%!~*'()-`; otherwise a prefix of
+the id plus a SHA-256 digest (`<prefix>~<32 hex characters>`), so a long
+provider tool call id, such as Gemini's with its base64 thought signature,
+still gives short, portable keys. A host that looks these entries up itself
+builds the keys with `interruptEntryKeys`, never from the raw id.
 After the commit, the pending interrupt is cleared and an ordinary log-mode
 generation continues from the path, with no separate prompt derivation.
 Producers run as they do before any generation, so a slot whose value is
