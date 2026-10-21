@@ -20,10 +20,12 @@ import {
   wrapToolsWithCallWrapper,
   wrapToolsWithExecutionContext,
 } from "../src/agent/tool-pipeline.js";
+import { createAgentState, StateBackend } from "../src/backends/state.js";
 import { createInterrupt } from "../src/checkpointer/types.js";
 import { ToolExecutionError, ToolPermissionDeniedError } from "../src/errors/index.js";
 import { MCPManager } from "../src/mcp/manager.js";
 import { TaskManager } from "../src/task-manager.js";
+import { createWriteTool } from "../src/tools/filesystem.js";
 import type {
   Agent,
   AgentOptions,
@@ -620,6 +622,103 @@ describe("createToolPipeline", () => {
       await expect(tools.probe.execute?.({ value: "x" }, execOptions())).rejects.toBe(failure);
       expect(rejection).toBe(failure);
       expect(transformToolError).toHaveBeenCalledWith(failure, { toolName: "probe" });
+    });
+
+    describe("a call cancelled while the wrapper holds it", () => {
+      /**
+       * Holds the first call (`hold`) in a FIFO wrapper, queues a real write
+       * behind it, optionally cancels, then releases the hold.
+       */
+      async function queueWriteBehindHeldCall(cancel?: "request" | "call") {
+        const state = createAgentState();
+        const backend = new StateBackend(state);
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let markStarted!: () => void;
+        const holdStarted = new Promise<void>((resolve) => {
+          markStarted = resolve;
+        });
+        const hold = tool({
+          description: "hold",
+          inputSchema: z.object({}),
+          execute: async () => {
+            markStarted();
+            await held;
+            return "held";
+          },
+        });
+        const fifo = createFifoWrapper();
+        const runs: Promise<unknown>[] = [];
+        const wrapToolCall: ToolCallWrapper = (call, run) => {
+          const result = fifo(call, run);
+          if (call.toolName === "write") {
+            // Once the write's turn comes, a later run() must reuse the outcome.
+            runs.push(result.then(run, run));
+          }
+          return result;
+        };
+        const request = new AbortController();
+        const callSignal = new AbortController();
+        const { deps } = createHarness(
+          { hold, write: createWriteTool(backend) },
+          { options: { wrapToolCall } },
+        );
+        const tools = createToolPipeline(deps).buildTools(buildOptions({ signal: request.signal }));
+
+        const holdResult = tools.hold.execute?.({}, execOptions({ toolCallId: "call-hold" }));
+        const writeResult = tools.write.execute?.(
+          { file_path: "/out.txt", content: "late" },
+          execOptions({ toolCallId: "call-write", abortSignal: callSignal.signal }),
+        );
+        // Cancel only once the first call is running and the write is queued.
+        await holdStarted;
+        const reason = new Error("generation cancelled");
+        if (cancel === "request") request.abort(reason);
+        if (cancel === "call") callSignal.abort(reason);
+        release();
+
+        await expect(holdResult).resolves.toBe("held");
+        const settled = await Promise.allSettled([writeResult, ...runs]);
+        return { state, settled, reason };
+      }
+
+      it.each(["request", "call"] as const)(
+        "rejects without writing when the %s signal is aborted before run()",
+        async (cancel) => {
+          const { state, settled, reason } = await queueWriteBehindHeldCall(cancel);
+
+          expect(state.files["/out.txt"]).toBeUndefined();
+          expect(settled).toEqual([
+            { status: "rejected", reason },
+            { status: "rejected", reason },
+          ]);
+        },
+      );
+
+      it("writes when nothing is cancelled", async () => {
+        const { state, settled } = await queueWriteBehindHeldCall();
+
+        expect(state.files["/out.txt"]?.content).toEqual(["late"]);
+        expect(settled.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+      });
+
+      it("names the tool when the abort reason is not an Error", async () => {
+        const { probe, calls } = createProbeTool();
+        const request = new AbortController();
+        request.abort("stopped");
+        const { deps } = createHarness(
+          { probe },
+          { options: { wrapToolCall: (_call, run) => run() } },
+        );
+        const tools = createToolPipeline(deps).buildTools(buildOptions({ signal: request.signal }));
+
+        await expect(tools.probe.execute?.({ value: "x" }, execOptions())).rejects.toThrow(
+          "Tool 'probe' was cancelled before it started",
+        );
+        expect(calls).toHaveLength(0);
+      });
     });
 
     it("runs the tool body once however often the wrapper calls run()", async () => {

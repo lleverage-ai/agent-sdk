@@ -17,7 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the model sent it; `run()` runs the rest of the pipeline once and settles
   with its result or rejection unchanged, `InterruptSignal` included, so a
   host's `finally` always runs and a rethrown interrupt still becomes the
-  placeholder result. Calls reach the wrapper in the order the AI SDK starts
+  placeholder result. A call whose generation or own abort signal is
+  cancelled before the host calls `run()` rejects with the abort reason
+  without starting. Calls reach the wrapper in the order the AI SDK starts
   them, so a host can keep its own order across a step's calls even when a
   hook delays one of them (a same-step `read` overtook the `bash` that writes
   its file while bash's `PreToolUse` hook awaited I/O). New types

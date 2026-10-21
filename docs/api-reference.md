@@ -346,6 +346,10 @@ const agent = createAgent({
 });
 ```
 
+A host may hold a call before calling `run()`. If the generation's signal or
+the call's abort signal is aborted by then, `run()` rejects with the abort
+reason and the call never starts, with or without a workflow gate.
+
 Rethrow what `run()` rejects with, so interrupts (`InterruptSignal`) still end
 the step and `transformToolError` still applies; a `finally` in the wrapper
 runs for every call, interrupted or not. It applies to the tools every

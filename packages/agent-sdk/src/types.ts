@@ -267,6 +267,9 @@ export interface ToolCallWrapperCall {
  *
  * Call `run()` once. Further calls return the same promise, so the tool body
  * never runs twice. A wrapper that never calls `run()` never runs the tool.
+ * If the generation's signal or the call's abort signal was aborted by the
+ * time `run()` is called, it rejects with the abort reason and nothing inside
+ * the wrapper runs, so a call cancelled while the host held it can't start.
  *
  * `run()` rejects with whatever the inner layers throw, `InterruptSignal`
  * included, unchanged; rethrow it (for example from a `try`/`finally`) so the
@@ -619,8 +622,10 @@ export interface AgentOptions {
    * per-call order, such as running a step's sandbox calls in the order the
    * model sent them, or to hold a resource for the whole call.
    *
-   * The wrapper must call `run()` and return its result. `run()` rejects with
-   * whatever the inner layers throw, `InterruptSignal` included, unchanged, so
+   * The wrapper must call `run()` and return its result. A call whose
+   * generation or own abort signal is cancelled before `run()` is called
+   * rejects without starting. `run()` rejects with whatever the inner layers
+   * throw, `InterruptSignal` included, unchanged, so
    * a `finally` in the wrapper always runs; rethrow the rejection so the SDK's
    * interrupt and `transformToolError` handling still apply.
    *

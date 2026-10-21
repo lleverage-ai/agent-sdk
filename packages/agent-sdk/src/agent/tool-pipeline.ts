@@ -81,7 +81,7 @@ import type { Tool, ToolExecutionOptions, ToolSet } from "ai";
 import { stepCountIs } from "ai";
 import type { BaseCheckpointSaver, Interrupt } from "../checkpointer/types.js";
 import { createInterrupt } from "../checkpointer/types.js";
-import { ToolExecutionError, ToolPermissionDeniedError } from "../errors/index.js";
+import { AbortError, ToolExecutionError, ToolPermissionDeniedError } from "../errors/index.js";
 import {
   aggregatePermissionDecisions,
   extractRespondWith,
@@ -993,15 +993,19 @@ export function wrapToolsWithStreamingContext(
  *
  * The wrapper is called synchronously on entry, with no await before it, so
  * calls reach the host in the order the AI SDK starts them. `run()` starts the
- * inner layers once; later calls return the same promise. Rejections from the
- * inner layers pass through unchanged. With no wrapper, the input is returned
- * unchanged.
+ * inner layers once; later calls return the same promise. A host may defer
+ * `run()`, so it first rechecks the request signal and the call's own abort
+ * signal, whether or not a workflow gate is configured: a call cancelled
+ * while it waited rejects with the abort reason and never enters the inner
+ * layers. Rejections from the inner layers pass through unchanged. With no
+ * wrapper, the input is returned unchanged.
  *
  * @internal
  */
 export function wrapToolsWithCallWrapper(
   tools: ToolSet,
   wrapToolCall: ToolCallWrapper | undefined,
+  requestSignal?: AbortSignal,
 ): ToolSet {
   if (!wrapToolCall) return tools;
   const wrapped: ToolSet = {};
@@ -1019,7 +1023,12 @@ export function wrapToolsWithCallWrapper(
       execute: async (input: unknown, options: ToolExecutionOptions<unknown>) => {
         let started: Promise<unknown> | undefined;
         const run = (): Promise<unknown> => {
-          started ??= (async () => originalExecute.call(tool, input, options))();
+          started ??= (async () => {
+            for (const signal of [requestSignal, options?.abortSignal]) {
+              if (signal?.aborted) throw cancelledBeforeStart(signal, name);
+            }
+            return originalExecute.call(tool, input, options);
+          })();
           return started;
         };
         return wrapToolCall(
@@ -1035,6 +1044,17 @@ export function wrapToolsWithCallWrapper(
   }
 
   return wrapped;
+}
+
+/** The abort reason when it is an Error, otherwise an AbortError naming the tool. */
+function cancelledBeforeStart(signal: AbortSignal, toolName: string): Error {
+  const reason: unknown = signal.reason;
+  return reason instanceof Error
+    ? reason
+    : new AbortError(`Tool '${toolName}' was cancelled before it started`, {
+        reason: typeof reason === "string" ? reason : undefined,
+        metadata: { toolName },
+      });
 }
 
 // =============================================================================
@@ -1290,7 +1310,7 @@ export function createToolPipeline(deps: ToolPipelineDeps): ToolPipeline {
       ? wrapToolsWithStreamingContext(hooked, streamingContext)
       : hooked;
     // [W] host per-call wrapper, entered before [G] and every hook
-    const perCall = wrapToolsWithCallWrapper(scoped, options.wrapToolCall);
+    const perCall = wrapToolsWithCallWrapper(scoped, options.wrapToolCall, signal);
     // [5] outermost: intercept InterruptSignal before the AI SDK does
     return wrapToolsWithSignalCatching(perCall, signalState, options.transformToolError);
   };
