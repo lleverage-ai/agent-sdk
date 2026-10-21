@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.22] - 2026-10-21
+
+Twenty-second release candidate for 1.0.0. A log-mode resume keys its entries
+by a short, portable segment of the interrupt id, so an interrupt raised from
+a long Gemini tool call id can be answered on a host store with an
+identifier rule.
+
 ### Fixed
 
 - Log-mode resume entry keys stay short and portable for long or unusual
