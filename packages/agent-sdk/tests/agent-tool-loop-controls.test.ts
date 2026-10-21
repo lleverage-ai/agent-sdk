@@ -2,6 +2,7 @@
  * Tests for the tool-loop controls upstreamed from the lleverage platform:
  *
  * - `transformToolError` boundary for tool execute() rejections
+ * - `wrapToolCall` per-call wrapper on the tools the AI SDK receives
  * - `tool-error` / `tool-output-denied` stream parts
  * - discovered-tool-call repair (`repairToolCall` → `call_tool`)
  * - `options.stop()` for tools and `GenerateOptions.shouldStopAfterStep`
@@ -89,6 +90,54 @@ async function runStopConditions(
   }
   return false;
 }
+
+describe("wrapToolCall", () => {
+  beforeEach(() => resetMocks());
+
+  it("wraps the tools generateText receives, outside the PreToolUse hooks", async () => {
+    mockGenerateOnce();
+    const events: string[] = [];
+    const agent = createAgent({
+      model: createMockModel(),
+      wrapToolCall: async (call, run) => {
+        events.push(`enter:${call.toolName}:${call.toolCallId}`);
+        try {
+          return await run();
+        } finally {
+          events.push("exit");
+        }
+      },
+      hooks: {
+        PreToolUse: [
+          {
+            hooks: [
+              async () => {
+                events.push("hook");
+                return {};
+              },
+            ],
+          },
+        ],
+      },
+      tools: {
+        echo: tool({
+          description: "Echoes",
+          inputSchema: z.object({}),
+          execute: async () => {
+            events.push("body");
+            return "echoed";
+          },
+        }),
+      },
+    });
+
+    await agent.generate({ prompt: "go" });
+    const echo = lastGenerateArgs().tools?.echo;
+
+    await expect(echo!.execute!({}, execOpts)).resolves.toBe("echoed");
+    expect(events).toEqual(["enter:echo:call-1", "hook", "body", "exit"]);
+  });
+});
 
 describe("transformToolError", () => {
   beforeEach(() => resetMocks());

@@ -19,6 +19,10 @@
  *     │                                 `options.stop()`; applies
  *     │                                 `transformToolError` to other rejections
  *     ▼
+ *   [W] optional per-call wrapper      host `wrapToolCall(call, run)`, called
+ *     │                                 synchronously on entry; `run` starts
+ *     │                                 [4] and everything beneath it
+ *     ▼
  *   [4] wrapToolsWithStreamingContext   (streamDataResponse only) injects the
  *     │                                 request-local `streamingContext`
  *     ▼
@@ -41,8 +45,9 @@
  * ```
  *
  * Layers [1]–[3] and optional [G] are applied by {@link ToolPipeline.buildTools}; [4] only when
- * a `streamingContext` is passed; [5] is the outermost layer that must run
- * before the AI SDK can observe a thrown `InterruptSignal`. Layer [6] is
+ * a `streamingContext` is passed; [W] only when `wrapToolCall` is set; [5] is
+ * the outermost layer that must run before the AI SDK can observe a thrown
+ * `InterruptSignal`. Layer [6] is
  * applied separately at the AI SDK call site, because the execution context
  * depends on the model chosen by the retry loop for that specific attempt.
  *
@@ -60,8 +65,13 @@
  * - The `task` / `task_output` tools are added *before* [2]–[3], so they are
  *   hooked and receive the task manager like any other tool. They are not
  *   permission-wrapped: {@link ToolPipeline.buildTools} adds them after [1].
- * - `transformToolError` ([5]) sees errors thrown by [1]–[4], including
- *   hook denials, permission denials and gate failures.
+ * - `transformToolError` ([5]) sees errors thrown by [1]–[4] and [W],
+ *   including hook denials, permission denials and gate failures.
+ * - [W] is entered with no await between the AI SDK calling `execute` and the
+ *   host wrapper, so calls reach the host in the order the AI SDK starts them,
+ *   before [G] or any `PreToolUse` hook can delay one of them. Rejections from
+ *   [4] and below, `InterruptSignal` included, reach [W] unchanged; [5] still
+ *   converts an interrupt the wrapper rethrows into its placeholder result.
  *
  * @packageDocumentation
  * @internal
@@ -96,6 +106,7 @@ import type {
   PreToolUseInput,
   StreamingContext,
   SubagentDefinition,
+  ToolCallWrapper,
   ToolErrorTransform,
 } from "../types.js";
 import {
@@ -973,6 +984,60 @@ export function wrapToolsWithStreamingContext(
 }
 
 // =============================================================================
+// [W] Per-call wrapper
+// =============================================================================
+
+/**
+ * Hands each tool call to the host's `wrapToolCall` before the rest of the
+ * pipeline runs.
+ *
+ * The wrapper is called synchronously on entry, with no await before it, so
+ * calls reach the host in the order the AI SDK starts them. `run()` starts the
+ * inner layers once; later calls return the same promise. Rejections from the
+ * inner layers pass through unchanged. With no wrapper, the input is returned
+ * unchanged.
+ *
+ * @internal
+ */
+export function wrapToolsWithCallWrapper(
+  tools: ToolSet,
+  wrapToolCall: ToolCallWrapper | undefined,
+): ToolSet {
+  if (!wrapToolCall) return tools;
+  const wrapped: ToolSet = {};
+
+  for (const [name, tool] of Object.entries(tools)) {
+    if (!tool.execute) {
+      wrapped[name] = tool;
+      continue;
+    }
+
+    const originalExecute = tool.execute;
+
+    wrapped[name] = {
+      ...tool,
+      execute: async (input: unknown, options: ToolExecutionOptions<unknown>) => {
+        let started: Promise<unknown> | undefined;
+        const run = (): Promise<unknown> => {
+          started ??= (async () => originalExecute.call(tool, input, options))();
+          return started;
+        };
+        return wrapToolCall(
+          {
+            toolName: name,
+            toolCallId: options?.toolCallId ?? `tool-${Date.now()}`,
+            input,
+          },
+          run,
+        );
+      },
+    } as Tool;
+  }
+
+  return wrapped;
+}
+
+// =============================================================================
 // Composition
 // =============================================================================
 
@@ -1076,7 +1141,7 @@ export interface BuildToolsOptions {
  */
 export interface ToolPipeline {
   /**
-   * The fully wrapped tool set for one AI SDK request: layers [1]–[5] in the
+   * The fully wrapped tool set for one AI SDK request: layers [1]–[5] and [W] in the
    * module-level diagram. Callers still apply
    * {@link wrapToolsWithExecutionContext} ([6]) at the call site.
    */
@@ -1224,8 +1289,10 @@ export function createToolPipeline(deps: ToolPipelineDeps): ToolPipeline {
     const scoped = streamingContext
       ? wrapToolsWithStreamingContext(hooked, streamingContext)
       : hooked;
+    // [W] host per-call wrapper, entered before [G] and every hook
+    const perCall = wrapToolsWithCallWrapper(scoped, options.wrapToolCall);
     // [5] outermost: intercept InterruptSignal before the AI SDK does
-    return wrapToolsWithSignalCatching(scoped, signalState, options.transformToolError);
+    return wrapToolsWithSignalCatching(perCall, signalState, options.transformToolError);
   };
 
   return {

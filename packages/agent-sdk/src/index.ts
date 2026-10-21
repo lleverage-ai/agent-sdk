@@ -808,6 +808,8 @@ export type {
   TaskToolOptions,
   Tool,
   ToolCallResult,
+  ToolCallWrapper,
+  ToolCallWrapperCall,
   ToolErrorTransform,
   ToolExecutionOptions,
   ToolLoadErrorInput,
