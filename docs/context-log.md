@@ -893,7 +893,9 @@ characters, all letters, digits or `._:@/%!~*'()-`; otherwise a prefix of
 the id plus a SHA-256 digest (`<prefix>~<32 hex characters>`), so a long
 provider tool call id, such as Gemini's with its base64 thought signature,
 still gives short, portable keys. A host that looks these entries up itself
-builds the keys with `interruptEntryKeys`, never from the raw id.
+builds the keys with `interruptEntryKeys`, never from the raw id. Releases
+before 1.0.0-rc.22 keyed every round by the raw id; a round already started
+under those keys (its resolution is on the path) is continued under them.
 After the commit, the pending interrupt is cleared and an ordinary log-mode
 generation continues from the path, with no separate prompt derivation.
 Producers run as they do before any generation, so a slot whose value is

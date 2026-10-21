@@ -1323,6 +1323,164 @@ describe("log-mode resume crash safety", () => {
   });
 });
 
+describe("log-mode resume of a round an older SDK started (LLE-16135)", () => {
+  // Before LLE-16135 the SDK keyed a resume's entries by the raw interrupt
+  // id. A store that accepts any key (this one) may hold such a round.
+  const signature = Buffer.alloc(19_501);
+  for (let index = 0; index < signature.length; index++) {
+    signature[index] = (index * 7 + 251) % 256;
+  }
+  const callId = `call_901458__thought__${signature.toString("base64")}`;
+
+  /** Commit this round's entries under raw-id keys, as an older SDK did. */
+  async function commitLegacy(
+    store: MemoryContextLogStore,
+    interrupt: { id: string; createdAt: string },
+    entries: Array<{ suffix: "resolution" | "result"; content: unknown[] }>,
+  ) {
+    const head = (await store.readHead(STREAM))!;
+    const keys = interruptEntryKeys(interrupt);
+    const legacyBase = `interrupt:${interrupt.id}:${interrupt.createdAt}`;
+    expect(keys.resolution).not.toBe(`${legacyBase}:resolution`);
+    await store.appendOutputs({
+      manifestId: head.lastManifestId!,
+      expectedRevision: head.revision,
+      items: entries.map(({ suffix, content }) => ({
+        kind: "tool_result" as const,
+        key: `${legacyBase}:${suffix}`,
+        message: { role: "tool" as const, content: content as never },
+      })),
+    });
+    return legacyBase;
+  }
+
+  async function interrupted(
+    tools: ReturnType<typeof approvalTools | typeof askTools>,
+    call: Reply,
+  ) {
+    const store = new MemoryContextLogStore();
+    const checkpointer = new MemorySaver();
+    const interrupt = await expectInterrupted(
+      logAgent(scriptedModel([call]).model, store, { tools, checkpointer }).generate({
+        prompt: "go",
+        threadId: THREAD,
+      }),
+    );
+    expect(interrupt.id).toBe(`int_${callId}`);
+    return { store, checkpointer, interrupt };
+  }
+
+  it("refuses an in-doubt resume when the resolution is under the raw-id key", async () => {
+    const { store, checkpointer, interrupt } = await interrupted(
+      approvalTools(),
+      toolCalls([callId, "deploy", { env: "prod" }]),
+    );
+    await commitLegacy(store, interrupt, [
+      {
+        suffix: "resolution",
+        content: [{ type: "tool-approval-response", approvalId: interrupt.id, approved: true }],
+      },
+    ]);
+
+    const runs: string[] = [];
+    const restarted = scriptedModel([text("never")]);
+    const error = await logAgent(restarted.model, store, {
+      tools: approvalTools(runs),
+      checkpointer,
+    })
+      .resume(THREAD, interrupt.id, { approved: true })
+      .then(
+        () => undefined,
+        (caught: unknown) => caught,
+      );
+
+    expect(isContextLogError(error, "conflict")).toBe(true);
+    expect((error as { reason: string }).reason).toBe("resume_in_doubt");
+    expect(runs).toEqual([]);
+    expect(restarted.requests).toHaveLength(0);
+    // No second resolution was committed.
+    expect((await readPath(store)).filter((entry) => entry.kind === "tool_result")).toHaveLength(1);
+  });
+
+  it("re-runs an in-doubt round with the answer it recorded, under its own keys", async () => {
+    const answers: unknown[] = [];
+    const ackTools = () => ({
+      ask: tool({
+        description: "Asks the user",
+        inputSchema: askInput,
+        execute: async (input, options) => {
+          answers.push(await interruptOf(options)(input));
+          return "noted";
+        },
+      }),
+    });
+    const { store, checkpointer, interrupt } = await interrupted(
+      ackTools(),
+      toolCalls([callId, "ask", { question: "Colour?" }]),
+    );
+    const legacyBase = await commitLegacy(store, interrupt, [
+      {
+        suffix: "resolution",
+        content: [
+          {
+            type: "tool-approval-response",
+            approvalId: interrupt.id,
+            approved: true,
+            reason: '{"answer":"blue"}',
+          },
+        ],
+      },
+    ]);
+
+    const result = await logAgent(scriptedModel([text("done")]).model, store, {
+      tools: ackTools(),
+      checkpointer,
+      contextLog: { mode: "log", store, inDoubtResume: "reexecute" },
+    }).resume(THREAD, interrupt.id, "a different answer");
+
+    expect(result.status).toBe("complete");
+    expect(answers).toEqual(["blue"]);
+    const keys = (await readPath(store)).map((entry) => entry.key);
+    expect(keys.slice(2, 4)).toEqual([`${legacyBase}:resolution`, `${legacyBase}:result`]);
+  });
+
+  it("clears the interrupt without running the tool when the raw-id round has its result", async () => {
+    const { store, checkpointer, interrupt } = await interrupted(
+      approvalTools(),
+      toolCalls([callId, "deploy", { env: "prod" }]),
+    );
+    await commitLegacy(store, interrupt, [
+      {
+        suffix: "resolution",
+        content: [{ type: "tool-approval-response", approvalId: interrupt.id, approved: true }],
+      },
+      {
+        suffix: "result",
+        content: [
+          {
+            type: "tool-result",
+            toolCallId: callId,
+            toolName: "deploy",
+            output: { type: "text", value: "deployed:prod" },
+          },
+        ],
+      },
+    ]);
+
+    const runs: string[] = [];
+    const resumed = scriptedModel([text("done")]);
+    const result = await logAgent(resumed.model, store, {
+      tools: approvalTools(runs),
+      checkpointer,
+    }).resume(THREAD, interrupt.id, { approved: true });
+
+    expect(result.status).toBe("complete");
+    expect(runs).toEqual([]);
+    expect(resumed.requests).toHaveLength(1);
+    expect((await checkpointer.load(THREAD))?.pendingInterrupt).toBeUndefined();
+  });
+});
+
 describe("log-mode resume across a projection adapter change (LLE-14019)", () => {
   /** The default adapter under a host id and version. */
   const hostAdapter = (id: string, version: string): ProjectionAdapter => {

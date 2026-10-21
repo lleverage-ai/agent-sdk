@@ -35,6 +35,7 @@
 
 import type { ToolCallPart } from "ai";
 import type { Interrupt } from "../checkpointer/types.js";
+import { interruptEntryKeys } from "../context-log/interrupt-keys.js";
 import type { ContextEntryInput } from "../context-log/types.js";
 
 /**
@@ -92,13 +93,27 @@ export function findUnresolvedInterrupts(
 }
 
 /**
- * Keys of a resume's entries (see `../context-log/interrupt-keys.ts`): the
- * interrupt's id, digested when it is long or has characters a host store
- * cannot keep, and its creation time.
+ * Keys of the round of `interrupt` whose entries are on a path. A round
+ * keeps the keys it started with: before LLE-16135 the SDK keyed every
+ * round by the raw interrupt id, so when the path already holds this
+ * round's resolution under the raw id (an older SDK committed it, then
+ * stopped before the result), the round continues under those keys. Its
+ * committed answer is then read, an in-doubt resume is still refused, and
+ * the result lands beside its resolution. Any other round uses
+ * {@link interruptEntryKeys}.
  *
  * @internal
  */
-export { interruptEntryKeys } from "../context-log/interrupt-keys.js";
+export function interruptRoundKeys(
+  interrupt: Pick<Interrupt, "id" | "createdAt">,
+  onPath: ReadonlySet<string>,
+): { resolution: string; result: string } {
+  const keys = interruptEntryKeys(interrupt);
+  if (onPath.has(keys.resolution)) return keys;
+  const base = `interrupt:${interrupt.id}:${interrupt.createdAt}`;
+  const legacy = { resolution: `${base}:resolution`, result: `${base}:result` };
+  return onPath.has(legacy.resolution) ? legacy : keys;
+}
 
 /**
  * Where an interrupted tool call sits on a path.

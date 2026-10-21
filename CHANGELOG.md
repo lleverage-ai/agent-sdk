@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the id's SHA-256. A Gemini tool call id carries the step's base64 thought
   signature, so its interrupt id could be thousands of characters with `+`
   and `=`, and a host store that refused such keys failed every resume of
-  it. New exports `interruptEntryKeySegment`, `interruptEntryKeys` and
+  it. A round an older SDK started under the raw-id keys keeps them: its
+  committed answer is still read and an in-doubt resume is still refused.
+  New exports `interruptEntryKeySegment`, `interruptEntryKeys` and
   `INTERRUPT_KEY_SEGMENT_MAX_CHARS`, for hosts that look up a resume's
   entries themselves.
 
