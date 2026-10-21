@@ -13,6 +13,10 @@
  *               the call's result, as the tool pipeline returned it
  * ```
  *
+ * In both keys `<id>` is the interrupt id's key segment
+ * (`interruptEntryKeySegment`), digested when the id is long or has
+ * characters a host store cannot keep.
+ *
  * The AI SDK drops approval parts that are not provider-executed before a
  * request reaches the provider, and merges adjacent tool messages, so the
  * resumed stream projects to the same provider input as a run that was
@@ -31,6 +35,7 @@
 
 import type { ToolCallPart } from "ai";
 import type { Interrupt } from "../checkpointer/types.js";
+import { interruptEntryKeys } from "../context-log/interrupt-keys.js";
 import type { ContextEntryInput } from "../context-log/types.js";
 
 /**
@@ -88,17 +93,26 @@ export function findUnresolvedInterrupts(
 }
 
 /**
- * Keys of a resume's entries. They include the interrupt's creation time, so
- * each round of a tool that interrupts again during a resume has its own.
+ * Keys of the round of `interrupt` whose entries are on a path. A round
+ * keeps the keys it started with: before LLE-16135 the SDK keyed every
+ * round by the raw interrupt id, so when the path already holds this
+ * round's resolution under the raw id (an older SDK committed it, then
+ * stopped before the result), the round continues under those keys. Its
+ * committed answer is then read, an in-doubt resume is still refused, and
+ * the result lands beside its resolution. Any other round uses
+ * {@link interruptEntryKeys}.
  *
  * @internal
  */
-export function interruptEntryKeys(interrupt: Pick<Interrupt, "id" | "createdAt">): {
-  resolution: string;
-  result: string;
-} {
+export function interruptRoundKeys(
+  interrupt: Pick<Interrupt, "id" | "createdAt">,
+  onPath: ReadonlySet<string>,
+): { resolution: string; result: string } {
+  const keys = interruptEntryKeys(interrupt);
+  if (onPath.has(keys.resolution)) return keys;
   const base = `interrupt:${interrupt.id}:${interrupt.createdAt}`;
-  return { resolution: `${base}:resolution`, result: `${base}:result` };
+  const legacy = { resolution: `${base}:resolution`, result: `${base}:result` };
+  return onPath.has(legacy.resolution) ? legacy : keys;
 }
 
 /**

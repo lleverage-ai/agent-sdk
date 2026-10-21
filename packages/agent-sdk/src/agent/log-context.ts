@@ -101,7 +101,7 @@ import type { LogCompaction, LogCompactor } from "./log-compaction.js";
 import {
   findUnresolvedInterrupts,
   INTERRUPT_PENDING_REASON,
-  interruptEntryKeys,
+  interruptRoundKeys,
   locateInterruptedCall,
 } from "./log-interrupts.js";
 import { resolveModelInputCapabilities } from "./model-capabilities.js";
@@ -1586,8 +1586,9 @@ export function createLogContextRuntime(
     if (!head || !location) {
       throw new ContextLogNotFoundError("interrupt", interrupt.id);
     }
-    const keys = interruptEntryKeys(interrupt);
     const onPath = new Set(path.map((entry) => entry.key));
+    // A round an older SDK started keeps its raw-id keys (LLE-16135).
+    const keys = interruptRoundKeys(interrupt, onPath);
     const state = location.resolved
       ? "resolved"
       : onPath.has(keys.resolution)

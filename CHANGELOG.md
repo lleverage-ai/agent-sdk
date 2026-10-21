@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Log-mode resume entry keys stay short and portable for long or unusual
+  interrupt ids (LLE-16135). `interrupt:<id>:<createdAt>:resolution` and
+  `…:result` now use the id's key segment: the id itself when it has at most
+  256 characters, all letters, digits or `._:@/%!~*'()-` (so keys for
+  today's Anthropic and OpenAI ids are unchanged), otherwise
+  `<prefix>~<digest>`, a readable prefix plus the first 32 hex characters of
+  the id's SHA-256. A Gemini tool call id carries the step's base64 thought
+  signature, so its interrupt id could be thousands of characters with `+`
+  and `=`, and a host store that refused such keys failed every resume of
+  it. A round an older SDK started under the raw-id keys keeps them: its
+  committed answer is still read and an in-doubt resume is still refused.
+  New exports `interruptEntryKeySegment`, `interruptEntryKeys` and
+  `INTERRUPT_KEY_SEGMENT_MAX_CHARS`, for hosts that look up a resume's
+  entries themselves.
+
 ## [1.0.0-rc.21] - 2026-10-21
 
 Twenty-first release candidate for 1.0.0. `AgentOptions.wrapToolCall` wraps

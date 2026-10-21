@@ -27,6 +27,11 @@ export {
   DelegationRecoveryRequiredError,
   isContextLogError,
 } from "./errors.js";
+export {
+  INTERRUPT_KEY_SEGMENT_MAX_CHARS,
+  interruptEntryKeySegment,
+  interruptEntryKeys,
+} from "./interrupt-keys.js";
 export { assertContextJson, canonicalContextJson } from "./json.js";
 export { MemoryContextLogStore } from "./memory-store.js";
 export { CORE_VERSION_CONTRACT_KEY, createMessageProjectionAdapter } from "./projection.js";
