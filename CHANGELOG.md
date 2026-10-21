@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.21] - 2026-10-21
+
+Twenty-first release candidate for 1.0.0. `AgentOptions.wrapToolCall` wraps
+each tool call once, outside the workflow gate, the tool hooks and
+permission checks, so a host can keep a step's calls in the order the model
+made them. `search_tools` `path` detail also keeps the restrictions written
+beside a recursive `$ref`.
+
 ### Added
 
 - `AgentOptions.wrapToolCall(call, run)`, a per-call wrapper around the tool
@@ -1838,7 +1846,8 @@ the final 1.0.0 entry.
 - Comprehensive error types and graceful degradation utilities
 - Testing utilities via `@lleverage-ai/agent-sdk/testing`
 
-[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.20...HEAD
+[Unreleased]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.21...HEAD
+[1.0.0-rc.21]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.20...agent-sdk@1.0.0-rc.21
 [1.0.0-rc.20]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.19...agent-sdk@1.0.0-rc.20
 [1.0.0-rc.19]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.18...agent-sdk@1.0.0-rc.19
 [1.0.0-rc.18]: https://github.com/lleverage-ai/agent-sdk/compare/agent-sdk@1.0.0-rc.17...agent-sdk@1.0.0-rc.18
