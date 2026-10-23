@@ -21,6 +21,7 @@
     "typescript": "^5.9.2"
   },
   "overrides": {
-    "body-parser": "^2.4.0"
+    "body-parser": "^2.4.0",
+    "ip-address": "^10.7.4"
   }
 }
