@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- `@modelcontextprotocol/sdk` dependency floor raised from `^1.30.0` to
+  `^1.30.1`, the first release with the fix for GHSA-f897-62hf-6gxq (MCP
+  servers over HTTP had no limit on request body size or JSON-RPC batch
+  length). The SDK only uses the MCP client transports, so it was not
+  exposed itself; the new floor keeps hosts that also run an MCP HTTP
+  server from resolving a vulnerable copy through this package.
+
 ## [1.0.0-rc.22] - 2026-10-21
 
 Twenty-second release candidate for 1.0.0. A log-mode resume keys its entries
