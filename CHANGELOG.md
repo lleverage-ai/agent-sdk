@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-rc.23] - 2026-11-11
+
+Twenty-third release candidate for 1.0.0. A log-mode run can carry tool
+calls the host already ran, with their results, committed after its input,
+so the first model request already holds them (for example a skill the user
+invoked by name, loaded before the run starts).
+
 ### Added
 
 - `GenerateOptions.contextSettledToolCalls` (context log mode, experimental,
