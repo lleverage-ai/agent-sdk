@@ -752,6 +752,60 @@ await agent.generate({
   that is not plain JSON. Outside log mode, `contextHistory` is a
   `ConfigurationError`.
 
+### Settled tool calls
+
+A host that already ran a tool for the run before its first model call (for
+example a skill the user invoked by name, loaded with the run's own `skill`
+tool) gives the call and its result to the run with
+`GenerateOptions.contextSettledToolCalls`. The run's first prepare commits
+them **after** its input, so the first request reads: the input, the calls,
+their results, and the model makes no call for them:
+
+```typescript
+const skill = agent.getActiveTools().skill!;
+const output = await skill.execute!({ skill_name: "orders" }, { toolCallId: "load-1", messages: [] });
+await agent.generate({
+  input,
+  threadId: sessionId,
+  contextSettledToolCalls: {
+    entries: [
+      {
+        key: `load:${runId}:call`,
+        message: {
+          role: "assistant",
+          content: [{ type: "tool-call", toolCallId: "load-1", toolName: "skill", input: { skill_name: "orders" } }],
+        },
+      },
+      {
+        key: `load:${runId}:result`,
+        message: {
+          role: "tool",
+          content: [{ type: "tool-result", toolCallId: "load-1", toolName: "skill", output: { type: "json", value: output } }],
+        },
+      },
+    ],
+  },
+});
+```
+
+- Entries are assistant messages of `tool-call` parts (none provider
+  executed) and tool messages of `tool-result` parts. Every call needs its
+  result after it, and every result answers a call before it; anything else
+  is a `ValidationError` before anything is committed, naming the field,
+  never its content.
+- Keys and metadata follow the rules for `contextHistory`: host-owned, never
+  screened or sent. The content is screened by the `PreGenerate` hooks like
+  new input; hooks never see `contextSettledToolCalls` itself.
+- The SDK does not run the tools. The host runs them, so whatever a tool
+  changes (a skill registry marking the skill loaded, which activates its
+  tools) is in place before the run's first request.
+- Committed only by the run's first committed prepare, in the same prepare
+  as the input; an entry whose key is already on the path is dropped, so a
+  retry never appends one twice. The entries are not listed in `runInput`.
+  A background follow-up never carries them.
+- Not accepted with `contextStream.forkFrom` (`ValidationError`) or outside
+  log mode (`ConfigurationError`).
+
 ## Compaction
 
 With a `contextManager`, log mode compacts by a declared **`compaction`**

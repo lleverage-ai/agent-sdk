@@ -48,9 +48,15 @@ export const LOG_MODE_OPERATIONAL_OPTIONS: ReadonlySet<keyof GenerateOptions> = 
 ]);
 
 /** Options that describe the input; the runtime supplies them as pending entries. */
-// `contextHistory` is input too: hooks see its entries, screened, as new
-// messages, never the unscreened option.
-const INPUT_OPTIONS = ["prompt", "input", "messages", "contextHistory"] as const;
+// `contextHistory` and `contextSettledToolCalls` are input too: hooks see
+// their entries, screened, as new messages, never the unscreened options.
+const INPUT_OPTIONS = [
+  "prompt",
+  "input",
+  "messages",
+  "contextHistory",
+  "contextSettledToolCalls",
+] as const;
 
 function violation(event: HookEvent, detail: string): ContextLogInvalidError {
   return new ContextLogInvalidError(
@@ -320,7 +326,8 @@ function writeTexts(
 
 /**
  * Entries the caller supplied, whatever their role: the run's own input and
- * host-supplied history (`contextHistory`). Their provider options are
+ * host-supplied history and settled tool calls (`contextHistory`,
+ * `contextSettledToolCalls`). Their provider options are
  * screened as data. Marked by object identity before screening; a hook's
  * transform writes back onto the same entries.
  */

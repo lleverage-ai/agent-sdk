@@ -702,6 +702,12 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         { configKey: "contextHistory" },
       );
     }
+    if (requestedOptions.contextSettledToolCalls !== undefined) {
+      throw new ConfigurationError(
+        'contextSettledToolCalls only applies in context log mode; set contextLog: { mode: "log" } on the agent',
+        { configKey: "contextSettledToolCalls" },
+      );
+    }
     if (requestedOptions.input !== undefined) {
       throw new ConfigurationError(
         'input only applies in context log mode; set contextLog: { mode: "log" } on the agent, or pass prompt or messages',
@@ -1266,6 +1272,7 @@ export function createGenerationRunner(deps: GenerationRunnerDeps): GenerationRu
         messages: _previousInput,
         _logRun: _previousRun,
         contextHistory: _previousHistory,
+        contextSettledToolCalls: _previousSettled,
         ...base
       } = initialAttempt.effectiveGenOptions;
       const run = await beginRun({
