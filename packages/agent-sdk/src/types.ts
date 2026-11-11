@@ -2430,6 +2430,46 @@ export interface GenerateOptions {
    */
   contextHistory?: import("./context-log/types.js").ContextHistoryInput;
 
+  /**
+   * Context log mode only: tool calls the host already ran for the run, with
+   * their results, committed **after** the run's new input by its first
+   * prepare, so the first model request already holds them and the model
+   * makes no call for them. For example, a skill the user invoked by name,
+   * loaded with the run's own `skill` tool before the run starts. See
+   * {@link ContextSettledToolCallsInput}.
+   *
+   * @example
+   * ```typescript
+   * // The host runs the agent's own `skill` tool (from getActiveTools()).
+   * const result = await runSkillTool(agent, { skill_name: "orders" });
+   * await agent.generate({
+   *   threadId,
+   *   input: [{ role: "user", content: "/orders process this one" }],
+   *   contextSettledToolCalls: {
+   *     entries: [
+   *       {
+   *         key: "load:1:call",
+   *         message: {
+   *           role: "assistant",
+   *           content: [{ type: "tool-call", toolCallId: "load-1", toolName: "skill", input: { skill_name: "orders" } }],
+   *         },
+   *       },
+   *       {
+   *         key: "load:1:result",
+   *         message: {
+   *           role: "tool",
+   *           content: [{ type: "tool-result", toolCallId: "load-1", toolName: "skill", output: { type: "json", value: result } }],
+   *         },
+   *       },
+   *     ],
+   *   },
+   * });
+   * ```
+   *
+   * @experimental
+   */
+  contextSettledToolCalls?: import("./context-log/types.js").ContextSettledToolCallsInput;
+
   /** Maximum tokens to generate */
   maxTokens?: number;
 

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `GenerateOptions.contextSettledToolCalls` (context log mode, experimental,
+  LLE-18750): tool calls the host already ran for the run, with their
+  results, committed by the run's first prepare after its input, so the first
+  model request already holds them and the model makes no call for them. For
+  example, a skill the user invoked by name, loaded with the run's own
+  `skill` tool before the run starts. Entries are assistant messages of tool
+  calls and tool messages of their results; every call must be answered.
+  They are screened like input, appended once per run, refused with
+  `contextStream.forkFrom` and outside log mode, and never carried by
+  background follow-ups. New types `ContextSettledToolCallsInput` and
+  `ContextSettledToolCallEntry`.
+
 ## [1.0.0-rc.22] - 2026-10-21
 
 Twenty-second release candidate for 1.0.0. A log-mode resume keys its entries
