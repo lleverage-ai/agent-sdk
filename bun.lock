@@ -14,7 +14,7 @@
     },
     "packages/agent-sdk": {
       "name": "@lleverage-ai/agent-sdk",
-      "version": "1.0.0-rc.22",
+      "version": "1.0.0-rc.23",
       "dependencies": {
         "@modelcontextprotocol/sdk": "^1.30.1",
         "ajv": "^8.20.0",
@@ -35,6 +35,7 @@
   },
   "overrides": {
     "body-parser": "^2.4.0",
+    "hono": "^4.13.16",
     "ip-address": "^10.7.4",
     "qs": "6.16.1",
     "undici": "^7.30.1",
@@ -304,7 +305,7 @@
 
     "hasown": ["hasown@2.0.2", "", { "dependencies": { "function-bind": "^1.1.2" } }, "sha512-0hJU9SCPvmMzIBdZFqNPXWa6dqh7WdH0cII9y+CyS8rG3nL48Bclra9HmKhVVUHyPWNH5Y7xDwAB7bfgSjkUMQ=="],
 
-    "hono": ["hono@4.12.3", "", {}, "sha512-SFsVSjp8sj5UumXOOFlkZOG6XS9SJDKw0TbwFeV+AJ8xlST8kxK5Z/5EYa111UY8732lK2S/xB653ceuaoGwpg=="],
+    "hono": ["hono@4.13.18", "", {}, "sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA=="],
 
     "http-errors": ["http-errors@2.0.1", "", { "dependencies": { "depd": "~2.0.0", "inherits": "~2.0.4", "setprototypeof": "~1.2.0", "statuses": "~2.0.2", "toidentifier": "~1.0.1" } }, "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ=="],
 
