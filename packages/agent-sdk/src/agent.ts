@@ -1502,9 +1502,10 @@ export function createAgent(options: AgentOptions): Agent {
               prompt: followUpPrompt,
               messages: hasCheckpointing ? undefined : runningMessages,
               // A follow-up is a new run on the log the original run already
-              // extended: the host's history applied to that run only, and
-              // compaction may since have removed it from the path.
+              // extended: the host's history and settled tool calls applied to
+              // that run only, and compaction may since have removed them.
               contextHistory: undefined,
+              contextSettledToolCalls: undefined,
             };
             try {
               lastResult = await agent.generate(followUpOptions);
@@ -2103,9 +2104,10 @@ export function createAgent(options: AgentOptions): Agent {
               prompt: followUpPrompt,
               messages: hasCheckpointing ? undefined : currentMessages,
               // A follow-up is a new run on the log the original run already
-              // extended: the host's history applied to that run only, and
-              // compaction may since have removed it from the path.
+              // extended: the host's history and settled tool calls applied to
+              // that run only, and compaction may since have removed them.
               contextHistory: undefined,
+              contextSettledToolCalls: undefined,
             };
 
             let followUpText = "";

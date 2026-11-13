@@ -16,6 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exposed itself; the new floor keeps hosts that also run an MCP HTTP
   server from resolving a vulnerable copy through this package.
 
+## [1.0.0-rc.23] - 2026-11-11
+
+Twenty-third release candidate for 1.0.0. A log-mode run can carry tool
+calls the host already ran, with their results, committed after its input,
+so the first model request already holds them (for example a skill the user
+invoked by name, loaded before the run starts).
+
+### Added
+
+- `GenerateOptions.contextSettledToolCalls` (context log mode, experimental,
+  LLE-18750): tool calls the host already ran for the run, with their
+  results, committed by the run's first prepare after its input, so the first
+  model request already holds them and the model makes no call for them. For
+  example, a skill the user invoked by name, loaded with the run's own
+  `skill` tool before the run starts. Entries are assistant messages of tool
+  calls and tool messages of their results; every call must be answered.
+  They are screened like input, appended once per run, refused with
+  `contextStream.forkFrom` and outside log mode, and never carried by
+  background follow-ups. New types `ContextSettledToolCallsInput` and
+  `ContextSettledToolCallEntry`.
+
 ## [1.0.0-rc.22] - 2026-10-21
 
 Twenty-second release candidate for 1.0.0. A log-mode resume keys its entries

@@ -72,6 +72,7 @@ import {
   type ContextModelRef,
   type ContextPathRef,
   type ContextRunInputRef,
+  type ContextSettledToolCallsInput,
   type ContextStreamRef,
   type ContextTransition,
   type ContextTransitionReason,
@@ -524,8 +525,27 @@ export function assertContextHistory(value: unknown): ContextHistoryInput {
     }
     if (history.root.metadata !== undefined) json(history.root.metadata, "root.metadata");
   }
+  assertHostEntries(history.entries, ["user", "assistant", "tool"], fail, json);
+  // A copy, so the caller cannot change what a retry plans.
+  return JSON.parse(JSON.stringify(history)) as ContextHistoryInput;
+}
+
+/**
+ * Checks the entries of `contextHistory` or `contextSettledToolCalls`:
+ * unique non-empty keys of bounded length without control characters,
+ * messages of one of `roles` whose content has the right shape for its role,
+ * and plain JSON throughout. `fail` throws; errors never quote content.
+ */
+function assertHostEntries(
+  entries: readonly unknown[],
+  roles: readonly ("user" | "assistant" | "tool")[],
+  fail: (detail: string) => never,
+  json: (field: unknown, path: string) => void,
+): void {
   const keys = new Set<string>();
-  history.entries.forEach((entry: unknown, index) => {
+  const roleNames =
+    roles.length === 3 ? "a user, assistant or tool message" : "an assistant or tool message";
+  entries.forEach((entry: unknown, index) => {
     if (typeof entry !== "object" || entry === null) {
       fail(`entries[${index}] must be an object`);
     }
@@ -545,19 +565,80 @@ export function assertContextHistory(value: unknown): ContextHistoryInput {
     if (keys.has(key as string)) fail(`entries[${index}].key repeats an earlier key`);
     keys.add(key as string);
     if (typeof message !== "object" || message === null || Array.isArray(message)) {
-      fail(`entries[${index}].message must be a user, assistant or tool message`);
+      fail(`entries[${index}].message must be ${roleNames}`);
     }
     const { role, content } = message as { role?: unknown; content?: unknown };
-    if (role !== "user" && role !== "assistant" && role !== "tool") {
-      fail(`entries[${index}].message must be a user, assistant or tool message`);
+    if (!(roles as readonly unknown[]).includes(role)) {
+      fail(`entries[${index}].message must be ${roleNames}`);
     }
     const shape = historyContentProblem(role as "user" | "assistant" | "tool", content);
     if (shape) fail(`entries[${index}].message ${shape}`);
     json(message, `entries[${index}].message`);
     if (metadata !== undefined) json(metadata, `entries[${index}].metadata`);
   });
+}
+
+/**
+ * Checks and copies a run's `contextSettledToolCalls`: entries as for
+ * `contextHistory`, but only assistant messages of tool calls (none provider
+ * executed) and tool messages of tool results, where every call has its
+ * result after it and every result answers a call before it. Errors never
+ * quote an entry's content.
+ *
+ * @internal
+ */
+export function assertContextSettledToolCalls(value: unknown): ContextSettledToolCallsInput {
+  const fail = (detail: string): never => {
+    throw new ValidationError(`contextSettledToolCalls ${detail}`, {
+      fieldErrors: { contextSettledToolCalls: [detail] },
+    });
+  };
+  const json = (field: unknown, path: string) => {
+    try {
+      assertContextJsonOpaque(field, `contextSettledToolCalls.${path}`);
+    } catch (error) {
+      if (isContextLogError(error, "invalid")) fail(`${path} must be plain JSON`);
+      throw error;
+    }
+  };
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return fail("must be an object with entries");
+  }
+  const settled = value as Partial<ContextSettledToolCallsInput>;
+  if (!Array.isArray(settled.entries)) return fail("entries must be an array");
+  assertHostEntries(settled.entries, ["assistant", "tool"], fail, json);
+  // Shapes are checked; now the parts, by role, and that every call is settled.
+  const pending = new Set<string>();
+  const called = new Set<string>();
+  settled.entries.forEach((entry, index) => {
+    const { role, content } = entry.message as { role: string; content: unknown };
+    if (!Array.isArray(content) || content.length === 0) {
+      fail(`entries[${index}].message must hold at least one tool call or tool result`);
+    }
+    for (const [partIndex, part] of (content as Array<Record<string, unknown>>).entries()) {
+      const at = `entries[${index}].message.content[${partIndex}]`;
+      const toolCallId = part.toolCallId as string;
+      if (role === "assistant") {
+        if (part.type !== "tool-call") fail(`${at} must be a tool call`);
+        if (part.providerExecuted === true) fail(`${at} must not be provider executed`);
+        if (typeof part.toolName !== "string") fail(`${at} must name its tool`);
+        if (called.has(toolCallId)) fail(`${at} repeats an earlier toolCallId`);
+        called.add(toolCallId);
+        pending.add(toolCallId);
+      } else {
+        if (part.type !== "tool-result") fail(`${at} must be a tool result`);
+        if (!pending.has(toolCallId)) {
+          fail(`${at} must answer a tool call made before it and not yet answered`);
+        }
+        pending.delete(toolCallId);
+      }
+    }
+  });
+  if (pending.size > 0) {
+    fail(`leaves ${pending.size} tool call(s) without a result`);
+  }
   // A copy, so the caller cannot change what a retry plans.
-  return JSON.parse(JSON.stringify(history)) as ContextHistoryInput;
+  return JSON.parse(JSON.stringify(settled)) as ContextSettledToolCallsInput;
 }
 
 /**
@@ -1004,6 +1085,10 @@ export function createLogContextRuntime(
       genOptions.contextHistory === undefined
         ? undefined
         : assertContextHistory(genOptions.contextHistory);
+    const contextSettledToolCalls =
+      genOptions.contextSettledToolCalls === undefined
+        ? undefined
+        : assertContextSettledToolCalls(genOptions.contextSettledToolCalls);
     if (genOptions._historyUnlessCheckpointed && genOptions._historyUnlessCheckpointed.length > 0) {
       throw new ValidationError(
         "Context log mode does not accept caller-supplied history: the log is the history",
@@ -1018,9 +1103,14 @@ export function createLogContextRuntime(
       _checkpointSnapshot: _snapshot,
       _logRun: _previousRun,
       contextHistory: _contextHistory,
+      contextSettledToolCalls: _contextSettledToolCalls,
       ...unchecked
     } = genOptions;
-    const rest: GenerateOptions = contextHistory ? { ...unchecked, contextHistory } : unchecked;
+    const rest: GenerateOptions = {
+      ...unchecked,
+      ...(contextHistory && { contextHistory }),
+      ...(contextSettledToolCalls && { contextSettledToolCalls }),
+    };
     if (input && input.length > 0) {
       // A copy, so a caller that reuses or changes its array while the run is
       // in flight cannot change what a retry plans. The input is plain JSON,
@@ -1068,8 +1158,10 @@ export function createLogContextRuntime(
       resolveModelInputCapabilities(options, model),
     );
 
-    // History the run supplies is committed once, with its input.
+    // History the run supplies is committed once, with its input, and so are
+    // the tool calls the host settled for it.
     const history = run.inputCommitted ? undefined : genOptions.contextHistory;
+    const settled = run.inputCommitted ? undefined : genOptions.contextSettledToolCalls;
     // One head read serves the version, the path and the cursor.
     const branchFrom =
       genOptions.contextStream?.branchFrom === undefined
@@ -1089,6 +1181,15 @@ export function createLogContextRuntime(
         throw new ValidationError(
           "contextHistory cannot be supplied for a fork: its history is the source path",
           { fieldErrors: { contextHistory: ["not accepted with contextStream.forkFrom"] } },
+        );
+      }
+      // A fork's first request is the source request plus the brief only.
+      if (genOptions.contextSettledToolCalls !== undefined) {
+        throw new ValidationError(
+          "contextSettledToolCalls cannot be supplied for a fork: its first request is the source request plus the brief",
+          {
+            fieldErrors: { contextSettledToolCalls: ["not accepted with contextStream.forkFrom"] },
+          },
         );
       }
       // Producer output would follow the brief, so the fork's request would
@@ -1328,6 +1429,12 @@ export function createLogContextRuntime(
         );
       }
     }
+    // The tool calls the host settled come after the run's input, before any
+    // model call: checked whole when the run started, so here only entries
+    // an earlier prepare of the run already committed are dropped.
+    const settledEntries = settled
+      ? historyEntries({ entries: settled.entries }).filter((entry) => !onPath.has(entry.key))
+      : [];
     // Producers run against this same head and path; entries already on the
     // path are dropped. Then the new input and producer output pass the
     // PreGenerate hooks (redaction, guardrails) before anything is committed
@@ -1339,7 +1446,12 @@ export function createLogContextRuntime(
       path,
       ...(genOptions.signal ? { signal: genOptions.signal } : {}),
     });
-    const screened = await screen(genOptions, [...imported, ...userEntries, ...produced]);
+    const screened = await screen(genOptions, [
+      ...imported,
+      ...userEntries,
+      ...settledEntries,
+      ...produced,
+    ]);
     let append = screened.pending;
 
     const committed = path.map(toEntryInput);

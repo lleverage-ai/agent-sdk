@@ -300,6 +300,53 @@ export interface ContextHistoryInput {
 }
 
 /**
+ * One message of the tool calls a host settled for a log-mode run: an
+ * assistant message of tool calls, or a tool message of their results. Keys
+ * and metadata follow the rules of {@link ContextHistoryEntry}.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextSettledToolCallEntry {
+  /** As {@link ContextHistoryEntry.key}: a host identifier, never screened or sent. */
+  key: string;
+  /**
+   * An assistant message holding only `tool-call` parts (none provider
+   * executed), or a tool message holding only `tool-result` parts. Content
+   * must be plain JSON and is screened by the PreGenerate hooks.
+   */
+  message: AssistantModelMessage | ToolModelMessage;
+  /** As {@link ContextHistoryEntry.metadata}: host identifiers and provenance only. */
+  metadata?: ContextMetadata;
+}
+
+/**
+ * Tool calls the host already ran for a log-mode run before its first model
+ * call (`GenerateOptions.contextSettledToolCalls`), for example a skill the
+ * user invoked by name, which the host loads with the run's own tool. The
+ * run's first prepare commits them **after** the run's new input, so the
+ * first request reads: the input, the calls, their results.
+ *
+ * - Every tool call needs its result among the entries, after it, and every
+ *   result answers a call made before it: the calls are settled, so the
+ *   model never sees one pending.
+ * - Entries are screened by the PreGenerate hooks like new input, and are
+ *   committed by the run's first committed prepare only. An entry whose key
+ *   is already on the path is dropped, so a retry never appends one twice.
+ * - The SDK does not run the tools: the host does, so any state a tool
+ *   changes (such as a skill registry marking a skill loaded) is already in
+ *   place when the run starts.
+ * - Not accepted with `contextStream.forkFrom`, and a background follow-up
+ *   the agent starts never carries them.
+ *
+ * @experimental
+ * @category Context Log
+ */
+export interface ContextSettledToolCallsInput {
+  entries: readonly ContextSettledToolCallEntry[];
+}
+
+/**
  * Where a stored entry sits in the log.
  *
  * @experimental
